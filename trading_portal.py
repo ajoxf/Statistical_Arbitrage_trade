@@ -2310,6 +2310,14 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <span class="basis-label" style="color: #888; font-size: 0.85em;">Fair Value Basis</span>
                         <span class="basis-value" style="color: #888; font-size: 0.85em;">${asset.swap_basis.toFixed(2)}</span>
                     </div>
+                    <div class="basis-row">
+                        <span class="basis-label" style="color: #888; font-size: 0.85em;">Diff (Actual - Fair)</span>
+                        <span class="basis-value" style="color: ${(asset.actual_basis - asset.swap_basis) >= 0 ? '#5cb85c' : '#d9534f'}; font-size: 0.85em;">${(asset.actual_basis - asset.swap_basis).toFixed(2)}</span>
+                    </div>
+                    <div class="basis-row">
+                        <span class="basis-label" style="color: #888; font-size: 0.85em;">Premium %</span>
+                        <span class="basis-value" style="color: ${(asset.actual_basis - asset.swap_basis) >= 0 ? '#5cb85c' : '#d9534f'}; font-size: 0.85em;">${asset.swap_basis !== 0 ? (((asset.actual_basis - asset.swap_basis) / Math.abs(asset.swap_basis)) * 100).toFixed(1) : 0}%</span>
+                    </div>
                 </div>
 
                 <div class="signal-section ${signalClass}">
