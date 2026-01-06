@@ -87,10 +87,11 @@ class DatabaseManager:
                 silver_futures_symbol TEXT DEFAULT '',
                 silver_futures_expiry TEXT DEFAULT '',
                 lookback_period INTEGER DEFAULT 90,
+                lookback_unit TEXT DEFAULT 'minutes',
                 entry_std_dev REAL DEFAULT 2.0,
                 exit_std_dev REAL DEFAULT 0.5,
                 stop_loss_std_dev REAL DEFAULT 3.0,
-                time_stop_loss_minutes INTEGER DEFAULT 0,
+                time_stop_loss_days REAL DEFAULT 0,
                 max_positions INTEGER DEFAULT 3,
                 lot_size REAL DEFAULT 0.1,
                 algo_enabled INTEGER DEFAULT 0,
@@ -184,14 +185,15 @@ class DatabaseManager:
                 'silver_futures_symbol': row[7] or '',
                 'silver_futures_expiry': row[8] or '',
                 'lookback_period': row[9] or 90,
-                'entry_std_dev': row[10] or 2.0,
-                'exit_std_dev': row[11] or 0.5,
-                'stop_loss_std_dev': row[12] or 3.0,
-                'time_stop_loss_minutes': row[13] or 0,
-                'max_positions': row[14] or 3,
-                'lot_size': row[15] or 0.1,
-                'algo_enabled': bool(row[16]),
-                'paper_mode': bool(row[17]) if row[17] is not None else True
+                'lookback_unit': row[10] or 'minutes',
+                'entry_std_dev': row[11] or 2.0,
+                'exit_std_dev': row[12] or 0.5,
+                'stop_loss_std_dev': row[13] or 3.0,
+                'time_stop_loss_days': row[14] or 0,
+                'max_positions': row[15] or 3,
+                'lot_size': row[16] or 0.1,
+                'algo_enabled': bool(row[17]),
+                'paper_mode': bool(row[18]) if row[18] is not None else True
             }
         return None
 
@@ -211,10 +213,11 @@ class DatabaseManager:
                     silver_futures_symbol = ?,
                     silver_futures_expiry = ?,
                     lookback_period = ?,
+                    lookback_unit = ?,
                     entry_std_dev = ?,
                     exit_std_dev = ?,
                     stop_loss_std_dev = ?,
-                    time_stop_loss_minutes = ?,
+                    time_stop_loss_days = ?,
                     max_positions = ?,
                     lot_size = ?,
                     algo_enabled = ?,
@@ -231,10 +234,11 @@ class DatabaseManager:
                 config.get('silver_futures_symbol', ''),
                 config.get('silver_futures_expiry', ''),
                 config.get('lookback_period', 90),
+                config.get('lookback_unit', 'minutes'),
                 config.get('entry_std_dev', 2.0),
                 config.get('exit_std_dev', 0.5),
                 config.get('stop_loss_std_dev', 3.0),
-                config.get('time_stop_loss_minutes', 0),
+                config.get('time_stop_loss_days', 0),
                 config.get('max_positions', 3),
                 config.get('lot_size', 0.1),
                 1 if config.get('algo_enabled') else 0,
@@ -675,7 +679,7 @@ class TradingMonitor:
         entry_std = self.config.get('entry_std_dev', 2.0)
         exit_std = self.config.get('exit_std_dev', 0.5)
         stop_loss_std = self.config.get('stop_loss_std_dev', 3.0)
-        time_stop_minutes = self.config.get('time_stop_loss_minutes', 0)
+        time_stop_days = self.config.get('time_stop_loss_days', 0)
 
         # Check existing positions
         has_position = asset_key in self.positions
@@ -697,18 +701,18 @@ class TradingMonitor:
             position = self.positions[asset_key]
 
             # Check time-based stop loss first (if enabled)
-            if time_stop_minutes > 0:
+            if time_stop_days > 0:
                 try:
-                    entry_time = datetime.fromisoformat(position['entry_time'])
-                    position_age_minutes = (datetime.now() - entry_time).total_seconds() / 60
-                    if position_age_minutes >= time_stop_minutes:
+                    entry_date = datetime.strptime(position['entry_date'], '%Y-%m-%d')
+                    position_age_days = (datetime.now() - entry_date).total_seconds() / 86400  # seconds per day
+                    if position_age_days >= time_stop_days:
                         return {
                             'type': 'TIME_STOP',
-                            'reason': f'Position held {position_age_minutes:.0f} min >= {time_stop_minutes} min limit',
+                            'reason': f'Position held {position_age_days:.1f} days >= {time_stop_days} day limit',
                             'action': 'Time stop - Close position'
                         }
                 except (ValueError, KeyError):
-                    pass  # If we can't parse entry_time, skip time check
+                    pass  # If we can't parse entry_date, skip time check
 
             if position['signal_type'] == 'SELL_BASIS':
                 if zscore <= exit_std:
@@ -1171,10 +1175,11 @@ def settings():
     if request.method == 'POST':
         try:
             monitor.config['lookback_period'] = int(request.form.get('lookback_period', 90))
+            monitor.config['lookback_unit'] = request.form.get('lookback_unit', 'minutes')
             monitor.config['entry_std_dev'] = float(request.form.get('entry_std_dev', 2.0))
             monitor.config['exit_std_dev'] = float(request.form.get('exit_std_dev', 0.5))
             monitor.config['stop_loss_std_dev'] = float(request.form.get('stop_loss_std_dev', 3.0))
-            monitor.config['time_stop_loss_minutes'] = int(request.form.get('time_stop_loss_minutes', 0))
+            monitor.config['time_stop_loss_days'] = float(request.form.get('time_stop_loss_days', 0))
             monitor.config['max_positions'] = int(request.form.get('max_positions', 3))
             monitor.config['lot_size'] = float(request.form.get('lot_size', 0.1))
 
@@ -1225,10 +1230,11 @@ def get_data():
             'algo_enabled': monitor.config.get('algo_enabled', False),
             'paper_mode': monitor.config.get('paper_mode', True),
             'lookback_period': monitor.config.get('lookback_period', 90),
+            'lookback_unit': monitor.config.get('lookback_unit', 'minutes'),
             'entry_std_dev': monitor.config.get('entry_std_dev', 2.0),
             'exit_std_dev': monitor.config.get('exit_std_dev', 0.5),
             'stop_loss_std_dev': monitor.config.get('stop_loss_std_dev', 3.0),
-            'time_stop_loss_minutes': monitor.config.get('time_stop_loss_minutes', 0)
+            'time_stop_loss_days': monitor.config.get('time_stop_loss_days', 0)
         },
         'last_update': monitor.last_update
     })
@@ -1955,9 +1961,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     document.getElementById('algo-status').className = 'status-badge ' + (cfg.algo_enabled ? 'active' : 'inactive');
                     document.getElementById('mode-status').textContent = cfg.paper_mode ? 'PAPER' : 'LIVE';
                     document.getElementById('mode-status').className = 'status-badge ' + (cfg.paper_mode ? 'paper' : 'live');
-                    let thresholdText = `Entry: ±${cfg.entry_std_dev}σ | Exit: ±${cfg.exit_std_dev}σ | Stop: ±${cfg.stop_loss_std_dev}σ`;
-                    if (cfg.time_stop_loss_minutes > 0) {
-                        thresholdText += ` | Time: ${cfg.time_stop_loss_minutes}min`;
+                    let thresholdText = `Entry: ±${cfg.entry_std_dev}σ | Exit: ±${cfg.exit_std_dev}σ | Stop: ±${cfg.stop_loss_std_dev}σ | Lookback: ${cfg.lookback_period} ${cfg.lookback_unit}`;
+                    if (cfg.time_stop_loss_days > 0) {
+                        thresholdText += ` | Time Stop: ${cfg.time_stop_loss_days} days`;
                     }
                     document.getElementById('thresholds').textContent = thresholdText;
 
@@ -2328,9 +2334,15 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                 <div class="card-title">Signal Parameters</div>
 
                 <div class="form-group">
-                    <label>Lookback Period (data points)</label>
-                    <input type="number" name="lookback_period" value="{{ config.lookback_period }}" min="10" max="1000">
-                    <div class="help-text">Number of data points for mean/std calculation</div>
+                    <label>Lookback Period</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="number" name="lookback_period" value="{{ config.lookback_period }}" min="1" max="10000" style="flex: 1;">
+                        <select name="lookback_unit" style="width: 120px; padding: 12px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="minutes" {{ 'selected' if config.lookback_unit == 'minutes' else '' }}>Minutes</option>
+                            <option value="days" {{ 'selected' if config.lookback_unit == 'days' else '' }}>Days</option>
+                        </select>
+                    </div>
+                    <div class="help-text">1 data point = 0.3 seconds. For intraday: use minutes. For swing trades: use days.</div>
                 </div>
 
                 <div class="form-group">
@@ -2352,9 +2364,9 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                 </div>
 
                 <div class="form-group">
-                    <label>Time-Based Stop Loss (Minutes)</label>
-                    <input type="number" name="time_stop_loss_minutes" value="{{ config.time_stop_loss_minutes or 0 }}" min="0" max="1440" step="1">
-                    <div class="help-text">Auto-close position after X minutes (0 = disabled). Max 1440 (24 hours)</div>
+                    <label>Time-Based Stop Loss (Days)</label>
+                    <input type="number" name="time_stop_loss_days" value="{{ config.time_stop_loss_days or 0 }}" min="0" max="365" step="0.5">
+                    <div class="help-text">Auto-close position after X days (0 = disabled). Use 0.5 for 12 hours, 1 for 1 day, etc.</div>
                 </div>
             </div>
 
