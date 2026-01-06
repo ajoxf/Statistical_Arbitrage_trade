@@ -285,6 +285,7 @@ class DatabaseManager:
         with self.lock:
             conn = self.get_connection()
             cursor = conn.cursor()
+            # Note: spread_cost column is at the END (added via ALTER TABLE)
             cursor.execute('''
                 INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
@@ -305,14 +306,14 @@ class DatabaseManager:
                 trade.get('gross_pnl', 0),
                 trade.get('swap_cost', 0),
                 trade.get('commission', 0),
-                trade.get('spread_cost', 0),
                 trade.get('net_pnl', 0),
                 trade.get('return_pct', 0),
                 trade.get('lot_size', 0.1),
                 trade.get('mt5_spot_ticket'),
                 trade.get('mt5_futures_ticket'),
                 trade.get('order_status', 'PENDING'),
-                trade['status']
+                trade['status'],
+                trade.get('spread_cost', 0)  # spread_cost is at the END
             ))
             conn.commit()
             conn.close()
@@ -328,6 +329,8 @@ class DatabaseManager:
         rows = cursor.fetchall()
         conn.close()
 
+        # Note: spread_cost was added via ALTER TABLE so it's at the END (index 24)
+        # Original order: 0-23 are the original columns, 24 is spread_cost (if exists)
         return [{
             'trade_id': r[0], 'asset': r[1], 'direction': r[2],
             'entry_date': r[3], 'exit_date': r[4], 'days_held': r[5],
@@ -336,14 +339,10 @@ class DatabaseManager:
             'exit_spot_price': r[10], 'exit_futures_price': r[11],
             'spot_pnl': r[12], 'futures_pnl': r[13],
             'gross_pnl': r[14], 'swap_cost': r[15], 'commission': r[16],
-            'spread_cost': r[17] if len(r) > 17 else 0,
-            'net_pnl': r[18] if len(r) > 18 else r[17],
-            'return_pct': r[19] if len(r) > 19 else r[18],
-            'lot_size': r[20] if len(r) > 20 else r[19],
-            'mt5_spot_ticket': r[21] if len(r) > 21 else r[20],
-            'mt5_futures_ticket': r[22] if len(r) > 22 else r[21],
-            'order_status': r[23] if len(r) > 23 else r[22],
-            'status': r[24] if len(r) > 24 else r[23]
+            'net_pnl': r[17], 'return_pct': r[18], 'lot_size': r[19],
+            'mt5_spot_ticket': r[20], 'mt5_futures_ticket': r[21],
+            'order_status': r[22], 'status': r[23],
+            'spread_cost': r[24] if len(r) > 24 else 0
         } for r in rows]
 
     def get_trade_summary(self):
