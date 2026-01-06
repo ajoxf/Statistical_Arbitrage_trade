@@ -153,16 +153,30 @@ class DatabaseManager:
             conn.commit()
             conn.close()
 
-    def get_price_history(self, asset, limit=500):
-        """Get price history for mean calculation"""
+    def get_price_history(self, asset, limit=500, max_age_hours=None):
+        """Get price history for mean calculation
+
+        Args:
+            asset: Asset key (GOLD, SILVER)
+            limit: Max number of records
+            max_age_hours: Only return data within this many hours (None = no filter)
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT spread, swap_diff FROM price_history
-            WHERE asset = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
-        ''', (asset, limit))
+        if max_age_hours:
+            cursor.execute('''
+                SELECT spread, swap_diff FROM price_history
+                WHERE asset = ? AND timestamp > datetime('now', ?)
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (asset, f'-{max_age_hours} hours', limit))
+        else:
+            cursor.execute('''
+                SELECT spread, swap_diff FROM price_history
+                WHERE asset = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (asset, limit))
         rows = cursor.fetchall()
         conn.close()
         return rows
@@ -574,14 +588,21 @@ class TradingMonitor:
         else:
             required_points = lookback
 
+        # Calculate max age for database query (only use recent data)
+        # Add 10% buffer to account for gaps
+        if lookback_unit == 'days':
+            max_age_hours = int(lookback * 24 * 1.1)  # days to hours + 10% buffer
+        else:
+            max_age_hours = max(2, int(lookback / 60 * 1.1) + 1)  # minutes to hours + buffer, min 2 hours
+
         # First try cache
         cache = list(self.spread_cache.get(asset_key, []))
 
         if len(cache) >= required_points:
             spreads = [d['spread'] for d in cache[-required_points:]]
         else:
-            # Fall back to database
-            history = self.db.get_price_history(asset_key, required_points)
+            # Fall back to database - only get data within the lookback window
+            history = self.db.get_price_history(asset_key, required_points, max_age_hours=max_age_hours)
             spreads = [row[0] for row in history]  # spread column (raw basis)
 
             # Rebuild cache from database
