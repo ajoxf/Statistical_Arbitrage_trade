@@ -716,6 +716,101 @@ class TradingMonitor:
         zscore = (current_value - stats['mean']) / stats['std']
         return zscore, stats
 
+    def calculate_hurst_exponent(self, asset_key, min_points=20):
+        """
+        Calculate Hurst Exponent using R/S (Rescaled Range) method.
+
+        H < 0.5: Mean-reverting (anti-persistent) - GOOD for mean reversion strategy
+        H = 0.5: Random walk (Brownian motion) - No edge
+        H > 0.5: Trending (persistent) - BAD for mean reversion, good for momentum
+
+        Returns: (hurst_value, regime_label)
+        """
+        cache = self.spread_cache.get(asset_key, [])
+        if len(cache) < min_points:
+            return None, 'INSUFFICIENT_DATA'
+
+        # Get spread values from cache
+        spreads = np.array([item['spread'] for item in cache])
+
+        # Use last N points (more recent data is more relevant)
+        max_points = min(100, len(spreads))
+        ts = spreads[-max_points:]
+
+        # R/S Analysis
+        n = len(ts)
+        if n < min_points:
+            return None, 'INSUFFICIENT_DATA'
+
+        # Calculate returns/differences
+        diffs = np.diff(ts)
+        if len(diffs) == 0:
+            return None, 'INSUFFICIENT_DATA'
+
+        # Range of chunk sizes to test (must be at least 10)
+        max_k = n // 2
+        min_k = max(10, n // 10)
+
+        if max_k <= min_k:
+            return None, 'INSUFFICIENT_DATA'
+
+        # Calculate R/S for different chunk sizes
+        rs_values = []
+        chunk_sizes = []
+
+        for k in range(min_k, max_k + 1, max(1, (max_k - min_k) // 10)):
+            num_chunks = n // k
+            if num_chunks < 1:
+                continue
+
+            rs_list = []
+            for i in range(num_chunks):
+                chunk = ts[i*k:(i+1)*k]
+                if len(chunk) < 2:
+                    continue
+
+                # Mean-adjusted cumulative deviations
+                mean_chunk = np.mean(chunk)
+                deviations = chunk - mean_chunk
+                cumsum = np.cumsum(deviations)
+
+                # Range
+                R = np.max(cumsum) - np.min(cumsum)
+
+                # Standard deviation
+                S = np.std(chunk, ddof=1)
+
+                if S > 0:
+                    rs_list.append(R / S)
+
+            if rs_list:
+                rs_values.append(np.mean(rs_list))
+                chunk_sizes.append(k)
+
+        if len(rs_values) < 3:
+            return None, 'INSUFFICIENT_DATA'
+
+        # Linear regression on log-log scale to get Hurst exponent
+        log_n = np.log(chunk_sizes)
+        log_rs = np.log(rs_values)
+
+        # Simple linear regression: H = slope
+        slope, _ = np.polyfit(log_n, log_rs, 1)
+        hurst = slope
+
+        # Clamp to reasonable range [0, 1]
+        hurst = max(0.0, min(1.0, hurst))
+
+        # Determine regime
+        if hurst < 0.4:
+            regime = 'MEAN_REVERTING'
+        elif hurst < 0.6:
+            regime = 'RANDOM_WALK'
+        else:
+            regime = 'TRENDING'
+
+        return round(hurst, 3), regime
+
     def get_market_data(self, asset_key):
         """Get market data for specific asset"""
         if asset_key not in self.active_assets:
@@ -782,8 +877,11 @@ class TradingMonitor:
             # Calculate z-score on RAW SPREAD (pure mean reversion)
             zscore, stats = self.calculate_zscore(asset_key, actual_basis)
 
-            # Generate signal (pass stats for progress info)
-            signal = self._generate_signal(asset_key, zscore, stats)
+            # Calculate Hurst exponent for regime detection
+            hurst_value, hurst_regime = self.calculate_hurst_exponent(asset_key)
+
+            # Generate signal (pass stats and hurst for filtering)
+            signal = self._generate_signal(asset_key, zscore, stats, hurst_value, hurst_regime)
 
             # Store z-score in history for charting
             entry_threshold = self.config.get('entry_std_dev', 2.0)
@@ -824,6 +922,8 @@ class TradingMonitor:
                 'zscore': zscore,
                 'stats': stats,
                 'signal': signal,
+                'hurst': hurst_value,
+                'hurst_regime': hurst_regime,
                 'timestamp': datetime.now().strftime('%H:%M:%S')
             }
 
@@ -831,8 +931,8 @@ class TradingMonitor:
             logger.error(f"Error getting market data for {asset_key}: {e}")
             return None
 
-    def _generate_signal(self, asset_key, zscore, stats=None):
-        """Generate trading signal based on z-score"""
+    def _generate_signal(self, asset_key, zscore, stats=None, hurst_value=None, hurst_regime=None):
+        """Generate trading signal based on z-score with Hurst exponent regime filter"""
         if zscore is None:
             # Show progress if stats available
             if stats and not stats.get('complete', False):
@@ -850,20 +950,32 @@ class TradingMonitor:
         stop_loss_std = self.config.get('stop_loss_std_dev', 3.0)
         time_stop_days = self.config.get('time_stop_loss_days', 0)
 
+        # Hurst exponent threshold for mean reversion trading
+        # H < 0.5 means mean-reverting, H > 0.5 means trending
+        hurst_threshold = 0.5
+
         # Check existing positions
         has_position = asset_key in self.positions
 
         if not has_position:
+            # HURST FILTER: Only enter new positions if regime is mean-reverting
+            if hurst_value is not None and hurst_value >= hurst_threshold:
+                return {
+                    'type': 'REGIME_FILTER',
+                    'reason': f'Hurst {hurst_value:.3f} >= {hurst_threshold} ({hurst_regime}) - Not mean-reverting',
+                    'action': 'Entry blocked - Wait for mean-reverting regime'
+                }
+
             if zscore > entry_std:
                 return {
                     'type': 'SELL_BASIS',
-                    'reason': f'Z-score {zscore:.2f} > {entry_std}',
+                    'reason': f'Z-score {zscore:.2f} > {entry_std} | Hurst {hurst_value:.3f} ({hurst_regime})' if hurst_value else f'Z-score {zscore:.2f} > {entry_std}',
                     'action': 'Buy Spot + Sell Futures'
                 }
             elif zscore < -entry_std:
                 return {
                     'type': 'BUY_BASIS',
-                    'reason': f'Z-score {zscore:.2f} < -{entry_std}',
+                    'reason': f'Z-score {zscore:.2f} < -{entry_std} | Hurst {hurst_value:.3f} ({hurst_regime})' if hurst_value else f'Z-score {zscore:.2f} < -{entry_std}',
                     'action': 'Sell Spot + Buy Futures'
                 }
         else:
@@ -1962,6 +2074,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .signal-section.collecting { border-color: #1976d2; background: #e3f2fd; }
         .signal-section.time-stop { border-color: #ff9800; background: #fff3e0; }
         .signal-section.stop-loss { border-color: #9c27b0; background: #f3e5f5; }
+        .signal-section.regime-filter { border-color: #795548; background: #efebe9; }
 
         .zscore-display {
             font-size: 2.5em;
@@ -1972,8 +2085,13 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .signal-section.buy-basis .zscore-display { color: #2e7d32; }
         .signal-section.time-stop .zscore-display { color: #ff9800; }
         .signal-section.stop-loss .zscore-display { color: #9c27b0; }
+        .signal-section.regime-filter .zscore-display { color: #795548; }
         .signal-type { font-size: 1.1em; font-weight: 600; margin-bottom: 5px; }
         .signal-reason { color: #666; font-size: 0.9em; }
+
+        /* Hurst exponent colors */
+        .hurst-good { color: #2e7d32; }  /* Green - mean reverting, good for strategy */
+        .hurst-bad { color: #c62828; }   /* Red - trending, bad for mean reversion */
 
         .stats-row {
             display: flex;
@@ -2456,6 +2574,12 @@ MONITOR_HTML = '''<!DOCTYPE html>
             else if (signal.type === 'COLLECTING') signalClass = 'collecting';
             else if (signal.type === 'TIME_STOP') signalClass = 'time-stop';
             else if (signal.type === 'STOP_LOSS') signalClass = 'stop-loss';
+            else if (signal.type === 'REGIME_FILTER') signalClass = 'regime-filter';
+
+            // Hurst exponent display
+            const hurst = asset.hurst !== null && asset.hurst !== undefined ? asset.hurst.toFixed(3) : '--';
+            const hurstRegime = asset.hurst_regime || 'N/A';
+            const hurstClass = asset.hurst < 0.5 ? 'hurst-good' : (asset.hurst >= 0.5 ? 'hurst-bad' : '');
 
             const diffClass = asset.swap_diff > 0 ? 'positive' : 'negative';
 
@@ -2521,6 +2645,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <span>Mean: ${asset.stats.mean.toFixed(2)}</span>
                         <span>Std: ${asset.stats.std.toFixed(2)}</span>
                         <span>Points: ${asset.stats.count}</span>
+                    </div>
+                    <div class="stats-row" style="font-size: 16px; margin-top: 8px;">
+                        <span class="${hurstClass}">Hurst: <strong>${hurst}</strong></span>
+                        <span class="${hurstClass}" style="font-size: 14px;">${hurstRegime}</span>
                     </div>
                     <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 18px;">
                         <div style="color: #888; margin-bottom: 10px;">Current Spread: <strong style="color: #333;">${asset.actual_basis.toFixed(2)}</strong></div>
