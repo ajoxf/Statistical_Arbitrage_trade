@@ -816,6 +816,27 @@ class TradingMonitor:
             price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
             deviation = 20  # Max price deviation in points
 
+            # Validate and adjust volume to MT5 requirements
+            vol_min = symbol_info.volume_min
+            vol_max = symbol_info.volume_max
+            vol_step = symbol_info.volume_step
+
+            # Ensure volume is within valid range
+            if volume < vol_min:
+                logger.warning(f"Volume {volume} below minimum {vol_min} for {symbol}, adjusting to minimum")
+                volume = vol_min
+            elif volume > vol_max:
+                logger.warning(f"Volume {volume} above maximum {vol_max} for {symbol}, adjusting to maximum")
+                volume = vol_max
+
+            # Round to valid step
+            if vol_step > 0:
+                volume = round(volume / vol_step) * vol_step
+                # Ensure precision (avoid floating point issues)
+                volume = round(volume, 2)
+
+            logger.info(f"MT5 order: {symbol} volume={volume} (min={vol_min}, max={vol_max}, step={vol_step})")
+
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
@@ -858,11 +879,29 @@ class TradingMonitor:
             # Opposite order to close
             close_type = mt5.ORDER_TYPE_SELL if position_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
 
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                return {'success': False, 'error': f'Symbol {symbol} not found'}
+
             tick = mt5.symbol_info_tick(symbol)
             if tick is None:
                 return {'success': False, 'error': f'Cannot get tick for {symbol}'}
 
             price = tick.bid if position_type == mt5.ORDER_TYPE_BUY else tick.ask
+
+            # Validate and adjust volume to MT5 requirements
+            vol_min = symbol_info.volume_min
+            vol_max = symbol_info.volume_max
+            vol_step = symbol_info.volume_step
+
+            if volume < vol_min:
+                volume = vol_min
+            elif volume > vol_max:
+                volume = vol_max
+
+            if vol_step > 0:
+                volume = round(volume / vol_step) * vol_step
+                volume = round(volume, 2)
 
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
