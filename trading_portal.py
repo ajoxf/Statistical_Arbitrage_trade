@@ -199,11 +199,22 @@ class DatabaseManager:
         """Get trading configuration"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM trading_config WHERE id = 1')
+        # IMPORTANT: Always use explicit column names to prevent data corruption
+        # when schema changes. Never use SELECT * which depends on physical column order.
+        cursor.execute('''
+            SELECT id, gold_swap_charge, silver_swap_charge, gold_spot_symbol,
+                   gold_futures_symbol, gold_futures_expiry, silver_spot_symbol,
+                   silver_futures_symbol, silver_futures_expiry, lookback_period,
+                   lookback_unit, entry_std_dev, exit_std_dev, stop_loss_std_dev,
+                   time_stop_loss_days, max_positions, lot_size, algo_enabled,
+                   paper_mode, commission_per_lot
+            FROM trading_config WHERE id = 1
+        ''')
         row = cursor.fetchone()
         conn.close()
 
         if row:
+            # Column order matches the explicit SELECT above
             return {
                 'gold_swap_charge': row[1] if row[1] is not None else 0.0,
                 'silver_swap_charge': row[2] if row[2] is not None else 0.0,
@@ -223,7 +234,7 @@ class DatabaseManager:
                 'lot_size': row[16] if row[16] is not None else 0.1,
                 'algo_enabled': bool(row[17]),
                 'paper_mode': bool(row[18]) if row[18] is not None else True,
-                'commission_per_lot': row[19] if len(row) > 19 and row[19] is not None else 0
+                'commission_per_lot': row[19] if row[19] is not None else 0
             }
         return None
 
@@ -285,9 +296,16 @@ class DatabaseManager:
         with self.lock:
             conn = self.get_connection()
             cursor = conn.cursor()
-            # Note: spread_cost column is at the END (added via ALTER TABLE)
+            # IMPORTANT: Always use explicit column names to prevent data corruption
+            # when schema changes. Never use VALUES alone without column names.
             cursor.execute('''
-                INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO trades (
+                    trade_id, asset, direction, entry_date, exit_date, days_held,
+                    entry_zscore, exit_zscore, entry_spot_price, entry_futures_price,
+                    exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
+                    gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
+                    lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 trade['trade_id'],
                 trade['asset'],
@@ -306,14 +324,14 @@ class DatabaseManager:
                 trade.get('gross_pnl', 0),
                 trade.get('swap_cost', 0),
                 trade.get('commission', 0),
+                trade.get('spread_cost', 0),
                 trade.get('net_pnl', 0),
                 trade.get('return_pct', 0),
                 trade.get('lot_size', 0.1),
                 trade.get('mt5_spot_ticket'),
                 trade.get('mt5_futures_ticket'),
                 trade.get('order_status', 'PENDING'),
-                trade['status'],
-                trade.get('spread_cost', 0)  # spread_cost is at the END
+                trade['status']
             ))
             conn.commit()
             conn.close()
@@ -322,15 +340,23 @@ class DatabaseManager:
         """Get recent trades"""
         conn = self.get_connection()
         cursor = conn.cursor()
+        # IMPORTANT: Always use explicit column names to prevent data corruption
+        # when schema changes. Never use SELECT * which depends on physical column order.
+        columns = '''
+            trade_id, asset, direction, entry_date, exit_date, days_held,
+            entry_zscore, exit_zscore, entry_spot_price, entry_futures_price,
+            exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
+            gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
+            lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status
+        '''
         if status:
-            cursor.execute('SELECT * FROM trades WHERE status = ? ORDER BY entry_date DESC LIMIT ?', (status, limit))
+            cursor.execute(f'SELECT {columns} FROM trades WHERE status = ? ORDER BY entry_date DESC LIMIT ?', (status, limit))
         else:
-            cursor.execute('SELECT * FROM trades ORDER BY entry_date DESC LIMIT ?', (limit,))
+            cursor.execute(f'SELECT {columns} FROM trades ORDER BY entry_date DESC LIMIT ?', (limit,))
         rows = cursor.fetchall()
         conn.close()
 
-        # Note: spread_cost was added via ALTER TABLE so it's at the END (index 24)
-        # Original order: 0-23 are the original columns, 24 is spread_cost (if exists)
+        # Column order matches the explicit SELECT above (not dependent on physical storage)
         return [{
             'trade_id': r[0], 'asset': r[1], 'direction': r[2],
             'entry_date': r[3], 'exit_date': r[4], 'days_held': r[5],
@@ -339,10 +365,9 @@ class DatabaseManager:
             'exit_spot_price': r[10], 'exit_futures_price': r[11],
             'spot_pnl': r[12], 'futures_pnl': r[13],
             'gross_pnl': r[14], 'swap_cost': r[15], 'commission': r[16],
-            'net_pnl': r[17], 'return_pct': r[18], 'lot_size': r[19],
-            'mt5_spot_ticket': r[20], 'mt5_futures_ticket': r[21],
-            'order_status': r[22], 'status': r[23],
-            'spread_cost': r[24] if len(r) > 24 else 0
+            'spread_cost': r[17], 'net_pnl': r[18], 'return_pct': r[19],
+            'lot_size': r[20], 'mt5_spot_ticket': r[21], 'mt5_futures_ticket': r[22],
+            'order_status': r[23], 'status': r[24]
         } for r in rows]
 
     def get_trade_summary(self):
