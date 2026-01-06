@@ -1169,9 +1169,17 @@ class TradingMonitor:
         futures_costs = self._get_mt5_position_costs(position.get('mt5_futures_ticket'))
 
         position['swap_cost'] = spot_costs['swap'] + futures_costs['swap']
-        position['commission'] = spot_costs['commission'] + futures_costs['commission']
 
-        logger.info(f"MT5 Costs - Swap: ${position['swap_cost']:.2f}, Commission: ${position['commission']:.2f}")
+        # Get commission from MT5, or use manual setting if MT5 doesn't report it
+        mt5_commission = spot_costs['commission'] + futures_costs['commission']
+        # Manual commission is entered as positive but stored as negative (it's a cost)
+        # *2 for spot + futures legs (each leg = entry + exit trades)
+        manual_commission = -abs(self.config.get('commission_per_lot', 0)) * lot_size * 2
+
+        # Use manual commission if MT5 commission is 0 (common in paper mode or with some brokers)
+        position['commission'] = mt5_commission if mt5_commission != 0 else manual_commission
+
+        logger.info(f"MT5 Costs - Swap: ${position['swap_cost']:.2f}, MT5 Comm: ${mt5_commission:.2f}, Manual Comm: ${manual_commission:.2f}, Using: ${position['commission']:.2f}")
 
         position['net_pnl'] = position['gross_pnl'] + position['swap_cost'] + position['commission']
 
@@ -2545,9 +2553,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <td class="${spotPnlClass}">$${(t.spot_pnl || 0).toFixed(2)}</td>
                     <td class="${futuresPnlClass}">$${(t.futures_pnl || 0).toFixed(2)}</td>
                     <td class="${grossPnlClass}">$${(t.gross_pnl || 0).toFixed(2)}</td>
-                    <td style="color: #c62828;">$${(t.swap_cost || 0).toFixed(2)}</td>
-                    <td style="color: #c62828;">$${(t.commission || 0).toFixed(2)}</td>
-                    <td style="color: #888;">$${(t.spread_cost || 0).toFixed(2)}</td>
+                    <td style="color: #c62828;">$${Math.abs(t.swap_cost || 0).toFixed(2)}</td>
+                    <td style="color: #c62828;">$${Math.abs(t.commission || 0).toFixed(2)}</td>
+                    <td style="color: #888;">$${Math.abs(t.spread_cost || 0).toFixed(2)}</td>
                     <td class="${netPnlClass}"><strong>$${(t.net_pnl || 0).toFixed(2)}</strong></td>
                     <td class="${returnClass}">${(t.return_pct || 0).toFixed(2)}%</td>
                 </tr>`;
