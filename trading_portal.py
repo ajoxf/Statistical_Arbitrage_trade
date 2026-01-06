@@ -417,10 +417,10 @@ class TradingMonitor:
                 for asset_key in self.active_assets.keys():
                     data = self.get_market_data(asset_key)
                     if data:
-                        # Save to cache
+                        # Save to cache - use RAW SPREAD for pure mean reversion
                         self.spread_cache[asset_key].append({
                             'timestamp': datetime.now(),
-                            'spread': data['swap_diff'],
+                            'spread': data['actual_basis'],  # Raw spread for mean reversion
                             'actual_basis': data['actual_basis']
                         })
 
@@ -429,7 +429,7 @@ class TradingMonitor:
                         if (datetime.now() - last_save).total_seconds() > 30:
                             self.db.save_price(
                                 asset_key, data['spot_price'], data['futures_price'],
-                                data['actual_basis'], data['swap_diff']
+                                data['actual_basis'], data['actual_basis']  # Store raw spread
                             )
                             self.last_price_save[asset_key] = datetime.now()
 
@@ -462,7 +462,7 @@ class TradingMonitor:
         return swap_futures_price, swap_basis, annual_swap_rate, swap_charge
 
     def get_statistics(self, asset_key):
-        """Get rolling statistics for z-score calculation"""
+        """Get rolling statistics for z-score calculation (pure mean reversion on raw spread)"""
         lookback = self.config.get('lookback_period', 90)
 
         # First try cache
@@ -475,14 +475,14 @@ class TradingMonitor:
             history = self.db.get_price_history(asset_key, lookback)
             if len(history) < 10:
                 return None
-            spreads = [row[1] for row in history]  # swap_diff column
+            spreads = [row[0] for row in history]  # spread column (raw basis)
 
             # Rebuild cache
             for row in reversed(history):
                 if len(self.spread_cache[asset_key]) < 1000:
                     self.spread_cache[asset_key].append({
                         'timestamp': datetime.now(),
-                        'spread': row[1]
+                        'spread': row[0]  # Use raw spread
                     })
 
         if len(spreads) < 10:
@@ -566,8 +566,8 @@ class TradingMonitor:
                 status = 'FAIR'
                 status_class = 'fair'
 
-            # Calculate z-score
-            zscore, stats = self.calculate_zscore(asset_key, swap_diff)
+            # Calculate z-score on RAW SPREAD (pure mean reversion)
+            zscore, stats = self.calculate_zscore(asset_key, actual_basis)
 
             # Generate signal
             signal = self._generate_signal(asset_key, zscore)
@@ -1487,32 +1487,25 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
                 <div class="basis-section">
                     <div class="basis-row">
-                        <span class="basis-label">Swap Charge</span>
-                        <span class="basis-value">$${asset.swap_charge.toFixed(2)}/day/lot (${asset.lot_size.toLocaleString()} oz)</span>
-                    </div>
-                    <div class="basis-row">
-                        <span class="basis-label">Actual Basis</span>
-                        <span class="basis-value">${asset.actual_basis.toFixed(2)}</span>
-                    </div>
-                    <div class="basis-row">
-                        <span class="basis-label">Swap-Based Basis</span>
-                        <span class="basis-value">${asset.swap_basis.toFixed(2)}</span>
-                    </div>
-                    <div class="basis-row">
-                        <span class="basis-label">Difference</span>
-                        <span class="basis-value ${diffClass}">${asset.swap_diff > 0 ? '+' : ''}${asset.swap_diff.toFixed(2)}</span>
-                    </div>
-                    <div class="basis-row">
-                        <span class="basis-label">Premium</span>
-                        <span class="basis-value">${asset.swap_premium_pct > 0 ? '+' : ''}${asset.swap_premium_pct.toFixed(1)}%</span>
+                        <span class="basis-label"><strong>Basis (F-S)</strong></span>
+                        <span class="basis-value"><strong>${asset.actual_basis.toFixed(2)}</strong></span>
                     </div>
                     <div class="basis-row">
                         <span class="basis-label">Days to Expiry</span>
                         <span class="basis-value">${Math.round(asset.days_to_expiry)}</span>
                     </div>
+                    <div class="basis-row" style="border-top: 1px solid #ddd; padding-top: 8px; margin-top: 4px;">
+                        <span class="basis-label" style="color: #888; font-size: 0.85em;">Swap Info (Reference)</span>
+                        <span class="basis-value" style="color: #888; font-size: 0.85em;">$${asset.swap_charge.toFixed(2)}/day/lot</span>
+                    </div>
+                    <div class="basis-row">
+                        <span class="basis-label" style="color: #888; font-size: 0.85em;">Fair Value Basis</span>
+                        <span class="basis-value" style="color: #888; font-size: 0.85em;">${asset.swap_basis.toFixed(2)}</span>
+                    </div>
                 </div>
 
                 <div class="signal-section ${signalClass}">
+                    <div style="font-size: 0.75em; color: #888; margin-bottom: 5px;">PURE MEAN REVERSION</div>
                     <div class="signal-type">${signal.type.replace('_', ' ')}</div>
                     <div class="zscore-display">${zscore}σ</div>
                     <div class="signal-reason">${signal.reason || ''}</div>
