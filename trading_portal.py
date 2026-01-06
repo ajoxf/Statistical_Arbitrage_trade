@@ -82,8 +82,10 @@ class DatabaseManager:
                 silver_swap_charge REAL DEFAULT 0.0,
                 gold_spot_symbol TEXT DEFAULT '',
                 gold_futures_symbol TEXT DEFAULT '',
+                gold_futures_expiry TEXT DEFAULT '',
                 silver_spot_symbol TEXT DEFAULT '',
                 silver_futures_symbol TEXT DEFAULT '',
+                silver_futures_expiry TEXT DEFAULT '',
                 lookback_period INTEGER DEFAULT 90,
                 entry_std_dev REAL DEFAULT 2.0,
                 exit_std_dev REAL DEFAULT 0.5,
@@ -165,17 +167,19 @@ class DatabaseManager:
                 'silver_swap_charge': row[2] or 0.0,
                 'gold_spot_symbol': row[3] or '',
                 'gold_futures_symbol': row[4] or '',
-                'silver_spot_symbol': row[5] or '',
-                'silver_futures_symbol': row[6] or '',
-                'lookback_period': row[7] or 90,
-                'entry_std_dev': row[8] or 2.0,
-                'exit_std_dev': row[9] or 0.5,
-                'stop_loss_std_dev': row[10] or 3.0,
-                'time_stop_loss_minutes': row[11] or 0,
-                'max_positions': row[12] or 3,
-                'lot_size': row[13] or 0.1,
-                'algo_enabled': bool(row[14]),
-                'paper_mode': bool(row[15]) if row[15] is not None else True
+                'gold_futures_expiry': row[5] or '',
+                'silver_spot_symbol': row[6] or '',
+                'silver_futures_symbol': row[7] or '',
+                'silver_futures_expiry': row[8] or '',
+                'lookback_period': row[9] or 90,
+                'entry_std_dev': row[10] or 2.0,
+                'exit_std_dev': row[11] or 0.5,
+                'stop_loss_std_dev': row[12] or 3.0,
+                'time_stop_loss_minutes': row[13] or 0,
+                'max_positions': row[14] or 3,
+                'lot_size': row[15] or 0.1,
+                'algo_enabled': bool(row[16]),
+                'paper_mode': bool(row[17]) if row[17] is not None else True
             }
         return None
 
@@ -190,8 +194,10 @@ class DatabaseManager:
                     silver_swap_charge = ?,
                     gold_spot_symbol = ?,
                     gold_futures_symbol = ?,
+                    gold_futures_expiry = ?,
                     silver_spot_symbol = ?,
                     silver_futures_symbol = ?,
+                    silver_futures_expiry = ?,
                     lookback_period = ?,
                     entry_std_dev = ?,
                     exit_std_dev = ?,
@@ -208,8 +214,10 @@ class DatabaseManager:
                 config.get('silver_swap_charge', 0),
                 config.get('gold_spot_symbol', ''),
                 config.get('gold_futures_symbol', ''),
+                config.get('gold_futures_expiry', ''),
                 config.get('silver_spot_symbol', ''),
                 config.get('silver_futures_symbol', ''),
+                config.get('silver_futures_expiry', ''),
                 config.get('lookback_period', 90),
                 config.get('entry_std_dev', 2.0),
                 config.get('exit_std_dev', 0.5),
@@ -324,6 +332,16 @@ class TradingMonitor:
             # First try user-configured symbols from config
             config_spot = self.config.get(f'{asset_key.lower()}_spot_symbol', '')
             config_futures = self.config.get(f'{asset_key.lower()}_futures_symbol', '')
+            config_expiry = self.config.get(f'{asset_key.lower()}_futures_expiry', '')
+
+            # Parse user-configured expiry date (format: YYYY-MM-DD)
+            if config_expiry:
+                try:
+                    expiry_date = datetime.strptime(config_expiry, '%Y-%m-%d')
+                    self.assets[asset_key]['futures_expiry'] = expiry_date
+                    logger.info(f"{asset_key}: Using configured expiry: {config_expiry}")
+                except ValueError:
+                    logger.warning(f"{asset_key}: Invalid expiry date format '{config_expiry}', using default")
 
             if config_spot:
                 symbol_info = mt5.symbol_info(config_spot)
@@ -523,6 +541,12 @@ class TradingMonitor:
             time_to_expiry = (config['futures_expiry'] - current_time).total_seconds() / (365.25 * 24 * 3600)
             days_to_expiry = time_to_expiry * 365.25
 
+            # Get swap charge for display
+            swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
+            if swap_charge <= 0 and asset_key in self.active_assets:
+                swap_charge = self.active_assets[asset_key].get('swap_long', 0)
+            lot_size = config['lot_size']
+
             if time_to_expiry > 0:
                 swap_futures_price, swap_basis, annual_swap_rate = self.calculate_swap_basis(
                     asset_key, spot_price, time_to_expiry
@@ -575,6 +599,8 @@ class TradingMonitor:
                 'swap_basis': swap_basis,
                 'swap_premium_pct': swap_premium_pct,
                 'swap_diff': swap_diff,
+                'swap_charge': swap_charge,
+                'lot_size': lot_size,
                 'annual_swap_rate': annual_swap_rate,
                 'days_to_expiry': days_to_expiry,
                 'status': status,
@@ -765,8 +791,10 @@ def setup():
             # Get symbol configurations
             gold_spot = request.form.get('gold_spot_symbol', '').strip()
             gold_futures = request.form.get('gold_futures_symbol', '').strip()
+            gold_expiry = request.form.get('gold_futures_expiry', '').strip()
             silver_spot = request.form.get('silver_spot_symbol', '').strip()
             silver_futures = request.form.get('silver_futures_symbol', '').strip()
+            silver_expiry = request.form.get('silver_futures_expiry', '').strip()
 
             # Swap charges are optional - will auto-detect from MT5
             gold_swap = float(request.form.get('gold_swap', 0) or 0)
@@ -775,13 +803,15 @@ def setup():
             # Save config
             monitor.config['gold_spot_symbol'] = gold_spot
             monitor.config['gold_futures_symbol'] = gold_futures
+            monitor.config['gold_futures_expiry'] = gold_expiry
             monitor.config['silver_spot_symbol'] = silver_spot
             monitor.config['silver_futures_symbol'] = silver_futures
+            monitor.config['silver_futures_expiry'] = silver_expiry
             monitor.config['gold_swap_charge'] = gold_swap
             monitor.config['silver_swap_charge'] = silver_swap
             monitor.db.save_config(monitor.config)
 
-            logger.info(f"Setup: Gold={gold_spot}/{gold_futures}, Silver={silver_spot}/{silver_futures}")
+            logger.info(f"Setup: Gold={gold_spot}/{gold_futures} (exp:{gold_expiry}), Silver={silver_spot}/{silver_futures} (exp:{silver_expiry})")
 
             if monitor.initialize_mt5():
                 monitor.is_initialized = True
@@ -1038,6 +1068,11 @@ SETUP_HTML = '''<!DOCTYPE html>
                     <div class="help-text">Your broker's gold futures symbol (required for basis trading)</div>
                 </div>
                 <div class="form-group">
+                    <label>Futures Expiry Date</label>
+                    <input type="date" name="gold_futures_expiry" value="{{ config.gold_futures_expiry or '' }}">
+                    <div class="help-text">Gold futures contract expiry date (default: 2026-02-24)</div>
+                </div>
+                <div class="form-group">
                     <label>Daily Swap Charge (USD per lot) - Optional</label>
                     <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or 0 }}" placeholder="0">
                     <div class="help-text">Leave at 0 to auto-detect from MT5. Lot size: 100 oz</div>
@@ -1055,6 +1090,11 @@ SETUP_HTML = '''<!DOCTYPE html>
                     <label>Silver Futures Symbol</label>
                     <input type="text" name="silver_futures_symbol" value="{{ config.silver_futures_symbol or '' }}" placeholder="e.g., SI0326, SIZ4, XAGUSD.f">
                     <div class="help-text">Your broker's silver futures symbol (required for basis trading)</div>
+                </div>
+                <div class="form-group">
+                    <label>Futures Expiry Date</label>
+                    <input type="date" name="silver_futures_expiry" value="{{ config.silver_futures_expiry or '' }}">
+                    <div class="help-text">Silver futures contract expiry date (default: 2026-02-26)</div>
                 </div>
                 <div class="form-group">
                     <label>Daily Swap Charge (USD per lot) - Optional</label>
@@ -1456,6 +1496,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 </div>
 
                 <div class="basis-section">
+                    <div class="basis-row">
+                        <span class="basis-label">Swap Charge</span>
+                        <span class="basis-value">$${asset.swap_charge.toFixed(2)}/day/lot (${asset.lot_size.toLocaleString()} oz)</span>
+                    </div>
                     <div class="basis-row">
                         <span class="basis-label">Actual Basis</span>
                         <span class="basis-value">${asset.actual_basis.toFixed(2)}</span>
