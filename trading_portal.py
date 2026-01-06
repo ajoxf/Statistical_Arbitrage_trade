@@ -127,6 +127,7 @@ class DatabaseManager:
                 gross_pnl REAL DEFAULT 0,
                 swap_cost REAL DEFAULT 0,
                 commission REAL DEFAULT 0,
+                spread_cost REAL DEFAULT 0,
                 net_pnl REAL DEFAULT 0,
                 return_pct REAL DEFAULT 0,
                 lot_size REAL DEFAULT 0.1,
@@ -136,6 +137,12 @@ class DatabaseManager:
                 status TEXT DEFAULT 'OPEN'
             )
         ''')
+
+        # Add spread_cost column if it doesn't exist (for existing DBs)
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN spread_cost REAL DEFAULT 0')
+        except:
+            pass  # Column already exists
 
         # Insert default config if not exists
         cursor.execute('SELECT COUNT(*) FROM trading_config')
@@ -279,7 +286,7 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 trade['trade_id'],
                 trade['asset'],
@@ -298,6 +305,7 @@ class DatabaseManager:
                 trade.get('gross_pnl', 0),
                 trade.get('swap_cost', 0),
                 trade.get('commission', 0),
+                trade.get('spread_cost', 0),
                 trade.get('net_pnl', 0),
                 trade.get('return_pct', 0),
                 trade.get('lot_size', 0.1),
@@ -328,9 +336,14 @@ class DatabaseManager:
             'exit_spot_price': r[10], 'exit_futures_price': r[11],
             'spot_pnl': r[12], 'futures_pnl': r[13],
             'gross_pnl': r[14], 'swap_cost': r[15], 'commission': r[16],
-            'net_pnl': r[17], 'return_pct': r[18], 'lot_size': r[19],
-            'mt5_spot_ticket': r[20], 'mt5_futures_ticket': r[21],
-            'order_status': r[22], 'status': r[23]
+            'spread_cost': r[17] if len(r) > 17 else 0,
+            'net_pnl': r[18] if len(r) > 18 else r[17],
+            'return_pct': r[19] if len(r) > 19 else r[18],
+            'lot_size': r[20] if len(r) > 20 else r[19],
+            'mt5_spot_ticket': r[21] if len(r) > 21 else r[20],
+            'mt5_futures_ticket': r[22] if len(r) > 22 else r[21],
+            'order_status': r[23] if len(r) > 23 else r[22],
+            'status': r[24] if len(r) > 24 else r[23]
         } for r in rows]
 
     def get_trade_summary(self):
@@ -1017,6 +1030,11 @@ class TradingMonitor:
         #            BUY_BASIS = Long Spread (Buy Futures, Sell Spot)
         direction = 'Short Spread' if signal_type == 'SELL_BASIS' else 'Long Spread'
 
+        # Calculate spread cost (FYI only - bid-ask spread)
+        spot_spread_cents = data.get('spot_spread', 0)  # in cents
+        futures_spread_cents = data.get('futures_spread', 0)  # in cents
+        spread_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * 100
+
         position = {
             'trade_id': trade_id,
             'asset': asset_key,
@@ -1026,6 +1044,7 @@ class TradingMonitor:
             'entry_spot_price': data['spot_price'],
             'entry_futures_price': data['futures_price'],
             'lot_size': lot_size,
+            'spread_cost': spread_cost,
             'status': 'OPEN',
             'order_status': 'PENDING'
         }
@@ -2159,12 +2178,13 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <th>Gross P&L</th>
                         <th>Swap</th>
                         <th>Comm</th>
+                        <th>Spread</th>
                         <th>Net P&L</th>
                         <th>Return</th>
                     </tr>
                 </thead>
                 <tbody id="trade-history-body">
-                    <tr><td colspan="15" style="text-align: center; color: #666;">No trades yet</td></tr>
+                    <tr><td colspan="16" style="text-align: center; color: #666;">No trades yet</td></tr>
                 </tbody>
             </table>
         </div>
@@ -2448,7 +2468,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             // Update table
             const tbody = document.getElementById('trade-history-body');
             if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="15" style="text-align: center; color: #666;">No trades yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="16" style="text-align: center; color: #666;">No trades yet</td></tr>';
                 return;
             }
 
@@ -2480,6 +2500,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <td class="${grossPnlClass}">$${(t.gross_pnl || 0).toFixed(2)}</td>
                     <td style="color: #c62828;">$${(t.swap_cost || 0).toFixed(2)}</td>
                     <td style="color: #c62828;">$${(t.commission || 0).toFixed(2)}</td>
+                    <td style="color: #888;">$${(t.spread_cost || 0).toFixed(2)}</td>
                     <td class="${netPnlClass}"><strong>$${(t.net_pnl || 0).toFixed(2)}</strong></td>
                     <td class="${returnClass}">${(t.return_pct || 0).toFixed(2)}%</td>
                 </tr>`;
