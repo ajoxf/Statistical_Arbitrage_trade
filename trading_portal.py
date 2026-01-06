@@ -1538,6 +1538,23 @@ def restart():
     return redirect(url_for('setup'))
 
 
+@app.route('/clear_trades')
+def clear_trades():
+    """Clear all trades from the journal"""
+    try:
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM trades')
+        conn.commit()
+        conn.close()
+        monitor.positions = {}  # Clear open positions too
+        logger.info("Trade journal cleared")
+        return redirect(url_for('index'))
+    except Exception as e:
+        logger.error(f"Error clearing trades: {e}")
+        return f"Error: {e}", 500
+
+
 # =============================================================================
 # HTML TEMPLATES
 # =============================================================================
