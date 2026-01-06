@@ -80,6 +80,10 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY,
                 gold_swap_charge REAL DEFAULT 0.0,
                 silver_swap_charge REAL DEFAULT 0.0,
+                gold_spot_symbol TEXT DEFAULT '',
+                gold_futures_symbol TEXT DEFAULT '',
+                silver_spot_symbol TEXT DEFAULT '',
+                silver_futures_symbol TEXT DEFAULT '',
                 lookback_period INTEGER DEFAULT 90,
                 entry_std_dev REAL DEFAULT 2.0,
                 exit_std_dev REAL DEFAULT 0.5,
@@ -159,15 +163,19 @@ class DatabaseManager:
             return {
                 'gold_swap_charge': row[1] or 0.0,
                 'silver_swap_charge': row[2] or 0.0,
-                'lookback_period': row[3] or 90,
-                'entry_std_dev': row[4] or 2.0,
-                'exit_std_dev': row[5] or 0.5,
-                'stop_loss_std_dev': row[6] or 3.0,
-                'time_stop_loss_minutes': row[7] or 0,
-                'max_positions': row[8] or 3,
-                'lot_size': row[9] or 0.1,
-                'algo_enabled': bool(row[10]),
-                'paper_mode': bool(row[11]) if row[11] is not None else True
+                'gold_spot_symbol': row[3] or '',
+                'gold_futures_symbol': row[4] or '',
+                'silver_spot_symbol': row[5] or '',
+                'silver_futures_symbol': row[6] or '',
+                'lookback_period': row[7] or 90,
+                'entry_std_dev': row[8] or 2.0,
+                'exit_std_dev': row[9] or 0.5,
+                'stop_loss_std_dev': row[10] or 3.0,
+                'time_stop_loss_minutes': row[11] or 0,
+                'max_positions': row[12] or 3,
+                'lot_size': row[13] or 0.1,
+                'algo_enabled': bool(row[14]),
+                'paper_mode': bool(row[15]) if row[15] is not None else True
             }
         return None
 
@@ -180,6 +188,10 @@ class DatabaseManager:
                 UPDATE trading_config SET
                     gold_swap_charge = ?,
                     silver_swap_charge = ?,
+                    gold_spot_symbol = ?,
+                    gold_futures_symbol = ?,
+                    silver_spot_symbol = ?,
+                    silver_futures_symbol = ?,
                     lookback_period = ?,
                     entry_std_dev = ?,
                     exit_std_dev = ?,
@@ -194,6 +206,10 @@ class DatabaseManager:
             ''', (
                 config.get('gold_swap_charge', 0),
                 config.get('silver_swap_charge', 0),
+                config.get('gold_spot_symbol', ''),
+                config.get('gold_futures_symbol', ''),
+                config.get('silver_spot_symbol', ''),
+                config.get('silver_futures_symbol', ''),
                 config.get('lookback_period', 90),
                 config.get('entry_std_dev', 2.0),
                 config.get('exit_std_dev', 0.5),
@@ -305,20 +321,46 @@ class TradingMonitor:
             futures_symbol = None
             swap_long = 0.0
 
-            for symbol in asset_config['spot_symbols']:
-                symbol_info = mt5.symbol_info(symbol)
-                if symbol_info:
-                    spot_symbol = symbol
-                    mt5.symbol_select(symbol, True)
-                    # Auto-detect swap charge from MT5
-                    swap_long = abs(symbol_info.swap_long) if symbol_info.swap_long else 0.0
-                    break
+            # First try user-configured symbols from config
+            config_spot = self.config.get(f'{asset_key.lower()}_spot_symbol', '')
+            config_futures = self.config.get(f'{asset_key.lower()}_futures_symbol', '')
 
-            for symbol in asset_config['futures_symbols']:
-                if mt5.symbol_info(symbol):
-                    futures_symbol = symbol
-                    mt5.symbol_select(symbol, True)
-                    break
+            if config_spot:
+                symbol_info = mt5.symbol_info(config_spot)
+                if symbol_info:
+                    spot_symbol = config_spot
+                    mt5.symbol_select(config_spot, True)
+                    swap_long = abs(symbol_info.swap_long) if symbol_info.swap_long else 0.0
+                    logger.info(f"{asset_key}: Using configured spot symbol: {config_spot}")
+                else:
+                    logger.warning(f"{asset_key}: Configured spot symbol '{config_spot}' not found in MT5")
+
+            if config_futures:
+                if mt5.symbol_info(config_futures):
+                    futures_symbol = config_futures
+                    mt5.symbol_select(config_futures, True)
+                    logger.info(f"{asset_key}: Using configured futures symbol: {config_futures}")
+                else:
+                    logger.warning(f"{asset_key}: Configured futures symbol '{config_futures}' not found in MT5")
+
+            # Fall back to auto-detection if user didn't configure or symbol not found
+            if not spot_symbol:
+                for symbol in asset_config['spot_symbols']:
+                    symbol_info = mt5.symbol_info(symbol)
+                    if symbol_info:
+                        spot_symbol = symbol
+                        mt5.symbol_select(symbol, True)
+                        swap_long = abs(symbol_info.swap_long) if symbol_info.swap_long else 0.0
+                        logger.info(f"{asset_key}: Auto-detected spot symbol: {symbol}")
+                        break
+
+            if not futures_symbol:
+                for symbol in asset_config['futures_symbols']:
+                    if mt5.symbol_info(symbol):
+                        futures_symbol = symbol
+                        mt5.symbol_select(symbol, True)
+                        logger.info(f"{asset_key}: Auto-detected futures symbol: {symbol}")
+                        break
 
             if spot_symbol and futures_symbol:
                 # Store auto-detected swap
@@ -331,6 +373,8 @@ class TradingMonitor:
                     'swap_long': swap_long
                 }
                 logger.info(f"{asset_key}: {spot_symbol} + {futures_symbol} | Swap: ${swap_long:.2f}/lot/day")
+            else:
+                logger.warning(f"{asset_key}: Could not find symbols - Spot: {spot_symbol}, Futures: {futures_symbol}")
 
         return len(self.active_assets) > 0
 
@@ -718,24 +762,43 @@ def setup():
     """Setup page for configuration"""
     if request.method == 'POST':
         try:
-            # Swap charges are now optional - will auto-detect from MT5
+            # Get symbol configurations
+            gold_spot = request.form.get('gold_spot_symbol', '').strip()
+            gold_futures = request.form.get('gold_futures_symbol', '').strip()
+            silver_spot = request.form.get('silver_spot_symbol', '').strip()
+            silver_futures = request.form.get('silver_futures_symbol', '').strip()
+
+            # Swap charges are optional - will auto-detect from MT5
             gold_swap = float(request.form.get('gold_swap', 0) or 0)
             silver_swap = float(request.form.get('silver_swap', 0) or 0)
 
-            # Save config (0 means auto-detect from MT5)
+            # Save config
+            monitor.config['gold_spot_symbol'] = gold_spot
+            monitor.config['gold_futures_symbol'] = gold_futures
+            monitor.config['silver_spot_symbol'] = silver_spot
+            monitor.config['silver_futures_symbol'] = silver_futures
             monitor.config['gold_swap_charge'] = gold_swap
             monitor.config['silver_swap_charge'] = silver_swap
             monitor.db.save_config(monitor.config)
+
+            logger.info(f"Setup: Gold={gold_spot}/{gold_futures}, Silver={silver_spot}/{silver_futures}")
 
             if monitor.initialize_mt5():
                 monitor.is_initialized = True
                 monitor.start_background_updates()
                 return redirect(url_for('index'))
             else:
-                return render_template('setup.html', error=monitor.error_message or "Failed to connect to MT5", config=monitor.config)
+                error_msg = monitor.error_message or "Failed to connect to MT5. Make sure MT5 is running and logged in."
+                logger.error(f"Setup failed: {error_msg}")
+                return render_template('setup.html', error=error_msg, config=monitor.config)
 
-        except ValueError:
-            return render_template('setup.html', error="Please enter valid numbers", config=monitor.config)
+        except ValueError as e:
+            logger.error(f"Setup ValueError: {e}")
+            return render_template('setup.html', error=f"Invalid input: {e}", config=monitor.config)
+        except Exception as e:
+            import traceback
+            logger.error(f"Setup error: {e}\n{traceback.format_exc()}")
+            return render_template('setup.html', error=f"Error: {e}", config=monitor.config)
 
     return render_template('setup.html', error=None, config=monitor.config)
 
@@ -952,8 +1015,9 @@ SETUP_HTML = '''<!DOCTYPE html>
 
         <div class="info-box">
             <p>• Make sure MetaTrader5 is running and logged in</p>
-            <p>• Swap charges will be auto-detected from MT5</p>
-            <p>• Leave swap at 0 to use auto-detected values</p>
+            <p>• Enter your broker's exact symbol names (check Market Watch in MT5)</p>
+            <p>• Leave symbol fields empty to auto-detect common symbols</p>
+            <p>• Swap charges will be auto-detected from MT5 if left at 0</p>
         </div>
 
         {% if error %}
@@ -962,7 +1026,17 @@ SETUP_HTML = '''<!DOCTYPE html>
 
         <form method="POST">
             <div class="section">
-                <div class="section-title">GOLD</div>
+                <div class="section-title">GOLD INSTRUMENTS</div>
+                <div class="form-group">
+                    <label>Gold Spot Symbol</label>
+                    <input type="text" name="gold_spot_symbol" value="{{ config.gold_spot_symbol or '' }}" placeholder="e.g., XAUUSD, GOLD, XAUUSDm">
+                    <div class="help-text">Your broker's gold spot symbol (leave empty to auto-detect)</div>
+                </div>
+                <div class="form-group">
+                    <label>Gold Futures Symbol</label>
+                    <input type="text" name="gold_futures_symbol" value="{{ config.gold_futures_symbol or '' }}" placeholder="e.g., GC0226, GCZ4, XAUUSD.f">
+                    <div class="help-text">Your broker's gold futures symbol (required for basis trading)</div>
+                </div>
                 <div class="form-group">
                     <label>Daily Swap Charge (USD per lot) - Optional</label>
                     <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or 0 }}" placeholder="0">
@@ -971,7 +1045,17 @@ SETUP_HTML = '''<!DOCTYPE html>
             </div>
 
             <div class="section">
-                <div class="section-title">SILVER</div>
+                <div class="section-title">SILVER INSTRUMENTS</div>
+                <div class="form-group">
+                    <label>Silver Spot Symbol</label>
+                    <input type="text" name="silver_spot_symbol" value="{{ config.silver_spot_symbol or '' }}" placeholder="e.g., XAGUSD, SILVER, XAGUSDm">
+                    <div class="help-text">Your broker's silver spot symbol (leave empty to auto-detect)</div>
+                </div>
+                <div class="form-group">
+                    <label>Silver Futures Symbol</label>
+                    <input type="text" name="silver_futures_symbol" value="{{ config.silver_futures_symbol or '' }}" placeholder="e.g., SI0326, SIZ4, XAGUSD.f">
+                    <div class="help-text">Your broker's silver futures symbol (required for basis trading)</div>
+                </div>
                 <div class="form-group">
                     <label>Daily Swap Charge (USD per lot) - Optional</label>
                     <input type="number" name="silver_swap" step="0.01" min="0" value="{{ config.silver_swap_charge or 0 }}" placeholder="0">
