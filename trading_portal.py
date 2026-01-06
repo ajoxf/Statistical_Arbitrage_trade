@@ -1063,7 +1063,7 @@ class TradingMonitor:
             'trade_id': trade_id,
             'asset': asset_key,
             'direction': direction,
-            'entry_date': datetime.now().strftime('%Y-%m-%d'),
+            'entry_date': datetime.now().strftime('%Y-%m-%d %H:%M'),
             'entry_zscore': data['zscore'],
             'entry_spot_price': data['spot_price'],
             'entry_futures_price': data['futures_price'],
@@ -1131,11 +1131,16 @@ class TradingMonitor:
             return
 
         position = self.positions[asset_key]
-        entry_date = datetime.strptime(position['entry_date'], '%Y-%m-%d')
+        # Parse entry_date (handles both old '%Y-%m-%d' and new '%Y-%m-%d %H:%M' formats)
+        entry_date_str = position['entry_date']
+        try:
+            entry_date = datetime.strptime(entry_date_str, '%Y-%m-%d %H:%M')
+        except ValueError:
+            entry_date = datetime.strptime(entry_date_str, '%Y-%m-%d')
         exit_date = datetime.now()
 
-        # Update position with exit data
-        position['exit_date'] = exit_date.strftime('%Y-%m-%d')
+        # Update position with exit data (include time)
+        position['exit_date'] = exit_date.strftime('%Y-%m-%d %H:%M')
         position['days_held'] = (exit_date - entry_date).days or 1
         position['exit_zscore'] = data['zscore']
         position['exit_spot_price'] = data['spot_price']
