@@ -413,7 +413,7 @@ class TradingMonitor:
         """Background loop for continuous price collection"""
         while self.running:
             try:
-                # Collect prices every 2 seconds for mean calculation
+                # Collect prices every 0.3 seconds for fast updates
                 for asset_key in self.active_assets.keys():
                     data = self.get_market_data(asset_key)
                     if data:
@@ -437,11 +437,11 @@ class TradingMonitor:
                         if self.config.get('algo_enabled'):
                             self._process_algo_trading(asset_key, data)
 
-                time.sleep(2)
+                time.sleep(0.3)
 
             except Exception as e:
                 logger.error(f"Background loop error: {e}")
-                time.sleep(5)
+                time.sleep(1)
 
     def calculate_swap_basis(self, asset_key, spot_price, time_to_expiry):
         """Calculate swap-based basis using user-configured swap charge (like Arb_Monitor)"""
@@ -1234,8 +1234,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
             padding: 12px;
             border-radius: 4px;
         }
-        .price-label { color: #666; font-size: 0.75em; text-transform: uppercase; }
-        .price-value { font-size: 1.1em; font-weight: 600; margin-top: 4px; }
+        .price-label { color: #666; font-size: 0.85em; text-transform: uppercase; }
+        .price-value { font-size: 18px; font-weight: 600; margin-top: 4px; }
 
         .basis-section {
             background: #f8f9fa;
@@ -1250,8 +1250,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
             border-bottom: 1px solid #eee;
         }
         .basis-row:last-child { border-bottom: none; }
-        .basis-label { color: #666; }
-        .basis-value { font-weight: 600; }
+        .basis-label { color: #666; font-size: 16px; }
+        .basis-value { font-weight: 600; font-size: 18px; }
         .basis-value.positive { color: #c62828; }
         .basis-value.negative { color: #2e7d32; }
 
@@ -1561,7 +1561,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         }
 
         updateData();
-        setInterval(updateData, 2000);
+        setInterval(updateData, 300);
     </script>
 </body>
 </html>'''
