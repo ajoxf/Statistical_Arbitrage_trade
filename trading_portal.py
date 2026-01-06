@@ -877,41 +877,39 @@ class TradingMonitor:
             'order_status': 'PENDING'
         }
 
-        # Execute trades through MT5 if live mode
-        if not self.config.get('paper_mode', True):
-            # SELL_BASIS: Sell Futures + Buy Spot
-            # BUY_BASIS: Buy Futures + Sell Spot
-            if signal_type == 'SELL_BASIS':
-                futures_order_type = mt5.ORDER_TYPE_SELL
-                spot_order_type = mt5.ORDER_TYPE_BUY
-            else:
-                futures_order_type = mt5.ORDER_TYPE_BUY
-                spot_order_type = mt5.ORDER_TYPE_SELL
-
-            # Execute futures order
-            futures_result = self._execute_mt5_order(
-                futures_symbol, futures_order_type, lot_size,
-                f"{asset_key} {direction} Futures"
-            )
-
-            # Execute spot order
-            spot_result = self._execute_mt5_order(
-                spot_symbol, spot_order_type, lot_size,
-                f"{asset_key} {direction} Spot"
-            )
-
-            if futures_result['success'] and spot_result['success']:
-                position['mt5_futures_ticket'] = futures_result['ticket']
-                position['mt5_spot_ticket'] = spot_result['ticket']
-                position['order_status'] = 'FILLED'
-                logger.info(f"LIVE TRADE FILLED: {asset_key} {direction} - Futures #{futures_result['ticket']}, Spot #{spot_result['ticket']}")
-            else:
-                position['order_status'] = 'PARTIAL' if (futures_result['success'] or spot_result['success']) else 'REJECTED'
-                error_msg = f"Futures: {futures_result.get('error', 'OK')}, Spot: {spot_result.get('error', 'OK')}"
-                logger.error(f"LIVE TRADE FAILED: {asset_key} {direction} - {error_msg}")
+        # Execute trades through MT5 (both paper and live mode place real orders)
+        # SELL_BASIS: Sell Futures + Buy Spot
+        # BUY_BASIS: Buy Futures + Sell Spot
+        if signal_type == 'SELL_BASIS':
+            futures_order_type = mt5.ORDER_TYPE_SELL
+            spot_order_type = mt5.ORDER_TYPE_BUY
         else:
-            position['order_status'] = 'PAPER'
-            logger.info(f"PAPER TRADE: {asset_key} {direction}")
+            futures_order_type = mt5.ORDER_TYPE_BUY
+            spot_order_type = mt5.ORDER_TYPE_SELL
+
+        mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
+
+        # Execute futures order
+        futures_result = self._execute_mt5_order(
+            futures_symbol, futures_order_type, lot_size,
+            f"{asset_key} {direction} Futures"
+        )
+
+        # Execute spot order
+        spot_result = self._execute_mt5_order(
+            spot_symbol, spot_order_type, lot_size,
+            f"{asset_key} {direction} Spot"
+        )
+
+        if futures_result['success'] and spot_result['success']:
+            position['mt5_futures_ticket'] = futures_result['ticket']
+            position['mt5_spot_ticket'] = spot_result['ticket']
+            position['order_status'] = 'FILLED'
+            logger.info(f"{mode_label} TRADE FILLED: {asset_key} {direction} - Futures #{futures_result['ticket']}, Spot #{spot_result['ticket']}")
+        else:
+            position['order_status'] = 'PARTIAL' if (futures_result['success'] or spot_result['success']) else 'REJECTED'
+            error_msg = f"Futures: {futures_result.get('error', 'OK')}, Spot: {spot_result.get('error', 'OK')}"
+            logger.error(f"{mode_label} TRADE FAILED: {asset_key} {direction} - {error_msg}")
 
         self.positions[asset_key] = position
         self.db.save_trade(position)
@@ -970,21 +968,14 @@ class TradingMonitor:
 
         position['gross_pnl'] = position['spot_pnl'] + position['futures_pnl']
 
-        # Get swap and commission from MT5 (live) or estimate (paper)
-        if not self.config.get('paper_mode', True):
-            # Get actual swap and commission from MT5 positions before closing
-            spot_costs = self._get_mt5_position_costs(position.get('mt5_spot_ticket'))
-            futures_costs = self._get_mt5_position_costs(position.get('mt5_futures_ticket'))
+        # Get swap and commission from MT5 positions before closing
+        spot_costs = self._get_mt5_position_costs(position.get('mt5_spot_ticket'))
+        futures_costs = self._get_mt5_position_costs(position.get('mt5_futures_ticket'))
 
-            position['swap_cost'] = spot_costs['swap'] + futures_costs['swap']
-            position['commission'] = spot_costs['commission'] + futures_costs['commission']
+        position['swap_cost'] = spot_costs['swap'] + futures_costs['swap']
+        position['commission'] = spot_costs['commission'] + futures_costs['commission']
 
-            logger.info(f"MT5 Costs - Swap: ${position['swap_cost']:.2f}, Commission: ${position['commission']:.2f}")
-        else:
-            # Estimate for paper trading
-            daily_swap = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
-            position['swap_cost'] = -abs(daily_swap * position['days_held'] * lot_size)
-            position['commission'] = -abs(lot_size * 2 * 5)  # ~$5 per lot per leg, 2 legs
+        logger.info(f"MT5 Costs - Swap: ${position['swap_cost']:.2f}, Commission: ${position['commission']:.2f}")
 
         position['net_pnl'] = position['gross_pnl'] + position['swap_cost'] + position['commission']
 
@@ -992,29 +983,28 @@ class TradingMonitor:
         margin_used = position['entry_spot_price'] * lot_size * contract_size * 0.1  # 10% margin
         position['return_pct'] = (position['net_pnl'] / margin_used * 100) if margin_used > 0 else 0
 
-        # Close MT5 positions if live mode
-        if not self.config.get('paper_mode', True):
-            asset_data = self.active_assets.get(asset_key, {})
-            spot_symbol = asset_data.get('spot_symbol')
-            futures_symbol = asset_data.get('futures_symbol')
+        mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
 
-            if position.get('mt5_futures_ticket'):
-                self._close_mt5_position(
-                    position['mt5_futures_ticket'],
-                    futures_symbol, lot_size,
-                    mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL
-                )
+        # Close MT5 positions (both paper and live mode)
+        asset_data = self.active_assets.get(asset_key, {})
+        spot_symbol = asset_data.get('spot_symbol')
+        futures_symbol = asset_data.get('futures_symbol')
 
-            if position.get('mt5_spot_ticket'):
-                self._close_mt5_position(
-                    position['mt5_spot_ticket'],
-                    spot_symbol, lot_size,
-                    mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
-                )
+        if position.get('mt5_futures_ticket'):
+            self._close_mt5_position(
+                position['mt5_futures_ticket'],
+                futures_symbol, lot_size,
+                mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL
+            )
 
-            logger.info(f"LIVE CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
-        else:
-            logger.info(f"PAPER CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
+        if position.get('mt5_spot_ticket'):
+            self._close_mt5_position(
+                position['mt5_spot_ticket'],
+                spot_symbol, lot_size,
+                mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
+            )
+
+        logger.info(f"{mode_label} CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
 
         position['status'] = 'CLOSED'
         self.db.save_trade(position)
