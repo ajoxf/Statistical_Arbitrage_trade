@@ -433,6 +433,9 @@ class TradingMonitor:
         self.spread_cache = {'GOLD': deque(maxlen=1000), 'SILVER': deque(maxlen=1000)}
         self.last_price_save = {}
 
+        # Z-score history for charting (store last 200 points per asset)
+        self.zscore_history = {'GOLD': deque(maxlen=200), 'SILVER': deque(maxlen=200)}
+
         # Active positions - load from database
         self.positions = {}
         self._load_open_positions()
@@ -781,6 +784,19 @@ class TradingMonitor:
 
             # Generate signal (pass stats for progress info)
             signal = self._generate_signal(asset_key, zscore, stats)
+
+            # Store z-score in history for charting
+            entry_threshold = self.config.get('entry_std_dev', 2.0)
+            exit_threshold = self.config.get('exit_std_dev', 0.5)
+            if zscore is not None:
+                self.zscore_history[asset_key].append({
+                    'time': datetime.now().strftime('%H:%M:%S'),
+                    'zscore': zscore,
+                    'entry_upper': entry_threshold,
+                    'entry_lower': -entry_threshold,
+                    'exit_upper': exit_threshold,
+                    'exit_lower': -exit_threshold
+                })
 
             return {
                 'asset_name': config['name'],
@@ -1508,6 +1524,12 @@ def get_data():
     trade_history = monitor.db.get_trades(limit=50)
     trade_summary = monitor.db.get_trade_summary()
 
+    # Get z-score history for charting
+    zscore_history = {
+        'GOLD': list(monitor.zscore_history.get('GOLD', [])),
+        'SILVER': list(monitor.zscore_history.get('SILVER', []))
+    }
+
     return jsonify({
         'data': data,
         'summary': {
@@ -1520,6 +1542,7 @@ def get_data():
         'positions': monitor.get_enriched_positions(),
         'trade_history': trade_history,
         'trade_summary': trade_summary,
+        'zscore_history': zscore_history,
         'config': {
             'algo_enabled': monitor.config.get('algo_enabled', False),
             'paper_mode': monitor.config.get('paper_mode', True),
@@ -2114,7 +2137,49 @@ MONITOR_HTML = '''<!DOCTYPE html>
             .controls { flex-direction: column; align-items: flex-start; }
             .summary { flex-direction: column; }
         }
+
+        /* Z-Score Chart Styles */
+        .chart-section {
+            background: white;
+            margin: 20px;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .chart-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+        }
+        .chart-tabs {
+            display: flex;
+            gap: 10px;
+        }
+        .chart-tab {
+            padding: 8px 16px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #f5f5f5;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .chart-tab.active {
+            background: #333;
+            color: white;
+            border-color: #333;
+        }
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="header">
@@ -2191,6 +2256,19 @@ MONITOR_HTML = '''<!DOCTYPE html>
         <div class="summary-item expensive">
             <div class="summary-count" id="expensive-count">0</div>
             <div class="summary-label">EXPENSIVE</div>
+        </div>
+    </div>
+
+    <div class="chart-section">
+        <div class="chart-header">
+            <div class="chart-title">Z-Score Chart</div>
+            <div class="chart-tabs">
+                <div class="chart-tab active" onclick="switchChart('GOLD')">GOLD</div>
+                <div class="chart-tab" onclick="switchChart('SILVER')">SILVER</div>
+            </div>
+        </div>
+        <div class="chart-container">
+            <canvas id="zscore-chart"></canvas>
         </div>
     </div>
 
@@ -2299,6 +2377,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
                     // Update trade history
                     updateTradeHistory(data.trade_history, data.trade_summary);
+
+                    // Update Z-Score chart
+                    updateZscoreChart(data.zscore_history, data.trade_history);
                 })
                 .catch(err => console.error('Error:', err));
         }
@@ -2590,6 +2671,223 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 body: JSON.stringify({ paper: paper })
             });
         }
+
+        // Z-Score Chart
+        let zscoreChart = null;
+        let currentChartAsset = 'GOLD';
+        let zscoreData = { GOLD: [], SILVER: [] };
+        let tradeMarkers = [];
+
+        function initChart() {
+            const ctx = document.getElementById('zscore-chart').getContext('2d');
+            zscoreChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'Z-Score',
+                            data: [],
+                            borderColor: '#2196F3',
+                            backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                            borderWidth: 2,
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Entry Upper (+)',
+                            data: [],
+                            borderColor: '#f44336',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: false,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Entry Lower (-)',
+                            data: [],
+                            borderColor: '#f44336',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: false,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Exit Upper',
+                            data: [],
+                            borderColor: '#4CAF50',
+                            borderWidth: 1,
+                            borderDash: [2, 2],
+                            fill: false,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Exit Lower',
+                            data: [],
+                            borderColor: '#4CAF50',
+                            borderWidth: 1,
+                            borderDash: [2, 2],
+                            fill: false,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Zero Line',
+                            data: [],
+                            borderColor: '#999',
+                            borderWidth: 1,
+                            fill: false,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Trade Entry',
+                            data: [],
+                            borderColor: '#FF9800',
+                            backgroundColor: '#FF9800',
+                            borderWidth: 0,
+                            pointRadius: 8,
+                            pointStyle: 'triangle',
+                            showLine: false
+                        },
+                        {
+                            label: 'Trade Exit',
+                            data: [],
+                            borderColor: '#9C27B0',
+                            backgroundColor: '#9C27B0',
+                            borderWidth: 0,
+                            pointRadius: 8,
+                            pointStyle: 'rect',
+                            showLine: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                usePointStyle: true,
+                                boxWidth: 8,
+                                font: { size: 11 }
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    if (context.dataset.label === 'Z-Score') {
+                                        return 'Z-Score: ' + context.parsed.y.toFixed(3);
+                                    }
+                                    return context.dataset.label + ': ' + context.parsed.y.toFixed(2);
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            grid: { display: false },
+                            ticks: { maxTicksLimit: 10 }
+                        },
+                        y: {
+                            display: true,
+                            grid: { color: '#eee' },
+                            suggestedMin: -3,
+                            suggestedMax: 3
+                        }
+                    }
+                }
+            });
+        }
+
+        function switchChart(asset) {
+            currentChartAsset = asset;
+            document.querySelectorAll('.chart-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.textContent === asset);
+            });
+            updateChartDisplay();
+        }
+
+        function updateZscoreChart(zscore_history, trade_history) {
+            if (!zscore_history) return;
+
+            zscoreData = zscore_history;
+
+            // Find trade markers for current asset
+            tradeMarkers = [];
+            if (trade_history) {
+                trade_history.forEach(trade => {
+                    if (trade.asset === currentChartAsset) {
+                        // Entry marker
+                        if (trade.entry_zscore) {
+                            tradeMarkers.push({
+                                type: 'entry',
+                                time: trade.entry_date ? trade.entry_date.split(' ')[1] || trade.entry_date : '',
+                                zscore: trade.entry_zscore,
+                                direction: trade.direction
+                            });
+                        }
+                        // Exit marker
+                        if (trade.exit_zscore && trade.status === 'CLOSED') {
+                            tradeMarkers.push({
+                                type: 'exit',
+                                time: trade.exit_date ? trade.exit_date.split(' ')[1] || trade.exit_date : '',
+                                zscore: trade.exit_zscore,
+                                direction: trade.direction
+                            });
+                        }
+                    }
+                });
+            }
+
+            updateChartDisplay();
+        }
+
+        function updateChartDisplay() {
+            if (!zscoreChart || !zscoreData[currentChartAsset]) return;
+
+            const history = zscoreData[currentChartAsset];
+            if (history.length === 0) return;
+
+            const labels = history.map(h => h.time);
+            const zscores = history.map(h => h.zscore);
+            const entryUpper = history.map(h => h.entry_upper);
+            const entryLower = history.map(h => h.entry_lower);
+            const exitUpper = history.map(h => h.exit_upper);
+            const exitLower = history.map(h => h.exit_lower);
+            const zeroLine = history.map(() => 0);
+
+            // Find trade markers that match times in our history
+            const entryPoints = labels.map(time => {
+                const marker = tradeMarkers.find(m => m.type === 'entry' && m.time === time);
+                return marker ? marker.zscore : null;
+            });
+            const exitPoints = labels.map(time => {
+                const marker = tradeMarkers.find(m => m.type === 'exit' && m.time === time);
+                return marker ? marker.zscore : null;
+            });
+
+            zscoreChart.data.labels = labels;
+            zscoreChart.data.datasets[0].data = zscores;
+            zscoreChart.data.datasets[1].data = entryUpper;
+            zscoreChart.data.datasets[2].data = entryLower;
+            zscoreChart.data.datasets[3].data = exitUpper;
+            zscoreChart.data.datasets[4].data = exitLower;
+            zscoreChart.data.datasets[5].data = zeroLine;
+            zscoreChart.data.datasets[6].data = entryPoints;
+            zscoreChart.data.datasets[7].data = exitPoints;
+
+            zscoreChart.update('none');
+        }
+
+        // Initialize chart on page load
+        initChart();
 
         updateData();
         setInterval(updateData, 300);
