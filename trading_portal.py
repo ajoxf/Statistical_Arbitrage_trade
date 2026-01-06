@@ -716,12 +716,12 @@ class TradingMonitor:
                 except (ValueError, KeyError):
                     pass  # If we can't parse entry_date, skip time check
 
-            if position['signal_type'] == 'SELL_BASIS':
+            if position['direction'] == 'Short Spread':
                 if zscore <= exit_std:
                     return {
                         'type': 'CLOSE',
                         'reason': f'Z-score {zscore:.2f} <= {exit_std} (exit)',
-                        'action': 'Close SELL_BASIS position'
+                        'action': 'Close Short Spread position'
                     }
                 if zscore > stop_loss_std:
                     return {
@@ -729,12 +729,12 @@ class TradingMonitor:
                         'reason': f'Z-score {zscore:.2f} > {stop_loss_std} (stop)',
                         'action': 'Stop loss - Close position'
                     }
-            elif position['signal_type'] == 'BUY_BASIS':
+            elif position['direction'] == 'Long Spread':
                 if zscore >= -exit_std:
                     return {
                         'type': 'CLOSE',
                         'reason': f'Z-score {zscore:.2f} >= -{exit_std} (exit)',
-                        'action': 'Close BUY_BASIS position'
+                        'action': 'Close Long Spread position'
                     }
                 if zscore < -stop_loss_std:
                     return {
