@@ -2097,6 +2097,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <tr>
                         <th>#</th>
                         <th>Direction</th>
+                        <th>Lots</th>
                         <th>Entry</th>
                         <th>Exit</th>
                         <th>Days</th>
@@ -2112,7 +2113,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     </tr>
                 </thead>
                 <tbody id="trade-history-body">
-                    <tr><td colspan="14" style="text-align: center; color: #666;">No trades yet</td></tr>
+                    <tr><td colspan="15" style="text-align: center; color: #666;">No trades yet</td></tr>
                 </tbody>
             </table>
         </div>
@@ -2366,7 +2367,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             // Update table
             const tbody = document.getElementById('trade-history-body');
             if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="14" style="text-align: center; color: #666;">No trades yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="15" style="text-align: center; color: #666;">No trades yet</td></tr>';
                 return;
             }
 
@@ -2387,6 +2388,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 return `<tr class="${t.status === 'OPEN' ? 'status-open' : ''}">
                     <td>${i + 1}</td>
                     <td class="${dirClass}"><span class="direction-icon">${icon}</span>${t.direction}</td>
+                    <td>${t.lot_size || 0.1}</td>
                     <td>${t.entry_date || '--'}</td>
                     <td>${t.exit_date || (t.status === 'OPEN' ? '<em>Open</em>' : '--')}</td>
                     <td>${t.days_held || '--'}</td>
