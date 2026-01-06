@@ -372,12 +372,34 @@ class TradingMonitor:
         self.spread_cache = {'GOLD': deque(maxlen=1000), 'SILVER': deque(maxlen=1000)}
         self.last_price_save = {}
 
-        # Active positions
+        # Active positions - load from database
         self.positions = {}
+        self._load_open_positions()
 
         # Background thread
         self.running = False
         self.update_thread = None
+
+    def _load_open_positions(self):
+        """Load open positions from database on startup"""
+        open_trades = self.db.get_trades(status='OPEN', limit=100)
+        for trade in open_trades:
+            asset_key = trade['asset']
+            self.positions[asset_key] = {
+                'trade_id': trade['trade_id'],
+                'asset': trade['asset'],
+                'direction': trade['direction'],
+                'entry_date': trade['entry_date'],
+                'entry_zscore': trade['entry_zscore'],
+                'entry_spot_price': trade['entry_spot_price'],
+                'entry_futures_price': trade['entry_futures_price'],
+                'lot_size': trade['lot_size'],
+                'status': trade['status'],
+                'order_status': trade['order_status'] or 'UNKNOWN',
+                'mt5_spot_ticket': trade['mt5_spot_ticket'],
+                'mt5_futures_ticket': trade['mt5_futures_ticket']
+            }
+            logger.info(f"Loaded open position: {asset_key} {trade['direction']} from {trade['entry_date']}")
 
     def initialize_mt5(self):
         """Initialize MT5 connection"""
@@ -1192,6 +1214,46 @@ class TradingMonitor:
             logger.error(f"Error getting MT5 positions: {e}")
             return []
 
+    def get_enriched_positions(self):
+        """Get algo positions with unrealized P&L from current prices"""
+        enriched = []
+        for asset_key, position in self.positions.items():
+            pos_copy = position.copy()
+
+            # Get current prices for this asset
+            asset_data = self.active_assets.get(asset_key, {})
+            if asset_data:
+                current_data = self.get_market_data(asset_key)
+                if current_data:
+                    entry_spot = position.get('entry_spot_price', 0)
+                    entry_futures = position.get('entry_futures_price', 0)
+                    current_spot = current_data.get('spot_price', 0)
+                    current_futures = current_data.get('futures_price', 0)
+                    lot_size = position.get('lot_size', 0.1)
+
+                    # Calculate unrealized P&L based on direction
+                    # Long Spread: Buy Futures + Sell Spot
+                    # Short Spread: Sell Futures + Buy Spot
+                    if position.get('direction') == 'Long Spread':
+                        # Long spread profits when spread widens
+                        futures_pnl = (current_futures - entry_futures) * lot_size * 100
+                        spot_pnl = (entry_spot - current_spot) * lot_size * 100
+                    else:
+                        # Short spread profits when spread narrows
+                        futures_pnl = (entry_futures - current_futures) * lot_size * 100
+                        spot_pnl = (current_spot - entry_spot) * lot_size * 100
+
+                    unrealized_pnl = futures_pnl + spot_pnl
+                    pos_copy['unrealized_pnl'] = unrealized_pnl
+                    pos_copy['current_spot'] = current_spot
+                    pos_copy['current_futures'] = current_futures
+                    pos_copy['current_spread'] = current_futures - current_spot
+                    pos_copy['entry_spread'] = entry_futures - entry_spot
+
+            enriched.append(pos_copy)
+
+        return enriched
+
     def sync_positions_with_mt5(self):
         """Sync portal positions with actual MT5 positions"""
         mt5_positions = self.get_mt5_positions()
@@ -1342,7 +1404,7 @@ def get_data():
         },
         'account': account_info,
         'mt5_positions': mt5_positions,
-        'positions': list(monitor.positions.values()),
+        'positions': monitor.get_enriched_positions(),
         'trade_history': trade_history,
         'trade_summary': trade_summary,
         'config': {
@@ -2262,16 +2324,33 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 container.innerHTML = '<div style="color: #666; text-align: center;">No algo positions</div>';
                 return;
             }
-            container.innerHTML = positions.map(p => `
-                <div class="position-card">
-                    <div class="pos-symbol">${p.asset}</div>
-                    <div><span class="pos-type ${p.direction === 'Long Spread' ? 'buy' : 'sell'}">${p.direction}</span></div>
-                    <div>Z: ${p.entry_zscore ? p.entry_zscore.toFixed(2) : '--'}σ</div>
-                    <div>${p.entry_date || '--'}</div>
-                    <div class="${p.order_status === 'FILLED' ? 'pnl-positive' : ''}">${p.order_status || 'PAPER'}</div>
-                    <div style="color: #888;">${p.lot_size || 0.1} lots</div>
+            container.innerHTML = positions.map(p => {
+                const unrealizedPnl = p.unrealized_pnl || 0;
+                const pnlClass = unrealizedPnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const pnlSign = unrealizedPnl >= 0 ? '+' : '';
+                const entrySpread = p.entry_spread ? p.entry_spread.toFixed(2) : '--';
+                const currentSpread = p.current_spread ? p.current_spread.toFixed(2) : '--';
+
+                return `
+                <div class="position-card" style="padding: 12px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 10px; background: #fafafa;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div class="pos-symbol" style="font-weight: bold; font-size: 1.1em;">${p.asset}</div>
+                        <span class="pos-type ${p.direction === 'Long Spread' ? 'buy' : 'sell'}" style="padding: 2px 8px; border-radius: 4px;">${p.direction}</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 0.9em;">
+                        <div>Entry Z: <strong>${p.entry_zscore ? p.entry_zscore.toFixed(2) : '--'}σ</strong></div>
+                        <div>Lots: <strong>${p.lot_size || 0.1}</strong></div>
+                        <div>Entry Spread: <strong>${entrySpread}</strong></div>
+                        <div>Current Spread: <strong>${currentSpread}</strong></div>
+                        <div>Date: ${p.entry_date || '--'}</div>
+                        <div>Status: <span class="${p.order_status === 'FILLED' ? 'pnl-positive' : ''}">${p.order_status || 'PENDING'}</span></div>
+                    </div>
+                    <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #ddd; text-align: center;">
+                        <div style="font-size: 0.8em; color: #888;">Unrealized P&L</div>
+                        <div class="${pnlClass}" style="font-size: 1.3em; font-weight: bold;">${pnlSign}$${Math.abs(unrealizedPnl).toFixed(2)}</div>
+                    </div>
                 </div>
-            `).join('');
+            `}).join('');
         }
 
         function updateTradeHistory(trades, summary) {
