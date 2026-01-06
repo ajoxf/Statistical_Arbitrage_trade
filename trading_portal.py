@@ -571,22 +571,43 @@ class TradingMonitor:
                         'spread': row[0]
                     })
 
+        # Get threshold config for band calculations
+        entry_std = self.config.get('entry_std_dev', 2.0)
+        exit_std = self.config.get('exit_std_dev', 0.5)
+        stop_std = self.config.get('stop_loss_std_dev', 3.0)
+
         # STRICT: Don't trade until we have FULL lookback period
         if len(spreads) < required_points:
+            mean_val = np.mean(spreads) if spreads else 0
+            std_val = np.std(spreads) if spreads else 0
             return {
-                'mean': np.mean(spreads) if spreads else 0,
-                'std': np.std(spreads) if spreads else 0,
+                'mean': mean_val,
+                'std': std_val,
                 'count': len(spreads),
                 'required': required_points,
-                'complete': False
+                'complete': False,
+                'upper_entry': mean_val + (entry_std * std_val),
+                'lower_entry': mean_val - (entry_std * std_val),
+                'upper_exit': mean_val + (exit_std * std_val),
+                'lower_exit': mean_val - (exit_std * std_val),
+                'upper_stop': mean_val + (stop_std * std_val),
+                'lower_stop': mean_val - (stop_std * std_val)
             }
 
+        mean_val = np.mean(spreads)
+        std_val = np.std(spreads)
         return {
-            'mean': np.mean(spreads),
-            'std': np.std(spreads),
+            'mean': mean_val,
+            'std': std_val,
             'count': len(spreads),
             'required': required_points,
-            'complete': True
+            'complete': True,
+            'upper_entry': mean_val + (entry_std * std_val),
+            'lower_entry': mean_val - (entry_std * std_val),
+            'upper_exit': mean_val + (exit_std * std_val),
+            'lower_exit': mean_val - (exit_std * std_val),
+            'upper_stop': mean_val + (stop_std * std_val),
+            'lower_stop': mean_val - (stop_std * std_val)
         }
 
     def calculate_zscore(self, asset_key, current_value):
@@ -2217,6 +2238,17 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <span>Mean: ${asset.stats.mean.toFixed(2)}</span>
                         <span>Std: ${asset.stats.std.toFixed(2)}</span>
                         <span>Points: ${asset.stats.count}</span>
+                    </div>
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 0.85em;">
+                        <div style="color: #888; margin-bottom: 4px;">Current Spread: <strong style="color: #333;">${asset.basis.toFixed(2)}</strong></div>
+                        <div style="display: flex; justify-content: space-between; color: #666;">
+                            <span style="color: #d9534f;">Entry ↑: ${asset.stats.upper_entry.toFixed(2)}</span>
+                            <span style="color: #5cb85c;">Exit ↑: ${asset.stats.upper_exit.toFixed(2)}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; color: #666;">
+                            <span style="color: #d9534f;">Entry ↓: ${asset.stats.lower_entry.toFixed(2)}</span>
+                            <span style="color: #5cb85c;">Exit ↓: ${asset.stats.lower_exit.toFixed(2)}</span>
+                        </div>
                     </div>` : ''}
                 </div>
             `;
