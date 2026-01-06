@@ -84,6 +84,7 @@ class DatabaseManager:
                 entry_std_dev REAL DEFAULT 2.0,
                 exit_std_dev REAL DEFAULT 0.5,
                 stop_loss_std_dev REAL DEFAULT 3.0,
+                time_stop_loss_minutes INTEGER DEFAULT 0,
                 max_positions INTEGER DEFAULT 3,
                 lot_size REAL DEFAULT 0.1,
                 algo_enabled INTEGER DEFAULT 0,
@@ -162,10 +163,11 @@ class DatabaseManager:
                 'entry_std_dev': row[4] or 2.0,
                 'exit_std_dev': row[5] or 0.5,
                 'stop_loss_std_dev': row[6] or 3.0,
-                'max_positions': row[7] or 3,
-                'lot_size': row[8] or 0.1,
-                'algo_enabled': bool(row[9]),
-                'paper_mode': bool(row[10]) if row[10] is not None else True
+                'time_stop_loss_minutes': row[7] or 0,
+                'max_positions': row[8] or 3,
+                'lot_size': row[9] or 0.1,
+                'algo_enabled': bool(row[10]),
+                'paper_mode': bool(row[11]) if row[11] is not None else True
             }
         return None
 
@@ -182,6 +184,7 @@ class DatabaseManager:
                     entry_std_dev = ?,
                     exit_std_dev = ?,
                     stop_loss_std_dev = ?,
+                    time_stop_loss_minutes = ?,
                     max_positions = ?,
                     lot_size = ?,
                     algo_enabled = ?,
@@ -195,6 +198,7 @@ class DatabaseManager:
                 config.get('entry_std_dev', 2.0),
                 config.get('exit_std_dev', 0.5),
                 config.get('stop_loss_std_dev', 3.0),
+                config.get('time_stop_loss_minutes', 0),
                 config.get('max_positions', 3),
                 config.get('lot_size', 0.1),
                 1 if config.get('algo_enabled') else 0,
@@ -549,6 +553,7 @@ class TradingMonitor:
         entry_std = self.config.get('entry_std_dev', 2.0)
         exit_std = self.config.get('exit_std_dev', 0.5)
         stop_loss_std = self.config.get('stop_loss_std_dev', 3.0)
+        time_stop_minutes = self.config.get('time_stop_loss_minutes', 0)
 
         # Check existing positions
         has_position = asset_key in self.positions
@@ -568,6 +573,21 @@ class TradingMonitor:
                 }
         else:
             position = self.positions[asset_key]
+
+            # Check time-based stop loss first (if enabled)
+            if time_stop_minutes > 0:
+                try:
+                    entry_time = datetime.fromisoformat(position['entry_time'])
+                    position_age_minutes = (datetime.now() - entry_time).total_seconds() / 60
+                    if position_age_minutes >= time_stop_minutes:
+                        return {
+                            'type': 'TIME_STOP',
+                            'reason': f'Position held {position_age_minutes:.0f} min >= {time_stop_minutes} min limit',
+                            'action': 'Time stop - Close position'
+                        }
+                except (ValueError, KeyError):
+                    pass  # If we can't parse entry_time, skip time check
+
             if position['signal_type'] == 'SELL_BASIS':
                 if zscore <= exit_std:
                     return {
@@ -606,7 +626,7 @@ class TradingMonitor:
             if asset_key not in self.positions:
                 self._open_position(asset_key, signal_type, data)
 
-        elif signal_type in ['CLOSE', 'STOP_LOSS']:
+        elif signal_type in ['CLOSE', 'STOP_LOSS', 'TIME_STOP']:
             if asset_key in self.positions:
                 self._close_position(asset_key, signal_type, data)
 
@@ -729,6 +749,7 @@ def settings():
             monitor.config['entry_std_dev'] = float(request.form.get('entry_std_dev', 2.0))
             monitor.config['exit_std_dev'] = float(request.form.get('exit_std_dev', 0.5))
             monitor.config['stop_loss_std_dev'] = float(request.form.get('stop_loss_std_dev', 3.0))
+            monitor.config['time_stop_loss_minutes'] = int(request.form.get('time_stop_loss_minutes', 0))
             monitor.config['max_positions'] = int(request.form.get('max_positions', 3))
             monitor.config['lot_size'] = float(request.form.get('lot_size', 0.1))
 
@@ -769,7 +790,8 @@ def get_data():
             'lookback_period': monitor.config.get('lookback_period', 90),
             'entry_std_dev': monitor.config.get('entry_std_dev', 2.0),
             'exit_std_dev': monitor.config.get('exit_std_dev', 0.5),
-            'stop_loss_std_dev': monitor.config.get('stop_loss_std_dev', 3.0)
+            'stop_loss_std_dev': monitor.config.get('stop_loss_std_dev', 3.0),
+            'time_stop_loss_minutes': monitor.config.get('time_stop_loss_minutes', 0)
         },
         'last_update': monitor.last_update
     })
@@ -1129,6 +1151,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .signal-section.buy-basis { border-color: #2e7d32; background: #e8f5e9; }
         .signal-section.hold { border-color: #ddd; background: #fafafa; }
         .signal-section.no-data { border-color: #eee; background: #f5f5f5; }
+        .signal-section.time-stop { border-color: #ff9800; background: #fff3e0; }
+        .signal-section.stop-loss { border-color: #9c27b0; background: #f3e5f5; }
 
         .zscore-display {
             font-size: 2.5em;
@@ -1137,6 +1161,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
         }
         .signal-section.sell-basis .zscore-display { color: #c62828; }
         .signal-section.buy-basis .zscore-display { color: #2e7d32; }
+        .signal-section.time-stop .zscore-display { color: #ff9800; }
+        .signal-section.stop-loss .zscore-display { color: #9c27b0; }
         .signal-type { font-size: 1.1em; font-weight: 600; margin-bottom: 5px; }
         .signal-reason { color: #666; font-size: 0.9em; }
 
@@ -1287,8 +1313,11 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     document.getElementById('algo-status').className = 'status-badge ' + (cfg.algo_enabled ? 'active' : 'inactive');
                     document.getElementById('mode-status').textContent = cfg.paper_mode ? 'PAPER' : 'LIVE';
                     document.getElementById('mode-status').className = 'status-badge ' + (cfg.paper_mode ? 'paper' : 'live');
-                    document.getElementById('thresholds').textContent =
-                        `Entry: ±${cfg.entry_std_dev}σ | Exit: ±${cfg.exit_std_dev}σ | Stop: ±${cfg.stop_loss_std_dev}σ`;
+                    let thresholdText = `Entry: ±${cfg.entry_std_dev}σ | Exit: ±${cfg.exit_std_dev}σ | Stop: ±${cfg.stop_loss_std_dev}σ`;
+                    if (cfg.time_stop_loss_minutes > 0) {
+                        thresholdText += ` | Time: ${cfg.time_stop_loss_minutes}min`;
+                    }
+                    document.getElementById('thresholds').textContent = thresholdText;
 
                     const container = document.getElementById('assets-container');
                     container.innerHTML = '';
@@ -1312,6 +1341,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
             if (signal.type === 'SELL_BASIS') signalClass = 'sell-basis';
             else if (signal.type === 'BUY_BASIS') signalClass = 'buy-basis';
             else if (signal.type === 'NO_DATA') signalClass = 'no-data';
+            else if (signal.type === 'TIME_STOP') signalClass = 'time-stop';
+            else if (signal.type === 'STOP_LOSS') signalClass = 'stop-loss';
 
             const diffClass = asset.swap_diff > 0 ? 'positive' : 'negative';
 
@@ -1559,6 +1590,12 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <label>Stop Loss Threshold (Standard Deviations)</label>
                     <input type="number" name="stop_loss_std_dev" value="{{ config.stop_loss_std_dev }}" min="2" max="6" step="0.1">
                     <div class="help-text">Z-score threshold for stop loss (e.g., 3.0 = ±3σ)</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Time-Based Stop Loss (Minutes)</label>
+                    <input type="number" name="time_stop_loss_minutes" value="{{ config.time_stop_loss_minutes or 0 }}" min="0" max="1440" step="1">
+                    <div class="help-text">Auto-close position after X minutes (0 = disabled). Max 1440 (24 hours)</div>
                 </div>
             </div>
 
