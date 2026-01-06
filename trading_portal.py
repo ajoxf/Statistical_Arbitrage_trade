@@ -2326,21 +2326,32 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <div class="zscore-display">${zscore}σ</div>
                     <div class="signal-reason">${signal.reason || ''}</div>
                     ${asset.stats ? `
-                    <div class="stats-row" style="font-size: 16px;">
+                    <div class="stats-row" style="font-size: 18px;">
                         <span>Mean: ${asset.stats.mean.toFixed(2)}</span>
                         <span>Std: ${asset.stats.std.toFixed(2)}</span>
                         <span>Points: ${asset.stats.count}</span>
                     </div>
-                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 16px;">
-                        <div style="color: #888; margin-bottom: 8px;">Current Spread: <strong style="color: #333;">${asset.actual_basis.toFixed(2)}</strong></div>
-                        <div style="margin-bottom: 6px;">
-                            <div style="color: #d9534f; margin-bottom: 2px;"><strong>Short Spread</strong> (Entry ↑): ${asset.stats.upper_entry.toFixed(2)}</div>
-                            <div style="color: #5cb85c;">Exit: ${asset.stats.upper_exit.toFixed(2)}</div>
-                        </div>
-                        <div>
-                            <div style="color: #5cb85c; margin-bottom: 2px;"><strong>Long Spread</strong> (Entry ↓): ${asset.stats.lower_entry.toFixed(2)}</div>
-                            <div style="color: #d9534f;">Exit: ${asset.stats.lower_exit.toFixed(2)}</div>
-                        </div>
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 18px;">
+                        <div style="color: #888; margin-bottom: 10px;">Current Spread: <strong style="color: #333;">${asset.actual_basis.toFixed(2)}</strong></div>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr>
+                                <td style="color: #d9534f; padding: 4px 0;"><strong>Short Spread</strong></td>
+                                <td style="color: #d9534f; text-align: right;">Entry ↑: ${asset.stats.upper_entry.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 4px 0;"></td>
+                                <td style="color: #5cb85c; text-align: right;">Exit: ${asset.stats.upper_exit.toFixed(2)}</td>
+                            </tr>
+                            <tr><td colspan="2" style="padding: 6px 0;"></td></tr>
+                            <tr>
+                                <td style="color: #5cb85c; padding: 4px 0;"><strong>Long Spread</strong></td>
+                                <td style="color: #5cb85c; text-align: right;">Entry ↓: ${asset.stats.lower_entry.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 4px 0;"></td>
+                                <td style="color: #d9534f; text-align: right;">Exit: ${asset.stats.lower_exit.toFixed(2)}</td>
+                            </tr>
+                        </table>
                     </div>` : ''}
                 </div>
             `;
