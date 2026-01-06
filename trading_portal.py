@@ -481,25 +481,35 @@ class TradingMonitor:
         """Background loop for continuous price collection"""
         while self.running:
             try:
-                # Collect prices every 0.3 seconds for fast updates
+                # Collect prices every 0.3 seconds for fast UI updates
                 for asset_key in self.active_assets.keys():
                     data = self.get_market_data(asset_key)
                     if data:
-                        # Save to cache - use RAW SPREAD for pure mean reversion
-                        self.spread_cache[asset_key].append({
-                            'timestamp': datetime.now(),
-                            'spread': data['actual_basis'],  # Raw spread for mean reversion
-                            'actual_basis': data['actual_basis']
-                        })
+                        # Determine save interval based on lookback_unit
+                        lookback_unit = self.config.get('lookback_unit', 'minutes')
+                        if lookback_unit == 'days':
+                            save_interval = 3600  # Save 1 point per hour (24 points per day)
+                        else:  # minutes
+                            save_interval = 60  # Save 1 point per minute
 
-                        # Save to database every 30 seconds
+                        # Save to database at the configured interval
                         last_save = self.last_price_save.get(asset_key, datetime.min)
-                        if (datetime.now() - last_save).total_seconds() > 30:
+                        if (datetime.now() - last_save).total_seconds() >= save_interval:
                             self.db.save_price(
                                 asset_key, data['spot_price'], data['futures_price'],
                                 data['actual_basis'], data['actual_basis']  # Store raw spread
                             )
                             self.last_price_save[asset_key] = datetime.now()
+
+                            # Also add to cache for statistics (spaced data points)
+                            self.spread_cache[asset_key].append({
+                                'timestamp': datetime.now(),
+                                'spread': data['actual_basis'],
+                                'actual_basis': data['actual_basis']
+                            })
+                            # Keep cache at reasonable size
+                            if len(self.spread_cache[asset_key]) > 2000:
+                                self.spread_cache[asset_key] = list(self.spread_cache[asset_key])[-1000:]
 
                         # Process algo trading if enabled
                         if self.config.get('algo_enabled'):
@@ -532,40 +542,61 @@ class TradingMonitor:
     def get_statistics(self, asset_key):
         """Get rolling statistics for z-score calculation (pure mean reversion on raw spread)"""
         lookback = self.config.get('lookback_period', 90)
+        lookback_unit = self.config.get('lookback_unit', 'minutes')
+
+        # Calculate required data points
+        # For 'minutes': 1 point per minute, so lookback = points needed
+        # For 'days': 24 points per day (1 per hour), so lookback * 24 = points needed
+        if lookback_unit == 'days':
+            required_points = lookback * 24
+        else:
+            required_points = lookback
 
         # First try cache
         cache = list(self.spread_cache.get(asset_key, []))
 
-        if len(cache) >= lookback:
-            spreads = [d['spread'] for d in cache[-lookback:]]
+        if len(cache) >= required_points:
+            spreads = [d['spread'] for d in cache[-required_points:]]
         else:
             # Fall back to database
-            history = self.db.get_price_history(asset_key, lookback)
-            if len(history) < 10:
-                return None
+            history = self.db.get_price_history(asset_key, required_points)
             spreads = [row[0] for row in history]  # spread column (raw basis)
 
-            # Rebuild cache
-            for row in reversed(history):
-                if len(self.spread_cache[asset_key]) < 1000:
+            # Rebuild cache from database
+            if len(spreads) > len(cache):
+                self.spread_cache[asset_key] = deque(maxlen=2000)
+                for row in reversed(history):
                     self.spread_cache[asset_key].append({
                         'timestamp': datetime.now(),
-                        'spread': row[0]  # Use raw spread
+                        'spread': row[0]
                     })
 
-        if len(spreads) < 10:
-            return None
+        # STRICT: Don't trade until we have FULL lookback period
+        if len(spreads) < required_points:
+            return {
+                'mean': np.mean(spreads) if spreads else 0,
+                'std': np.std(spreads) if spreads else 0,
+                'count': len(spreads),
+                'required': required_points,
+                'complete': False
+            }
 
         return {
             'mean': np.mean(spreads),
             'std': np.std(spreads),
-            'count': len(spreads)
+            'count': len(spreads),
+            'required': required_points,
+            'complete': True
         }
 
     def calculate_zscore(self, asset_key, current_value):
         """Calculate z-score for current spread"""
         stats = self.get_statistics(asset_key)
         if not stats or stats['std'] == 0:
+            return None, stats
+
+        # Don't calculate valid z-score until lookback is complete
+        if not stats.get('complete', False):
             return None, stats
 
         zscore = (current_value - stats['mean']) / stats['std']
@@ -637,8 +668,8 @@ class TradingMonitor:
             # Calculate z-score on RAW SPREAD (pure mean reversion)
             zscore, stats = self.calculate_zscore(asset_key, actual_basis)
 
-            # Generate signal
-            signal = self._generate_signal(asset_key, zscore)
+            # Generate signal (pass stats for progress info)
+            signal = self._generate_signal(asset_key, zscore, stats)
 
             return {
                 'asset_name': config['name'],
@@ -673,9 +704,18 @@ class TradingMonitor:
             logger.error(f"Error getting market data for {asset_key}: {e}")
             return None
 
-    def _generate_signal(self, asset_key, zscore):
+    def _generate_signal(self, asset_key, zscore, stats=None):
         """Generate trading signal based on z-score"""
         if zscore is None:
+            # Show progress if stats available
+            if stats and not stats.get('complete', False):
+                count = stats.get('count', 0)
+                required = stats.get('required', 0)
+                pct = (count / required * 100) if required > 0 else 0
+                return {
+                    'type': 'COLLECTING',
+                    'reason': f'Collecting data: {count}/{required} points ({pct:.0f}%)'
+                }
             return {'type': 'NO_DATA', 'reason': 'Insufficient data for signal'}
 
         entry_std = self.config.get('entry_std_dev', 2.0)
@@ -1644,6 +1684,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .signal-section.buy-basis { border-color: #2e7d32; background: #e8f5e9; }
         .signal-section.hold { border-color: #ddd; background: #fafafa; }
         .signal-section.no-data { border-color: #eee; background: #f5f5f5; }
+        .signal-section.collecting { border-color: #1976d2; background: #e3f2fd; }
         .signal-section.time-stop { border-color: #ff9800; background: #fff3e0; }
         .signal-section.stop-loss { border-color: #9c27b0; background: #f3e5f5; }
 
@@ -2077,6 +2118,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             if (signal.type === 'SELL_BASIS') signalClass = 'sell-basis';
             else if (signal.type === 'BUY_BASIS') signalClass = 'buy-basis';
             else if (signal.type === 'NO_DATA') signalClass = 'no-data';
+            else if (signal.type === 'COLLECTING') signalClass = 'collecting';
             else if (signal.type === 'TIME_STOP') signalClass = 'time-stop';
             else if (signal.type === 'STOP_LOSS') signalClass = 'stop-loss';
 
