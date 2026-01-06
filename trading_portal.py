@@ -118,7 +118,8 @@ class DatabaseManager:
                 spot_pnl REAL DEFAULT 0,
                 futures_pnl REAL DEFAULT 0,
                 gross_pnl REAL DEFAULT 0,
-                fees REAL DEFAULT 0,
+                swap_cost REAL DEFAULT 0,
+                commission REAL DEFAULT 0,
                 net_pnl REAL DEFAULT 0,
                 return_pct REAL DEFAULT 0,
                 lot_size REAL DEFAULT 0.1,
@@ -254,7 +255,7 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 trade['trade_id'],
                 trade['asset'],
@@ -271,7 +272,8 @@ class DatabaseManager:
                 trade.get('spot_pnl', 0),
                 trade.get('futures_pnl', 0),
                 trade.get('gross_pnl', 0),
-                trade.get('fees', 0),
+                trade.get('swap_cost', 0),
+                trade.get('commission', 0),
                 trade.get('net_pnl', 0),
                 trade.get('return_pct', 0),
                 trade.get('lot_size', 0.1),
@@ -301,10 +303,10 @@ class DatabaseManager:
             'entry_spot_price': r[8], 'entry_futures_price': r[9],
             'exit_spot_price': r[10], 'exit_futures_price': r[11],
             'spot_pnl': r[12], 'futures_pnl': r[13],
-            'gross_pnl': r[14], 'fees': r[15], 'net_pnl': r[16],
-            'return_pct': r[17], 'lot_size': r[18],
-            'mt5_spot_ticket': r[19], 'mt5_futures_ticket': r[20],
-            'order_status': r[21], 'status': r[22]
+            'gross_pnl': r[14], 'swap_cost': r[15], 'commission': r[16],
+            'net_pnl': r[17], 'return_pct': r[18], 'lot_size': r[19],
+            'mt5_spot_ticket': r[20], 'mt5_futures_ticket': r[21],
+            'order_status': r[22], 'status': r[23]
         } for r in rows]
 
     def get_trade_summary(self):
@@ -914,6 +916,21 @@ class TradingMonitor:
         self.positions[asset_key] = position
         self.db.save_trade(position)
 
+    def _get_mt5_position_costs(self, ticket):
+        """Get swap and commission from MT5 position by ticket"""
+        try:
+            positions = mt5.positions_get(ticket=ticket)
+            if positions and len(positions) > 0:
+                pos = positions[0]
+                return {
+                    'swap': pos.swap,
+                    'commission': pos.commission,
+                    'profit': pos.profit
+                }
+        except Exception as e:
+            logger.error(f"Error getting MT5 position costs: {e}")
+        return {'swap': 0, 'commission': 0, 'profit': 0}
+
     def _close_position(self, asset_key, close_reason, data):
         """Close an existing position with P&L calculation"""
         if asset_key not in self.positions:
@@ -953,10 +970,23 @@ class TradingMonitor:
 
         position['gross_pnl'] = position['spot_pnl'] + position['futures_pnl']
 
-        # Estimate fees (commission + spread cost) - approximately $5 per lot per leg
-        position['fees'] = -abs(lot_size * 2 * 27)  # ~$27 per leg, 2 legs
+        # Get swap and commission from MT5 (live) or estimate (paper)
+        if not self.config.get('paper_mode', True):
+            # Get actual swap and commission from MT5 positions before closing
+            spot_costs = self._get_mt5_position_costs(position.get('mt5_spot_ticket'))
+            futures_costs = self._get_mt5_position_costs(position.get('mt5_futures_ticket'))
 
-        position['net_pnl'] = position['gross_pnl'] + position['fees']
+            position['swap_cost'] = spot_costs['swap'] + futures_costs['swap']
+            position['commission'] = spot_costs['commission'] + futures_costs['commission']
+
+            logger.info(f"MT5 Costs - Swap: ${position['swap_cost']:.2f}, Commission: ${position['commission']:.2f}")
+        else:
+            # Estimate for paper trading
+            daily_swap = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
+            position['swap_cost'] = -abs(daily_swap * position['days_held'] * lot_size)
+            position['commission'] = -abs(lot_size * 2 * 5)  # ~$5 per lot per leg, 2 legs
+
+        position['net_pnl'] = position['gross_pnl'] + position['swap_cost'] + position['commission']
 
         # Calculate return % based on margin used (approximate)
         margin_used = position['entry_spot_price'] * lot_size * contract_size * 0.1  # 10% margin
@@ -969,7 +999,6 @@ class TradingMonitor:
             futures_symbol = asset_data.get('futures_symbol')
 
             if position.get('mt5_futures_ticket'):
-                futures_type = mt5.ORDER_TYPE_SELL if position['direction'] == 'Long Spread' else mt5.ORDER_TYPE_BUY
                 self._close_mt5_position(
                     position['mt5_futures_ticket'],
                     futures_symbol, lot_size,
@@ -983,9 +1012,9 @@ class TradingMonitor:
                     mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
                 )
 
-            logger.info(f"LIVE CLOSE: {asset_key} - {close_reason} - Net P&L: ${position['net_pnl']:.2f}")
+            logger.info(f"LIVE CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
         else:
-            logger.info(f"PAPER CLOSE: {asset_key} - {close_reason} - Net P&L: ${position['net_pnl']:.2f}")
+            logger.info(f"PAPER CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
 
         position['status'] = 'CLOSED'
         self.db.save_trade(position)
@@ -1923,13 +1952,14 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <th>Spot P&L</th>
                         <th>Futures P&L</th>
                         <th>Gross P&L</th>
-                        <th>Fees</th>
+                        <th>Swap</th>
+                        <th>Comm</th>
                         <th>Net P&L</th>
                         <th>Return</th>
                     </tr>
                 </thead>
                 <tbody id="trade-history-body">
-                    <tr><td colspan="13" style="text-align: center; color: #666;">No trades yet</td></tr>
+                    <tr><td colspan="14" style="text-align: center; color: #666;">No trades yet</td></tr>
                 </tbody>
             </table>
         </div>
@@ -2154,7 +2184,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             // Update table
             const tbody = document.getElementById('trade-history-body');
             if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="13" style="text-align: center; color: #666;">No trades yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="14" style="text-align: center; color: #666;">No trades yet</td></tr>';
                 return;
             }
 
@@ -2183,7 +2213,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <td class="${spotPnlClass}">$${(t.spot_pnl || 0).toFixed(2)}</td>
                     <td class="${futuresPnlClass}">$${(t.futures_pnl || 0).toFixed(2)}</td>
                     <td class="${grossPnlClass}">$${(t.gross_pnl || 0).toFixed(2)}</td>
-                    <td style="color: #c62828;">$${(t.fees || 0).toFixed(2)}</td>
+                    <td style="color: #c62828;">$${(t.swap_cost || 0).toFixed(2)}</td>
+                    <td style="color: #c62828;">$${(t.commission || 0).toFixed(2)}</td>
                     <td class="${netPnlClass}"><strong>$${(t.net_pnl || 0).toFixed(2)}</strong></td>
                     <td class="${returnClass}">${(t.return_pct || 0).toFixed(2)}%</td>
                 </tr>`;
