@@ -253,7 +253,8 @@ class TradingMonitor:
                 'futures_symbols': ['GC0226', 'GC1225', 'XAUUSD.f', 'GCZ4'],
                 'futures_expiry': datetime(2026, 2, 24),
                 'multiplier': 1.0,
-                'lot_size': 100
+                'lot_size': 100,
+                'swap_long': 0.0  # Will be auto-detected from MT5
             },
             'SILVER': {
                 'name': 'SILVER',
@@ -261,7 +262,8 @@ class TradingMonitor:
                 'futures_symbols': ['SI0326', 'SI1225', 'XAGUSD.f', 'SIU4'],
                 'futures_expiry': datetime(2026, 2, 26),
                 'multiplier': 1.0,
-                'lot_size': 5000
+                'lot_size': 5000,
+                'swap_long': 0.0  # Will be auto-detected from MT5
             }
         }
 
@@ -293,15 +295,19 @@ class TradingMonitor:
         return self.setup_symbols()
 
     def setup_symbols(self):
-        """Setup symbols for Gold and Silver"""
+        """Setup symbols for Gold and Silver and auto-detect swap charges"""
         for asset_key, asset_config in self.assets.items():
             spot_symbol = None
             futures_symbol = None
+            swap_long = 0.0
 
             for symbol in asset_config['spot_symbols']:
-                if mt5.symbol_info(symbol):
+                symbol_info = mt5.symbol_info(symbol)
+                if symbol_info:
                     spot_symbol = symbol
                     mt5.symbol_select(symbol, True)
+                    # Auto-detect swap charge from MT5
+                    swap_long = abs(symbol_info.swap_long) if symbol_info.swap_long else 0.0
                     break
 
             for symbol in asset_config['futures_symbols']:
@@ -311,12 +317,16 @@ class TradingMonitor:
                     break
 
             if spot_symbol and futures_symbol:
+                # Store auto-detected swap
+                self.assets[asset_key]['swap_long'] = swap_long
+
                 self.active_assets[asset_key] = {
                     'config': asset_config,
                     'spot_symbol': spot_symbol,
-                    'futures_symbol': futures_symbol
+                    'futures_symbol': futures_symbol,
+                    'swap_long': swap_long
                 }
-                logger.info(f"{asset_key}: {spot_symbol} + {futures_symbol}")
+                logger.info(f"{asset_key}: {spot_symbol} + {futures_symbol} | Swap: ${swap_long:.2f}/lot/day")
 
         return len(self.active_assets) > 0
 
@@ -371,8 +381,14 @@ class TradingMonitor:
                 time.sleep(5)
 
     def calculate_swap_basis(self, asset_key, spot_price, time_to_expiry):
-        """Calculate swap-based basis"""
+        """Calculate swap-based basis using auto-detected or manual swap charge"""
+        # First try manual config, then fall back to auto-detected from MT5
         swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
+
+        # If no manual swap configured, use auto-detected from MT5
+        if swap_charge <= 0 and asset_key in self.active_assets:
+            swap_charge = self.active_assets[asset_key].get('swap_long', 0)
+
         lot_size = self.assets[asset_key]['lot_size']
 
         if swap_charge <= 0:
@@ -682,13 +698,11 @@ def setup():
     """Setup page for configuration"""
     if request.method == 'POST':
         try:
-            gold_swap = float(request.form.get('gold_swap', 0))
-            silver_swap = float(request.form.get('silver_swap', 0))
+            # Swap charges are now optional - will auto-detect from MT5
+            gold_swap = float(request.form.get('gold_swap', 0) or 0)
+            silver_swap = float(request.form.get('silver_swap', 0) or 0)
 
-            if gold_swap <= 0 or silver_swap <= 0:
-                return render_template('setup.html', error="Please enter positive swap charges", config=monitor.config)
-
-            # Save basic config
+            # Save config (0 means auto-detect from MT5)
             monitor.config['gold_swap_charge'] = gold_swap
             monitor.config['silver_swap_charge'] = silver_swap
             monitor.db.save_config(monitor.config)
@@ -809,7 +823,7 @@ def restart():
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
 os.makedirs(TEMPLATE_DIR, exist_ok=True)
 
-# Setup page template
+# Setup page template - Clean Black & White style
 SETUP_HTML = '''<!DOCTYPE html>
 <html>
 <head>
@@ -819,90 +833,105 @@ SETUP_HTML = '''<!DOCTYPE html>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Courier New', monospace;
-            background: #000;
-            color: #00ff00;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #fff;
+            color: #333;
             min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            padding: 40px 20px;
         }
         .container {
             max-width: 600px;
-            padding: 40px;
-            border: 1px solid #00ff00;
+            margin: 0 auto;
         }
         h1 {
-            text-align: center;
-            margin-bottom: 10px;
-            font-size: 1.5em;
+            font-size: 1.8em;
+            margin-bottom: 5px;
+            font-weight: 600;
         }
         .subtitle {
-            text-align: center;
-            color: #008800;
+            color: #666;
             margin-bottom: 30px;
         }
         .info-box {
-            background: #001100;
-            border: 1px solid #004400;
-            padding: 15px;
+            background: #f8f9fa;
+            border-left: 4px solid #333;
+            padding: 15px 20px;
             margin-bottom: 30px;
-            font-size: 0.9em;
         }
-        .info-box p { margin-bottom: 10px; }
+        .info-box p {
+            margin-bottom: 8px;
+            color: #555;
+        }
+        .info-box p:last-child { margin-bottom: 0; }
+        .section {
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        .section-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #333;
+        }
         .form-group {
             margin-bottom: 20px;
         }
         label {
             display: block;
             margin-bottom: 5px;
-            color: #00ff00;
+            font-weight: 500;
+        }
+        .help-text {
+            color: #888;
+            font-size: 0.85em;
+            margin-top: 5px;
         }
         input {
             width: 100%;
-            padding: 10px;
-            background: #001100;
-            border: 1px solid #00ff00;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
             font-size: 1em;
         }
         input:focus {
             outline: none;
-            border-color: #00ff88;
+            border-color: #333;
         }
         .btn {
             width: 100%;
             padding: 15px;
-            background: #00ff00;
-            color: #000;
+            background: #333;
+            color: #fff;
             border: none;
-            font-family: 'Courier New', monospace;
+            border-radius: 4px;
             font-size: 1em;
             cursor: pointer;
-            font-weight: bold;
+            font-weight: 500;
         }
         .btn:hover {
-            background: #00cc00;
+            background: #555;
         }
         .error {
-            background: #330000;
-            border: 1px solid #ff0000;
-            color: #ff0000;
-            padding: 10px;
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c00;
+            padding: 12px;
             margin-bottom: 20px;
+            border-radius: 4px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>ALGORITHMIC TRADING PORTAL</h1>
+        <h1>Algorithmic Trading Portal</h1>
         <div class="subtitle">Gold & Silver Basis Trading</div>
 
         <div class="info-box">
-            <p>▸ Make sure MetaTrader5 is running and logged in</p>
-            <p>▸ Enter your daily swap charges (cost to hold long overnight)</p>
-            <p>▸ System will calculate fair value and generate signals</p>
+            <p>• Make sure MetaTrader5 is running and logged in</p>
+            <p>• Swap charges will be auto-detected from MT5</p>
+            <p>• Leave swap at 0 to use auto-detected values</p>
         </div>
 
         {% if error %}
@@ -910,16 +939,22 @@ SETUP_HTML = '''<!DOCTYPE html>
         {% endif %}
 
         <form method="POST">
-            <div class="form-group">
-                <label>GOLD Swap Charge (USD per lot/day)</label>
-                <label style="color: #006600; font-size: 0.8em;">1 lot = 100 oz</label>
-                <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or '' }}" required>
+            <div class="section">
+                <div class="section-title">GOLD</div>
+                <div class="form-group">
+                    <label>Daily Swap Charge (USD per lot) - Optional</label>
+                    <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or 0 }}" placeholder="0">
+                    <div class="help-text">Leave at 0 to auto-detect from MT5. Lot size: 100 oz</div>
+                </div>
             </div>
 
-            <div class="form-group">
-                <label>SILVER Swap Charge (USD per lot/day)</label>
-                <label style="color: #006600; font-size: 0.8em;">1 lot = 5,000 oz</label>
-                <input type="number" name="silver_swap" step="0.01" min="0" value="{{ config.silver_swap_charge or '' }}" required>
+            <div class="section">
+                <div class="section-title">SILVER</div>
+                <div class="form-group">
+                    <label>Daily Swap Charge (USD per lot) - Optional</label>
+                    <input type="number" name="silver_swap" step="0.01" min="0" value="{{ config.silver_swap_charge or 0 }}" placeholder="0">
+                    <div class="help-text">Leave at 0 to auto-detect from MT5. Lot size: 5,000 oz</div>
+                </div>
             </div>
 
             <button type="submit" class="btn">START MONITORING</button>
@@ -928,7 +963,7 @@ SETUP_HTML = '''<!DOCTYPE html>
 </body>
 </html>'''
 
-# Main monitor page template
+# Main monitor page template - Clean Black & White style
 MONITOR_HTML = '''<!DOCTYPE html>
 <html>
 <head>
@@ -938,9 +973,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Courier New', monospace;
-            background: #000;
-            color: #00ff00;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #fff;
+            color: #333;
             min-height: 100vh;
             padding: 20px;
         }
@@ -949,90 +984,98 @@ MONITOR_HTML = '''<!DOCTYPE html>
             justify-content: space-between;
             align-items: center;
             margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #004400;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #333;
         }
-        h1 { font-size: 1.3em; }
-        .timestamp { color: #008800; }
+        h1 { font-size: 1.5em; font-weight: 600; }
+        .timestamp { color: #666; }
 
         .controls {
             display: flex;
             gap: 20px;
             margin-bottom: 20px;
             padding: 15px;
-            background: #001100;
-            border: 1px solid #004400;
+            background: #f8f9fa;
+            border-radius: 8px;
             flex-wrap: wrap;
+            align-items: center;
         }
         .control-group {
             display: flex;
             align-items: center;
             gap: 10px;
         }
-        .control-label { color: #00ff00; }
+        .control-label { color: #333; font-weight: 500; }
         .toggle {
             position: relative;
             width: 50px;
-            height: 24px;
+            height: 26px;
         }
         .toggle input { opacity: 0; width: 0; height: 0; }
         .toggle-slider {
             position: absolute;
             cursor: pointer;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: #333;
-            border-radius: 24px;
+            background: #ccc;
+            border-radius: 26px;
             transition: 0.3s;
         }
         .toggle-slider:before {
             position: absolute;
             content: "";
-            height: 18px;
-            width: 18px;
+            height: 20px;
+            width: 20px;
             left: 3px;
             bottom: 3px;
-            background: #888;
+            background: #fff;
             border-radius: 50%;
             transition: 0.3s;
         }
-        .toggle input:checked + .toggle-slider { background: #004400; }
-        .toggle input:checked + .toggle-slider:before {
-            transform: translateX(26px);
-            background: #00ff00;
-        }
-        .toggle.danger input:checked + .toggle-slider { background: #440000; }
-        .toggle.danger input:checked + .toggle-slider:before { background: #ff4444; }
+        .toggle input:checked + .toggle-slider { background: #333; }
+        .toggle input:checked + .toggle-slider:before { transform: translateX(24px); }
+        .toggle.danger input:checked + .toggle-slider { background: #c00; }
 
         .status-badge {
-            padding: 3px 10px;
-            border-radius: 3px;
+            padding: 4px 12px;
+            border-radius: 4px;
             font-size: 0.8em;
+            font-weight: 500;
         }
-        .status-badge.active { background: #004400; color: #00ff00; }
-        .status-badge.inactive { background: #222; color: #666; }
-        .status-badge.paper { background: #333300; color: #ffff00; }
-        .status-badge.live { background: #440000; color: #ff4444; }
+        .status-badge.active { background: #333; color: #fff; }
+        .status-badge.inactive { background: #eee; color: #666; }
+        .status-badge.paper { background: #f0f0f0; color: #666; border: 1px solid #ccc; }
+        .status-badge.live { background: #c00; color: #fff; }
+        .status-badge.cheap { background: #e8f5e9; color: #2e7d32; }
+        .status-badge.fair { background: #fff3e0; color: #f57c00; }
+        .status-badge.expensive { background: #ffebee; color: #c62828; }
 
         .summary {
             display: flex;
-            gap: 20px;
-            margin-bottom: 20px;
+            gap: 15px;
+            margin-bottom: 25px;
         }
         .summary-item {
-            padding: 15px 25px;
-            border: 1px solid;
+            padding: 20px 30px;
+            border: 2px solid;
+            border-radius: 8px;
+            text-align: center;
         }
-        .summary-item.cheap { border-color: #00ff00; color: #00ff00; }
-        .summary-item.fair { border-color: #ffff00; color: #ffff00; }
-        .summary-item.expensive { border-color: #ff8800; color: #ff8800; }
-        .summary-count { font-size: 2em; font-weight: bold; }
-        .summary-label { font-size: 0.8em; }
+        .summary-item.cheap { border-color: #4caf50; }
+        .summary-item.fair { border-color: #ff9800; }
+        .summary-item.expensive { border-color: #f44336; }
+        .summary-count { font-size: 2.5em; font-weight: 700; }
+        .summary-item.cheap .summary-count { color: #2e7d32; }
+        .summary-item.fair .summary-count { color: #f57c00; }
+        .summary-item.expensive .summary-count { color: #c62828; }
+        .summary-label { font-size: 0.85em; color: #666; margin-top: 5px; }
 
-        .assets { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 20px; }
+        .assets { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; }
 
         .asset-card {
-            border: 1px solid #004400;
+            border: 1px solid #ddd;
+            border-radius: 8px;
             padding: 20px;
+            background: #fff;
         }
         .asset-header {
             display: flex;
@@ -1040,9 +1083,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
             align-items: center;
             margin-bottom: 15px;
             padding-bottom: 10px;
-            border-bottom: 1px solid #004400;
+            border-bottom: 2px solid #333;
         }
-        .asset-name { font-size: 1.3em; font-weight: bold; }
+        .asset-name { font-size: 1.3em; font-weight: 700; }
 
         .price-grid {
             display: grid;
@@ -1051,104 +1094,120 @@ MONITOR_HTML = '''<!DOCTYPE html>
             margin-bottom: 15px;
         }
         .price-item {
-            background: #001100;
-            padding: 10px;
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 4px;
         }
-        .price-label { color: #006600; font-size: 0.8em; }
-        .price-value { font-size: 1.1em; }
+        .price-label { color: #666; font-size: 0.75em; text-transform: uppercase; }
+        .price-value { font-size: 1.1em; font-weight: 600; margin-top: 4px; }
 
         .basis-section {
-            background: #001100;
+            background: #f8f9fa;
             padding: 15px;
+            border-radius: 4px;
             margin-bottom: 15px;
         }
         .basis-row {
             display: flex;
             justify-content: space-between;
-            padding: 5px 0;
+            padding: 6px 0;
+            border-bottom: 1px solid #eee;
         }
+        .basis-row:last-child { border-bottom: none; }
+        .basis-label { color: #666; }
+        .basis-value { font-weight: 600; }
+        .basis-value.positive { color: #c62828; }
+        .basis-value.negative { color: #2e7d32; }
 
         .signal-section {
-            background: #000;
-            border: 2px solid;
-            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
             text-align: center;
         }
-        .signal-section.sell-basis { border-color: #ff4444; background: #110000; }
-        .signal-section.buy-basis { border-color: #44ff44; background: #001100; }
-        .signal-section.hold { border-color: #444; }
-        .signal-section.no-data { border-color: #333; }
+        .signal-section.sell-basis { border-color: #c62828; background: #ffebee; }
+        .signal-section.buy-basis { border-color: #2e7d32; background: #e8f5e9; }
+        .signal-section.hold { border-color: #ddd; background: #fafafa; }
+        .signal-section.no-data { border-color: #eee; background: #f5f5f5; }
 
         .zscore-display {
-            font-size: 2em;
-            font-weight: bold;
+            font-size: 2.5em;
+            font-weight: 700;
             margin: 10px 0;
         }
-        .signal-type { font-size: 1.2em; margin-bottom: 5px; }
-        .signal-reason { color: #888; font-size: 0.9em; }
+        .signal-section.sell-basis .zscore-display { color: #c62828; }
+        .signal-section.buy-basis .zscore-display { color: #2e7d32; }
+        .signal-type { font-size: 1.1em; font-weight: 600; margin-bottom: 5px; }
+        .signal-reason { color: #666; font-size: 0.9em; }
 
         .stats-row {
             display: flex;
             justify-content: center;
             gap: 30px;
-            margin-top: 10px;
+            margin-top: 12px;
             font-size: 0.85em;
-            color: #666;
+            color: #888;
         }
 
         .positions-section {
-            margin-top: 20px;
-            border: 1px solid #004400;
+            margin-top: 25px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
             padding: 20px;
         }
         .positions-title {
+            font-weight: 600;
             margin-bottom: 15px;
             padding-bottom: 10px;
-            border-bottom: 1px solid #004400;
+            border-bottom: 2px solid #333;
         }
         .position-card {
-            background: #001100;
+            background: #f8f9fa;
             padding: 15px;
             margin-bottom: 10px;
+            border-radius: 4px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .footer {
-            margin-top: 20px;
-            padding-top: 10px;
-            border-top: 1px solid #004400;
+            margin-top: 25px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            color: #666;
         }
         .footer a {
-            color: #ff4444;
+            color: #c00;
             text-decoration: none;
             padding: 10px 20px;
-            border: 1px solid #ff4444;
+            border: 1px solid #c00;
+            border-radius: 4px;
         }
-        .footer a:hover { background: #220000; }
+        .footer a:hover { background: #fff0f0; }
 
         .settings-link {
-            color: #00ff00;
+            color: #333;
             text-decoration: none;
             padding: 10px 20px;
-            border: 1px solid #00ff00;
+            border: 1px solid #333;
+            border-radius: 4px;
         }
-        .settings-link:hover { background: #002200; }
+        .settings-link:hover { background: #f5f5f5; }
 
         @media (max-width: 600px) {
             .price-grid { grid-template-columns: repeat(2, 1fr); }
-            .controls { flex-direction: column; }
+            .controls { flex-direction: column; align-items: flex-start; }
             .summary { flex-direction: column; }
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>ALGORITHMIC TRADING PORTAL</h1>
+        <h1>Algorithmic Trading Portal</h1>
         <div class="timestamp" id="timestamp">Loading...</div>
     </div>
 
@@ -1171,9 +1230,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
         </div>
         <div class="control-group">
             <span class="control-label">Thresholds:</span>
-            <span style="color: #888;" id="thresholds">Entry: ±2.0σ | Exit: ±0.5σ | Stop: ±3.0σ</span>
+            <span style="color: #666;" id="thresholds">Entry: ±2.0σ | Exit: ±0.5σ | Stop: ±3.0σ</span>
         </div>
-        <a href="/settings" class="settings-link">⚙ SETTINGS</a>
+        <a href="/settings" class="settings-link">⚙ Settings</a>
     </div>
 
     <div class="summary">
@@ -1196,7 +1255,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
     </div>
 
     <div class="positions-section">
-        <div class="positions-title">ACTIVE POSITIONS</div>
+        <div class="positions-title">Active Positions</div>
         <div id="positions-container">
             <div style="color: #666; text-align: center;">No active positions</div>
         </div>
@@ -1204,7 +1263,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
     <div class="footer">
         <div>Last update: <span id="last-update">-</span></div>
-        <a href="/restart">⟲ RESTART</a>
+        <a href="/restart">↻ Restart</a>
     </div>
 
     <script>
@@ -1214,16 +1273,13 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 .then(data => {
                     if (data.error) return;
 
-                    // Update timestamp
                     document.getElementById('timestamp').textContent = new Date().toLocaleTimeString();
                     document.getElementById('last-update').textContent = data.last_update;
 
-                    // Update summary
                     document.getElementById('cheap-count').textContent = data.summary.cheap;
                     document.getElementById('fair-count').textContent = data.summary.fair;
                     document.getElementById('expensive-count').textContent = data.summary.expensive;
 
-                    // Update config display
                     const cfg = data.config;
                     document.getElementById('algo-toggle').checked = cfg.algo_enabled;
                     document.getElementById('paper-toggle').checked = cfg.paper_mode;
@@ -1234,15 +1290,12 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     document.getElementById('thresholds').textContent =
                         `Entry: ±${cfg.entry_std_dev}σ | Exit: ±${cfg.exit_std_dev}σ | Stop: ±${cfg.stop_loss_std_dev}σ`;
 
-                    // Update assets
                     const container = document.getElementById('assets-container');
                     container.innerHTML = '';
-
                     for (const [key, asset] of Object.entries(data.data)) {
                         container.appendChild(createAssetCard(asset));
                     }
 
-                    // Update positions
                     updatePositions(data.positions);
                 })
                 .catch(err => console.error('Error:', err));
@@ -1260,6 +1313,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
             else if (signal.type === 'BUY_BASIS') signalClass = 'buy-basis';
             else if (signal.type === 'NO_DATA') signalClass = 'no-data';
 
+            const diffClass = asset.swap_diff > 0 ? 'positive' : 'negative';
+
             card.innerHTML = `
                 <div class="asset-header">
                     <span class="asset-name">${asset.asset_name}</span>
@@ -1268,43 +1323,43 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
                 <div class="price-grid">
                     <div class="price-item">
-                        <div class="price-label">SPOT</div>
+                        <div class="price-label">Spot</div>
                         <div class="price-value">${asset.spot_price.toFixed(2)}</div>
                     </div>
                     <div class="price-item">
-                        <div class="price-label">FUTURES</div>
+                        <div class="price-label">Futures</div>
                         <div class="price-value">${asset.futures_price.toFixed(2)}</div>
                     </div>
                     <div class="price-item">
-                        <div class="price-label">SPOT SPREAD</div>
+                        <div class="price-label">Spot Spread</div>
                         <div class="price-value">${asset.spot_spread.toFixed(1)}¢</div>
                     </div>
                     <div class="price-item">
-                        <div class="price-label">FUT SPREAD</div>
+                        <div class="price-label">Fut Spread</div>
                         <div class="price-value">${asset.futures_spread.toFixed(1)}¢</div>
                     </div>
                 </div>
 
                 <div class="basis-section">
                     <div class="basis-row">
-                        <span>Actual Basis:</span>
-                        <span>${asset.actual_basis.toFixed(2)}</span>
+                        <span class="basis-label">Actual Basis</span>
+                        <span class="basis-value">${asset.actual_basis.toFixed(2)}</span>
                     </div>
                     <div class="basis-row">
-                        <span>Swap-Based Basis:</span>
-                        <span>${asset.swap_basis.toFixed(2)}</span>
+                        <span class="basis-label">Swap-Based Basis</span>
+                        <span class="basis-value">${asset.swap_basis.toFixed(2)}</span>
                     </div>
                     <div class="basis-row">
-                        <span>Difference:</span>
-                        <span style="color: ${asset.swap_diff > 0 ? '#ff8800' : '#00ff00'}">${asset.swap_diff > 0 ? '+' : ''}${asset.swap_diff.toFixed(2)}</span>
+                        <span class="basis-label">Difference</span>
+                        <span class="basis-value ${diffClass}">${asset.swap_diff > 0 ? '+' : ''}${asset.swap_diff.toFixed(2)}</span>
                     </div>
                     <div class="basis-row">
-                        <span>Premium:</span>
-                        <span>${asset.swap_premium_pct > 0 ? '+' : ''}${asset.swap_premium_pct.toFixed(1)}%</span>
+                        <span class="basis-label">Premium</span>
+                        <span class="basis-value">${asset.swap_premium_pct > 0 ? '+' : ''}${asset.swap_premium_pct.toFixed(1)}%</span>
                     </div>
                     <div class="basis-row">
-                        <span>Days to Expiry:</span>
-                        <span>${Math.round(asset.days_to_expiry)}</span>
+                        <span class="basis-label">Days to Expiry</span>
+                        <span class="basis-value">${Math.round(asset.days_to_expiry)}</span>
                     </div>
                 </div>
 
@@ -1326,23 +1381,15 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
         function updatePositions(positions) {
             const container = document.getElementById('positions-container');
-
             if (!positions || positions.length === 0) {
                 container.innerHTML = '<div style="color: #666; text-align: center;">No active positions</div>';
                 return;
             }
-
             container.innerHTML = positions.map(p => `
                 <div class="position-card">
-                    <div>
-                        <strong>${p.asset}</strong> - ${p.signal_type}
-                    </div>
-                    <div>
-                        Entry Z: ${p.entry_zscore ? p.entry_zscore.toFixed(2) : '--'}σ
-                    </div>
-                    <div style="color: #888;">
-                        ${new Date(p.entry_time).toLocaleString()}
-                    </div>
+                    <div><strong>${p.asset}</strong> - ${p.signal_type}</div>
+                    <div>Entry Z: ${p.entry_zscore ? p.entry_zscore.toFixed(2) : '--'}σ</div>
+                    <div style="color: #888;">${new Date(p.entry_time).toLocaleString()}</div>
                 </div>
             `).join('');
         }
@@ -1352,7 +1399,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 document.getElementById('algo-toggle').checked = false;
                 return;
             }
-
             fetch('/api/toggle_algo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1365,7 +1411,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 document.getElementById('paper-toggle').checked = true;
                 return;
             }
-
             fetch('/api/toggle_paper', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1373,14 +1418,13 @@ MONITOR_HTML = '''<!DOCTYPE html>
             });
         }
 
-        // Initial load and refresh every 2 seconds
         updateData();
         setInterval(updateData, 2000);
     </script>
 </body>
 </html>'''
 
-# Settings page template
+# Settings page template - Clean Black & White style
 SETTINGS_HTML = '''<!DOCTYPE html>
 <html>
 <head>
@@ -1390,27 +1434,29 @@ SETTINGS_HTML = '''<!DOCTYPE html>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Courier New', monospace;
-            background: #000;
-            color: #00ff00;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #fff;
+            color: #333;
             min-height: 100vh;
-            padding: 20px;
+            padding: 40px 20px;
         }
         .container { max-width: 600px; margin: 0 auto; }
         h1 {
-            text-align: center;
+            font-size: 1.8em;
             margin-bottom: 30px;
-            font-size: 1.5em;
+            font-weight: 600;
         }
         .card {
-            border: 1px solid #004400;
+            border: 1px solid #ddd;
+            border-radius: 8px;
             padding: 20px;
             margin-bottom: 20px;
         }
         .card-title {
+            font-weight: 600;
             margin-bottom: 20px;
             padding-bottom: 10px;
-            border-bottom: 1px solid #004400;
+            border-bottom: 2px solid #333;
         }
         .form-group {
             margin-bottom: 20px;
@@ -1418,66 +1464,66 @@ SETTINGS_HTML = '''<!DOCTYPE html>
         label {
             display: block;
             margin-bottom: 5px;
-            color: #00ff00;
+            font-weight: 500;
         }
         .help-text {
-            color: #006600;
+            color: #888;
             font-size: 0.85em;
-            margin-bottom: 5px;
+            margin-top: 5px;
         }
         input {
             width: 100%;
-            padding: 10px;
-            background: #001100;
-            border: 1px solid #00ff00;
-            color: #00ff00;
-            font-family: 'Courier New', monospace;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
             font-size: 1em;
         }
         input:focus {
             outline: none;
-            border-color: #00ff88;
+            border-color: #333;
         }
         .btn {
             width: 100%;
             padding: 15px;
-            background: #00ff00;
-            color: #000;
+            background: #333;
+            color: #fff;
             border: none;
-            font-family: 'Courier New', monospace;
+            border-radius: 4px;
             font-size: 1em;
             cursor: pointer;
-            font-weight: bold;
+            font-weight: 500;
             margin-top: 10px;
         }
-        .btn:hover { background: #00cc00; }
+        .btn:hover { background: #555; }
         .btn-secondary {
-            background: transparent;
-            color: #00ff00;
-            border: 1px solid #00ff00;
+            background: #fff;
+            color: #333;
+            border: 1px solid #333;
         }
-        .btn-secondary:hover { background: #002200; }
+        .btn-secondary:hover { background: #f5f5f5; }
         .success {
-            background: #002200;
-            border: 1px solid #00ff00;
-            color: #00ff00;
-            padding: 10px;
+            background: #e8f5e9;
+            border: 1px solid #4caf50;
+            color: #2e7d32;
+            padding: 12px;
             margin-bottom: 20px;
+            border-radius: 4px;
             text-align: center;
         }
         .error {
-            background: #220000;
-            border: 1px solid #ff0000;
-            color: #ff0000;
-            padding: 10px;
+            background: #ffebee;
+            border: 1px solid #f44336;
+            color: #c62828;
+            padding: 12px;
             margin-bottom: 20px;
+            border-radius: 4px;
         }
-        a { color: #00ff00; }
+        a { color: #333; text-decoration: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>⚙ TRADING SETTINGS</h1>
+        <h1>⚙ Trading Settings</h1>
 
         {% if saved %}
         <div class="success">Settings saved successfully!</div>
@@ -1489,51 +1535,51 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
         <form method="POST">
             <div class="card">
-                <div class="card-title">SIGNAL PARAMETERS</div>
+                <div class="card-title">Signal Parameters</div>
 
                 <div class="form-group">
                     <label>Lookback Period (data points)</label>
-                    <div class="help-text">Number of data points for mean/std calculation</div>
                     <input type="number" name="lookback_period" value="{{ config.lookback_period }}" min="10" max="1000">
+                    <div class="help-text">Number of data points for mean/std calculation</div>
                 </div>
 
                 <div class="form-group">
                     <label>Entry Threshold (Standard Deviations)</label>
-                    <div class="help-text">Z-score threshold to open position (e.g., 2.0 = ±2σ)</div>
                     <input type="number" name="entry_std_dev" value="{{ config.entry_std_dev }}" min="0.5" max="5" step="0.1">
+                    <div class="help-text">Z-score threshold to open position (e.g., 2.0 = ±2σ)</div>
                 </div>
 
                 <div class="form-group">
                     <label>Exit Threshold (Standard Deviations)</label>
-                    <div class="help-text">Z-score threshold to close position (e.g., 0.5 = ±0.5σ)</div>
                     <input type="number" name="exit_std_dev" value="{{ config.exit_std_dev }}" min="0" max="2" step="0.1">
+                    <div class="help-text">Z-score threshold to close position (e.g., 0.5 = ±0.5σ)</div>
                 </div>
 
                 <div class="form-group">
                     <label>Stop Loss Threshold (Standard Deviations)</label>
-                    <div class="help-text">Z-score threshold for stop loss (e.g., 3.0 = ±3σ)</div>
                     <input type="number" name="stop_loss_std_dev" value="{{ config.stop_loss_std_dev }}" min="2" max="6" step="0.1">
+                    <div class="help-text">Z-score threshold for stop loss (e.g., 3.0 = ±3σ)</div>
                 </div>
             </div>
 
             <div class="card">
-                <div class="card-title">POSITION SIZING</div>
+                <div class="card-title">Position Sizing</div>
 
                 <div class="form-group">
                     <label>Max Positions per Asset</label>
-                    <div class="help-text">Maximum concurrent positions allowed per asset</div>
                     <input type="number" name="max_positions" value="{{ config.max_positions }}" min="1" max="10">
+                    <div class="help-text">Maximum concurrent positions allowed per asset</div>
                 </div>
 
                 <div class="form-group">
                     <label>Lot Size</label>
-                    <div class="help-text">Size of each trade in lots</div>
                     <input type="number" name="lot_size" value="{{ config.lot_size }}" min="0.01" max="10" step="0.01">
+                    <div class="help-text">Size of each trade in lots</div>
                 </div>
             </div>
 
-            <button type="submit" class="btn">SAVE SETTINGS</button>
-            <a href="/" class="btn btn-secondary" style="display: block; text-align: center; text-decoration: none; margin-top: 10px;">← BACK TO MONITOR</a>
+            <button type="submit" class="btn">Save Settings</button>
+            <a href="/" class="btn btn-secondary" style="display: block; text-align: center; margin-top: 10px;">← Back to Monitor</a>
         </form>
     </div>
 </body>
