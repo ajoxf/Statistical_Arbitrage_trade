@@ -191,22 +191,22 @@ class DatabaseManager:
 
         if row:
             return {
-                'gold_swap_charge': row[1] or 0.0,
-                'silver_swap_charge': row[2] or 0.0,
+                'gold_swap_charge': row[1] if row[1] is not None else 0.0,
+                'silver_swap_charge': row[2] if row[2] is not None else 0.0,
                 'gold_spot_symbol': row[3] or '',
                 'gold_futures_symbol': row[4] or '',
                 'gold_futures_expiry': row[5] or '',
                 'silver_spot_symbol': row[6] or '',
                 'silver_futures_symbol': row[7] or '',
                 'silver_futures_expiry': row[8] or '',
-                'lookback_period': row[9] or 90,
+                'lookback_period': row[9] if row[9] is not None else 90,
                 'lookback_unit': row[10] or 'minutes',
-                'entry_std_dev': row[11] or 2.0,
-                'exit_std_dev': row[12] or 0.5,
-                'stop_loss_std_dev': row[13] or 3.0,
-                'time_stop_loss_days': row[14] or 0,
-                'max_positions': row[15] or 3,
-                'lot_size': row[16] or 0.1,
+                'entry_std_dev': row[11] if row[11] is not None else 2.0,
+                'exit_std_dev': row[12] if row[12] is not None else 0.5,
+                'stop_loss_std_dev': row[13] if row[13] is not None else 3.0,
+                'time_stop_loss_days': row[14] if row[14] is not None else 0,
+                'max_positions': row[15] if row[15] is not None else 3,
+                'lot_size': row[16] if row[16] is not None else 0.1,
                 'algo_enabled': bool(row[17]),
                 'paper_mode': bool(row[18]) if row[18] is not None else True
             }
@@ -2318,20 +2318,20 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <div class="zscore-display">${zscore}σ</div>
                     <div class="signal-reason">${signal.reason || ''}</div>
                     ${asset.stats ? `
-                    <div class="stats-row">
+                    <div class="stats-row" style="font-size: 16px;">
                         <span>Mean: ${asset.stats.mean.toFixed(2)}</span>
                         <span>Std: ${asset.stats.std.toFixed(2)}</span>
                         <span>Points: ${asset.stats.count}</span>
                     </div>
-                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 0.85em;">
-                        <div style="color: #888; margin-bottom: 4px;">Current Spread: <strong style="color: #333;">${asset.actual_basis.toFixed(2)}</strong></div>
-                        <div style="display: flex; justify-content: space-between; color: #666;">
-                            <span style="color: #d9534f;">Entry ↑: ${asset.stats.upper_entry.toFixed(2)}</span>
-                            <span style="color: #5cb85c;">Exit ↑: ${asset.stats.upper_exit.toFixed(2)}</span>
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 16px;">
+                        <div style="color: #888; margin-bottom: 8px;">Current Spread: <strong style="color: #333;">${asset.actual_basis.toFixed(2)}</strong></div>
+                        <div style="margin-bottom: 6px;">
+                            <div style="color: #d9534f; margin-bottom: 2px;"><strong>Short Spread</strong> (Entry ↑): ${asset.stats.upper_entry.toFixed(2)}</div>
+                            <div style="color: #5cb85c;">Exit: ${asset.stats.upper_exit.toFixed(2)}</div>
                         </div>
-                        <div style="display: flex; justify-content: space-between; color: #666;">
-                            <span style="color: #d9534f;">Entry ↓: ${asset.stats.lower_entry.toFixed(2)}</span>
-                            <span style="color: #5cb85c;">Exit ↓: ${asset.stats.lower_exit.toFixed(2)}</span>
+                        <div>
+                            <div style="color: #5cb85c; margin-bottom: 2px;"><strong>Long Spread</strong> (Entry ↓): ${asset.stats.lower_entry.toFixed(2)}</div>
+                            <div style="color: #d9534f;">Exit: ${asset.stats.lower_exit.toFixed(2)}</div>
                         </div>
                     </div>` : ''}
                 </div>
