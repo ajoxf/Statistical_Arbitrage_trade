@@ -1275,17 +1275,23 @@ class TradingMonitor:
             if asset_data:
                 current_data = self.get_market_data(asset_key)
                 if current_data:
-                    entry_spot = position.get('entry_spot_price', 0)
-                    entry_futures = position.get('entry_futures_price', 0)
-                    current_spot = current_data.get('spot_price', 0)
-                    current_futures = current_data.get('futures_price', 0)
-                    lot_size = position.get('lot_size', 0.1)
+                    entry_spot = position.get('entry_spot_price') or 0
+                    entry_futures = position.get('entry_futures_price') or 0
+                    current_spot = current_data.get('spot_price') or 0
+                    current_futures = current_data.get('futures_price') or 0
+                    lot_size = position.get('lot_size') or 0.1
+
+                    # Skip P&L calculation if we don't have valid prices
+                    if entry_spot == 0 or entry_futures == 0 or current_spot == 0 or current_futures == 0:
+                        pos_copy['unrealized_pnl'] = 0
+                        enriched.append(pos_copy)
+                        continue
 
                     # Calculate unrealized P&L based on direction
-                    # Long Spread: Buy Futures + Sell Spot
-                    # Short Spread: Sell Futures + Buy Spot
+                    # Long Spread: Buy Futures + Sell Spot (profit when spread RISES)
+                    # Short Spread: Sell Futures + Buy Spot (profit when spread FALLS)
                     if position.get('direction') == 'Long Spread':
-                        # Long spread profits when spread widens
+                        # Long spread: profit = (current_spread - entry_spread) * lots * 100
                         futures_pnl = (current_futures - entry_futures) * lot_size * 100
                         spot_pnl = (entry_spot - current_spot) * lot_size * 100
                     else:
@@ -2418,7 +2424,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             container.innerHTML = positions.map(p => {
                 const unrealizedPnl = p.unrealized_pnl || 0;
                 const pnlClass = unrealizedPnl >= 0 ? 'pnl-positive' : 'pnl-negative';
-                const pnlSign = unrealizedPnl >= 0 ? '+' : '';
+                const pnlSign = unrealizedPnl >= 0 ? '+' : '-';
                 const entrySpread = p.entry_spread ? p.entry_spread.toFixed(2) : '--';
                 const currentSpread = p.current_spread ? p.current_spread.toFixed(2) : '--';
                 const targetExit = p.target_exit ? p.target_exit.toFixed(2) : '--';
