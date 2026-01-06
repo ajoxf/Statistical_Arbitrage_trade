@@ -323,11 +323,10 @@ class TradingMonitor:
         return self.setup_symbols()
 
     def setup_symbols(self):
-        """Setup symbols for Gold and Silver and auto-detect swap charges"""
+        """Setup symbols for Gold and Silver using user-configured swap charges"""
         for asset_key, asset_config in self.assets.items():
             spot_symbol = None
             futures_symbol = None
-            swap_long = 0.0
 
             # First try user-configured symbols from config
             config_spot = self.config.get(f'{asset_key.lower()}_spot_symbol', '')
@@ -348,7 +347,6 @@ class TradingMonitor:
                 if symbol_info:
                     spot_symbol = config_spot
                     mt5.symbol_select(config_spot, True)
-                    swap_long = abs(symbol_info.swap_long) if symbol_info.swap_long else 0.0
                     logger.info(f"{asset_key}: Using configured spot symbol: {config_spot}")
                 else:
                     logger.warning(f"{asset_key}: Configured spot symbol '{config_spot}' not found in MT5")
@@ -368,7 +366,6 @@ class TradingMonitor:
                     if symbol_info:
                         spot_symbol = symbol
                         mt5.symbol_select(symbol, True)
-                        swap_long = abs(symbol_info.swap_long) if symbol_info.swap_long else 0.0
                         logger.info(f"{asset_key}: Auto-detected spot symbol: {symbol}")
                         break
 
@@ -381,16 +378,16 @@ class TradingMonitor:
                         break
 
             if spot_symbol and futures_symbol:
-                # Store auto-detected swap
-                self.assets[asset_key]['swap_long'] = swap_long
+                # Get user-configured swap charge (required for accurate calculation)
+                swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
 
                 self.active_assets[asset_key] = {
                     'config': asset_config,
                     'spot_symbol': spot_symbol,
                     'futures_symbol': futures_symbol,
-                    'swap_long': swap_long
+                    'swap_charge': swap_charge
                 }
-                logger.info(f"{asset_key}: {spot_symbol} + {futures_symbol} | Swap: ${swap_long:.2f}/lot/day")
+                logger.info(f"{asset_key}: {spot_symbol} + {futures_symbol} | Swap: ${swap_charge:.2f}/lot/day")
             else:
                 logger.warning(f"{asset_key}: Could not find symbols - Spot: {spot_symbol}, Futures: {futures_symbol}")
 
@@ -447,18 +444,13 @@ class TradingMonitor:
                 time.sleep(5)
 
     def calculate_swap_basis(self, asset_key, spot_price, time_to_expiry):
-        """Calculate swap-based basis using auto-detected or manual swap charge"""
-        # First try manual config, then fall back to auto-detected from MT5
+        """Calculate swap-based basis using user-configured swap charge (like Arb_Monitor)"""
+        # Use user-configured swap charge - must be entered manually for accuracy
         swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
-
-        # If no manual swap configured, use auto-detected from MT5
-        if swap_charge <= 0 and asset_key in self.active_assets:
-            swap_charge = self.active_assets[asset_key].get('swap_long', 0)
-
         lot_size = self.assets[asset_key]['lot_size']
 
         if swap_charge <= 0:
-            return spot_price, 0, 0
+            return spot_price, 0, 0, 0
 
         position_value = spot_price * lot_size
         daily_swap_rate = swap_charge / position_value
@@ -467,7 +459,7 @@ class TradingMonitor:
         swap_futures_price = spot_price * math.exp(annual_swap_rate * time_to_expiry)
         swap_basis = swap_futures_price - spot_price
 
-        return swap_futures_price, swap_basis, annual_swap_rate
+        return swap_futures_price, swap_basis, annual_swap_rate, swap_charge
 
     def get_statistics(self, asset_key):
         """Get rolling statistics for z-score calculation"""
@@ -541,14 +533,11 @@ class TradingMonitor:
             time_to_expiry = (config['futures_expiry'] - current_time).total_seconds() / (365.25 * 24 * 3600)
             days_to_expiry = time_to_expiry * 365.25
 
-            # Get swap charge for display
-            swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
-            if swap_charge <= 0 and asset_key in self.active_assets:
-                swap_charge = self.active_assets[asset_key].get('swap_long', 0)
+            # Get swap charge from user config and lot size
             lot_size = config['lot_size']
 
             if time_to_expiry > 0:
-                swap_futures_price, swap_basis, annual_swap_rate = self.calculate_swap_basis(
+                swap_futures_price, swap_basis, annual_swap_rate, swap_charge = self.calculate_swap_basis(
                     asset_key, spot_price, time_to_expiry
                 )
 
@@ -564,6 +553,7 @@ class TradingMonitor:
                 swap_premium_pct = 0
                 swap_diff = 0
                 annual_swap_rate = 0
+                swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
 
             # Determine status (like Arb_Monitor)
             if swap_diff < 0:
@@ -1047,7 +1037,7 @@ SETUP_HTML = '''<!DOCTYPE html>
             <p>• Make sure MetaTrader5 is running and logged in</p>
             <p>• Enter your broker's exact symbol names (check Market Watch in MT5)</p>
             <p>• Leave symbol fields empty to auto-detect common symbols</p>
-            <p>• Swap charges will be auto-detected from MT5 if left at 0</p>
+            <p>• <strong>Enter swap charges manually</strong> - check MT5 symbol specification for accurate values</p>
         </div>
 
         {% if error %}
@@ -1073,9 +1063,9 @@ SETUP_HTML = '''<!DOCTYPE html>
                     <div class="help-text">Gold futures contract expiry date (default: 2026-02-24)</div>
                 </div>
                 <div class="form-group">
-                    <label>Daily Swap Charge (USD per lot) - Optional</label>
-                    <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or 0 }}" placeholder="0">
-                    <div class="help-text">Leave at 0 to auto-detect from MT5. Lot size: 100 oz</div>
+                    <label>Daily Swap Charge (USD per lot)</label>
+                    <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or 0 }}" placeholder="e.g., 45.67">
+                    <div class="help-text">Check MT5: Right-click XAUUSD → Specification → Swap Long. Lot size: 100 oz</div>
                 </div>
             </div>
 
@@ -1097,9 +1087,9 @@ SETUP_HTML = '''<!DOCTYPE html>
                     <div class="help-text">Silver futures contract expiry date (default: 2026-02-26)</div>
                 </div>
                 <div class="form-group">
-                    <label>Daily Swap Charge (USD per lot) - Optional</label>
-                    <input type="number" name="silver_swap" step="0.01" min="0" value="{{ config.silver_swap_charge or 0 }}" placeholder="0">
-                    <div class="help-text">Leave at 0 to auto-detect from MT5. Lot size: 5,000 oz</div>
+                    <label>Daily Swap Charge (USD per lot)</label>
+                    <input type="number" name="silver_swap" step="0.01" min="0" value="{{ config.silver_swap_charge or 0 }}" placeholder="e.g., 5.23">
+                    <div class="help-text">Check MT5: Right-click XAGUSD → Specification → Swap Long. Lot size: 5,000 oz</div>
                 </div>
             </div>
 
