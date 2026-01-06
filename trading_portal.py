@@ -755,6 +755,101 @@ class TradingMonitor:
         """Reload configuration from database"""
         self.config = self.db.get_config() or {}
 
+    def get_mt5_account_info(self):
+        """Get MT5 account information"""
+        try:
+            account = mt5.account_info()
+            if account is None:
+                return None
+
+            return {
+                'login': account.login,
+                'server': account.server,
+                'name': account.name,
+                'currency': account.currency,
+                'balance': account.balance,
+                'equity': account.equity,
+                'margin': account.margin,
+                'free_margin': account.margin_free,
+                'margin_level': account.margin_level if account.margin > 0 else 0,
+                'profit': account.profit,
+                'leverage': account.leverage,
+                'trade_allowed': account.trade_allowed,
+                'trade_expert': account.trade_expert
+            }
+        except Exception as e:
+            logger.error(f"Error getting MT5 account info: {e}")
+            return None
+
+    def get_mt5_positions(self):
+        """Get all open positions from MT5 with P&L"""
+        try:
+            positions = mt5.positions_get()
+            if positions is None or len(positions) == 0:
+                return []
+
+            result = []
+            for pos in positions:
+                # Calculate return percentage
+                if pos.price_open > 0:
+                    if pos.type == 0:  # BUY
+                        return_pct = ((pos.price_current - pos.price_open) / pos.price_open) * 100
+                    else:  # SELL
+                        return_pct = ((pos.price_open - pos.price_current) / pos.price_open) * 100
+                else:
+                    return_pct = 0
+
+                result.append({
+                    'ticket': pos.ticket,
+                    'symbol': pos.symbol,
+                    'type': 'BUY' if pos.type == 0 else 'SELL',
+                    'volume': pos.volume,
+                    'price_open': pos.price_open,
+                    'price_current': pos.price_current,
+                    'sl': pos.sl,
+                    'tp': pos.tp,
+                    'profit': pos.profit,
+                    'return_pct': return_pct,
+                    'swap': pos.swap,
+                    'commission': pos.commission,
+                    'time': datetime.fromtimestamp(pos.time).strftime('%Y-%m-%d %H:%M:%S'),
+                    'magic': pos.magic,
+                    'comment': pos.comment
+                })
+
+            return result
+        except Exception as e:
+            logger.error(f"Error getting MT5 positions: {e}")
+            return []
+
+    def sync_positions_with_mt5(self):
+        """Sync portal positions with actual MT5 positions"""
+        mt5_positions = self.get_mt5_positions()
+
+        # Get relevant symbols for our assets
+        relevant_symbols = set()
+        for asset_key, asset_data in self.active_assets.items():
+            relevant_symbols.add(asset_data.get('spot_symbol', ''))
+            relevant_symbols.add(asset_data.get('futures_symbol', ''))
+
+        # Find MT5 positions that match our symbols
+        synced_positions = []
+        for pos in mt5_positions:
+            if pos['symbol'] in relevant_symbols:
+                # Determine which asset this belongs to
+                asset_key = None
+                for ak, ad in self.active_assets.items():
+                    if pos['symbol'] in [ad.get('spot_symbol'), ad.get('futures_symbol')]:
+                        asset_key = ak
+                        break
+
+                if asset_key:
+                    pos['asset'] = asset_key
+                    pos['is_spot'] = pos['symbol'] == self.active_assets[asset_key].get('spot_symbol')
+                    synced_positions.append(pos)
+
+        return synced_positions
+
 
 # =============================================================================
 # GLOBAL MONITOR INSTANCE
@@ -859,6 +954,10 @@ def get_data():
     expensive_count = sum(1 for d in data.values() if d['swap_diff'] > 5)
     fair_count = len(data) - cheap_count - expensive_count
 
+    # Get MT5 account info and positions
+    account_info = monitor.get_mt5_account_info()
+    mt5_positions = monitor.get_mt5_positions()
+
     return jsonify({
         'data': data,
         'summary': {
@@ -866,6 +965,8 @@ def get_data():
             'fair': fair_count,
             'expensive': expensive_count
         },
+        'account': account_info,
+        'mt5_positions': mt5_positions,
         'positions': list(monitor.positions.values()),
         'config': {
             'algo_enabled': monitor.config.get('algo_enabled', False),
@@ -1289,6 +1390,34 @@ MONITOR_HTML = '''<!DOCTYPE html>
             color: #888;
         }
 
+        .account-section {
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+        }
+        .account-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #333;
+        }
+        .account-title { font-weight: 600; font-size: 1.1em; }
+        .account-id { color: #666; font-size: 0.9em; }
+        .account-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 15px;
+        }
+        .account-item { text-align: center; }
+        .account-label { color: #666; font-size: 0.85em; margin-bottom: 4px; }
+        .account-value { font-size: 18px; font-weight: 600; }
+        .account-value.positive { color: #2e7d32; }
+        .account-value.negative { color: #c62828; }
+
         .positions-section {
             margin-top: 25px;
             border: 1px solid #ddd;
@@ -1306,9 +1435,30 @@ MONITOR_HTML = '''<!DOCTYPE html>
             padding: 15px;
             margin-bottom: 10px;
             border-radius: 4px;
-            display: flex;
-            justify-content: space-between;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr;
+            gap: 15px;
             align-items: center;
+            font-size: 16px;
+        }
+        .position-card .pos-symbol { font-weight: 600; font-size: 18px; }
+        .position-card .pos-type { padding: 4px 8px; border-radius: 4px; font-weight: 500; }
+        .position-card .pos-type.buy { background: #e8f5e9; color: #2e7d32; }
+        .position-card .pos-type.sell { background: #ffebee; color: #c62828; }
+        .position-card .pos-pnl { font-weight: 600; font-size: 18px; }
+        .position-card .pos-pnl.positive { color: #2e7d32; }
+        .position-card .pos-pnl.negative { color: #c62828; }
+        .position-card .pos-return { font-size: 14px; }
+        .position-header {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr;
+            gap: 15px;
+            padding: 10px 15px;
+            font-weight: 600;
+            color: #666;
+            font-size: 0.85em;
+            border-bottom: 1px solid #ddd;
+            margin-bottom: 10px;
         }
 
         .footer {
@@ -1375,6 +1525,39 @@ MONITOR_HTML = '''<!DOCTYPE html>
         <a href="/settings" class="settings-link">⚙ Settings</a>
     </div>
 
+    <div class="account-section" id="account-section">
+        <div class="account-header">
+            <span class="account-title">MT5 Account</span>
+            <span class="account-id" id="account-id">---</span>
+        </div>
+        <div class="account-grid">
+            <div class="account-item">
+                <div class="account-label">Balance</div>
+                <div class="account-value" id="account-balance">$0.00</div>
+            </div>
+            <div class="account-item">
+                <div class="account-label">Equity</div>
+                <div class="account-value" id="account-equity">$0.00</div>
+            </div>
+            <div class="account-item">
+                <div class="account-label">Margin</div>
+                <div class="account-value" id="account-margin">$0.00</div>
+            </div>
+            <div class="account-item">
+                <div class="account-label">Free Margin</div>
+                <div class="account-value" id="account-free-margin">$0.00</div>
+            </div>
+            <div class="account-item">
+                <div class="account-label">Open P&L</div>
+                <div class="account-value" id="account-profit">$0.00</div>
+            </div>
+            <div class="account-item">
+                <div class="account-label">Leverage</div>
+                <div class="account-value" id="account-leverage">1:100</div>
+            </div>
+        </div>
+    </div>
+
     <div class="summary">
         <div class="summary-item cheap">
             <div class="summary-count" id="cheap-count">0</div>
@@ -1395,9 +1578,16 @@ MONITOR_HTML = '''<!DOCTYPE html>
     </div>
 
     <div class="positions-section">
-        <div class="positions-title">Active Positions</div>
+        <div class="positions-title">MT5 Open Positions</div>
+        <div id="mt5-positions-container">
+            <div style="color: #666; text-align: center;">No open positions in MT5</div>
+        </div>
+    </div>
+
+    <div class="positions-section" style="margin-top: 15px;">
+        <div class="positions-title">Portal Algo Positions</div>
         <div id="positions-container">
-            <div style="color: #666; text-align: center;">No active positions</div>
+            <div style="color: #666; text-align: center;">No algo positions</div>
         </div>
     </div>
 
@@ -1439,9 +1629,74 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         container.appendChild(createAssetCard(asset));
                     }
 
+                    // Update account info
+                    updateAccountInfo(data.account);
+
+                    // Update MT5 positions
+                    updateMT5Positions(data.mt5_positions);
+
+                    // Update algo positions
                     updatePositions(data.positions);
                 })
                 .catch(err => console.error('Error:', err));
+        }
+
+        function updateAccountInfo(account) {
+            if (!account) {
+                document.getElementById('account-id').textContent = 'Not Connected';
+                return;
+            }
+
+            document.getElementById('account-id').textContent = `${account.login} @ ${account.server}`;
+            document.getElementById('account-balance').textContent = '$' + account.balance.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('account-equity').textContent = '$' + account.equity.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('account-margin').textContent = '$' + account.margin.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('account-free-margin').textContent = '$' + account.free_margin.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+            const profitEl = document.getElementById('account-profit');
+            profitEl.textContent = (account.profit >= 0 ? '+$' : '-$') + Math.abs(account.profit).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            profitEl.className = 'account-value ' + (account.profit >= 0 ? 'positive' : 'negative');
+
+            document.getElementById('account-leverage').textContent = '1:' + account.leverage;
+        }
+
+        function updateMT5Positions(positions) {
+            const container = document.getElementById('mt5-positions-container');
+            if (!positions || positions.length === 0) {
+                container.innerHTML = '<div style="color: #666; text-align: center;">No open positions in MT5</div>';
+                return;
+            }
+
+            let html = `
+                <div class="position-header">
+                    <div>Symbol</div>
+                    <div>Type</div>
+                    <div>Volume</div>
+                    <div>Open Price</div>
+                    <div>P&L</div>
+                    <div>Return %</div>
+                </div>
+            `;
+
+            positions.forEach(pos => {
+                const pnlClass = pos.profit >= 0 ? 'positive' : 'negative';
+                const typeClass = pos.type.toLowerCase();
+                const pnlSign = pos.profit >= 0 ? '+' : '';
+                const returnSign = pos.return_pct >= 0 ? '+' : '';
+
+                html += `
+                    <div class="position-card">
+                        <div class="pos-symbol">${pos.symbol}</div>
+                        <div><span class="pos-type ${typeClass}">${pos.type}</span></div>
+                        <div>${pos.volume}</div>
+                        <div>${pos.price_open.toFixed(pos.price_open > 100 ? 2 : 4)}</div>
+                        <div class="pos-pnl ${pnlClass}">${pnlSign}$${pos.profit.toFixed(2)}</div>
+                        <div class="pos-return ${pnlClass}">${returnSign}${pos.return_pct.toFixed(2)}%</div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
         }
 
         function createAssetCard(asset) {
