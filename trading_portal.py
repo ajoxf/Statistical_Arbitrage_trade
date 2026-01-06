@@ -99,20 +99,32 @@ class DatabaseManager:
             )
         ''')
 
-        # Trades log
+        # Trades log - comprehensive trade journal
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 trade_id TEXT PRIMARY KEY,
                 asset TEXT,
-                signal_type TEXT,
-                entry_spread REAL,
+                direction TEXT,
+                entry_date TEXT,
+                exit_date TEXT,
+                days_held INTEGER DEFAULT 0,
                 entry_zscore REAL,
-                entry_time TEXT,
-                exit_spread REAL,
                 exit_zscore REAL,
-                exit_time TEXT,
-                pnl REAL,
-                status TEXT
+                entry_spot_price REAL,
+                entry_futures_price REAL,
+                exit_spot_price REAL,
+                exit_futures_price REAL,
+                spot_pnl REAL DEFAULT 0,
+                futures_pnl REAL DEFAULT 0,
+                gross_pnl REAL DEFAULT 0,
+                fees REAL DEFAULT 0,
+                net_pnl REAL DEFAULT 0,
+                return_pct REAL DEFAULT 0,
+                lot_size REAL DEFAULT 0.1,
+                mt5_spot_ticket INTEGER,
+                mt5_futures_ticket INTEGER,
+                order_status TEXT DEFAULT 'PENDING',
+                status TEXT DEFAULT 'OPEN'
             )
         ''')
 
@@ -238,30 +250,80 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                trade['trade_id'], trade['asset'], trade['signal_type'],
-                trade['entry_spread'], trade['entry_zscore'], trade['entry_time'],
-                trade.get('exit_spread'), trade.get('exit_zscore'), trade.get('exit_time'),
-                trade.get('pnl', 0), trade['status']
+                trade['trade_id'],
+                trade['asset'],
+                trade['direction'],
+                trade['entry_date'],
+                trade.get('exit_date'),
+                trade.get('days_held', 0),
+                trade['entry_zscore'],
+                trade.get('exit_zscore'),
+                trade['entry_spot_price'],
+                trade['entry_futures_price'],
+                trade.get('exit_spot_price'),
+                trade.get('exit_futures_price'),
+                trade.get('spot_pnl', 0),
+                trade.get('futures_pnl', 0),
+                trade.get('gross_pnl', 0),
+                trade.get('fees', 0),
+                trade.get('net_pnl', 0),
+                trade.get('return_pct', 0),
+                trade.get('lot_size', 0.1),
+                trade.get('mt5_spot_ticket'),
+                trade.get('mt5_futures_ticket'),
+                trade.get('order_status', 'PENDING'),
+                trade['status']
             ))
             conn.commit()
             conn.close()
 
-    def get_trades(self, limit=50):
+    def get_trades(self, limit=50, status=None):
         """Get recent trades"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM trades ORDER BY entry_time DESC LIMIT ?', (limit,))
+        if status:
+            cursor.execute('SELECT * FROM trades WHERE status = ? ORDER BY entry_date DESC LIMIT ?', (status, limit))
+        else:
+            cursor.execute('SELECT * FROM trades ORDER BY entry_date DESC LIMIT ?', (limit,))
         rows = cursor.fetchall()
         conn.close()
 
         return [{
-            'trade_id': r[0], 'asset': r[1], 'signal_type': r[2],
-            'entry_spread': r[3], 'entry_zscore': r[4], 'entry_time': r[5],
-            'exit_spread': r[6], 'exit_zscore': r[7], 'exit_time': r[8],
-            'pnl': r[9], 'status': r[10]
+            'trade_id': r[0], 'asset': r[1], 'direction': r[2],
+            'entry_date': r[3], 'exit_date': r[4], 'days_held': r[5],
+            'entry_zscore': r[6], 'exit_zscore': r[7],
+            'entry_spot_price': r[8], 'entry_futures_price': r[9],
+            'exit_spot_price': r[10], 'exit_futures_price': r[11],
+            'spot_pnl': r[12], 'futures_pnl': r[13],
+            'gross_pnl': r[14], 'fees': r[15], 'net_pnl': r[16],
+            'return_pct': r[17], 'lot_size': r[18],
+            'mt5_spot_ticket': r[19], 'mt5_futures_ticket': r[20],
+            'order_status': r[21], 'status': r[22]
         } for r in rows]
+
+    def get_trade_summary(self):
+        """Get total P&L summary"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN status = 'CLOSED' THEN net_pnl ELSE 0 END) as total_pnl,
+                SUM(CASE WHEN status = 'CLOSED' AND net_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                SUM(CASE WHEN status = 'CLOSED' AND net_pnl <= 0 THEN 1 ELSE 0 END) as losing_trades
+            FROM trades
+        ''')
+        row = cursor.fetchone()
+        conn.close()
+        return {
+            'total_trades': row[0] or 0,
+            'total_pnl': row[1] or 0,
+            'winning_trades': row[2] or 0,
+            'losing_trades': row[3] or 0,
+            'win_rate': (row[2] / row[0] * 100) if row[0] and row[0] > 0 else 0
+        }
 
 
 # =============================================================================
@@ -690,53 +752,238 @@ class TradingMonitor:
             if asset_key in self.positions:
                 self._close_position(asset_key, signal_type, data)
 
+    def _execute_mt5_order(self, symbol, order_type, volume, comment=""):
+        """Execute an order through MT5"""
+        try:
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                return {'success': False, 'error': f'Symbol {symbol} not found'}
+
+            if not symbol_info.visible:
+                mt5.symbol_select(symbol, True)
+
+            # Get current price
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return {'success': False, 'error': f'Cannot get tick for {symbol}'}
+
+            price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+            deviation = 20  # Max price deviation in points
+
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": order_type,
+                "price": price,
+                "deviation": deviation,
+                "magic": 123456,
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            result = mt5.order_send(request)
+            if result is None:
+                return {'success': False, 'error': 'Order send failed - no result'}
+
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                return {
+                    'success': False,
+                    'error': f'Order failed: {result.comment}',
+                    'retcode': result.retcode
+                }
+
+            return {
+                'success': True,
+                'ticket': result.order,
+                'price': result.price,
+                'volume': result.volume,
+                'comment': result.comment
+            }
+
+        except Exception as e:
+            logger.error(f"MT5 order execution error: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def _close_mt5_position(self, ticket, symbol, volume, position_type):
+        """Close an MT5 position by ticket"""
+        try:
+            # Opposite order to close
+            close_type = mt5.ORDER_TYPE_SELL if position_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return {'success': False, 'error': f'Cannot get tick for {symbol}'}
+
+            price = tick.bid if position_type == mt5.ORDER_TYPE_BUY else tick.ask
+
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": close_type,
+                "position": ticket,
+                "price": price,
+                "deviation": 20,
+                "magic": 123456,
+                "comment": "Close position",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            result = mt5.order_send(request)
+            if result is None:
+                return {'success': False, 'error': 'Close order failed - no result'}
+
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                return {'success': False, 'error': f'Close failed: {result.comment}'}
+
+            return {'success': True, 'ticket': result.order, 'price': result.price}
+
+        except Exception as e:
+            logger.error(f"MT5 close position error: {e}")
+            return {'success': False, 'error': str(e)}
+
     def _open_position(self, asset_key, signal_type, data):
-        """Open a new position"""
+        """Open a new position with full trade tracking"""
         trade_id = str(uuid.uuid4())[:8]
+        lot_size = self.config.get('lot_size', 0.1)
+
+        asset_data = self.active_assets.get(asset_key, {})
+        spot_symbol = asset_data.get('spot_symbol')
+        futures_symbol = asset_data.get('futures_symbol')
+
+        # Direction: SELL_BASIS = Short Spread (Sell Futures, Buy Spot)
+        #            BUY_BASIS = Long Spread (Buy Futures, Sell Spot)
+        direction = 'Short Spread' if signal_type == 'SELL_BASIS' else 'Long Spread'
 
         position = {
             'trade_id': trade_id,
             'asset': asset_key,
-            'signal_type': signal_type,
-            'entry_spread': data['swap_diff'],
+            'direction': direction,
+            'entry_date': datetime.now().strftime('%Y-%m-%d'),
             'entry_zscore': data['zscore'],
-            'entry_time': datetime.now().isoformat(),
-            'status': 'OPEN'
+            'entry_spot_price': data['spot_price'],
+            'entry_futures_price': data['futures_price'],
+            'lot_size': lot_size,
+            'status': 'OPEN',
+            'order_status': 'PENDING'
         }
 
-        # Execute trade if live mode
+        # Execute trades through MT5 if live mode
         if not self.config.get('paper_mode', True):
-            # Add MT5 order execution here
-            logger.info(f"LIVE TRADE: {asset_key} {signal_type}")
+            # SELL_BASIS: Sell Futures + Buy Spot
+            # BUY_BASIS: Buy Futures + Sell Spot
+            if signal_type == 'SELL_BASIS':
+                futures_order_type = mt5.ORDER_TYPE_SELL
+                spot_order_type = mt5.ORDER_TYPE_BUY
+            else:
+                futures_order_type = mt5.ORDER_TYPE_BUY
+                spot_order_type = mt5.ORDER_TYPE_SELL
+
+            # Execute futures order
+            futures_result = self._execute_mt5_order(
+                futures_symbol, futures_order_type, lot_size,
+                f"{asset_key} {direction} Futures"
+            )
+
+            # Execute spot order
+            spot_result = self._execute_mt5_order(
+                spot_symbol, spot_order_type, lot_size,
+                f"{asset_key} {direction} Spot"
+            )
+
+            if futures_result['success'] and spot_result['success']:
+                position['mt5_futures_ticket'] = futures_result['ticket']
+                position['mt5_spot_ticket'] = spot_result['ticket']
+                position['order_status'] = 'FILLED'
+                logger.info(f"LIVE TRADE FILLED: {asset_key} {direction} - Futures #{futures_result['ticket']}, Spot #{spot_result['ticket']}")
+            else:
+                position['order_status'] = 'PARTIAL' if (futures_result['success'] or spot_result['success']) else 'REJECTED'
+                error_msg = f"Futures: {futures_result.get('error', 'OK')}, Spot: {spot_result.get('error', 'OK')}"
+                logger.error(f"LIVE TRADE FAILED: {asset_key} {direction} - {error_msg}")
         else:
-            logger.info(f"PAPER TRADE: {asset_key} {signal_type}")
+            position['order_status'] = 'PAPER'
+            logger.info(f"PAPER TRADE: {asset_key} {direction}")
 
         self.positions[asset_key] = position
         self.db.save_trade(position)
 
     def _close_position(self, asset_key, close_reason, data):
-        """Close an existing position"""
+        """Close an existing position with P&L calculation"""
         if asset_key not in self.positions:
             return
 
         position = self.positions[asset_key]
-        position['exit_spread'] = data['swap_diff']
+        entry_date = datetime.strptime(position['entry_date'], '%Y-%m-%d')
+        exit_date = datetime.now()
+
+        # Update position with exit data
+        position['exit_date'] = exit_date.strftime('%Y-%m-%d')
+        position['days_held'] = (exit_date - entry_date).days or 1
         position['exit_zscore'] = data['zscore']
-        position['exit_time'] = datetime.now().isoformat()
-        position['status'] = 'CLOSED'
+        position['exit_spot_price'] = data['spot_price']
+        position['exit_futures_price'] = data['futures_price']
 
-        # Calculate P&L (simplified)
-        spread_diff = position['exit_spread'] - position['entry_spread']
-        if position['signal_type'] == 'SELL_BASIS':
-            position['pnl'] = -spread_diff  # Profit when spread decreases
+        # Calculate P&L for each leg
+        lot_size = position.get('lot_size', 0.1)
+        asset_config = self.assets.get(asset_key, {})
+        contract_size = asset_config.get('lot_size', 100)  # oz per lot
+
+        # Price differences
+        spot_diff = position['exit_spot_price'] - position['entry_spot_price']
+        futures_diff = position['exit_futures_price'] - position['entry_futures_price']
+
+        # Calculate P&L based on direction
+        if position['direction'] == 'Short Spread':
+            # Short Spread: Sold Futures, Bought Spot
+            # Profit on futures when price drops, profit on spot when price rises
+            position['futures_pnl'] = -futures_diff * lot_size * contract_size
+            position['spot_pnl'] = spot_diff * lot_size * contract_size
         else:
-            position['pnl'] = spread_diff  # Profit when spread increases
+            # Long Spread: Bought Futures, Sold Spot
+            # Profit on futures when price rises, profit on spot when price drops
+            position['futures_pnl'] = futures_diff * lot_size * contract_size
+            position['spot_pnl'] = -spot_diff * lot_size * contract_size
 
+        position['gross_pnl'] = position['spot_pnl'] + position['futures_pnl']
+
+        # Estimate fees (commission + spread cost) - approximately $5 per lot per leg
+        position['fees'] = -abs(lot_size * 2 * 27)  # ~$27 per leg, 2 legs
+
+        position['net_pnl'] = position['gross_pnl'] + position['fees']
+
+        # Calculate return % based on margin used (approximate)
+        margin_used = position['entry_spot_price'] * lot_size * contract_size * 0.1  # 10% margin
+        position['return_pct'] = (position['net_pnl'] / margin_used * 100) if margin_used > 0 else 0
+
+        # Close MT5 positions if live mode
         if not self.config.get('paper_mode', True):
-            logger.info(f"LIVE CLOSE: {asset_key} - {close_reason}")
-        else:
-            logger.info(f"PAPER CLOSE: {asset_key} - {close_reason}")
+            asset_data = self.active_assets.get(asset_key, {})
+            spot_symbol = asset_data.get('spot_symbol')
+            futures_symbol = asset_data.get('futures_symbol')
 
+            if position.get('mt5_futures_ticket'):
+                futures_type = mt5.ORDER_TYPE_SELL if position['direction'] == 'Long Spread' else mt5.ORDER_TYPE_BUY
+                self._close_mt5_position(
+                    position['mt5_futures_ticket'],
+                    futures_symbol, lot_size,
+                    mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL
+                )
+
+            if position.get('mt5_spot_ticket'):
+                self._close_mt5_position(
+                    position['mt5_spot_ticket'],
+                    spot_symbol, lot_size,
+                    mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
+                )
+
+            logger.info(f"LIVE CLOSE: {asset_key} - {close_reason} - Net P&L: ${position['net_pnl']:.2f}")
+        else:
+            logger.info(f"PAPER CLOSE: {asset_key} - {close_reason} - Net P&L: ${position['net_pnl']:.2f}")
+
+        position['status'] = 'CLOSED'
         self.db.save_trade(position)
         del self.positions[asset_key]
 
@@ -958,6 +1205,10 @@ def get_data():
     account_info = monitor.get_mt5_account_info()
     mt5_positions = monitor.get_mt5_positions()
 
+    # Get trade history and summary
+    trade_history = monitor.db.get_trades(limit=50)
+    trade_summary = monitor.db.get_trade_summary()
+
     return jsonify({
         'data': data,
         'summary': {
@@ -968,6 +1219,8 @@ def get_data():
         'account': account_info,
         'mt5_positions': mt5_positions,
         'positions': list(monitor.positions.values()),
+        'trade_history': trade_history,
+        'trade_summary': trade_summary,
         'config': {
             'algo_enabled': monitor.config.get('algo_enabled', False),
             'paper_mode': monitor.config.get('paper_mode', True),
@@ -1461,6 +1714,56 @@ MONITOR_HTML = '''<!DOCTYPE html>
             margin-bottom: 10px;
         }
 
+        /* Trade History Table */
+        .trade-history-section {
+            margin-top: 25px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .trade-history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #333;
+        }
+        .trade-history-title { font-weight: 600; font-size: 1.1em; }
+        .trade-summary { display: flex; gap: 30px; }
+        .summary-stat { font-size: 0.9em; color: #666; }
+        .summary-stat strong { color: #333; }
+        .summary-stat strong.positive { color: #2e7d32; }
+        .summary-stat strong.negative { color: #c62828; }
+        .trade-history-table-wrapper { overflow-x: auto; }
+        .trade-history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        .trade-history-table th {
+            background: #f8f9fa;
+            padding: 12px 8px;
+            text-align: left;
+            font-weight: 600;
+            color: #666;
+            border-bottom: 2px solid #ddd;
+            white-space: nowrap;
+        }
+        .trade-history-table td {
+            padding: 12px 8px;
+            border-bottom: 1px solid #eee;
+            white-space: nowrap;
+        }
+        .trade-history-table tr:hover { background: #f8f9fa; }
+        .trade-history-table .direction-long { color: #2e7d32; }
+        .trade-history-table .direction-short { color: #c62828; }
+        .trade-history-table .pnl-positive { color: #2e7d32; font-weight: 600; }
+        .trade-history-table .pnl-negative { color: #c62828; font-weight: 600; }
+        .trade-history-table .status-open { color: #1976d2; }
+        .trade-history-table .status-closed { color: #666; }
+        .direction-icon { margin-right: 5px; }
+
         .footer {
             margin-top: 25px;
             padding-top: 15px;
@@ -1591,6 +1894,41 @@ MONITOR_HTML = '''<!DOCTYPE html>
         </div>
     </div>
 
+    <div class="trade-history-section">
+        <div class="trade-history-header">
+            <span class="trade-history-title">Trade Journal</span>
+            <div class="trade-summary" id="trade-summary">
+                <span class="summary-stat">Total P&L: <strong id="total-pnl">$0.00</strong></span>
+                <span class="summary-stat">Win Rate: <strong id="win-rate">0%</strong></span>
+                <span class="summary-stat">Trades: <strong id="total-trades">0</strong></span>
+            </div>
+        </div>
+        <div class="trade-history-table-wrapper">
+            <table class="trade-history-table" id="trade-history-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Direction</th>
+                        <th>Entry</th>
+                        <th>Exit</th>
+                        <th>Days</th>
+                        <th>Entry Z</th>
+                        <th>Exit Z</th>
+                        <th>Spot P&L</th>
+                        <th>Futures P&L</th>
+                        <th>Gross P&L</th>
+                        <th>Fees</th>
+                        <th>Net P&L</th>
+                        <th>Return</th>
+                    </tr>
+                </thead>
+                <tbody id="trade-history-body">
+                    <tr><td colspan="13" style="text-align: center; color: #666;">No trades yet</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <div class="footer">
         <div>Last update: <span id="last-update">-</span></div>
         <a href="/restart">↻ Restart</a>
@@ -1637,6 +1975,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
                     // Update algo positions
                     updatePositions(data.positions);
+
+                    // Update trade history
+                    updateTradeHistory(data.trade_history, data.trade_summary);
                 })
                 .catch(err => console.error('Error:', err));
         }
@@ -1779,16 +2120,68 @@ MONITOR_HTML = '''<!DOCTYPE html>
         function updatePositions(positions) {
             const container = document.getElementById('positions-container');
             if (!positions || positions.length === 0) {
-                container.innerHTML = '<div style="color: #666; text-align: center;">No active positions</div>';
+                container.innerHTML = '<div style="color: #666; text-align: center;">No algo positions</div>';
                 return;
             }
             container.innerHTML = positions.map(p => `
                 <div class="position-card">
-                    <div><strong>${p.asset}</strong> - ${p.signal_type}</div>
-                    <div>Entry Z: ${p.entry_zscore ? p.entry_zscore.toFixed(2) : '--'}σ</div>
-                    <div style="color: #888;">${new Date(p.entry_time).toLocaleString()}</div>
+                    <div class="pos-symbol">${p.asset}</div>
+                    <div><span class="pos-type ${p.direction === 'Long Spread' ? 'buy' : 'sell'}">${p.direction}</span></div>
+                    <div>Z: ${p.entry_zscore ? p.entry_zscore.toFixed(2) : '--'}σ</div>
+                    <div>${p.entry_date || '--'}</div>
+                    <div class="${p.order_status === 'FILLED' ? 'pnl-positive' : ''}">${p.order_status || 'PAPER'}</div>
+                    <div style="color: #888;">${p.lot_size || 0.1} lots</div>
                 </div>
             `).join('');
+        }
+
+        function updateTradeHistory(trades, summary) {
+            // Update summary
+            const totalPnl = summary.total_pnl || 0;
+            const totalPnlEl = document.getElementById('total-pnl');
+            totalPnlEl.textContent = (totalPnl >= 0 ? '$' : '-$') + Math.abs(totalPnl).toFixed(2);
+            totalPnlEl.className = totalPnl >= 0 ? 'positive' : 'negative';
+
+            document.getElementById('win-rate').textContent = (summary.win_rate || 0).toFixed(1) + '%';
+            document.getElementById('total-trades').textContent = summary.total_trades || 0;
+
+            // Update table
+            const tbody = document.getElementById('trade-history-body');
+            if (!trades || trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="13" style="text-align: center; color: #666;">No trades yet</td></tr>';
+                return;
+            }
+
+            let runningPnl = 0;
+            tbody.innerHTML = trades.slice().reverse().map((t, i) => {
+                const isLong = t.direction === 'Long Spread';
+                const dirClass = isLong ? 'direction-long' : 'direction-short';
+                const icon = isLong ? '📈' : '📉';
+
+                const spotPnlClass = (t.spot_pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const futuresPnlClass = (t.futures_pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const grossPnlClass = (t.gross_pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const netPnlClass = (t.net_pnl || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const returnClass = (t.return_pct || 0) >= 0 ? 'pnl-positive' : 'pnl-negative';
+
+                runningPnl += t.net_pnl || 0;
+
+                return `<tr class="${t.status === 'OPEN' ? 'status-open' : ''}">
+                    <td>${i + 1}</td>
+                    <td class="${dirClass}"><span class="direction-icon">${icon}</span>${t.direction}</td>
+                    <td>${t.entry_date || '--'}</td>
+                    <td>${t.exit_date || (t.status === 'OPEN' ? '<em>Open</em>' : '--')}</td>
+                    <td>${t.days_held || '--'}</td>
+                    <td>${t.entry_zscore ? t.entry_zscore.toFixed(2) : '--'}</td>
+                    <td>${t.exit_zscore ? t.exit_zscore.toFixed(2) : '--'}</td>
+                    <td class="${spotPnlClass}">$${(t.spot_pnl || 0).toFixed(2)}</td>
+                    <td class="${futuresPnlClass}">$${(t.futures_pnl || 0).toFixed(2)}</td>
+                    <td class="${grossPnlClass}">$${(t.gross_pnl || 0).toFixed(2)}</td>
+                    <td style="color: #c62828;">$${(t.fees || 0).toFixed(2)}</td>
+                    <td class="${netPnlClass}"><strong>$${(t.net_pnl || 0).toFixed(2)}</strong></td>
+                    <td class="${returnClass}">${(t.return_pct || 0).toFixed(2)}%</td>
+                </tr>`;
+            }).join('');
         }
 
         function toggleAlgo(enabled) {
