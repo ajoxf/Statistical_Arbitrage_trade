@@ -2324,7 +2324,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <span>Points: ${asset.stats.count}</span>
                     </div>
                     <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 0.85em;">
-                        <div style="color: #888; margin-bottom: 4px;">Current Spread: <strong style="color: #333;">${asset.basis.toFixed(2)}</strong></div>
+                        <div style="color: #888; margin-bottom: 4px;">Current Spread: <strong style="color: #333;">${asset.actual_basis.toFixed(2)}</strong></div>
                         <div style="display: flex; justify-content: space-between; color: #666;">
                             <span style="color: #d9534f;">Entry ↑: ${asset.stats.upper_entry.toFixed(2)}</span>
                             <span style="color: #5cb85c;">Exit ↑: ${asset.stats.upper_exit.toFixed(2)}</span>
