@@ -96,9 +96,16 @@ class DatabaseManager:
                 lot_size REAL DEFAULT 0.1,
                 algo_enabled INTEGER DEFAULT 0,
                 paper_mode INTEGER DEFAULT 1,
+                commission_per_lot REAL DEFAULT 0,
                 updated_at TEXT
             )
         ''')
+
+        # Add commission_per_lot column if it doesn't exist (for existing DBs)
+        try:
+            cursor.execute('ALTER TABLE trading_config ADD COLUMN commission_per_lot REAL DEFAULT 0')
+        except:
+            pass  # Column already exists
 
         # Trades log - comprehensive trade journal
         cursor.execute('''
@@ -208,7 +215,8 @@ class DatabaseManager:
                 'max_positions': row[15] if row[15] is not None else 3,
                 'lot_size': row[16] if row[16] is not None else 0.1,
                 'algo_enabled': bool(row[17]),
-                'paper_mode': bool(row[18]) if row[18] is not None else True
+                'paper_mode': bool(row[18]) if row[18] is not None else True,
+                'commission_per_lot': row[19] if len(row) > 19 and row[19] is not None else 0
             }
         return None
 
@@ -237,6 +245,7 @@ class DatabaseManager:
                     lot_size = ?,
                     algo_enabled = ?,
                     paper_mode = ?,
+                    commission_per_lot = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -258,6 +267,7 @@ class DatabaseManager:
                 config.get('lot_size', 0.1),
                 1 if config.get('algo_enabled') else 0,
                 1 if config.get('paper_mode', True) else 0,
+                config.get('commission_per_lot', 0),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -1271,6 +1281,25 @@ class TradingMonitor:
                     pos_copy['current_spread'] = current_futures - current_spot
                     pos_copy['entry_spread'] = entry_futures - entry_spot
 
+                    # Get target exit price from statistics
+                    stats = self.get_statistics(asset_key)
+                    if stats:
+                        # Exit target is based on exit bands (mean if exit_std=0)
+                        if position.get('direction') == 'Long Spread':
+                            pos_copy['target_exit'] = stats.get('upper_exit', stats.get('mean', 0))
+                        else:
+                            pos_copy['target_exit'] = stats.get('lower_exit', stats.get('mean', 0))
+
+                    # Calculate spread cost (bid-ask spread for both spot + futures)
+                    spot_spread_cents = current_data.get('spot_spread', 0)  # in cents
+                    futures_spread_cents = current_data.get('futures_spread', 0)  # in cents
+                    # Total spread cost = (spot spread + futures spread) * lot_size * 100 oz
+                    # Since spread is in cents, divide by 100 to get dollars
+                    spread_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * 100
+                    pos_copy['spread_cost'] = spread_cost
+                    pos_copy['spot_spread'] = spot_spread_cents
+                    pos_copy['futures_spread'] = futures_spread_cents
+
             enriched.append(pos_copy)
 
         return enriched
@@ -1384,6 +1413,7 @@ def settings():
             monitor.config['time_stop_loss_days'] = float(request.form.get('time_stop_loss_days', 0))
             monitor.config['max_positions'] = int(request.form.get('max_positions', 3))
             monitor.config['lot_size'] = float(request.form.get('lot_size', 0.1))
+            monitor.config['commission_per_lot'] = float(request.form.get('commission_per_lot', 0))
 
             monitor.db.save_config(monitor.config)
             return redirect(url_for('settings') + '?saved=1')
@@ -2371,6 +2401,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 const pnlSign = unrealizedPnl >= 0 ? '+' : '';
                 const entrySpread = p.entry_spread ? p.entry_spread.toFixed(2) : '--';
                 const currentSpread = p.current_spread ? p.current_spread.toFixed(2) : '--';
+                const targetExit = p.target_exit ? p.target_exit.toFixed(2) : '--';
+                const spreadCost = p.spread_cost ? p.spread_cost.toFixed(2) : '0.00';
+                const spotSpread = p.spot_spread ? p.spot_spread.toFixed(1) : '--';
+                const futSpread = p.futures_spread ? p.futures_spread.toFixed(1) : '--';
 
                 return `
                 <div class="position-card" style="padding: 12px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 10px; background: #fafafa;">
@@ -2383,8 +2417,15 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <div>Lots: <strong>${p.lot_size || 0.1}</strong></div>
                         <div>Entry Spread: <strong>${entrySpread}</strong></div>
                         <div>Current Spread: <strong>${currentSpread}</strong></div>
-                        <div>Date: ${p.entry_date || '--'}</div>
+                        <div style="color: #5cb85c;">Target Exit: <strong>${targetExit}</strong></div>
                         <div>Status: <span class="${p.order_status === 'FILLED' ? 'pnl-positive' : ''}">${p.order_status || 'PENDING'}</span></div>
+                        <div>Date: ${p.entry_date || '--'}</div>
+                    </div>
+                    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 0.85em; color: #888;">
+                        <div style="display: flex; justify-content: space-between;">
+                            <span>Bid-Ask Spread: Spot ${spotSpread}¢ + Fut ${futSpread}¢</span>
+                            <span style="color: #c62828;">Cost: $${spreadCost}</span>
+                        </div>
                     </div>
                     <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #ddd; text-align: center;">
                         <div style="font-size: 0.8em; color: #888;">Unrealized P&L</div>
@@ -2638,6 +2679,12 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <label>Lot Size</label>
                     <input type="number" name="lot_size" value="{{ config.lot_size }}" min="0.01" max="10" step="0.01">
                     <div class="help-text">Size of each trade in lots</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Commission per Lot ($)</label>
+                    <input type="number" name="commission_per_lot" value="{{ config.commission_per_lot }}" min="0" max="100" step="0.01">
+                    <div class="help-text">Manual commission charge per lot (both entry + exit)</div>
                 </div>
             </div>
 
