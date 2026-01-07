@@ -3362,9 +3362,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
         function switchChart(asset) {
             currentChartAsset = asset;
-            document.querySelectorAll('.chart-tab').forEach(tab => {
-                tab.classList.toggle('active', tab.textContent === asset);
-            });
+            // Use IDs to toggle active state (textContent changes to asset names)
+            document.getElementById('tab-asset1').classList.toggle('active', asset === 'GOLD');
+            document.getElementById('tab-asset2').classList.toggle('active', asset === 'SILVER');
             updateChartDisplay();
         }
 
@@ -3549,9 +3549,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
         function switchPriceChart(asset) {
             currentPriceChartAsset = asset;
-            document.querySelectorAll('#price-tab-asset1, #price-tab-asset2').forEach(tab => {
-                tab.classList.toggle('active', tab.textContent === asset);
-            });
+            // Use IDs to toggle active state (textContent changes to asset names)
+            document.getElementById('price-tab-asset1').classList.toggle('active', asset === 'GOLD');
+            document.getElementById('price-tab-asset2').classList.toggle('active', asset === 'SILVER');
             updatePriceChartDisplay();
         }
 
