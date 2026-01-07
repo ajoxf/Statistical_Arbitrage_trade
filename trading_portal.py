@@ -116,7 +116,10 @@ class DatabaseManager:
             ('gold_contract_size', 'REAL DEFAULT 100'),
             ('silver_asset_name', "TEXT DEFAULT 'SILVER'"),
             ('silver_contract_size', 'REAL DEFAULT 5000'),
-            ('hurst_enabled', 'INTEGER DEFAULT 1')
+            ('hurst_enabled', 'INTEGER DEFAULT 1'),
+            ('close_before_overnight', 'INTEGER DEFAULT 0'),
+            ('overnight_close_hour', 'INTEGER DEFAULT 16'),
+            ('overnight_close_minute', 'INTEGER DEFAULT 55')
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -225,7 +228,7 @@ class DatabaseManager:
                    lookback_unit, entry_std_dev, exit_std_dev, stop_loss_std_dev,
                    time_stop_loss_days, max_positions, lot_size, algo_enabled,
                    paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes,
-                   hurst_enabled
+                   hurst_enabled, close_before_overnight, overnight_close_hour, overnight_close_minute
             FROM trading_config WHERE id = 1
         ''')
         row = cursor.fetchone()
@@ -259,7 +262,10 @@ class DatabaseManager:
                 'commission_per_lot': row[23] if row[23] is not None else 0,
                 'hurst_threshold': row[24] if row[24] is not None else 0.5,
                 'trending_duration_minutes': row[25] if row[25] is not None else 15,
-                'hurst_enabled': bool(row[26]) if row[26] is not None else True
+                'hurst_enabled': bool(row[26]) if row[26] is not None else True,
+                'close_before_overnight': bool(row[27]) if row[27] is not None else False,
+                'overnight_close_hour': row[28] if row[28] is not None else 16,
+                'overnight_close_minute': row[29] if row[29] is not None else 55
             }
         return None
 
@@ -296,6 +302,9 @@ class DatabaseManager:
                     hurst_threshold = ?,
                     trending_duration_minutes = ?,
                     hurst_enabled = ?,
+                    close_before_overnight = ?,
+                    overnight_close_hour = ?,
+                    overnight_close_minute = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -325,6 +334,9 @@ class DatabaseManager:
                 config.get('hurst_threshold', 0.5),
                 config.get('trending_duration_minutes', 15),
                 1 if config.get('hurst_enabled', True) else 0,
+                1 if config.get('close_before_overnight', False) else 0,
+                config.get('overnight_close_hour', 16),
+                config.get('overnight_close_minute', 55),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -1203,6 +1215,20 @@ class TradingMonitor:
                 except (ValueError, KeyError):
                     pass  # If we can't parse entry_date, skip time check
 
+            # Check overnight close (close positions before swap time)
+            close_before_overnight = self.config.get('close_before_overnight', False)
+            if close_before_overnight:
+                close_hour = self.config.get('overnight_close_hour', 16)
+                close_minute = self.config.get('overnight_close_minute', 55)
+                now = datetime.now()
+                # Check if current time is at or past the close time
+                if now.hour > close_hour or (now.hour == close_hour and now.minute >= close_minute):
+                    return {
+                        'type': 'OVERNIGHT_CLOSE',
+                        'reason': f'Closing before overnight swap (time: {now.strftime("%H:%M")} >= {close_hour:02d}:{close_minute:02d})',
+                        'action': 'Close position to avoid overnight swap'
+                    }
+
             if position['direction'] == 'Short Spread':
                 if zscore <= exit_std:
                     return {
@@ -1241,7 +1267,7 @@ class TradingMonitor:
             if asset_key not in self.positions:
                 self._open_position(asset_key, signal_type, data)
 
-        elif signal_type in ['CLOSE', 'STOP_LOSS', 'TIME_STOP']:
+        elif signal_type in ['CLOSE', 'STOP_LOSS', 'TIME_STOP', 'OVERNIGHT_CLOSE']:
             if asset_key in self.positions:
                 self._close_position(asset_key, signal_type, data)
 
@@ -1848,6 +1874,9 @@ def settings():
             monitor.config['hurst_threshold'] = float(request.form.get('hurst_threshold', 0.5))
             monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 15))
             monitor.config['hurst_enabled'] = request.form.get('hurst_enabled') == 'on'
+            monitor.config['close_before_overnight'] = request.form.get('close_before_overnight') == 'on'
+            monitor.config['overnight_close_hour'] = int(request.form.get('overnight_close_hour', 16))
+            monitor.config['overnight_close_minute'] = int(request.form.get('overnight_close_minute', 55))
 
             monitor.db.save_config(monitor.config)
             return redirect(url_for('settings') + '?saved=1')
@@ -2395,6 +2424,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .signal-section.no-data { border-color: #eee; background: #f5f5f5; }
         .signal-section.collecting { border-color: #1976d2; background: #e3f2fd; }
         .signal-section.time-stop { border-color: #ff9800; background: #fff3e0; }
+        .signal-section.overnight-close { border-color: #795548; background: #efebe9; }
         .signal-section.stop-loss { border-color: #9c27b0; background: #f3e5f5; }
         .signal-section.regime-filter { border-color: #9e9e9e; background: #f5f5f5; }
 
@@ -2406,6 +2436,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .signal-section.sell-basis .zscore-display { color: #c62828; }
         .signal-section.buy-basis .zscore-display { color: #2e7d32; }
         .signal-section.time-stop .zscore-display { color: #ff9800; }
+        .signal-section.overnight-close .zscore-display { color: #795548; }
         .signal-section.stop-loss .zscore-display { color: #9c27b0; }
         .signal-section.regime-filter .zscore-display { color: #616161; }
         .signal-type { font-size: 1.1em; font-weight: 600; margin-bottom: 5px; }
@@ -2997,6 +3028,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             else if (signal.type === 'NO_DATA') signalClass = 'no-data';
             else if (signal.type === 'COLLECTING') signalClass = 'collecting';
             else if (signal.type === 'TIME_STOP') signalClass = 'time-stop';
+            else if (signal.type === 'OVERNIGHT_CLOSE') signalClass = 'overnight-close';
             else if (signal.type === 'STOP_LOSS') signalClass = 'stop-loss';
             else if (signal.type === 'REGIME_FILTER') signalClass = 'regime-filter';
 
@@ -3831,6 +3863,30 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <input type="number" name="time_stop_loss_days" value="{{ config.time_stop_loss_days or 0 }}" min="0" max="365" step="0.5">
                     <div class="help-text">Auto-close position after X days (0 = disabled). Use 0.5 for 12 hours, 1 for 1 day, etc.</div>
                 </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Overnight Swap Protection</div>
+
+                <div class="form-group">
+                    <label class="toggle-label">
+                        <input type="checkbox" name="close_before_overnight" {% if config.close_before_overnight %}checked{% endif %}>
+                        <span>Close Positions Before Overnight</span>
+                    </label>
+                    <div class="help-text">Automatically close all positions before swap time to avoid overnight charges</div>
+                </div>
+
+                <div class="form-group" style="display: flex; gap: 15px; align-items: flex-end;">
+                    <div style="flex: 1;">
+                        <label>Close Hour (24h format)</label>
+                        <input type="number" name="overnight_close_hour" value="{{ config.overnight_close_hour or 16 }}" min="0" max="23" step="1">
+                    </div>
+                    <div style="flex: 1;">
+                        <label>Close Minute</label>
+                        <input type="number" name="overnight_close_minute" value="{{ config.overnight_close_minute or 55 }}" min="0" max="59" step="1">
+                    </div>
+                </div>
+                <div class="help-text">Default 16:55 (4:55 PM) - close before 5 PM EST swap rollover. Adjust based on your broker's swap time.</div>
             </div>
 
             <div class="card">
