@@ -483,6 +483,9 @@ class TradingMonitor:
         # Track when Hurst became trending for each asset
         self.trending_since = {'GOLD': None, 'SILVER': None}
 
+        # Track consecutive stop losses (for auto-enabling Hurst protection)
+        self.consecutive_stop_losses = 0
+
         # Active positions - load from database
         self.positions = {}
         self._load_open_positions()
@@ -1504,6 +1507,26 @@ class TradingMonitor:
             )
 
         logger.info(f"{mode_label} CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
+
+        # Track consecutive stop losses for auto-enabling Hurst protection
+        if close_reason == 'STOP_LOSS':
+            self.consecutive_stop_losses += 1
+            logger.warning(f"Stop loss #{self.consecutive_stop_losses} triggered")
+
+            # After 3 consecutive stop losses, auto-enable Hurst protection
+            if self.consecutive_stop_losses >= 3:
+                logger.warning(f"3 consecutive stop losses! Auto-enabling Hurst filter (threshold=0.5, duration=20min)")
+                self.config['hurst_enabled'] = True
+                self.config['hurst_threshold'] = 0.5
+                self.config['trending_duration_minutes'] = 20
+                self.db.save_config(self.config)
+                # Reset counter after enabling protection
+                self.consecutive_stop_losses = 0
+        else:
+            # Reset counter on normal exit (CLOSE, TIME_STOP, etc.)
+            if self.consecutive_stop_losses > 0:
+                logger.info(f"Resetting stop loss counter (was {self.consecutive_stop_losses})")
+            self.consecutive_stop_losses = 0
 
         position['status'] = 'CLOSED'
         self.db.save_trade(position)
