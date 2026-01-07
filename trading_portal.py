@@ -115,7 +115,8 @@ class DatabaseManager:
             ('gold_asset_name', "TEXT DEFAULT 'GOLD'"),
             ('gold_contract_size', 'REAL DEFAULT 100'),
             ('silver_asset_name', "TEXT DEFAULT 'SILVER'"),
-            ('silver_contract_size', 'REAL DEFAULT 5000')
+            ('silver_contract_size', 'REAL DEFAULT 5000'),
+            ('hurst_enabled', 'INTEGER DEFAULT 1')
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -223,7 +224,8 @@ class DatabaseManager:
                    silver_asset_name, silver_contract_size, lookback_period,
                    lookback_unit, entry_std_dev, exit_std_dev, stop_loss_std_dev,
                    time_stop_loss_days, max_positions, lot_size, algo_enabled,
-                   paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes
+                   paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes,
+                   hurst_enabled
             FROM trading_config WHERE id = 1
         ''')
         row = cursor.fetchone()
@@ -256,7 +258,8 @@ class DatabaseManager:
                 'paper_mode': bool(row[22]) if row[22] is not None else True,
                 'commission_per_lot': row[23] if row[23] is not None else 0,
                 'hurst_threshold': row[24] if row[24] is not None else 0.5,
-                'trending_duration_minutes': row[25] if row[25] is not None else 15
+                'trending_duration_minutes': row[25] if row[25] is not None else 15,
+                'hurst_enabled': bool(row[26]) if row[26] is not None else True
             }
         return None
 
@@ -292,6 +295,7 @@ class DatabaseManager:
                     commission_per_lot = ?,
                     hurst_threshold = ?,
                     trending_duration_minutes = ?,
+                    hurst_enabled = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -320,6 +324,7 @@ class DatabaseManager:
                 config.get('commission_per_lot', 0),
                 config.get('hurst_threshold', 0.5),
                 config.get('trending_duration_minutes', 15),
+                1 if config.get('hurst_enabled', True) else 0,
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -471,6 +476,9 @@ class TradingMonitor:
 
         # Z-score history for charting (store last 200 points per asset)
         self.zscore_history = {'GOLD': deque(maxlen=200), 'SILVER': deque(maxlen=200)}
+
+        # Price history for spot/futures charting (store last 200 points per asset)
+        self.price_history = {'GOLD': deque(maxlen=200), 'SILVER': deque(maxlen=200)}
 
         # Track when Hurst became trending for each asset
         self.trending_since = {'GOLD': None, 'SILVER': None}
@@ -941,6 +949,14 @@ class TradingMonitor:
                     'exit_lower': -exit_threshold
                 })
 
+            # Store price history for spot/futures charting
+            self.price_history[asset_key].append({
+                'time': datetime.now().strftime('%H:%M:%S'),
+                'spot_price': spot_price,
+                'futures_price': futures_price,
+                'spread': spread
+            })
+
             # Margin calculations
             # Get account leverage
             account = mt5.account_info()
@@ -1073,6 +1089,7 @@ class TradingMonitor:
         # Hurst exponent threshold for mean reversion trading (configurable)
         hurst_threshold = self.config.get('hurst_threshold', 0.5)
         trending_duration_minutes = self.config.get('trending_duration_minutes', 15)
+        hurst_enabled = self.config.get('hurst_enabled', True)
 
         # Get current market session
         market_session = self._get_market_session()
@@ -1081,8 +1098,8 @@ class TradingMonitor:
         has_position = asset_key in self.positions
 
         if not has_position:
-            # HURST FILTER: Only enter new positions if regime is mean-reverting
-            if hurst_value is not None and hurst_value >= hurst_threshold:
+            # HURST FILTER: Only enter new positions if regime is mean-reverting (if enabled)
+            if hurst_enabled and hurst_value is not None and hurst_value >= hurst_threshold:
                 # Track when trending started
                 if self.trending_since.get(asset_key) is None:
                     self.trending_since[asset_key] = datetime.now()
@@ -1761,6 +1778,7 @@ def settings():
             monitor.config['commission_per_lot'] = float(request.form.get('commission_per_lot', 0))
             monitor.config['hurst_threshold'] = float(request.form.get('hurst_threshold', 0.5))
             monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 15))
+            monitor.config['hurst_enabled'] = request.form.get('hurst_enabled') == 'on'
 
             monitor.db.save_config(monitor.config)
             return redirect(url_for('settings') + '?saved=1')
@@ -1799,6 +1817,12 @@ def get_data():
         'SILVER': list(monitor.zscore_history.get('SILVER', []))
     }
 
+    # Get price history for charting
+    price_history = {
+        'GOLD': list(monitor.price_history.get('GOLD', [])),
+        'SILVER': list(monitor.price_history.get('SILVER', []))
+    }
+
     return jsonify({
         'data': data,
         'summary': {
@@ -1812,6 +1836,7 @@ def get_data():
         'trade_history': trade_history,
         'trade_summary': trade_summary,
         'zscore_history': zscore_history,
+        'price_history': price_history,
         'config': {
             'algo_enabled': monitor.config.get('algo_enabled', False),
             'paper_mode': monitor.config.get('paper_mode', True),
@@ -1866,6 +1891,10 @@ def reset_statistics():
         # Clear in-memory z-score history
         for asset_key in monitor.zscore_history:
             monitor.zscore_history[asset_key].clear()
+
+        # Clear in-memory price history
+        for asset_key in monitor.price_history:
+            monitor.price_history[asset_key].clear()
 
         # Clear price history from database
         conn = monitor.db.get_connection()
@@ -2616,6 +2645,19 @@ MONITOR_HTML = '''<!DOCTYPE html>
         </div>
     </div>
 
+    <div class="chart-section">
+        <div class="chart-header">
+            <div class="chart-title" id="price-chart-title">Price Chart</div>
+            <div class="chart-tabs">
+                <div class="chart-tab active" id="price-tab-asset1" onclick="switchPriceChart('GOLD')">Asset 1</div>
+                <div class="chart-tab" id="price-tab-asset2" onclick="switchPriceChart('SILVER')">Asset 2</div>
+            </div>
+        </div>
+        <div class="chart-container">
+            <canvas id="price-chart"></canvas>
+        </div>
+    </div>
+
     <div class="assets" id="assets-container">
         <div style="color: #666; text-align: center; padding: 50px;">Loading market data...</div>
     </div>
@@ -2730,22 +2772,32 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
                     // Update chart tab names and visibility
                     const tabsContainer = document.querySelector('.chart-tabs');
+                    const priceTabsContainer = document.querySelectorAll('.chart-tabs')[1];
                     if (assetFilter) {
                         // Single asset mode - hide tabs, show asset name as title
                         tabsContainer.style.display = 'none';
+                        if (priceTabsContainer) priceTabsContainer.style.display = 'none';
                         const assetName = filteredData[filteredKeys[0]]?.asset_name || 'Asset';
                         document.querySelector('.chart-title').textContent = `${assetName} Z-Score`;
-                        // Set chart to this asset
-                        if (selectedAssetKey) currentChartAsset = selectedAssetKey;
+                        document.getElementById('price-chart-title').textContent = `${assetName} Price`;
+                        // Set charts to this asset
+                        if (selectedAssetKey) {
+                            currentChartAsset = selectedAssetKey;
+                            currentPriceChartAsset = selectedAssetKey;
+                        }
                     } else {
                         // Multi-asset mode - show tabs
                         tabsContainer.style.display = 'flex';
+                        if (priceTabsContainer) priceTabsContainer.style.display = 'flex';
                         document.querySelector('.chart-title').textContent = 'Z-Score Chart';
+                        document.getElementById('price-chart-title').textContent = 'Price Chart';
                         if (assetKeys.length > 0 && data.data[assetKeys[0]]) {
                             document.getElementById('tab-asset1').textContent = data.data[assetKeys[0]].asset_name;
+                            document.getElementById('price-tab-asset1').textContent = data.data[assetKeys[0]].asset_name;
                         }
                         if (assetKeys.length > 1 && data.data[assetKeys[1]]) {
                             document.getElementById('tab-asset2').textContent = data.data[assetKeys[1]].asset_name;
+                            document.getElementById('price-tab-asset2').textContent = data.data[assetKeys[1]].asset_name;
                         }
                     }
 
@@ -2790,6 +2842,13 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         filteredZscoreHistory = { [selectedAssetKey]: data.zscore_history[selectedAssetKey] };
                     }
                     updateZscoreChart(filteredZscoreHistory, filteredHistory);
+
+                    // Update Price chart - filter by asset if single-asset mode
+                    let filteredPriceHistory = data.price_history;
+                    if (assetFilter && selectedAssetKey && data.price_history) {
+                        filteredPriceHistory = { [selectedAssetKey]: data.price_history[selectedAssetKey] };
+                    }
+                    updatePriceChart(filteredPriceHistory);
                 })
                 .catch(err => console.error('Error:', err));
         }
@@ -3114,7 +3173,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         }
 
         function resetStatistics() {
-            if (!confirm('Reset all statistics? This will clear:\\n- Spread cache (mean/std calculation)\\n- Price history\\n- Z-Score chart\\n\\nLookback period will restart from scratch.')) {
+            if (!confirm('Reset all statistics? This will clear:\\n- Spread cache (mean/std calculation)\\n- Price history\\n- Z-Score chart\\n- Price chart\\n\\nLookback period will restart from scratch.')) {
                 return;
             }
             fetch('/api/reset_statistics', {
@@ -3131,6 +3190,13 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         zscoreChart.data.labels = [];
                         zscoreChart.data.datasets.forEach(ds => ds.data = []);
                         zscoreChart.update();
+                    }
+                    // Clear price chart data
+                    priceData = { GOLD: [], SILVER: [] };
+                    if (priceChart) {
+                        priceChart.data.labels = [];
+                        priceChart.data.datasets.forEach(ds => ds.data = []);
+                        priceChart.update();
                     }
                 } else {
                     alert('Error: ' + data.message);
@@ -3373,8 +3439,149 @@ MONITOR_HTML = '''<!DOCTYPE html>
             zscoreChart.update('none');
         }
 
-        // Initialize chart on page load
+        // Price Chart
+        let priceChart = null;
+        let currentPriceChartAsset = 'GOLD';
+        let priceData = { GOLD: [], SILVER: [] };
+
+        function initPriceChart() {
+            const ctx = document.getElementById('price-chart').getContext('2d');
+            priceChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'Spot Price',
+                            data: [],
+                            borderColor: '#2196F3',
+                            backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                            borderWidth: 2,
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 0,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Futures Price',
+                            data: [],
+                            borderColor: '#FF9800',
+                            backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                            borderWidth: 2,
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 0,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Spread (F-S)',
+                            data: [],
+                            borderColor: '#4CAF50',
+                            backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
+                            fill: false,
+                            tension: 0.1,
+                            pointRadius: 0,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                usePointStyle: true,
+                                boxWidth: 8,
+                                font: { size: 11 }
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    if (context.dataset.label === 'Spread (F-S)') {
+                                        return context.dataset.label + ': ' + context.parsed.y.toFixed(4);
+                                    }
+                                    return context.dataset.label + ': $' + context.parsed.y.toFixed(2);
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            grid: { display: false },
+                            ticks: { maxTicksLimit: 10 }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            grid: { color: '#eee' },
+                            title: {
+                                display: true,
+                                text: 'Price ($)'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            grid: { drawOnChartArea: false },
+                            title: {
+                                display: true,
+                                text: 'Spread'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function switchPriceChart(asset) {
+            currentPriceChartAsset = asset;
+            document.querySelectorAll('#price-tab-asset1, #price-tab-asset2').forEach(tab => {
+                tab.classList.toggle('active', tab.textContent === asset);
+            });
+            updatePriceChartDisplay();
+        }
+
+        function updatePriceChart(price_history) {
+            if (!price_history) return;
+            priceData = price_history;
+            updatePriceChartDisplay();
+        }
+
+        function updatePriceChartDisplay() {
+            if (!priceChart || !priceData[currentPriceChartAsset]) return;
+
+            const history = priceData[currentPriceChartAsset];
+            if (history.length === 0) return;
+
+            const labels = history.map(h => h.time);
+            const spotPrices = history.map(h => h.spot_price);
+            const futuresPrices = history.map(h => h.futures_price);
+            const spreads = history.map(h => h.spread);
+
+            priceChart.data.labels = labels;
+            priceChart.data.datasets[0].data = spotPrices;
+            priceChart.data.datasets[1].data = futuresPrices;
+            priceChart.data.datasets[2].data = spreads;
+
+            priceChart.update('none');
+        }
+
+        // Initialize charts on page load
         initChart();
+        initPriceChart();
 
         updateData();
         setInterval(updateData, 300);
@@ -3534,6 +3741,14 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
             <div class="card">
                 <div class="card-title">Regime Filter (Hurst Exponent)</div>
+
+                <div class="form-group">
+                    <label class="toggle-label">
+                        <input type="checkbox" name="hurst_enabled" {% if config.hurst_enabled %}checked{% endif %}>
+                        <span>Enable Hurst Filter</span>
+                    </label>
+                    <div class="help-text">When enabled, blocks new entries during trending markets (Hurst >= threshold)</div>
+                </div>
 
                 <div class="form-group">
                     <label>Hurst Threshold: <span id="hurst_threshold_value">{{ config.hurst_threshold or 0.5 }}</span></label>
