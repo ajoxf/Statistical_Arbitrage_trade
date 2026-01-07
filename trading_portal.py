@@ -1733,8 +1733,10 @@ class TradingMonitor:
                         # Exit target is based on exit bands (mean if exit_std=0)
                         if position.get('direction') == 'Long Spread':
                             pos_copy['target_exit'] = stats.get('upper_exit', stats.get('mean', 0))
+                            pos_copy['stop_loss_exit'] = stats.get('lower_stop', stats.get('mean', 0))
                         else:
                             pos_copy['target_exit'] = stats.get('lower_exit', stats.get('mean', 0))
+                            pos_copy['stop_loss_exit'] = stats.get('upper_stop', stats.get('mean', 0))
 
                     # Calculate spread cost (bid-ask spread for both spot + futures)
                     spot_spread_cents = current_data.get('spot_spread', 0)  # in cents
@@ -3168,6 +3170,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 const entrySpread = p.entry_spread ? p.entry_spread.toFixed(2) : '--';
                 const currentSpread = p.current_spread ? p.current_spread.toFixed(2) : '--';
                 const targetExit = p.target_exit ? p.target_exit.toFixed(2) : '--';
+                const stopLossExit = p.stop_loss_exit ? p.stop_loss_exit.toFixed(2) : '--';
                 const spreadCost = p.spread_cost ? p.spread_cost.toFixed(2) : '0.00';
                 const spotSpread = p.spot_spread ? p.spot_spread.toFixed(1) : '--';
                 const futSpread = p.futures_spread ? p.futures_spread.toFixed(1) : '--';
@@ -3184,6 +3187,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <div>Entry Spread: <strong>${entrySpread}</strong></div>
                         <div>Current Spread: <strong>${currentSpread}</strong></div>
                         <div style="color: #5cb85c;">Target Exit: <strong>${targetExit}</strong></div>
+                        <div style="color: #d9534f;">Stop Loss: <strong>${stopLossExit}</strong></div>
                         <div>Status: <span class="${p.order_status === 'FILLED' ? 'pnl-positive' : ''}">${p.order_status || 'PENDING'}</span></div>
                         <div>Date: ${p.entry_date || '--'}</div>
                     </div>
