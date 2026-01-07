@@ -410,25 +410,48 @@ class DatabaseManager:
         } for r in rows]
 
     def get_trade_summary(self):
-        """Get total P&L summary"""
+        """Get total P&L summary with Sharpe ratio"""
         conn = self.get_connection()
         cursor = conn.cursor()
+
+        # Basic stats
         cursor.execute('''
             SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN status = 'CLOSED' THEN net_pnl ELSE 0 END) as total_pnl,
                 SUM(CASE WHEN status = 'CLOSED' AND net_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
-                SUM(CASE WHEN status = 'CLOSED' AND net_pnl <= 0 THEN 1 ELSE 0 END) as losing_trades
+                SUM(CASE WHEN status = 'CLOSED' AND net_pnl <= 0 THEN 1 ELSE 0 END) as losing_trades,
+                SUM(CASE WHEN status = 'CLOSED' THEN return_pct ELSE 0 END) as cumulative_return
             FROM trades
         ''')
         row = cursor.fetchone()
+
+        # Get individual returns for Sharpe calculation
+        cursor.execute('''
+            SELECT return_pct FROM trades WHERE status = 'CLOSED' AND return_pct IS NOT NULL
+        ''')
+        returns = [r[0] for r in cursor.fetchall()]
         conn.close()
+
+        # Calculate Sharpe ratio
+        sharpe_ratio = 0.0
+        if len(returns) >= 2:
+            import statistics
+            mean_return = statistics.mean(returns)
+            std_return = statistics.stdev(returns)
+            if std_return > 0:
+                # Sharpe = mean / std (assuming risk-free rate = 0)
+                # Annualize by sqrt of trades per year estimate (assume ~100 trades/year)
+                sharpe_ratio = (mean_return / std_return) * (100 ** 0.5)
+
         return {
             'total_trades': row[0] or 0,
             'total_pnl': row[1] or 0,
             'winning_trades': row[2] or 0,
             'losing_trades': row[3] or 0,
-            'win_rate': (row[2] / row[0] * 100) if row[0] and row[0] > 0 else 0
+            'win_rate': (row[2] / row[0] * 100) if row[0] and row[0] > 0 else 0,
+            'cumulative_return': row[4] or 0,
+            'sharpe_ratio': sharpe_ratio
         }
 
 
@@ -2707,6 +2730,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
             <span class="trade-history-title">Trade Journal</span>
             <div class="trade-summary" id="trade-summary">
                 <span class="summary-stat">Total P&L: <strong id="total-pnl">$0.00</strong></span>
+                <span class="summary-stat">Return: <strong id="cumulative-return">0.00%</strong></span>
+                <span class="summary-stat">Sharpe: <strong id="sharpe-ratio">0.00</strong></span>
                 <span class="summary-stat">Win Rate: <strong id="win-rate">0%</strong></span>
                 <span class="summary-stat">Trades: <strong id="total-trades">0</strong></span>
             </div>
@@ -3128,6 +3153,18 @@ MONITOR_HTML = '''<!DOCTYPE html>
             const totalPnlEl = document.getElementById('total-pnl');
             totalPnlEl.textContent = (totalPnl >= 0 ? '$' : '-$') + Math.abs(totalPnl).toFixed(2);
             totalPnlEl.className = totalPnl >= 0 ? 'positive' : 'negative';
+
+            // Cumulative return
+            const cumReturn = summary.cumulative_return || 0;
+            const cumReturnEl = document.getElementById('cumulative-return');
+            cumReturnEl.textContent = (cumReturn >= 0 ? '+' : '') + cumReturn.toFixed(2) + '%';
+            cumReturnEl.className = cumReturn >= 0 ? 'positive' : 'negative';
+
+            // Sharpe ratio
+            const sharpe = summary.sharpe_ratio || 0;
+            const sharpeEl = document.getElementById('sharpe-ratio');
+            sharpeEl.textContent = sharpe.toFixed(2);
+            sharpeEl.className = sharpe >= 1 ? 'positive' : (sharpe >= 0 ? '' : 'negative');
 
             document.getElementById('win-rate').textContent = (summary.win_rate || 0).toFixed(1) + '%';
             document.getElementById('total-trades').textContent = summary.total_trades || 0;
