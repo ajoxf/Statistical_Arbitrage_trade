@@ -896,6 +896,32 @@ class TradingMonitor:
                     'exit_lower': -exit_threshold
                 })
 
+            # Margin calculations
+            # Get account leverage
+            account = mt5.account_info()
+            leverage = account.leverage if account else 100  # Default 1:100
+
+            # Get contract size from config (oz per lot)
+            contract_size = config.get('lot_size', 100)  # Gold: 100 oz, Silver: 5000 oz
+
+            # User's configured lot size for trading
+            user_lot_size = self.config.get('lot_size', 0.1)
+
+            # Margin per lot (Spot) = (Price × Contract Size) / Leverage
+            margin_per_lot_spot = (spot_price * contract_size) / leverage
+
+            # Margin per lot (Futures) - typically similar or slightly different
+            margin_per_lot_futures = (futures_price * contract_size) / leverage
+
+            # Total margin per lot (both legs of spread trade)
+            margin_per_lot_total = margin_per_lot_spot + margin_per_lot_futures
+
+            # Margin required for current position size
+            margin_required = margin_per_lot_total * user_lot_size
+
+            # Margin with 15% buffer for price fluctuation
+            margin_with_buffer = margin_required * 1.15
+
             return {
                 'asset_name': config['name'],
                 'spot_symbol': spot_symbol,
@@ -924,6 +950,12 @@ class TradingMonitor:
                 'signal': signal,
                 'hurst': hurst_value,
                 'hurst_regime': hurst_regime,
+                'leverage': leverage,
+                'margin_per_lot_spot': margin_per_lot_spot,
+                'margin_per_lot_total': margin_per_lot_total,
+                'margin_required': margin_required,
+                'margin_with_buffer': margin_with_buffer,
+                'user_lot_size': user_lot_size,
                 'timestamp': datetime.now().strftime('%H:%M:%S')
             }
 
@@ -2670,6 +2702,26 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <div class="basis-row">
                         <span class="basis-label" style="color: #888; font-size: 0.85em;">Premium %</span>
                         <span class="basis-value" style="color: ${(asset.actual_basis - asset.swap_basis) >= 0 ? '#5cb85c' : '#d9534f'}; font-size: 0.85em;">${asset.swap_basis !== 0 ? (((asset.actual_basis - asset.swap_basis) / Math.abs(asset.swap_basis)) * 100).toFixed(1) : 0}%</span>
+                    </div>
+                </div>
+
+                <div class="basis-section" style="background: #f8f9fa; border: 1px solid #e9ecef;">
+                    <div style="font-weight: 600; margin-bottom: 8px; color: #495057;">Margin Requirements (1:${asset.leverage})</div>
+                    <div class="basis-row">
+                        <span class="basis-label">Margin/Lot (Spot)</span>
+                        <span class="basis-value"><strong>$${asset.margin_per_lot_spot.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
+                    </div>
+                    <div class="basis-row">
+                        <span class="basis-label">Margin/Lot (Both Legs)</span>
+                        <span class="basis-value"><strong>$${asset.margin_per_lot_total.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
+                    </div>
+                    <div class="basis-row">
+                        <span class="basis-label">Required (${asset.user_lot_size} lots)</span>
+                        <span class="basis-value" style="color: #1976d2;"><strong>$${asset.margin_required.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
+                    </div>
+                    <div class="basis-row">
+                        <span class="basis-label">With 15% Buffer</span>
+                        <span class="basis-value" style="color: #c62828;"><strong>$${asset.margin_with_buffer.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
                     </div>
                 </div>
 
