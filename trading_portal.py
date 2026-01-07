@@ -950,11 +950,12 @@ class TradingMonitor:
                 })
 
             # Store price history for spot/futures charting
+            current_spread = futures_price - spot_price
             self.price_history[asset_key].append({
                 'time': datetime.now().strftime('%H:%M:%S'),
                 'spot_price': spot_price,
                 'futures_price': futures_price,
-                'spread': spread
+                'spread': current_spread
             })
 
             # Margin calculations
