@@ -952,6 +952,7 @@ class TradingMonitor:
                 'hurst_regime': hurst_regime,
                 'leverage': leverage,
                 'margin_per_lot_spot': margin_per_lot_spot,
+                'margin_per_lot_futures': margin_per_lot_futures,
                 'margin_per_lot_total': margin_per_lot_total,
                 'margin_required': margin_required,
                 'margin_with_buffer': margin_with_buffer,
@@ -2708,15 +2709,19 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 <div class="basis-section" style="background: #f8f9fa; border: 1px solid #e9ecef;">
                     <div style="font-weight: 600; margin-bottom: 8px; color: #495057;">Margin Requirements (1:${asset.leverage})</div>
                     <div class="basis-row">
-                        <span class="basis-label">Margin/Lot (Spot)</span>
-                        <span class="basis-value"><strong>$${asset.margin_per_lot_spot.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
+                        <span class="basis-label">Spot Leg (Buy/Sell)</span>
+                        <span class="basis-value"><strong>$${asset.margin_per_lot_spot.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong>/lot</span>
                     </div>
                     <div class="basis-row">
-                        <span class="basis-label">Margin/Lot (Both Legs)</span>
-                        <span class="basis-value"><strong>$${asset.margin_per_lot_total.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
+                        <span class="basis-label">Futures Leg (Buy/Sell)</span>
+                        <span class="basis-value"><strong>$${asset.margin_per_lot_futures.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong>/lot</span>
+                    </div>
+                    <div class="basis-row" style="border-top: 1px solid #dee2e6; padding-top: 6px; margin-top: 6px;">
+                        <span class="basis-label">Total (Spread Trade)</span>
+                        <span class="basis-value"><strong>$${asset.margin_per_lot_total.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong>/lot</span>
                     </div>
                     <div class="basis-row">
-                        <span class="basis-label">Required (${asset.user_lot_size} lots)</span>
+                        <span class="basis-label">For ${asset.user_lot_size} lots</span>
                         <span class="basis-value" style="color: #1976d2;"><strong>$${asset.margin_required.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
                     </div>
                     <div class="basis-row">
