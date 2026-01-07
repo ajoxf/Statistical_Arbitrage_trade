@@ -1303,8 +1303,17 @@ class TradingMonitor:
             if asset_key in self.positions:
                 self._close_position(asset_key, signal_type, data)
 
-    def _execute_mt5_order(self, symbol, order_type, volume, comment=""):
-        """Execute an order through MT5"""
+    def _execute_mt5_order(self, symbol, order_type, volume, comment="", use_limit=False):
+        """Execute an order through MT5
+
+        Args:
+            symbol: Trading symbol
+            order_type: mt5.ORDER_TYPE_BUY or mt5.ORDER_TYPE_SELL
+            volume: Lot size
+            comment: Order comment
+            use_limit: If True, use limit order (guaranteed price, may not fill)
+                      If False, use market order (guaranteed fill, may have slippage)
+        """
         try:
             symbol_info = mt5.symbol_info(symbol)
             if symbol_info is None:
@@ -1319,7 +1328,6 @@ class TradingMonitor:
                 return {'success': False, 'error': f'Cannot get tick for {symbol}'}
 
             price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
-            deviation = 20  # Max price deviation in points
 
             # Validate and adjust volume to MT5 requirements
             vol_min = symbol_info.volume_min
@@ -1337,23 +1345,39 @@ class TradingMonitor:
             # Round to valid step
             if vol_step > 0:
                 volume = round(volume / vol_step) * vol_step
-                # Ensure precision (avoid floating point issues)
                 volume = round(volume, 2)
 
-            logger.info(f"MT5 order: {symbol} volume={volume} (min={vol_min}, max={vol_max}, step={vol_step})")
+            order_mode = "LIMIT" if use_limit else "MARKET"
+            logger.info(f"MT5 {order_mode} order: {symbol} volume={volume} price={price}")
 
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": volume,
-                "type": order_type,
-                "price": price,
-                "deviation": deviation,
-                "magic": 123456,
-                "comment": comment,
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
+            if use_limit:
+                # Limit order - guaranteed price, may not fill
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": volume,
+                    "type": order_type,
+                    "price": price,
+                    "deviation": 0,  # No deviation - exact price only
+                    "magic": 123456,
+                    "comment": comment,
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_FOK,  # Fill or Kill - all or nothing at this price
+                }
+            else:
+                # Market order - guaranteed fill, may have slippage
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": volume,
+                    "type": order_type,
+                    "price": price,
+                    "deviation": 20,  # Allow 20 points slippage
+                    "magic": 123456,
+                    "comment": comment,
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,  # Immediate or Cancel
+                }
 
             result = mt5.order_send(request)
             if result is None:
@@ -1378,8 +1402,17 @@ class TradingMonitor:
             logger.error(f"MT5 order execution error: {e}")
             return {'success': False, 'error': str(e)}
 
-    def _close_mt5_position(self, ticket, symbol, volume, position_type):
-        """Close an MT5 position by ticket"""
+    def _close_mt5_position(self, ticket, symbol, volume, position_type, use_limit=False):
+        """Close an MT5 position by ticket
+
+        Args:
+            ticket: MT5 position ticket number
+            symbol: Trading symbol
+            volume: Lot size
+            position_type: Original position type (BUY or SELL)
+            use_limit: If True, use limit order (guaranteed price, may not fill)
+                      If False, use market order (guaranteed fill, may have slippage)
+        """
         try:
             # Opposite order to close
             close_type = mt5.ORDER_TYPE_SELL if position_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
@@ -1408,19 +1441,39 @@ class TradingMonitor:
                 volume = round(volume / vol_step) * vol_step
                 volume = round(volume, 2)
 
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": volume,
-                "type": close_type,
-                "position": ticket,
-                "price": price,
-                "deviation": 20,
-                "magic": 123456,
-                "comment": "Close position",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
+            order_mode = "LIMIT" if use_limit else "MARKET"
+            logger.info(f"MT5 {order_mode} close: {symbol} ticket={ticket} volume={volume} price={price}")
+
+            if use_limit:
+                # Limit order - guaranteed price, may not fill (for profit exits)
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": volume,
+                    "type": close_type,
+                    "position": ticket,
+                    "price": price,
+                    "deviation": 0,  # No deviation - exact price only
+                    "magic": 123456,
+                    "comment": "Close position",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_FOK,  # Fill or Kill
+                }
+            else:
+                # Market order - guaranteed fill (for stop losses, time-sensitive exits)
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": volume,
+                    "type": close_type,
+                    "position": ticket,
+                    "price": price,
+                    "deviation": 20,  # Allow slippage
+                    "magic": 123456,
+                    "comment": "Close position",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,  # Immediate or Cancel
+                }
 
             result = mt5.order_send(request)
             if result is None:
@@ -1479,16 +1532,18 @@ class TradingMonitor:
 
         mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
 
-        # Execute futures order
+        # Execute futures order (use limit order for better price)
         futures_result = self._execute_mt5_order(
             futures_symbol, futures_order_type, lot_size,
-            f"{asset_key} {direction} Futures"
+            f"{asset_key} {direction} Futures",
+            use_limit=True
         )
 
-        # Execute spot order
+        # Execute spot order (use limit order for better price)
         spot_result = self._execute_mt5_order(
             spot_symbol, spot_order_type, lot_size,
-            f"{asset_key} {direction} Spot"
+            f"{asset_key} {direction} Spot",
+            use_limit=True
         )
 
         if futures_result['success'] and spot_result['success']:
@@ -1601,18 +1656,23 @@ class TradingMonitor:
         spot_symbol = asset_data.get('spot_symbol')
         futures_symbol = asset_data.get('futures_symbol')
 
+        # Use limit orders for profit exits (CLOSE), market orders for urgent exits (STOP_LOSS, TIME_STOP, OVERNIGHT_CLOSE)
+        use_limit_for_close = (close_reason == 'CLOSE')
+
         if position.get('mt5_futures_ticket'):
             self._close_mt5_position(
                 position['mt5_futures_ticket'],
                 futures_symbol, lot_size,
-                mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL
+                mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL,
+                use_limit=use_limit_for_close
             )
 
         if position.get('mt5_spot_ticket'):
             self._close_mt5_position(
                 position['mt5_spot_ticket'],
                 spot_symbol, lot_size,
-                mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
+                mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY,
+                use_limit=use_limit_for_close
             )
 
         logger.info(f"{mode_label} CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
