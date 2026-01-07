@@ -2674,39 +2674,38 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 </div>
 
                 <div class="signal-section ${signalClass}">
-                    <div style="font-size: 0.75em; color: #888; margin-bottom: 5px;">PURE MEAN REVERSION</div>
+                    <div style="font-size: 12px; color: #888;">PURE MEAN REVERSION</div>
                     <div class="signal-type">${signal.type.replace('_', ' ')}</div>
                     <div class="zscore-display">${zscore}σ</div>
                     <div class="signal-reason">${signal.reason || ''}</div>
                     ${asset.stats ? `
-                    <div class="stats-row" style="font-size: 18px;">
-                        <span>Mean: ${asset.stats.mean.toFixed(2)}</span>
-                        <span>Std: ${asset.stats.std.toFixed(2)}</span>
-                        <span>Points: ${asset.stats.count}</span>
+                    <div class="stats-row" style="font-size: 18px; margin-top: 5px;">
+                        <span>Mean: <strong>${asset.stats.mean.toFixed(2)}</strong></span>
+                        <span>Std: <strong>${asset.stats.std.toFixed(2)}</strong></span>
+                        <span>Points: <strong>${asset.stats.count}</strong></span>
                     </div>
-                    <div class="stats-row" style="font-size: 16px; margin-top: 8px;">
+                    <div class="stats-row" style="font-size: 18px; margin-top: 5px;">
                         <span class="${hurstClass}">Hurst: <strong>${hurst}</strong></span>
-                        <span class="${hurstClass}" style="font-size: 14px;">${hurstRegime}</span>
+                        <span class="${hurstClass}"><strong>${hurstRegime}</strong></span>
                     </div>
                     <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 18px;">
-                        <div style="color: #888; margin-bottom: 10px;">Current Spread: <strong style="color: #333;">${asset.actual_basis.toFixed(2)}</strong></div>
-                        <table style="width: 100%; border-collapse: collapse;">
+                        <div style="color: #888;">Current Spread: <strong style="color: #333;">${asset.actual_basis.toFixed(2)}</strong></div>
+                        <table style="width: 100%; border-collapse: collapse; margin-top: 5px;">
                             <tr>
-                                <td style="color: #d9534f; padding: 4px 0;"><strong>Short Spread</strong></td>
-                                <td style="color: #d9534f; text-align: right;">Entry ↑: ${asset.stats.upper_entry.toFixed(2)}</td>
+                                <td style="color: #d9534f; padding: 2px 0;"><strong>Short Spread</strong></td>
+                                <td style="color: #d9534f; text-align: right;">Entry ↑: <strong>${asset.stats.upper_entry.toFixed(2)}</strong></td>
                             </tr>
                             <tr>
-                                <td style="padding: 4px 0;"></td>
-                                <td style="color: #5cb85c; text-align: right;">Exit: ${asset.stats.upper_exit.toFixed(2)}</td>
-                            </tr>
-                            <tr><td colspan="2" style="padding: 6px 0;"></td></tr>
-                            <tr>
-                                <td style="color: #5cb85c; padding: 4px 0;"><strong>Long Spread</strong></td>
-                                <td style="color: #5cb85c; text-align: right;">Entry ↓: ${asset.stats.lower_entry.toFixed(2)}</td>
+                                <td></td>
+                                <td style="color: #5cb85c; text-align: right;">Exit: <strong>${asset.stats.upper_exit.toFixed(2)}</strong></td>
                             </tr>
                             <tr>
-                                <td style="padding: 4px 0;"></td>
-                                <td style="color: #d9534f; text-align: right;">Exit: ${asset.stats.lower_exit.toFixed(2)}</td>
+                                <td style="color: #5cb85c; padding: 2px 0;"><strong>Long Spread</strong></td>
+                                <td style="color: #5cb85c; text-align: right;">Entry ↓: <strong>${asset.stats.lower_entry.toFixed(2)}</strong></td>
+                            </tr>
+                            <tr>
+                                <td></td>
+                                <td style="color: #d9534f; text-align: right;">Exit: <strong>${asset.stats.lower_exit.toFixed(2)}</strong></td>
                             </tr>
                         </table>
                     </div>` : ''}
