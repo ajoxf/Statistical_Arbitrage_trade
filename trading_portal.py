@@ -410,7 +410,7 @@ class DatabaseManager:
         } for r in rows]
 
     def get_trade_summary(self):
-        """Get total P&L summary with Sharpe ratio"""
+        """Get total P&L summary with Sharpe ratio and drawdown"""
         conn = self.get_connection()
         cursor = conn.cursor()
 
@@ -426,9 +426,11 @@ class DatabaseManager:
         ''')
         row = cursor.fetchone()
 
-        # Get individual returns for Sharpe calculation
+        # Get individual returns in chronological order for Sharpe and drawdown
         cursor.execute('''
-            SELECT return_pct FROM trades WHERE status = 'CLOSED' AND return_pct IS NOT NULL
+            SELECT return_pct FROM trades
+            WHERE status = 'CLOSED' AND return_pct IS NOT NULL
+            ORDER BY exit_date ASC
         ''')
         returns = [r[0] for r in cursor.fetchall()]
         conn.close()
@@ -444,6 +446,22 @@ class DatabaseManager:
                 # Annualize by sqrt of trades per year estimate (assume ~100 trades/year)
                 sharpe_ratio = (mean_return / std_return) * (100 ** 0.5)
 
+        # Calculate maximum drawdown from cumulative returns
+        max_drawdown = 0.0
+        current_drawdown = 0.0
+        if len(returns) > 0:
+            cumulative = 0.0
+            peak = 0.0
+            for ret in returns:
+                cumulative += ret
+                if cumulative > peak:
+                    peak = cumulative
+                drawdown = peak - cumulative
+                if drawdown > max_drawdown:
+                    max_drawdown = drawdown
+            # Current drawdown is from peak to current cumulative
+            current_drawdown = peak - cumulative
+
         return {
             'total_trades': row[0] or 0,
             'total_pnl': row[1] or 0,
@@ -451,7 +469,9 @@ class DatabaseManager:
             'losing_trades': row[3] or 0,
             'win_rate': (row[2] / row[0] * 100) if row[0] and row[0] > 0 else 0,
             'cumulative_return': row[4] or 0,
-            'sharpe_ratio': sharpe_ratio
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'current_drawdown': current_drawdown
         }
 
 
@@ -2496,6 +2516,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .summary-stat strong { color: #333; }
         .summary-stat strong.positive { color: #2e7d32; }
         .summary-stat strong.negative { color: #c62828; }
+        .summary-stat strong.warning { color: #f57c00; }
         .trade-history-table-wrapper { overflow-x: auto; }
         .trade-history-table {
             width: 100%;
@@ -2731,6 +2752,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             <div class="trade-summary" id="trade-summary">
                 <span class="summary-stat">Total P&L: <strong id="total-pnl">$0.00</strong></span>
                 <span class="summary-stat">Return: <strong id="cumulative-return">0.00%</strong></span>
+                <span class="summary-stat">Drawdown: <strong id="current-drawdown">0.00%</strong></span>
                 <span class="summary-stat">Sharpe: <strong id="sharpe-ratio">0.00</strong></span>
                 <span class="summary-stat">Win Rate: <strong id="win-rate">0%</strong></span>
                 <span class="summary-stat">Trades: <strong id="total-trades">0</strong></span>
@@ -3159,6 +3181,15 @@ MONITOR_HTML = '''<!DOCTYPE html>
             const cumReturnEl = document.getElementById('cumulative-return');
             cumReturnEl.textContent = (cumReturn >= 0 ? '+' : '') + cumReturn.toFixed(2) + '%';
             cumReturnEl.className = cumReturn >= 0 ? 'positive' : 'negative';
+
+            // Current drawdown (always shown as negative since it's a decline)
+            const drawdown = summary.current_drawdown || 0;
+            const drawdownEl = document.getElementById('current-drawdown');
+            drawdownEl.textContent = drawdown > 0 ? '-' + drawdown.toFixed(2) + '%' : '0.00%';
+            drawdownEl.className = drawdown > 5 ? 'negative' : (drawdown > 0 ? 'warning' : '');
+            // Show max drawdown in tooltip
+            const maxDd = summary.max_drawdown || 0;
+            drawdownEl.title = 'Max Drawdown: -' + maxDd.toFixed(2) + '%';
 
             // Sharpe ratio
             const sharpe = summary.sharpe_ratio || 0;
