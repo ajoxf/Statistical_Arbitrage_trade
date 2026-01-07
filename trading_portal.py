@@ -97,15 +97,22 @@ class DatabaseManager:
                 algo_enabled INTEGER DEFAULT 0,
                 paper_mode INTEGER DEFAULT 1,
                 commission_per_lot REAL DEFAULT 0,
+                hurst_threshold REAL DEFAULT 0.5,
+                trending_duration_minutes INTEGER DEFAULT 0,
                 updated_at TEXT
             )
         ''')
 
-        # Add commission_per_lot column if it doesn't exist (for existing DBs)
-        try:
-            cursor.execute('ALTER TABLE trading_config ADD COLUMN commission_per_lot REAL DEFAULT 0')
-        except:
-            pass  # Column already exists
+        # Add columns if they don't exist (for existing DBs)
+        for col_def in [
+            ('commission_per_lot', 'REAL DEFAULT 0'),
+            ('hurst_threshold', 'REAL DEFAULT 0.5'),
+            ('trending_duration_minutes', 'INTEGER DEFAULT 0')
+        ]:
+            try:
+                cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
+            except:
+                pass  # Column already exists
 
         # Trades log - comprehensive trade journal
         cursor.execute('''
@@ -207,7 +214,7 @@ class DatabaseManager:
                    silver_futures_symbol, silver_futures_expiry, lookback_period,
                    lookback_unit, entry_std_dev, exit_std_dev, stop_loss_std_dev,
                    time_stop_loss_days, max_positions, lot_size, algo_enabled,
-                   paper_mode, commission_per_lot
+                   paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes
             FROM trading_config WHERE id = 1
         ''')
         row = cursor.fetchone()
@@ -234,7 +241,9 @@ class DatabaseManager:
                 'lot_size': row[16] if row[16] is not None else 0.1,
                 'algo_enabled': bool(row[17]),
                 'paper_mode': bool(row[18]) if row[18] is not None else True,
-                'commission_per_lot': row[19] if row[19] is not None else 0
+                'commission_per_lot': row[19] if row[19] is not None else 0,
+                'hurst_threshold': row[20] if row[20] is not None else 0.5,
+                'trending_duration_minutes': row[21] if row[21] is not None else 0
             }
         return None
 
@@ -264,6 +273,8 @@ class DatabaseManager:
                     algo_enabled = ?,
                     paper_mode = ?,
                     commission_per_lot = ?,
+                    hurst_threshold = ?,
+                    trending_duration_minutes = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -286,6 +297,8 @@ class DatabaseManager:
                 1 if config.get('algo_enabled') else 0,
                 1 if config.get('paper_mode', True) else 0,
                 config.get('commission_per_lot', 0),
+                config.get('hurst_threshold', 0.5),
+                config.get('trending_duration_minutes', 0),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -435,6 +448,9 @@ class TradingMonitor:
 
         # Z-score history for charting (store last 200 points per asset)
         self.zscore_history = {'GOLD': deque(maxlen=200), 'SILVER': deque(maxlen=200)}
+
+        # Track when Hurst became trending for each asset
+        self.trending_since = {'GOLD': None, 'SILVER': None}
 
         # Active positions - load from database
         self.positions = {}
@@ -964,6 +980,48 @@ class TradingMonitor:
             logger.error(f"Error getting market data for {asset_key}: {e}")
             return None
 
+    def _get_market_session(self):
+        """Determine current market session based on UTC time"""
+        utc_now = datetime.utcnow()
+        hour = utc_now.hour
+
+        # Market session times (approximate, in UTC):
+        # Sydney: 22:00 - 07:00 UTC
+        # Tokyo/China: 00:00 - 09:00 UTC (China opens ~01:30 UTC)
+        # London: 07:00 - 16:00 UTC (opens 07:00/08:00 depending on DST)
+        # New York: 13:00 - 22:00 UTC (opens 13:30/14:30 depending on DST)
+
+        sessions = []
+
+        # China/Tokyo session
+        if 0 <= hour < 9:
+            if hour < 2:
+                sessions.append("🇨🇳 China Opening")
+            else:
+                sessions.append("🇨🇳 China/Tokyo")
+
+        # London session
+        if 7 <= hour < 16:
+            if 7 <= hour < 8:
+                sessions.append("🇬🇧 London Opening")
+            else:
+                sessions.append("🇬🇧 London")
+
+        # New York session
+        if 13 <= hour < 22:
+            if 13 <= hour < 14:
+                sessions.append("🇺🇸 NY Opening")
+            else:
+                sessions.append("🇺🇸 New York")
+
+        # Sydney session (overnight)
+        if hour >= 22 or hour < 7:
+            sessions.append("🇦🇺 Sydney")
+
+        if sessions:
+            return " | ".join(sessions)
+        return "Between Sessions"
+
     def _generate_signal(self, asset_key, zscore, stats=None, hurst_value=None, hurst_regime=None):
         """Generate trading signal based on z-score with Hurst exponent regime filter"""
         if zscore is None:
@@ -983,9 +1041,12 @@ class TradingMonitor:
         stop_loss_std = self.config.get('stop_loss_std_dev', 3.0)
         time_stop_days = self.config.get('time_stop_loss_days', 0)
 
-        # Hurst exponent threshold for mean reversion trading
-        # H < 0.5 means mean-reverting, H > 0.5 means trending
-        hurst_threshold = 0.5
+        # Hurst exponent threshold for mean reversion trading (configurable)
+        hurst_threshold = self.config.get('hurst_threshold', 0.5)
+        trending_duration_minutes = self.config.get('trending_duration_minutes', 0)
+
+        # Get current market session
+        market_session = self._get_market_session()
 
         # Check existing positions
         has_position = asset_key in self.positions
@@ -993,11 +1054,32 @@ class TradingMonitor:
         if not has_position:
             # HURST FILTER: Only enter new positions if regime is mean-reverting
             if hurst_value is not None and hurst_value >= hurst_threshold:
-                return {
-                    'type': 'REGIME_FILTER',
-                    'reason': f'Hurst {hurst_value:.3f} >= {hurst_threshold} ({hurst_regime}) - Not mean-reverting',
-                    'action': 'Entry blocked - Wait for mean-reverting regime'
-                }
+                # Track when trending started
+                if self.trending_since.get(asset_key) is None:
+                    self.trending_since[asset_key] = datetime.now()
+
+                # Check if trending for required duration
+                trending_start = self.trending_since[asset_key]
+                trending_minutes = (datetime.now() - trending_start).total_seconds() / 60
+
+                # Only block if trending for required duration (or immediate if 0)
+                if trending_duration_minutes == 0 or trending_minutes >= trending_duration_minutes:
+                    return {
+                        'type': 'REGIME_FILTER',
+                        'reason': f'Hurst {hurst_value:.3f} >= {hurst_threshold} ({hurst_regime}) for {trending_minutes:.0f}min | {market_session}',
+                        'action': 'Entry blocked - Wait for mean-reverting regime'
+                    }
+                else:
+                    # Still in grace period
+                    remaining = trending_duration_minutes - trending_minutes
+                    return {
+                        'type': 'REGIME_FILTER',
+                        'reason': f'Hurst {hurst_value:.3f} trending - grace period {remaining:.0f}min left | {market_session}',
+                        'action': f'May enter if reverts within {remaining:.0f}min'
+                    }
+            else:
+                # Reset trending tracker when mean-reverting again
+                self.trending_since[asset_key] = None
 
             if zscore > entry_std:
                 return {
@@ -1637,6 +1719,8 @@ def settings():
             monitor.config['max_positions'] = int(request.form.get('max_positions', 3))
             monitor.config['lot_size'] = float(request.form.get('lot_size', 0.1))
             monitor.config['commission_per_lot'] = float(request.form.get('commission_per_lot', 0))
+            monitor.config['hurst_threshold'] = float(request.form.get('hurst_threshold', 0.5))
+            monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 0))
 
             monitor.db.save_config(monitor.config)
             return redirect(url_for('settings') + '?saved=1')
@@ -1696,8 +1780,11 @@ def get_data():
             'entry_std_dev': monitor.config.get('entry_std_dev', 2.0),
             'exit_std_dev': monitor.config.get('exit_std_dev', 0.5),
             'stop_loss_std_dev': monitor.config.get('stop_loss_std_dev', 3.0),
-            'time_stop_loss_days': monitor.config.get('time_stop_loss_days', 0)
+            'time_stop_loss_days': monitor.config.get('time_stop_loss_days', 0),
+            'hurst_threshold': monitor.config.get('hurst_threshold', 0.5),
+            'trending_duration_minutes': monitor.config.get('trending_duration_minutes', 0)
         },
+        'market_session': monitor._get_market_session(),
         'last_update': monitor.last_update
     })
 
@@ -2414,6 +2501,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
             <span class="control-label">Thresholds:</span>
             <span style="color: #666;" id="thresholds">Entry: ±2.0σ | Exit: ±0.5σ | Stop: ±3.0σ</span>
         </div>
+        <div class="control-group">
+            <span class="control-label">Session:</span>
+            <span style="color: #1976d2; font-weight: 500;" id="market-session">Loading...</span>
+        </div>
         <a href="/settings" class="settings-link">⚙ Settings</a>
         <button class="reset-btn" onclick="resetStatistics()">↺ Reset Stats</button>
         <button class="reset-btn" onclick="clearTrades()">🗑 Clear Trades</button>
@@ -2543,11 +2634,19 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     document.getElementById('algo-status').className = 'status-badge ' + (cfg.algo_enabled ? 'active' : 'inactive');
                     document.getElementById('mode-status').textContent = cfg.paper_mode ? 'PAPER' : 'LIVE';
                     document.getElementById('mode-status').className = 'status-badge ' + (cfg.paper_mode ? 'paper' : 'live');
-                    let thresholdText = `Entry: ±${cfg.entry_std_dev}σ | Exit: ±${cfg.exit_std_dev}σ | Stop: ±${cfg.stop_loss_std_dev}σ | Lookback: ${cfg.lookback_period} ${cfg.lookback_unit}`;
+                    let thresholdText = `Entry: ±${cfg.entry_std_dev}σ | Exit: ±${cfg.exit_std_dev}σ | Stop: ±${cfg.stop_loss_std_dev}σ | Hurst: ${cfg.hurst_threshold}`;
+                    if (cfg.trending_duration_minutes > 0) {
+                        thresholdText += ` (${cfg.trending_duration_minutes}min)`;
+                    }
                     if (cfg.time_stop_loss_days > 0) {
-                        thresholdText += ` | Time Stop: ${cfg.time_stop_loss_days} days`;
+                        thresholdText += ` | Time Stop: ${cfg.time_stop_loss_days}d`;
                     }
                     document.getElementById('thresholds').textContent = thresholdText;
+
+                    // Update market session
+                    if (data.market_session) {
+                        document.getElementById('market-session').textContent = data.market_session;
+                    }
 
                     const container = document.getElementById('assets-container');
                     container.innerHTML = '';
@@ -3307,6 +3406,22 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <label>Time-Based Stop Loss (Days)</label>
                     <input type="number" name="time_stop_loss_days" value="{{ config.time_stop_loss_days or 0 }}" min="0" max="365" step="0.5">
                     <div class="help-text">Auto-close position after X days (0 = disabled). Use 0.5 for 12 hours, 1 for 1 day, etc.</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Regime Filter (Hurst Exponent)</div>
+
+                <div class="form-group">
+                    <label>Hurst Threshold: <span id="hurst_threshold_value">{{ config.hurst_threshold or 0.5 }}</span></label>
+                    <input type="range" name="hurst_threshold" value="{{ config.hurst_threshold or 0.5 }}" min="0.3" max="0.9" step="0.05" oninput="document.getElementById('hurst_threshold_value').textContent = this.value">
+                    <div class="help-text">Block entries when Hurst >= this value (0.5 = strict, 0.7 = relaxed). Lower = more filtering.</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Trending Duration (Minutes)</label>
+                    <input type="number" name="trending_duration_minutes" value="{{ config.trending_duration_minutes or 0 }}" min="0" max="120" step="5">
+                    <div class="help-text">Only block if trending for X minutes continuously (0 = immediate block)</div>
                 </div>
             </div>
 
