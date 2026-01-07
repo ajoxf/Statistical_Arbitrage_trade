@@ -447,16 +447,17 @@ class DatabaseManager:
         returns = [r[0] for r in cursor.fetchall()]
         conn.close()
 
-        # Calculate Sharpe ratio
+        # Calculate Sharpe ratio (per-trade basis, not annualized)
+        # This is mean return / std dev - a simple risk-adjusted return metric
+        # Note: Not directly comparable to traditional annualized Sharpe ratios
         sharpe_ratio = 0.0
         if len(returns) >= 2:
             import statistics
             mean_return = statistics.mean(returns)
             std_return = statistics.stdev(returns)
             if std_return > 0:
-                # Sharpe = mean / std (assuming risk-free rate = 0)
-                # Annualize by sqrt of trades per year estimate (assume ~100 trades/year)
-                sharpe_ratio = (mean_return / std_return) * (100 ** 0.5)
+                # Simple Sharpe = mean / std (risk-free rate assumed 0)
+                sharpe_ratio = mean_return / std_return
 
         # Calculate maximum drawdown from cumulative returns
         max_drawdown = 0.0
