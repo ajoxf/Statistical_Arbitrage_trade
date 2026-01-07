@@ -1740,7 +1740,7 @@ def restart():
 
 @app.route('/clear_trades')
 def clear_trades():
-    """Clear all trades from the journal"""
+    """Clear all trades from the journal (redirect version)"""
     try:
         conn = monitor.db.get_connection()
         cursor = conn.cursor()
@@ -1753,6 +1753,23 @@ def clear_trades():
     except Exception as e:
         logger.error(f"Error clearing trades: {e}")
         return f"Error: {e}", 500
+
+
+@app.route('/api/clear_trades', methods=['POST'])
+def api_clear_trades():
+    """Clear all trades from the journal (API version)"""
+    try:
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM trades')
+        conn.commit()
+        conn.close()
+        monitor.positions = {}  # Clear open positions too
+        logger.info("Trade journal cleared via API")
+        return jsonify({'status': 'success', 'message': 'Trade journal cleared'})
+    except Exception as e:
+        logger.error(f"Error clearing trades: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 # =============================================================================
@@ -2366,6 +2383,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         </div>
         <a href="/settings" class="settings-link">⚙ Settings</a>
         <button class="reset-btn" onclick="resetStatistics()">↺ Reset Stats</button>
+        <button class="reset-btn" onclick="clearTrades()">🗑 Clear Trades</button>
     </div>
 
     <div class="account-section" id="account-section">
@@ -2863,6 +2881,26 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 }
             })
             .catch(err => alert('Error resetting statistics: ' + err));
+        }
+
+        function clearTrades() {
+            if (!confirm('Are you sure you want to clear all trades?\\n\\nThis will delete:\\n- All trade history\\n- All open positions\\n\\nThis action cannot be undone.')) {
+                return;
+            }
+            fetch('/api/clear_trades', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert('Trade journal cleared successfully.');
+                    updateData();  // Refresh the page data
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(err => alert('Error clearing trades: ' + err));
         }
 
         // Z-Score Chart
