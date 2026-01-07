@@ -1515,10 +1515,12 @@ class TradingMonitor:
 
             # After 3 consecutive stop losses, auto-enable Hurst protection
             if self.consecutive_stop_losses >= 3:
-                logger.warning(f"3 consecutive stop losses! Auto-enabling Hurst filter (threshold=0.5, duration=20min)")
+                previous_lot_size = self.config.get('lot_size', 0.1)
+                logger.warning(f"3 consecutive stop losses! Auto-enabling Hurst filter (threshold=0.5, duration=20min) and reducing lot size from {previous_lot_size} to 0.01")
                 self.config['hurst_enabled'] = True
                 self.config['hurst_threshold'] = 0.5
                 self.config['trending_duration_minutes'] = 20
+                self.config['lot_size'] = 0.01  # Reset to minimum lot size
                 self.db.save_config(self.config)
                 # Reset counter after enabling protection
                 self.consecutive_stop_losses = 0
