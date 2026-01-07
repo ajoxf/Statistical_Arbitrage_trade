@@ -3321,7 +3321,7 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
                 <div class="form-group">
                     <label>Lot Size</label>
-                    <input type="number" name="lot_size" value="{{ config.lot_size }}" min="0.01" max="10" step="0.01">
+                    <input type="number" name="lot_size" value="{{ config.lot_size }}" min="0.01" max="700" step="0.01">
                     <div class="help-text">Size of each trade in lots</div>
                 </div>
 
