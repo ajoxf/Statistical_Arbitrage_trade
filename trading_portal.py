@@ -1550,9 +1550,17 @@ class TradingMonitor:
 
         position['net_pnl'] = position['gross_pnl'] + position['swap_cost'] + position['commission']
 
-        # Calculate return % based on margin used (approximate)
-        margin_used = position['entry_spot_price'] * lot_size * contract_size * 0.1  # 10% margin
-        position['return_pct'] = (position['net_pnl'] / margin_used * 100) if margin_used > 0 else 0
+        # Calculate return % based on actual margin used
+        # Margin = (Spot Position Value + Futures Position Value) × (1 + Buffer) / Leverage
+        account = mt5.account_info()
+        leverage = account.leverage if account else 100  # Default 1:100
+
+        spot_position_value = position['entry_spot_price'] * lot_size * contract_size
+        futures_position_value = position['entry_futures_price'] * lot_size * contract_size
+        total_notional = spot_position_value + futures_position_value
+        margin_with_buffer = (total_notional * 1.15) / leverage  # 15% buffer for price fluctuation
+
+        position['return_pct'] = (position['net_pnl'] / margin_with_buffer * 100) if margin_with_buffer > 0 else 0
 
         mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
 
