@@ -2607,8 +2607,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
         <div class="chart-header">
             <div class="chart-title">Z-Score Chart</div>
             <div class="chart-tabs">
-                <div class="chart-tab active" onclick="switchChart('GOLD')">GOLD</div>
-                <div class="chart-tab" onclick="switchChart('SILVER')">SILVER</div>
+                <div class="chart-tab active" id="tab-asset1" onclick="switchChart('GOLD')">Asset 1</div>
+                <div class="chart-tab" id="tab-asset2" onclick="switchChart('SILVER')">Asset 2</div>
             </div>
         </div>
         <div class="chart-container">
@@ -2678,6 +2678,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
     </div>
 
     <script>
+        // Get asset filter from URL parameter (?asset=1 or ?asset=2)
+        const urlParams = new URLSearchParams(window.location.search);
+        const assetFilter = urlParams.get('asset'); // '1', '2', or null (show all)
+
         function updateData() {
             fetch('/api/data')
                 .then(res => res.json())
@@ -2708,26 +2712,84 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         document.getElementById('market-session').textContent = data.market_session;
                     }
 
+                    // Filter data by asset if URL parameter is set
+                    const assetKeys = Object.keys(data.data);
+                    let filteredData = data.data;
+                    let filteredKeys = assetKeys;
+                    let selectedAssetKey = null;
+
+                    if (assetFilter === '1' && assetKeys.length > 0) {
+                        selectedAssetKey = assetKeys[0];
+                        filteredData = { [selectedAssetKey]: data.data[selectedAssetKey] };
+                        filteredKeys = [selectedAssetKey];
+                    } else if (assetFilter === '2' && assetKeys.length > 1) {
+                        selectedAssetKey = assetKeys[1];
+                        filteredData = { [selectedAssetKey]: data.data[selectedAssetKey] };
+                        filteredKeys = [selectedAssetKey];
+                    }
+
+                    // Update chart tab names and visibility
+                    const tabsContainer = document.querySelector('.chart-tabs');
+                    if (assetFilter) {
+                        // Single asset mode - hide tabs, show asset name as title
+                        tabsContainer.style.display = 'none';
+                        const assetName = filteredData[filteredKeys[0]]?.asset_name || 'Asset';
+                        document.querySelector('.chart-title').textContent = `${assetName} Z-Score`;
+                        // Set chart to this asset
+                        if (selectedAssetKey) currentChartAsset = selectedAssetKey;
+                    } else {
+                        // Multi-asset mode - show tabs
+                        tabsContainer.style.display = 'flex';
+                        document.querySelector('.chart-title').textContent = 'Z-Score Chart';
+                        if (assetKeys.length > 0 && data.data[assetKeys[0]]) {
+                            document.getElementById('tab-asset1').textContent = data.data[assetKeys[0]].asset_name;
+                        }
+                        if (assetKeys.length > 1 && data.data[assetKeys[1]]) {
+                            document.getElementById('tab-asset2').textContent = data.data[assetKeys[1]].asset_name;
+                        }
+                    }
+
                     const container = document.getElementById('assets-container');
                     container.innerHTML = '';
-                    for (const [key, asset] of Object.entries(data.data)) {
+                    for (const [key, asset] of Object.entries(filteredData)) {
                         container.appendChild(createAssetCard(asset));
                     }
 
                     // Update account info
                     updateAccountInfo(data.account);
 
-                    // Update MT5 positions
-                    updateMT5Positions(data.mt5_positions);
+                    // Update MT5 positions - filter by asset if single-asset mode
+                    let filteredMT5Positions = data.mt5_positions;
+                    if (assetFilter && selectedAssetKey && data.mt5_positions) {
+                        const assetSymbols = filteredData[selectedAssetKey];
+                        if (assetSymbols) {
+                            filteredMT5Positions = data.mt5_positions.filter(p =>
+                                p.symbol === assetSymbols.spot_symbol || p.symbol === assetSymbols.futures_symbol
+                            );
+                        }
+                    }
+                    updateMT5Positions(filteredMT5Positions);
 
-                    // Update algo positions
-                    updatePositions(data.positions);
+                    // Update algo positions - filter by asset if single-asset mode
+                    let filteredPositions = data.positions;
+                    if (assetFilter && selectedAssetKey && data.positions) {
+                        filteredPositions = data.positions.filter(p => p.asset === selectedAssetKey);
+                    }
+                    updatePositions(filteredPositions);
 
-                    // Update trade history
-                    updateTradeHistory(data.trade_history, data.trade_summary);
+                    // Update trade history - filter by asset if single-asset mode
+                    let filteredHistory = data.trade_history;
+                    if (assetFilter && selectedAssetKey && data.trade_history) {
+                        filteredHistory = data.trade_history.filter(t => t.asset === selectedAssetKey);
+                    }
+                    updateTradeHistory(filteredHistory, data.trade_summary);
 
-                    // Update Z-Score chart
-                    updateZscoreChart(data.zscore_history, data.trade_history);
+                    // Update Z-Score chart - filter by asset if single-asset mode
+                    let filteredZscoreHistory = data.zscore_history;
+                    if (assetFilter && selectedAssetKey && data.zscore_history) {
+                        filteredZscoreHistory = { [selectedAssetKey]: data.zscore_history[selectedAssetKey] };
+                    }
+                    updateZscoreChart(filteredZscoreHistory, filteredHistory);
                 })
                 .catch(err => console.error('Error:', err));
         }
