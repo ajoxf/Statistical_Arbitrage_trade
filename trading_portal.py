@@ -2150,7 +2150,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .signal-section.collecting { border-color: #1976d2; background: #e3f2fd; }
         .signal-section.time-stop { border-color: #ff9800; background: #fff3e0; }
         .signal-section.stop-loss { border-color: #9c27b0; background: #f3e5f5; }
-        .signal-section.regime-filter { border-color: #795548; background: #efebe9; }
+        .signal-section.regime-filter { border-color: #9e9e9e; background: #f5f5f5; }
 
         .zscore-display {
             font-size: 2.5em;
@@ -2161,7 +2161,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .signal-section.buy-basis .zscore-display { color: #2e7d32; }
         .signal-section.time-stop .zscore-display { color: #ff9800; }
         .signal-section.stop-loss .zscore-display { color: #9c27b0; }
-        .signal-section.regime-filter .zscore-display { color: #795548; }
+        .signal-section.regime-filter .zscore-display { color: #616161; }
         .signal-type { font-size: 1.1em; font-weight: 600; margin-bottom: 5px; }
         .signal-reason { color: #666; font-size: 0.9em; }
 
