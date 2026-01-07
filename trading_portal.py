@@ -1908,7 +1908,7 @@ def get_data():
     mt5_positions = monitor.get_mt5_positions()
 
     # Get trade history and summary
-    trade_history = monitor.db.get_trades(limit=50)
+    trade_history = monitor.db.get_trades(limit=500)
     trade_summary = monitor.db.get_trade_summary()
 
     # Get z-score history for charting
@@ -2014,8 +2014,66 @@ def reset_statistics():
 @app.route('/api/trades')
 def get_trades():
     """Get trade history"""
-    trades = monitor.db.get_trades(50)
+    trades = monitor.db.get_trades(500)
     return jsonify(trades)
+
+
+@app.route('/api/trades/csv')
+def download_trades_csv():
+    """Download trade history as CSV"""
+    import csv
+    import io
+
+    trades = monitor.db.get_trades(limit=10000)  # Get all trades
+
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header row
+    writer.writerow([
+        'Trade ID', 'Asset', 'Direction', 'Entry Date', 'Exit Date', 'Days Held',
+        'Entry Z-Score', 'Exit Z-Score', 'Entry Spot', 'Entry Futures',
+        'Exit Spot', 'Exit Futures', 'Spot P&L', 'Futures P&L', 'Gross P&L',
+        'Swap Cost', 'Commission', 'Spread Cost', 'Net P&L', 'Return %',
+        'Lot Size', 'Status'
+    ])
+
+    # Data rows
+    for t in trades:
+        writer.writerow([
+            t.get('trade_id', ''),
+            t.get('asset', ''),
+            t.get('direction', ''),
+            t.get('entry_date', ''),
+            t.get('exit_date', ''),
+            t.get('days_held', ''),
+            t.get('entry_zscore', ''),
+            t.get('exit_zscore', ''),
+            t.get('entry_spot_price', ''),
+            t.get('entry_futures_price', ''),
+            t.get('exit_spot_price', ''),
+            t.get('exit_futures_price', ''),
+            t.get('spot_pnl', ''),
+            t.get('futures_pnl', ''),
+            t.get('gross_pnl', ''),
+            t.get('swap_cost', ''),
+            t.get('commission', ''),
+            t.get('spread_cost', ''),
+            t.get('net_pnl', ''),
+            t.get('return_pct', ''),
+            t.get('lot_size', ''),
+            t.get('status', '')
+        ])
+
+    # Create response
+    output.seek(0)
+    from flask import Response
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename=trade_journal_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'}
+    )
 
 
 @app.route('/restart')
@@ -2550,7 +2608,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
         .summary-stat strong.positive { color: #2e7d32; }
         .summary-stat strong.negative { color: #c62828; }
         .summary-stat strong.warning { color: #f57c00; }
-        .trade-history-table-wrapper { overflow-x: auto; }
+        .trade-history-table-wrapper { overflow-x: auto; max-height: 400px; overflow-y: auto; }
+        .download-btn { padding: 4px 10px; background: #1976d2; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; margin-left: 10px; }
+        .download-btn:hover { background: #1565c0; }
         .trade-history-table {
             width: 100%;
             border-collapse: collapse;
@@ -2789,6 +2849,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 <span class="summary-stat">Sharpe: <strong id="sharpe-ratio">0.00</strong></span>
                 <span class="summary-stat">Win Rate: <strong id="win-rate">0%</strong></span>
                 <span class="summary-stat">Trades: <strong id="total-trades">0</strong></span>
+                <button class="download-btn" onclick="downloadTradesCSV()" title="Download as CSV">⬇ CSV</button>
             </div>
         </div>
         <div class="trade-history-table-wrapper">
@@ -3333,6 +3394,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 }
             })
             .catch(err => alert('Error resetting statistics: ' + err));
+        }
+
+        function downloadTradesCSV() {
+            window.location.href = '/api/trades/csv';
         }
 
         function clearTrades() {
