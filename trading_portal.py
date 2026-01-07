@@ -432,31 +432,63 @@ class DatabaseManager:
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN status = 'CLOSED' THEN net_pnl ELSE 0 END) as total_pnl,
                 SUM(CASE WHEN status = 'CLOSED' AND net_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
-                SUM(CASE WHEN status = 'CLOSED' AND net_pnl <= 0 THEN 1 ELSE 0 END) as losing_trades,
-                SUM(CASE WHEN status = 'CLOSED' THEN return_pct ELSE 0 END) as cumulative_return
+                SUM(CASE WHEN status = 'CLOSED' AND net_pnl <= 0 THEN 1 ELSE 0 END) as losing_trades
             FROM trades
         ''')
         row = cursor.fetchone()
+        total_pnl = row[1] or 0
 
-        # Get individual returns in chronological order for Sharpe and drawdown
+        # Get trade details for margin calculation and returns
         cursor.execute('''
-            SELECT return_pct FROM trades
-            WHERE status = 'CLOSED' AND return_pct IS NOT NULL
+            SELECT asset, entry_spot_price, entry_futures_price, lot_size, return_pct, exit_date
+            FROM trades
+            WHERE status = 'CLOSED'
             ORDER BY exit_date ASC
         ''')
-        returns = [r[0] for r in cursor.fetchall()]
+        trades = cursor.fetchall()
         conn.close()
 
+        # Calculate total margin used across all trades
+        # Margin = (Spot Value + Futures Value) × 1.15 buffer / Leverage
+        leverage = 100  # Default leverage
+        try:
+            account = mt5.account_info()
+            if account:
+                leverage = account.leverage
+        except:
+            pass
+
+        total_margin_used = 0
+        returns = []
+        for t in trades:
+            asset, entry_spot, entry_futures, lot_size, return_pct, exit_date = t
+            if entry_spot and entry_futures and lot_size:
+                # Get contract size for this asset
+                if asset == 'GOLD':
+                    contract_size = 100
+                elif asset == 'SILVER':
+                    contract_size = 5000
+                else:
+                    contract_size = 100  # Default
+
+                spot_value = entry_spot * lot_size * contract_size
+                futures_value = entry_futures * lot_size * contract_size
+                margin = (spot_value + futures_value) * 1.15 / leverage
+                total_margin_used += margin
+
+            if return_pct is not None:
+                returns.append(return_pct)
+
+        # Calculate overall return based on total margin used
+        cumulative_return = (total_pnl / total_margin_used * 100) if total_margin_used > 0 else 0
+
         # Calculate Sharpe ratio (per-trade basis, not annualized)
-        # This is mean return / std dev - a simple risk-adjusted return metric
-        # Note: Not directly comparable to traditional annualized Sharpe ratios
         sharpe_ratio = 0.0
         if len(returns) >= 2:
             import statistics
             mean_return = statistics.mean(returns)
             std_return = statistics.stdev(returns)
             if std_return > 0:
-                # Simple Sharpe = mean / std (risk-free rate assumed 0)
                 sharpe_ratio = mean_return / std_return
 
         # Calculate maximum drawdown from cumulative returns
@@ -472,7 +504,6 @@ class DatabaseManager:
                 drawdown = peak - cumulative
                 if drawdown > max_drawdown:
                     max_drawdown = drawdown
-            # Current drawdown is from peak to current cumulative
             current_drawdown = peak - cumulative
 
         return {
