@@ -83,9 +83,13 @@ class DatabaseManager:
                 gold_spot_symbol TEXT DEFAULT '',
                 gold_futures_symbol TEXT DEFAULT '',
                 gold_futures_expiry TEXT DEFAULT '',
+                gold_asset_name TEXT DEFAULT 'GOLD',
+                gold_contract_size REAL DEFAULT 100,
                 silver_spot_symbol TEXT DEFAULT '',
                 silver_futures_symbol TEXT DEFAULT '',
                 silver_futures_expiry TEXT DEFAULT '',
+                silver_asset_name TEXT DEFAULT 'SILVER',
+                silver_contract_size REAL DEFAULT 5000,
                 lookback_period INTEGER DEFAULT 90,
                 lookback_unit TEXT DEFAULT 'minutes',
                 entry_std_dev REAL DEFAULT 2.0,
@@ -107,7 +111,11 @@ class DatabaseManager:
         for col_def in [
             ('commission_per_lot', 'REAL DEFAULT 0'),
             ('hurst_threshold', 'REAL DEFAULT 0.5'),
-            ('trending_duration_minutes', 'INTEGER DEFAULT 15')
+            ('trending_duration_minutes', 'INTEGER DEFAULT 15'),
+            ('gold_asset_name', "TEXT DEFAULT 'GOLD'"),
+            ('gold_contract_size', 'REAL DEFAULT 100'),
+            ('silver_asset_name', "TEXT DEFAULT 'SILVER'"),
+            ('silver_contract_size', 'REAL DEFAULT 5000')
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -210,8 +218,9 @@ class DatabaseManager:
         # when schema changes. Never use SELECT * which depends on physical column order.
         cursor.execute('''
             SELECT id, gold_swap_charge, silver_swap_charge, gold_spot_symbol,
-                   gold_futures_symbol, gold_futures_expiry, silver_spot_symbol,
-                   silver_futures_symbol, silver_futures_expiry, lookback_period,
+                   gold_futures_symbol, gold_futures_expiry, gold_asset_name, gold_contract_size,
+                   silver_spot_symbol, silver_futures_symbol, silver_futures_expiry,
+                   silver_asset_name, silver_contract_size, lookback_period,
                    lookback_unit, entry_std_dev, exit_std_dev, stop_loss_std_dev,
                    time_stop_loss_days, max_positions, lot_size, algo_enabled,
                    paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes
@@ -228,22 +237,26 @@ class DatabaseManager:
                 'gold_spot_symbol': row[3] or '',
                 'gold_futures_symbol': row[4] or '',
                 'gold_futures_expiry': row[5] or '',
-                'silver_spot_symbol': row[6] or '',
-                'silver_futures_symbol': row[7] or '',
-                'silver_futures_expiry': row[8] or '',
-                'lookback_period': row[9] if row[9] is not None else 90,
-                'lookback_unit': row[10] or 'minutes',
-                'entry_std_dev': row[11] if row[11] is not None else 2.0,
-                'exit_std_dev': row[12] if row[12] is not None else 0.5,
-                'stop_loss_std_dev': row[13] if row[13] is not None else 3.0,
-                'time_stop_loss_days': row[14] if row[14] is not None else 0,
-                'max_positions': row[15] if row[15] is not None else 3,
-                'lot_size': row[16] if row[16] is not None else 0.1,
-                'algo_enabled': bool(row[17]),
-                'paper_mode': bool(row[18]) if row[18] is not None else True,
-                'commission_per_lot': row[19] if row[19] is not None else 0,
-                'hurst_threshold': row[20] if row[20] is not None else 0.5,
-                'trending_duration_minutes': row[21] if row[21] is not None else 15
+                'gold_asset_name': row[6] or 'GOLD',
+                'gold_contract_size': row[7] if row[7] is not None else 100,
+                'silver_spot_symbol': row[8] or '',
+                'silver_futures_symbol': row[9] or '',
+                'silver_futures_expiry': row[10] or '',
+                'silver_asset_name': row[11] or 'SILVER',
+                'silver_contract_size': row[12] if row[12] is not None else 5000,
+                'lookback_period': row[13] if row[13] is not None else 90,
+                'lookback_unit': row[14] or 'minutes',
+                'entry_std_dev': row[15] if row[15] is not None else 2.0,
+                'exit_std_dev': row[16] if row[16] is not None else 0.5,
+                'stop_loss_std_dev': row[17] if row[17] is not None else 3.0,
+                'time_stop_loss_days': row[18] if row[18] is not None else 0,
+                'max_positions': row[19] if row[19] is not None else 3,
+                'lot_size': row[20] if row[20] is not None else 0.1,
+                'algo_enabled': bool(row[21]),
+                'paper_mode': bool(row[22]) if row[22] is not None else True,
+                'commission_per_lot': row[23] if row[23] is not None else 0,
+                'hurst_threshold': row[24] if row[24] is not None else 0.5,
+                'trending_duration_minutes': row[25] if row[25] is not None else 15
             }
         return None
 
@@ -259,9 +272,13 @@ class DatabaseManager:
                     gold_spot_symbol = ?,
                     gold_futures_symbol = ?,
                     gold_futures_expiry = ?,
+                    gold_asset_name = ?,
+                    gold_contract_size = ?,
                     silver_spot_symbol = ?,
                     silver_futures_symbol = ?,
                     silver_futures_expiry = ?,
+                    silver_asset_name = ?,
+                    silver_contract_size = ?,
                     lookback_period = ?,
                     lookback_unit = ?,
                     entry_std_dev = ?,
@@ -283,9 +300,13 @@ class DatabaseManager:
                 config.get('gold_spot_symbol', ''),
                 config.get('gold_futures_symbol', ''),
                 config.get('gold_futures_expiry', ''),
+                config.get('gold_asset_name', 'GOLD'),
+                config.get('gold_contract_size', 100),
                 config.get('silver_spot_symbol', ''),
                 config.get('silver_futures_symbol', ''),
                 config.get('silver_futures_expiry', ''),
+                config.get('silver_asset_name', 'SILVER'),
+                config.get('silver_contract_size', 5000),
                 config.get('lookback_period', 90),
                 config.get('lookback_unit', 'minutes'),
                 config.get('entry_std_dev', 2.0),
@@ -416,23 +437,25 @@ class TradingMonitor:
         self.db = DatabaseManager()
         self.config = self.db.get_config() or {}
 
+        # Asset configuration - uses config values for name and contract size
+        # Internal keys remain 'GOLD' and 'SILVER' for backward compatibility
         self.assets = {
             'GOLD': {
-                'name': 'GOLD',
+                'name': self.config.get('gold_asset_name', 'GOLD'),
                 'spot_symbols': ['XAUUSD', 'XAUUSD_', 'GOLD'],
                 'futures_symbols': ['GC0226', 'GC1225', 'XAUUSD.f', 'GCZ4'],
                 'futures_expiry': datetime(2026, 2, 24),
                 'multiplier': 1.0,
-                'lot_size': 100,
+                'lot_size': self.config.get('gold_contract_size', 100),  # Contract size (units per lot)
                 'swap_long': 0.0  # Will be auto-detected from MT5
             },
             'SILVER': {
-                'name': 'SILVER',
+                'name': self.config.get('silver_asset_name', 'SILVER'),
                 'spot_symbols': ['XAGUSD', 'XAGUSD_', 'SILVER'],
                 'futures_symbols': ['SI0326', 'SI1225', 'XAGUSD.f', 'SIU4'],
                 'futures_expiry': datetime(2026, 2, 26),
                 'multiplier': 1.0,
-                'lot_size': 5000,
+                'lot_size': self.config.get('silver_contract_size', 5000),  # Contract size (units per lot)
                 'swap_long': 0.0  # Will be auto-detected from MT5
             }
         }
@@ -442,7 +465,7 @@ class TradingMonitor:
         self.last_update = None
         self.error_message = None
 
-        # Mean calculation cache
+        # Mean calculation cache - keyed by internal asset key
         self.spread_cache = {'GOLD': deque(maxlen=1000), 'SILVER': deque(maxlen=1000)}
         self.last_price_save = {}
 
@@ -493,7 +516,13 @@ class TradingMonitor:
         return self.setup_symbols()
 
     def setup_symbols(self):
-        """Setup symbols for Gold and Silver using user-configured swap charges"""
+        """Setup symbols for assets using user-configured values"""
+        # Refresh asset configuration from config (for name and contract size)
+        self.assets['GOLD']['name'] = self.config.get('gold_asset_name', 'GOLD')
+        self.assets['GOLD']['lot_size'] = self.config.get('gold_contract_size', 100)
+        self.assets['SILVER']['name'] = self.config.get('silver_asset_name', 'SILVER')
+        self.assets['SILVER']['lot_size'] = self.config.get('silver_contract_size', 5000)
+
         for asset_key, asset_config in self.assets.items():
             spot_symbol = None
             futures_symbol = None
@@ -917,8 +946,8 @@ class TradingMonitor:
             account = mt5.account_info()
             leverage = account.leverage if account else 100  # Default 1:100
 
-            # Get contract size from config (oz per lot)
-            contract_size = config.get('lot_size', 100)  # Gold: 100 oz, Silver: 5000 oz
+            # Get contract size from asset config (units per lot - configurable per asset)
+            contract_size = config.get('lot_size', 100)
 
             # User's configured lot size for trading
             user_lot_size = self.config.get('lot_size', 0.1)
@@ -1660,30 +1689,41 @@ def setup():
     """Setup page for configuration"""
     if request.method == 'POST':
         try:
-            # Get symbol configurations
+            # Get asset configurations
+            gold_asset_name = request.form.get('gold_asset_name', 'GOLD').strip() or 'GOLD'
             gold_spot = request.form.get('gold_spot_symbol', '').strip()
             gold_futures = request.form.get('gold_futures_symbol', '').strip()
             gold_expiry = request.form.get('gold_futures_expiry', '').strip()
+            gold_contract_size = float(request.form.get('gold_contract_size', 100) or 100)
+
+            silver_asset_name = request.form.get('silver_asset_name', 'SILVER').strip() or 'SILVER'
             silver_spot = request.form.get('silver_spot_symbol', '').strip()
             silver_futures = request.form.get('silver_futures_symbol', '').strip()
             silver_expiry = request.form.get('silver_futures_expiry', '').strip()
+            silver_contract_size = float(request.form.get('silver_contract_size', 5000) or 5000)
 
             # Swap charges are optional - will auto-detect from MT5
             gold_swap = float(request.form.get('gold_swap', 0) or 0)
             silver_swap = float(request.form.get('silver_swap', 0) or 0)
 
             # Save config
+            monitor.config['gold_asset_name'] = gold_asset_name
             monitor.config['gold_spot_symbol'] = gold_spot
             monitor.config['gold_futures_symbol'] = gold_futures
             monitor.config['gold_futures_expiry'] = gold_expiry
+            monitor.config['gold_contract_size'] = gold_contract_size
+            monitor.config['gold_swap_charge'] = gold_swap
+
+            monitor.config['silver_asset_name'] = silver_asset_name
             monitor.config['silver_spot_symbol'] = silver_spot
             monitor.config['silver_futures_symbol'] = silver_futures
             monitor.config['silver_futures_expiry'] = silver_expiry
-            monitor.config['gold_swap_charge'] = gold_swap
+            monitor.config['silver_contract_size'] = silver_contract_size
             monitor.config['silver_swap_charge'] = silver_swap
+
             monitor.db.save_config(monitor.config)
 
-            logger.info(f"Setup: Gold={gold_spot}/{gold_futures} (exp:{gold_expiry}), Silver={silver_spot}/{silver_futures} (exp:{silver_expiry})")
+            logger.info(f"Setup: {gold_asset_name}={gold_spot}/{gold_futures}, {silver_asset_name}={silver_spot}/{silver_futures}")
 
             if monitor.initialize_mt5():
                 monitor.is_initialized = True
@@ -2001,7 +2041,7 @@ SETUP_HTML = '''<!DOCTYPE html>
 <body>
     <div class="container">
         <h1>Algorithmic Trading Portal</h1>
-        <div class="subtitle">Gold & Silver Basis Trading</div>
+        <div class="subtitle">Spot-Futures Basis Trading</div>
 
         <div class="info-box">
             <p>• Make sure MetaTrader5 is running and logged in</p>
@@ -2016,50 +2056,70 @@ SETUP_HTML = '''<!DOCTYPE html>
 
         <form method="POST">
             <div class="section">
-                <div class="section-title">GOLD INSTRUMENTS</div>
+                <div class="section-title">ASSET 1 (Slot 1)</div>
                 <div class="form-group">
-                    <label>Gold Spot Symbol</label>
-                    <input type="text" name="gold_spot_symbol" value="{{ config.gold_spot_symbol or '' }}" placeholder="e.g., XAUUSD, GOLD, XAUUSDm">
-                    <div class="help-text">Your broker's gold spot symbol (leave empty to auto-detect)</div>
+                    <label>Asset Name</label>
+                    <input type="text" name="gold_asset_name" value="{{ config.gold_asset_name or 'GOLD' }}" placeholder="e.g., GOLD, COFFEE, PALLADIUM, S&P500">
+                    <div class="help-text">Display name for this asset (e.g., GOLD, COFFEE, CRUDE OIL)</div>
                 </div>
                 <div class="form-group">
-                    <label>Gold Futures Symbol</label>
-                    <input type="text" name="gold_futures_symbol" value="{{ config.gold_futures_symbol or '' }}" placeholder="e.g., GC0226, GCZ4, XAUUSD.f">
-                    <div class="help-text">Your broker's gold futures symbol (required for basis trading)</div>
+                    <label>Spot Symbol</label>
+                    <input type="text" name="gold_spot_symbol" value="{{ config.gold_spot_symbol or '' }}" placeholder="e.g., XAUUSD, KC, XPDUSD">
+                    <div class="help-text">Your broker's spot/cash symbol from MT5 Market Watch</div>
+                </div>
+                <div class="form-group">
+                    <label>Futures Symbol</label>
+                    <input type="text" name="gold_futures_symbol" value="{{ config.gold_futures_symbol or '' }}" placeholder="e.g., GC0226, KC0325, PA0326">
+                    <div class="help-text">Your broker's futures symbol (required for basis trading)</div>
                 </div>
                 <div class="form-group">
                     <label>Futures Expiry Date</label>
                     <input type="date" name="gold_futures_expiry" value="{{ config.gold_futures_expiry or '' }}">
-                    <div class="help-text">Gold futures contract expiry date (default: 2026-02-24)</div>
+                    <div class="help-text">Futures contract expiry date</div>
+                </div>
+                <div class="form-group">
+                    <label>Contract Size (units per lot)</label>
+                    <input type="number" name="gold_contract_size" step="0.01" min="0.01" value="{{ config.gold_contract_size or 100 }}" placeholder="e.g., 100">
+                    <div class="help-text">Units per lot: Gold=100oz, Silver=5000oz, Coffee=37500lbs, Crude=1000bbl</div>
                 </div>
                 <div class="form-group">
                     <label>Daily Swap Charge (USD per lot)</label>
                     <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or 0 }}" placeholder="e.g., 45.67">
-                    <div class="help-text">Check MT5: Right-click XAUUSD → Specification → Swap Long. Lot size: 100 oz</div>
+                    <div class="help-text">Check MT5: Right-click symbol → Specification → Swap Long</div>
                 </div>
             </div>
 
             <div class="section">
-                <div class="section-title">SILVER INSTRUMENTS</div>
+                <div class="section-title">ASSET 2 (Slot 2)</div>
                 <div class="form-group">
-                    <label>Silver Spot Symbol</label>
-                    <input type="text" name="silver_spot_symbol" value="{{ config.silver_spot_symbol or '' }}" placeholder="e.g., XAGUSD, SILVER, XAGUSDm">
-                    <div class="help-text">Your broker's silver spot symbol (leave empty to auto-detect)</div>
+                    <label>Asset Name</label>
+                    <input type="text" name="silver_asset_name" value="{{ config.silver_asset_name or 'SILVER' }}" placeholder="e.g., SILVER, COCOA, PLATINUM, NASDAQ">
+                    <div class="help-text">Display name for this asset (e.g., SILVER, COCOA, NATURAL GAS)</div>
                 </div>
                 <div class="form-group">
-                    <label>Silver Futures Symbol</label>
-                    <input type="text" name="silver_futures_symbol" value="{{ config.silver_futures_symbol or '' }}" placeholder="e.g., SI0326, SIZ4, XAGUSD.f">
-                    <div class="help-text">Your broker's silver futures symbol (required for basis trading)</div>
+                    <label>Spot Symbol</label>
+                    <input type="text" name="silver_spot_symbol" value="{{ config.silver_spot_symbol or '' }}" placeholder="e.g., XAGUSD, CC, XPTUSD">
+                    <div class="help-text">Your broker's spot/cash symbol from MT5 Market Watch</div>
+                </div>
+                <div class="form-group">
+                    <label>Futures Symbol</label>
+                    <input type="text" name="silver_futures_symbol" value="{{ config.silver_futures_symbol or '' }}" placeholder="e.g., SI0326, CC0325, PL0326">
+                    <div class="help-text">Your broker's futures symbol (required for basis trading)</div>
                 </div>
                 <div class="form-group">
                     <label>Futures Expiry Date</label>
                     <input type="date" name="silver_futures_expiry" value="{{ config.silver_futures_expiry or '' }}">
-                    <div class="help-text">Silver futures contract expiry date (default: 2026-02-26)</div>
+                    <div class="help-text">Futures contract expiry date</div>
+                </div>
+                <div class="form-group">
+                    <label>Contract Size (units per lot)</label>
+                    <input type="number" name="silver_contract_size" step="0.01" min="0.01" value="{{ config.silver_contract_size or 5000 }}" placeholder="e.g., 5000">
+                    <div class="help-text">Units per lot: Gold=100oz, Silver=5000oz, Coffee=37500lbs, Crude=1000bbl</div>
                 </div>
                 <div class="form-group">
                     <label>Daily Swap Charge (USD per lot)</label>
                     <input type="number" name="silver_swap" step="0.01" min="0" value="{{ config.silver_swap_charge or 0 }}" placeholder="e.g., 5.23">
-                    <div class="help-text">Check MT5: Right-click XAGUSD → Specification → Swap Long. Lot size: 5,000 oz</div>
+                    <div class="help-text">Check MT5: Right-click symbol → Specification → Swap Long</div>
                 </div>
             </div>
 
@@ -3472,7 +3532,7 @@ def main():
     """Main entry point"""
     print("=" * 70)
     print("ALGORITHMIC TRADING PORTAL")
-    print("Gold & Silver Basis Trading")
+    print("Spot-Futures Basis Trading")
     print("=" * 70)
     print()
     print("Starting web server...")
