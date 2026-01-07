@@ -2953,6 +2953,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
                 <div class="signal-section ${signalClass}">
                     <div class="signal-type">${signal.type.replace('_', ' ')}</div>
+                    ${signal.reason ? `<div class="signal-reason">${signal.reason}</div>` : ''}
                     <div class="zscore-display">${zscore}σ</div>
                     ${asset.stats ? `
                     <div style="display: inline-block; padding: 6px 16px; border-radius: 20px; margin: 8px 0; font-size: 16px; font-weight: 600; ${asset.hurst < 0.5 ? 'background: #e8f5e9; color: #2e7d32;' : 'background: #ffebee; color: #c62828;'}">
