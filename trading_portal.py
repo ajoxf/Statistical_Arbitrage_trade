@@ -512,7 +512,7 @@ class DatabaseManager:
             'winning_trades': row[2] or 0,
             'losing_trades': row[3] or 0,
             'win_rate': (row[2] / row[0] * 100) if row[0] and row[0] > 0 else 0,
-            'cumulative_return': row[4] or 0,
+            'cumulative_return': cumulative_return,
             'sharpe_ratio': sharpe_ratio,
             'max_drawdown': max_drawdown,
             'current_drawdown': current_drawdown
