@@ -98,7 +98,7 @@ class DatabaseManager:
                 paper_mode INTEGER DEFAULT 1,
                 commission_per_lot REAL DEFAULT 0,
                 hurst_threshold REAL DEFAULT 0.5,
-                trending_duration_minutes INTEGER DEFAULT 0,
+                trending_duration_minutes INTEGER DEFAULT 15,
                 updated_at TEXT
             )
         ''')
@@ -107,7 +107,7 @@ class DatabaseManager:
         for col_def in [
             ('commission_per_lot', 'REAL DEFAULT 0'),
             ('hurst_threshold', 'REAL DEFAULT 0.5'),
-            ('trending_duration_minutes', 'INTEGER DEFAULT 0')
+            ('trending_duration_minutes', 'INTEGER DEFAULT 15')
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -243,7 +243,7 @@ class DatabaseManager:
                 'paper_mode': bool(row[18]) if row[18] is not None else True,
                 'commission_per_lot': row[19] if row[19] is not None else 0,
                 'hurst_threshold': row[20] if row[20] is not None else 0.5,
-                'trending_duration_minutes': row[21] if row[21] is not None else 0
+                'trending_duration_minutes': row[21] if row[21] is not None else 15
             }
         return None
 
@@ -298,7 +298,7 @@ class DatabaseManager:
                 1 if config.get('paper_mode', True) else 0,
                 config.get('commission_per_lot', 0),
                 config.get('hurst_threshold', 0.5),
-                config.get('trending_duration_minutes', 0),
+                config.get('trending_duration_minutes', 15),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -1043,7 +1043,7 @@ class TradingMonitor:
 
         # Hurst exponent threshold for mean reversion trading (configurable)
         hurst_threshold = self.config.get('hurst_threshold', 0.5)
-        trending_duration_minutes = self.config.get('trending_duration_minutes', 0)
+        trending_duration_minutes = self.config.get('trending_duration_minutes', 15)
 
         # Get current market session
         market_session = self._get_market_session()
@@ -1720,7 +1720,7 @@ def settings():
             monitor.config['lot_size'] = float(request.form.get('lot_size', 0.1))
             monitor.config['commission_per_lot'] = float(request.form.get('commission_per_lot', 0))
             monitor.config['hurst_threshold'] = float(request.form.get('hurst_threshold', 0.5))
-            monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 0))
+            monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 15))
 
             monitor.db.save_config(monitor.config)
             return redirect(url_for('settings') + '?saved=1')
@@ -1782,7 +1782,7 @@ def get_data():
             'stop_loss_std_dev': monitor.config.get('stop_loss_std_dev', 3.0),
             'time_stop_loss_days': monitor.config.get('time_stop_loss_days', 0),
             'hurst_threshold': monitor.config.get('hurst_threshold', 0.5),
-            'trending_duration_minutes': monitor.config.get('trending_duration_minutes', 0)
+            'trending_duration_minutes': monitor.config.get('trending_duration_minutes', 15)
         },
         'market_session': monitor._get_market_session(),
         'last_update': monitor.last_update
@@ -3420,8 +3420,8 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
                 <div class="form-group">
                     <label>Trending Duration (Minutes)</label>
-                    <input type="number" name="trending_duration_minutes" value="{{ config.trending_duration_minutes or 0 }}" min="0" max="120" step="5">
-                    <div class="help-text">Only block if trending for X minutes continuously (0 = immediate block)</div>
+                    <input type="number" name="trending_duration_minutes" value="{{ config.trending_duration_minutes or 15 }}" min="0" max="120" step="5">
+                    <div class="help-text">Only block if trending for X minutes continuously (0 = immediate, 15 = recommended)</div>
                 </div>
             </div>
 
