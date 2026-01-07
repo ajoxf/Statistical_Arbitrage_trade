@@ -119,7 +119,8 @@ class DatabaseManager:
             ('hurst_enabled', 'INTEGER DEFAULT 1'),
             ('close_before_overnight', 'INTEGER DEFAULT 0'),
             ('overnight_close_hour', 'INTEGER DEFAULT 16'),
-            ('overnight_close_minute', 'INTEGER DEFAULT 55')
+            ('overnight_close_minute', 'INTEGER DEFAULT 55'),
+            ('selected_asset', "TEXT DEFAULT 'GOLD'")
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -228,7 +229,8 @@ class DatabaseManager:
                    lookback_unit, entry_std_dev, exit_std_dev, stop_loss_std_dev,
                    time_stop_loss_days, max_positions, lot_size, algo_enabled,
                    paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes,
-                   hurst_enabled, close_before_overnight, overnight_close_hour, overnight_close_minute
+                   hurst_enabled, close_before_overnight, overnight_close_hour, overnight_close_minute,
+                   selected_asset
             FROM trading_config WHERE id = 1
         ''')
         row = cursor.fetchone()
@@ -265,7 +267,8 @@ class DatabaseManager:
                 'hurst_enabled': bool(row[26]) if row[26] is not None else True,
                 'close_before_overnight': bool(row[27]) if row[27] is not None else False,
                 'overnight_close_hour': row[28] if row[28] is not None else 16,
-                'overnight_close_minute': row[29] if row[29] is not None else 55
+                'overnight_close_minute': row[29] if row[29] is not None else 55,
+                'selected_asset': row[30] if row[30] is not None else 'GOLD'
             }
         return None
 
@@ -305,6 +308,7 @@ class DatabaseManager:
                     close_before_overnight = ?,
                     overnight_close_hour = ?,
                     overnight_close_minute = ?,
+                    selected_asset = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -337,6 +341,7 @@ class DatabaseManager:
                 1 if config.get('close_before_overnight', False) else 0,
                 config.get('overnight_close_hour', 16),
                 config.get('overnight_close_minute', 55),
+                config.get('selected_asset', 'GOLD'),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -1296,8 +1301,13 @@ class TradingMonitor:
         signal_type = signal.get('type')
 
         if signal_type in ['SELL_BASIS', 'BUY_BASIS']:
-            if asset_key not in self.positions:
+            # Only open if no existing position for this asset AND no other positions exist
+            # Enforce single position mode - only 1 spread at a time
+            max_positions = self.config.get('max_positions', 1)
+            if asset_key not in self.positions and len(self.positions) < max_positions:
                 self._open_position(asset_key, signal_type, data)
+            elif len(self.positions) >= max_positions:
+                logger.info(f"Skipping {signal_type} - max positions ({max_positions}) reached")
 
         elif signal_type in ['CLOSE', 'STOP_LOSS', 'TIME_STOP', 'OVERNIGHT_CLOSE']:
             if asset_key in self.positions:
@@ -1659,21 +1669,69 @@ class TradingMonitor:
         # Use limit orders for profit exits (CLOSE), market orders for urgent exits (STOP_LOSS, TIME_STOP, OVERNIGHT_CLOSE)
         use_limit_for_close = (close_reason == 'CLOSE')
 
+        # Track if MT5 closes were successful
+        futures_closed = False
+        spot_closed = False
+
         if position.get('mt5_futures_ticket'):
-            self._close_mt5_position(
+            result = self._close_mt5_position(
                 position['mt5_futures_ticket'],
                 futures_symbol, lot_size,
                 mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL,
                 use_limit=use_limit_for_close
             )
+            if result['success']:
+                futures_closed = True
+                logger.info(f"Futures position closed successfully: ticket {position['mt5_futures_ticket']}")
+            else:
+                # Retry with market order if limit failed
+                logger.warning(f"Futures limit close failed: {result.get('error')}. Retrying with market order...")
+                result = self._close_mt5_position(
+                    position['mt5_futures_ticket'],
+                    futures_symbol, lot_size,
+                    mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL,
+                    use_limit=False
+                )
+                if result['success']:
+                    futures_closed = True
+                    logger.info(f"Futures position closed with market order: ticket {position['mt5_futures_ticket']}")
+                else:
+                    logger.error(f"CRITICAL: Failed to close futures position {position['mt5_futures_ticket']}: {result.get('error')}")
+        else:
+            futures_closed = True  # No ticket to close
 
         if position.get('mt5_spot_ticket'):
-            self._close_mt5_position(
+            result = self._close_mt5_position(
                 position['mt5_spot_ticket'],
                 spot_symbol, lot_size,
                 mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY,
                 use_limit=use_limit_for_close
             )
+            if result['success']:
+                spot_closed = True
+                logger.info(f"Spot position closed successfully: ticket {position['mt5_spot_ticket']}")
+            else:
+                # Retry with market order if limit failed
+                logger.warning(f"Spot limit close failed: {result.get('error')}. Retrying with market order...")
+                result = self._close_mt5_position(
+                    position['mt5_spot_ticket'],
+                    spot_symbol, lot_size,
+                    mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY,
+                    use_limit=False
+                )
+                if result['success']:
+                    spot_closed = True
+                    logger.info(f"Spot position closed with market order: ticket {position['mt5_spot_ticket']}")
+                else:
+                    logger.error(f"CRITICAL: Failed to close spot position {position['mt5_spot_ticket']}: {result.get('error')}")
+        else:
+            spot_closed = True  # No ticket to close
+
+        # Only mark as closed if BOTH positions were successfully closed
+        if not (futures_closed and spot_closed):
+            logger.error(f"POSITION NOT FULLY CLOSED: {asset_key} - Futures: {futures_closed}, Spot: {spot_closed}")
+            # Keep position in tracking so we can try again
+            return
 
         logger.info(f"{mode_label} CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
 
@@ -1704,12 +1762,15 @@ class TradingMonitor:
         del self.positions[asset_key]
 
     def get_all_data(self):
-        """Get data for all assets"""
+        """Get data for selected asset only (single-asset mode)"""
         data = {}
-        for asset_key in ['GOLD', 'SILVER']:
-            market_data = self.get_market_data(asset_key)
-            if market_data:
-                data[asset_key] = market_data
+
+        # Only process the selected asset to avoid multiple simultaneous positions
+        selected_asset = self.config.get('selected_asset', 'GOLD')
+
+        market_data = self.get_market_data(selected_asset)
+        if market_data:
+            data[selected_asset] = market_data
 
         self.last_update = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         return data
@@ -1979,6 +2040,7 @@ def settings():
             monitor.config['close_before_overnight'] = request.form.get('close_before_overnight') == 'on'
             monitor.config['overnight_close_hour'] = int(request.form.get('overnight_close_hour', 16))
             monitor.config['overnight_close_minute'] = int(request.form.get('overnight_close_minute', 55))
+            monitor.config['selected_asset'] = request.form.get('selected_asset', 'GOLD')
 
             monitor.db.save_config(monitor.config)
             return redirect(url_for('settings') + '?saved=1')
@@ -4083,12 +4145,25 @@ SETTINGS_HTML = '''<!DOCTYPE html>
             </div>
 
             <div class="card">
+                <div class="card-title">Asset Selection</div>
+
+                <div class="form-group">
+                    <label>Active Asset</label>
+                    <select name="selected_asset">
+                        <option value="GOLD" {% if config.selected_asset == 'GOLD' %}selected{% endif %}>Gold</option>
+                        <option value="SILVER" {% if config.selected_asset == 'SILVER' %}selected{% endif %}>Silver</option>
+                    </select>
+                    <div class="help-text">Only ONE asset is active at a time to avoid multiple simultaneous positions. Open another browser window for other assets.</div>
+                </div>
+            </div>
+
+            <div class="card">
                 <div class="card-title">Position Sizing</div>
 
                 <div class="form-group">
-                    <label>Max Positions per Asset</label>
+                    <label>Max Positions</label>
                     <input type="number" name="max_positions" value="{{ config.max_positions }}" min="1" max="10">
-                    <div class="help-text">Maximum concurrent positions allowed per asset</div>
+                    <div class="help-text">Maximum concurrent positions allowed (1 = one spread at a time)</div>
                 </div>
 
                 <div class="form-group">
