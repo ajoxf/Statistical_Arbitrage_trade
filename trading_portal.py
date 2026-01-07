@@ -2419,21 +2419,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
         </div>
     </div>
 
-    <div class="summary">
-        <div class="summary-item cheap">
-            <div class="summary-count" id="cheap-count">0</div>
-            <div class="summary-label">CHEAP</div>
-        </div>
-        <div class="summary-item fair">
-            <div class="summary-count" id="fair-count">0</div>
-            <div class="summary-label">FAIR</div>
-        </div>
-        <div class="summary-item expensive">
-            <div class="summary-count" id="expensive-count">0</div>
-            <div class="summary-label">EXPENSIVE</div>
-        </div>
-    </div>
-
     <div class="chart-section">
         <div class="chart-header">
             <div class="chart-title">Z-Score Chart</div>
@@ -2517,10 +2502,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
                     document.getElementById('timestamp').textContent = new Date().toLocaleTimeString();
                     document.getElementById('last-update').textContent = data.last_update;
-
-                    document.getElementById('cheap-count').textContent = data.summary.cheap;
-                    document.getElementById('fair-count').textContent = data.summary.fair;
-                    document.getElementById('expensive-count').textContent = data.summary.expensive;
 
                     const cfg = data.config;
                     document.getElementById('algo-toggle').checked = cfg.algo_enabled;
