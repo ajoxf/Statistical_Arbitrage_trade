@@ -1695,6 +1695,33 @@ def toggle_paper():
     return jsonify({'status': 'success', 'paper_mode': paper})
 
 
+@app.route('/api/reset_statistics', methods=['POST'])
+def reset_statistics():
+    """Reset all statistics - clears spread cache, price history, and z-score history"""
+    try:
+        # Clear in-memory spread cache
+        for asset_key in monitor.spread_cache:
+            monitor.spread_cache[asset_key].clear()
+
+        # Clear in-memory z-score history
+        for asset_key in monitor.zscore_history:
+            monitor.zscore_history[asset_key].clear()
+
+        # Clear price history from database
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM price_history')
+        conn.commit()
+        conn.close()
+
+        logger.info("Statistics reset - spread cache, z-score history, and price history cleared")
+        return jsonify({'status': 'success', 'message': 'Statistics reset successfully'})
+
+    except Exception as e:
+        logger.error(f"Error resetting statistics: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/trades')
 def get_trades():
     """Get trade history"""
@@ -2250,6 +2277,17 @@ MONITOR_HTML = '''<!DOCTYPE html>
         }
         .settings-link:hover { background: #f5f5f5; }
 
+        .reset-btn {
+            color: #c62828;
+            background: white;
+            padding: 10px 20px;
+            border: 1px solid #c62828;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .reset-btn:hover { background: #ffebee; }
+
         @media (max-width: 600px) {
             .price-grid { grid-template-columns: repeat(2, 1fr); }
             .controls { flex-direction: column; align-items: flex-start; }
@@ -2327,6 +2365,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             <span style="color: #666;" id="thresholds">Entry: ±2.0σ | Exit: ±0.5σ | Stop: ±3.0σ</span>
         </div>
         <a href="/settings" class="settings-link">⚙ Settings</a>
+        <button class="reset-btn" onclick="resetStatistics()">↺ Reset Stats</button>
     </div>
 
     <div class="account-section" id="account-section">
@@ -2798,6 +2837,32 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ paper: paper })
             });
+        }
+
+        function resetStatistics() {
+            if (!confirm('Reset all statistics? This will clear:\\n- Spread cache (mean/std calculation)\\n- Price history\\n- Z-Score chart\\n\\nLookback period will restart from scratch.')) {
+                return;
+            }
+            fetch('/api/reset_statistics', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert('Statistics reset successfully. Lookback will restart.');
+                    // Clear local chart data
+                    zscoreData = { GOLD: [], SILVER: [] };
+                    if (zscoreChart) {
+                        zscoreChart.data.labels = [];
+                        zscoreChart.data.datasets.forEach(ds => ds.data = []);
+                        zscoreChart.update();
+                    }
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(err => alert('Error resetting statistics: ' + err));
         }
 
         // Z-Score Chart
