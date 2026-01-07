@@ -2725,7 +2725,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <span class="basis-value" style="color: #1976d2;"><strong>$${asset.margin_required.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
                     </div>
                     <div class="basis-row">
-                        <span class="basis-label">With 15% Buffer</span>
+                        <span class="basis-label">If Price ±15%</span>
                         <span class="basis-value" style="color: #c62828;"><strong>$${asset.margin_with_buffer.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong></span>
                     </div>
                 </div>
