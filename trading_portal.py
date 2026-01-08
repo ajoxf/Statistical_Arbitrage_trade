@@ -2384,6 +2384,91 @@ def api_clear_trades():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/search_symbols', methods=['GET'])
+def api_search_symbols():
+    """Search for available symbols in MT5
+
+    Query params:
+        q: Search query (e.g., 'BTC', 'EUR', 'XAU')
+        type: Filter by type - 'forex', 'crypto', 'futures', 'all' (default: 'all')
+    """
+    try:
+        if not mt5.terminal_info():
+            return jsonify({'status': 'error', 'message': 'MT5 not connected'}), 400
+
+        query = request.args.get('q', '').upper()
+        symbol_type = request.args.get('type', 'all').lower()
+
+        # Get all symbols
+        all_symbols = mt5.symbols_get()
+        if not all_symbols:
+            return jsonify({'status': 'error', 'message': 'No symbols found'}), 400
+
+        results = []
+        for sym in all_symbols:
+            name = sym.name.upper()
+
+            # Filter by query
+            if query and query not in name:
+                continue
+
+            # Determine symbol category
+            is_forex = sym.path and 'forex' in sym.path.lower()
+            is_crypto = any(c in name for c in ['BTC', 'ETH', 'LTC', 'XRP', 'CRYPTO'])
+            is_futures = 'FUT' in name or '.F' in name or '_F' in name or 'FUTURE' in name.upper()
+            is_metal = any(m in name for m in ['XAU', 'XAG', 'GOLD', 'SILVER', 'PLAT', 'PALL'])
+            is_oil = any(o in name for o in ['WTI', 'BRENT', 'OIL', 'CL', 'UKOIL', 'USOIL'])
+
+            # Filter by type
+            if symbol_type == 'forex' and not is_forex:
+                continue
+            if symbol_type == 'crypto' and not is_crypto:
+                continue
+            if symbol_type == 'futures' and not is_futures:
+                continue
+            if symbol_type == 'metals' and not is_metal:
+                continue
+            if symbol_type == 'oil' and not is_oil:
+                continue
+
+            # Get current price if available
+            tick = mt5.symbol_info_tick(sym.name)
+            bid = tick.bid if tick else 0
+            ask = tick.ask if tick else 0
+            spread = (ask - bid) if tick else 0
+
+            results.append({
+                'name': sym.name,
+                'description': sym.description if hasattr(sym, 'description') else '',
+                'path': sym.path if hasattr(sym, 'path') else '',
+                'bid': bid,
+                'ask': ask,
+                'spread': round(spread, 5),
+                'contract_size': sym.trade_contract_size,
+                'min_lot': sym.volume_min,
+                'is_futures': is_futures,
+                'is_crypto': is_crypto,
+                'is_forex': is_forex,
+                'is_metal': is_metal,
+                'is_oil': is_oil
+            })
+
+        # Sort by name
+        results.sort(key=lambda x: x['name'])
+
+        return jsonify({
+            'status': 'success',
+            'query': query,
+            'type_filter': symbol_type,
+            'count': len(results),
+            'symbols': results[:100]  # Limit to 100 results
+        })
+
+    except Exception as e:
+        logger.error(f"Error searching symbols: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/test_orders', methods=['POST'])
 def api_test_orders():
     """Test order placement for both Spot and Futures symbols
