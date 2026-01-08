@@ -4611,13 +4611,13 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
                 <div class="form-group">
                     <label>Minimum Profit per Lot ($)</label>
-                    <input type="number" name="min_profit_per_lot" id="min_profit_per_lot" value="{{ config.min_profit_per_lot }}" min="0" max="500" step="1">
+                    <input type="number" name="min_profit_per_lot" id="min_profit_per_lot" value="{{ config.min_profit_per_lot }}" min="0" max="50000" step="1">
                     <div class="help-text">Target profit per lot AFTER costs. Total = this × lot size. E.g., $50/lot × 30 lots = $1,500 min profit. Set to 0 for statistical exit only.</div>
                 </div>
 
                 <div class="form-group">
                     <label>Maximum Loss per Lot ($)</label>
-                    <input type="number" name="max_loss_per_lot" id="max_loss_per_lot" value="{{ config.max_loss_per_lot or 100 }}" min="0" max="1000" step="1">
+                    <input type="number" name="max_loss_per_lot" id="max_loss_per_lot" value="{{ config.max_loss_per_lot or 100 }}" min="0" max="50000" step="1">
                     <div class="help-text">Absolute stop loss per lot. If unrealized loss exceeds this × lot size, position closes immediately regardless of z-score. Set to 0 to disable.</div>
                 </div>
 
