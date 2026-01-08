@@ -1833,7 +1833,7 @@ class TradingMonitor:
             return []
 
     def get_enriched_positions(self):
-        """Get algo positions with unrealized P&L from current prices"""
+        """Get algo positions with unrealized P&L from MT5 actual positions"""
         enriched = []
         for asset_key, position in self.positions.items():
             pos_copy = position.copy()
@@ -1849,26 +1849,35 @@ class TradingMonitor:
                     current_futures = current_data.get('futures_price') or 0
                     lot_size = position.get('lot_size') or 0.1
 
-                    # Skip P&L calculation if we don't have valid prices
-                    if entry_spot == 0 or entry_futures == 0 or current_spot == 0 or current_futures == 0:
-                        pos_copy['unrealized_pnl'] = 0
-                        enriched.append(pos_copy)
-                        continue
+                    # Get ACTUAL P&L from MT5 positions using stored ticket numbers
+                    # This ensures P&L matches MT5 exactly (includes slippage, real fill prices)
+                    spot_ticket = position.get('mt5_spot_ticket')
+                    futures_ticket = position.get('mt5_futures_ticket')
 
-                    # Calculate unrealized P&L based on direction
-                    # Long Spread: Buy Futures + Sell Spot (profit when spread RISES)
-                    # Short Spread: Sell Futures + Buy Spot (profit when spread FALLS)
-                    if position.get('direction') == 'Long Spread':
-                        # Long spread: profit = (current_spread - entry_spread) * lots * 100
-                        futures_pnl = (current_futures - entry_futures) * lot_size * 100
-                        spot_pnl = (entry_spot - current_spot) * lot_size * 100
-                    else:
-                        # Short spread profits when spread narrows
-                        futures_pnl = (entry_futures - current_futures) * lot_size * 100
-                        spot_pnl = (current_spot - entry_spot) * lot_size * 100
+                    mt5_spot_pnl = 0
+                    mt5_futures_pnl = 0
 
-                    unrealized_pnl = futures_pnl + spot_pnl
+                    if spot_ticket:
+                        try:
+                            spot_positions = mt5.positions_get(ticket=spot_ticket)
+                            if spot_positions and len(spot_positions) > 0:
+                                mt5_spot_pnl = getattr(spot_positions[0], 'profit', 0)
+                        except:
+                            pass
+
+                    if futures_ticket:
+                        try:
+                            futures_positions = mt5.positions_get(ticket=futures_ticket)
+                            if futures_positions and len(futures_positions) > 0:
+                                mt5_futures_pnl = getattr(futures_positions[0], 'profit', 0)
+                        except:
+                            pass
+
+                    # Use MT5's actual P&L (matches what you see in MT5 terminal)
+                    unrealized_pnl = mt5_spot_pnl + mt5_futures_pnl
                     pos_copy['unrealized_pnl'] = unrealized_pnl
+                    pos_copy['mt5_spot_pnl'] = mt5_spot_pnl
+                    pos_copy['mt5_futures_pnl'] = mt5_futures_pnl
                     pos_copy['current_spot'] = current_spot
                     pos_copy['current_futures'] = current_futures
                     pos_copy['current_spread'] = current_futures - current_spot
