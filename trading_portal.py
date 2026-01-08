@@ -121,12 +121,35 @@ class DatabaseManager:
             ('overnight_close_hour', 'INTEGER DEFAULT 16'),
             ('overnight_close_minute', 'INTEGER DEFAULT 55'),
             ('selected_asset', "TEXT DEFAULT 'GOLD'"),
-            ('min_profit_per_lot', 'REAL DEFAULT 50')
+            ('min_profit_per_lot', 'REAL DEFAULT 50'),
+            # Generic asset fields (replaces gold_*/silver_* for single-asset mode)
+            ('asset_name', "TEXT DEFAULT ''"),
+            ('spot_symbol', "TEXT DEFAULT ''"),
+            ('futures_symbol', "TEXT DEFAULT ''"),
+            ('futures_expiry', "TEXT DEFAULT ''"),
+            ('contract_size', 'REAL DEFAULT 100'),
+            ('swap_charge', 'REAL DEFAULT 0')
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
             except:
                 pass  # Column already exists
+
+        # Migration: Copy gold_* values to generic fields if generic fields are empty
+        try:
+            cursor.execute('''
+                UPDATE trading_config
+                SET asset_name = gold_asset_name,
+                    spot_symbol = gold_spot_symbol,
+                    futures_symbol = gold_futures_symbol,
+                    futures_expiry = gold_futures_expiry,
+                    contract_size = gold_contract_size,
+                    swap_charge = gold_swap_charge
+                WHERE id = 1 AND (asset_name IS NULL OR asset_name = '')
+            ''')
+            conn.commit()
+        except:
+            pass  # Migration already done or fields don't exist
 
         # Trades log - comprehensive trade journal
         cursor.execute('''
@@ -231,7 +254,8 @@ class DatabaseManager:
                    time_stop_loss_days, max_positions, lot_size, algo_enabled,
                    paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes,
                    hurst_enabled, close_before_overnight, overnight_close_hour, overnight_close_minute,
-                   selected_asset
+                   selected_asset, min_profit_per_lot,
+                   asset_name, spot_symbol, futures_symbol, futures_expiry, contract_size, swap_charge
             FROM trading_config WHERE id = 1
         ''')
         row = cursor.fetchone()
@@ -239,7 +263,16 @@ class DatabaseManager:
 
         if row:
             # Column order matches the explicit SELECT above
+            # Generic fields (32-37) with fallback to gold_* fields for migration
+            asset_name = row[32] if len(row) > 32 and row[32] else (row[6] or 'GOLD')
+            spot_symbol = row[33] if len(row) > 33 and row[33] else (row[3] or '')
+            futures_symbol = row[34] if len(row) > 34 and row[34] else (row[4] or '')
+            futures_expiry = row[35] if len(row) > 35 and row[35] else (row[5] or '')
+            contract_size = row[36] if len(row) > 36 and row[36] is not None else (row[7] if row[7] is not None else 100)
+            swap_charge = row[37] if len(row) > 37 and row[37] is not None else (row[1] if row[1] is not None else 0)
+
             return {
+                # Legacy fields (kept for backward compatibility)
                 'gold_swap_charge': row[1] if row[1] is not None else 0.0,
                 'silver_swap_charge': row[2] if row[2] is not None else 0.0,
                 'gold_spot_symbol': row[3] or '',
@@ -252,6 +285,7 @@ class DatabaseManager:
                 'silver_futures_expiry': row[10] or '',
                 'silver_asset_name': row[11] or 'SILVER',
                 'silver_contract_size': row[12] if row[12] is not None else 5000,
+                # Trading parameters
                 'lookback_period': row[13] if row[13] is not None else 90,
                 'lookback_unit': row[14] or 'minutes',
                 'entry_std_dev': row[15] if row[15] is not None else 2.0,
@@ -270,7 +304,14 @@ class DatabaseManager:
                 'overnight_close_hour': row[28] if row[28] is not None else 16,
                 'overnight_close_minute': row[29] if row[29] is not None else 55,
                 'selected_asset': row[30] if row[30] is not None else 'GOLD',
-                'min_profit_per_lot': row[31] if len(row) > 31 and row[31] is not None else 50
+                'min_profit_per_lot': row[31] if row[31] is not None else 50,
+                # NEW: Generic asset fields (single-asset mode)
+                'asset_name': asset_name,
+                'spot_symbol': spot_symbol,
+                'futures_symbol': futures_symbol,
+                'futures_expiry': futures_expiry,
+                'contract_size': contract_size,
+                'swap_charge': swap_charge
             }
         return None
 
@@ -312,6 +353,12 @@ class DatabaseManager:
                     overnight_close_minute = ?,
                     selected_asset = ?,
                     min_profit_per_lot = ?,
+                    asset_name = ?,
+                    spot_symbol = ?,
+                    futures_symbol = ?,
+                    futures_expiry = ?,
+                    contract_size = ?,
+                    swap_charge = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -346,6 +393,12 @@ class DatabaseManager:
                 config.get('overnight_close_minute', 55),
                 config.get('selected_asset', 'GOLD'),
                 config.get('min_profit_per_lot', 50),
+                config.get('asset_name', 'GOLD'),
+                config.get('spot_symbol', ''),
+                config.get('futures_symbol', ''),
+                config.get('futures_expiry', ''),
+                config.get('contract_size', 100),
+                config.get('swap_charge', 0),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -538,26 +591,19 @@ class TradingMonitor:
         self.db = DatabaseManager()
         self.config = self.db.get_config() or {}
 
-        # Asset configuration - uses config values for name and contract size
-        # Internal keys remain 'GOLD' and 'SILVER' for backward compatibility
+        # Asset configuration - SINGLE ASSET MODE
+        # Uses generic config fields (asset_name, spot_symbol, futures_symbol, etc.)
+        # Internal key is "ACTIVE" - the display name comes from config.asset_name
+        asset_name = self.config.get('asset_name', 'GOLD')
         self.assets = {
-            'GOLD': {
-                'name': self.config.get('gold_asset_name', 'GOLD'),
-                'spot_symbols': ['XAUUSD', 'XAUUSD_', 'GOLD'],
-                'futures_symbols': ['GC0226', 'GC1225', 'XAUUSD.f', 'GCZ4'],
-                'futures_expiry': datetime(2026, 2, 24),
+            'ACTIVE': {
+                'name': asset_name,
+                'spot_symbols': [self.config.get('spot_symbol', '')],  # User-configured symbol
+                'futures_symbols': [self.config.get('futures_symbol', '')],  # User-configured symbol
+                'futures_expiry': self._parse_expiry(self.config.get('futures_expiry', '')),
                 'multiplier': 1.0,
-                'lot_size': self.config.get('gold_contract_size', 100),  # Contract size (units per lot)
-                'swap_long': 0.0  # Will be auto-detected from MT5
-            },
-            'SILVER': {
-                'name': self.config.get('silver_asset_name', 'SILVER'),
-                'spot_symbols': ['XAGUSD', 'XAGUSD_', 'SILVER'],
-                'futures_symbols': ['SI0326', 'SI1225', 'XAGUSD.f', 'SIU4'],
-                'futures_expiry': datetime(2026, 2, 26),
-                'multiplier': 1.0,
-                'lot_size': self.config.get('silver_contract_size', 5000),  # Contract size (units per lot)
-                'swap_long': 0.0  # Will be auto-detected from MT5
+                'lot_size': self.config.get('contract_size', 100),  # Contract size (units per lot)
+                'swap_long': self.config.get('swap_charge', 0.0)
             }
         }
 
@@ -567,17 +613,17 @@ class TradingMonitor:
         self.error_message = None
 
         # Mean calculation cache - keyed by internal asset key
-        self.spread_cache = {'GOLD': deque(maxlen=1000), 'SILVER': deque(maxlen=1000)}
+        self.spread_cache = {'ACTIVE': deque(maxlen=1000)}
         self.last_price_save = {}
 
         # Z-score history for charting (store last 200 points per asset)
-        self.zscore_history = {'GOLD': deque(maxlen=200), 'SILVER': deque(maxlen=200)}
+        self.zscore_history = {'ACTIVE': deque(maxlen=200)}
 
         # Price history for spot/futures charting (store last 200 points per asset)
-        self.price_history = {'GOLD': deque(maxlen=200), 'SILVER': deque(maxlen=200)}
+        self.price_history = {'ACTIVE': deque(maxlen=200)}
 
         # Track when Hurst became trending for each asset
-        self.trending_since = {'GOLD': None, 'SILVER': None}
+        self.trending_since = {'ACTIVE': None}
 
         # Track consecutive stop losses (for auto-enabling Hurst protection)
         self.consecutive_stop_losses = 0
@@ -611,6 +657,15 @@ class TradingMonitor:
             }
             logger.info(f"Loaded open position: {asset_key} {trade['direction']} from {trade['entry_date']}")
 
+    def _parse_expiry(self, expiry_str):
+        """Parse expiry date string to datetime"""
+        if not expiry_str:
+            return datetime(2026, 12, 31)  # Default far future
+        try:
+            return datetime.strptime(expiry_str, '%Y-%m-%d')
+        except ValueError:
+            return datetime(2026, 12, 31)
+
     def initialize_mt5(self):
         """Initialize MT5 connection"""
         if not mt5.initialize():
@@ -623,79 +678,65 @@ class TradingMonitor:
         return self.setup_symbols()
 
     def setup_symbols(self):
-        """Setup symbols for assets using user-configured values"""
-        # Refresh asset configuration from config (for name and contract size)
-        self.assets['GOLD']['name'] = self.config.get('gold_asset_name', 'GOLD')
-        self.assets['GOLD']['lot_size'] = self.config.get('gold_contract_size', 100)
-        self.assets['SILVER']['name'] = self.config.get('silver_asset_name', 'SILVER')
-        self.assets['SILVER']['lot_size'] = self.config.get('silver_contract_size', 5000)
+        """Setup symbols for the active asset using user-configured values"""
+        # Refresh asset configuration from generic config fields
+        asset_name = self.config.get('asset_name', 'GOLD')
+        self.assets['ACTIVE']['name'] = asset_name
+        self.assets['ACTIVE']['lot_size'] = self.config.get('contract_size', 100)
+        self.assets['ACTIVE']['swap_long'] = self.config.get('swap_charge', 0)
 
-        for asset_key, asset_config in self.assets.items():
-            spot_symbol = None
-            futures_symbol = None
+        # Get user-configured symbols from generic fields
+        config_spot = self.config.get('spot_symbol', '')
+        config_futures = self.config.get('futures_symbol', '')
+        config_expiry = self.config.get('futures_expiry', '')
 
-            # First try user-configured symbols from config
-            config_spot = self.config.get(f'{asset_key.lower()}_spot_symbol', '')
-            config_futures = self.config.get(f'{asset_key.lower()}_futures_symbol', '')
-            config_expiry = self.config.get(f'{asset_key.lower()}_futures_expiry', '')
+        # Update the spot_symbols and futures_symbols lists with configured values
+        if config_spot:
+            self.assets['ACTIVE']['spot_symbols'] = [config_spot]
+        if config_futures:
+            self.assets['ACTIVE']['futures_symbols'] = [config_futures]
 
-            # Parse user-configured expiry date (format: YYYY-MM-DD)
-            if config_expiry:
-                try:
-                    expiry_date = datetime.strptime(config_expiry, '%Y-%m-%d')
-                    self.assets[asset_key]['futures_expiry'] = expiry_date
-                    logger.info(f"{asset_key}: Using configured expiry: {config_expiry}")
-                except ValueError:
-                    logger.warning(f"{asset_key}: Invalid expiry date format '{config_expiry}', using default")
+        # Parse user-configured expiry date (format: YYYY-MM-DD)
+        if config_expiry:
+            self.assets['ACTIVE']['futures_expiry'] = self._parse_expiry(config_expiry)
+            logger.info(f"{asset_name}: Using configured expiry: {config_expiry}")
 
-            if config_spot:
-                symbol_info = mt5.symbol_info(config_spot)
-                if symbol_info:
-                    spot_symbol = config_spot
-                    mt5.symbol_select(config_spot, True)
-                    logger.info(f"{asset_key}: Using configured spot symbol: {config_spot}")
-                else:
-                    logger.warning(f"{asset_key}: Configured spot symbol '{config_spot}' not found in MT5")
+        spot_symbol = None
+        futures_symbol = None
 
-            if config_futures:
-                if mt5.symbol_info(config_futures):
-                    futures_symbol = config_futures
-                    mt5.symbol_select(config_futures, True)
-                    logger.info(f"{asset_key}: Using configured futures symbol: {config_futures}")
-                else:
-                    logger.warning(f"{asset_key}: Configured futures symbol '{config_futures}' not found in MT5")
-
-            # Fall back to auto-detection if user didn't configure or symbol not found
-            if not spot_symbol:
-                for symbol in asset_config['spot_symbols']:
-                    symbol_info = mt5.symbol_info(symbol)
-                    if symbol_info:
-                        spot_symbol = symbol
-                        mt5.symbol_select(symbol, True)
-                        logger.info(f"{asset_key}: Auto-detected spot symbol: {symbol}")
-                        break
-
-            if not futures_symbol:
-                for symbol in asset_config['futures_symbols']:
-                    if mt5.symbol_info(symbol):
-                        futures_symbol = symbol
-                        mt5.symbol_select(symbol, True)
-                        logger.info(f"{asset_key}: Auto-detected futures symbol: {symbol}")
-                        break
-
-            if spot_symbol and futures_symbol:
-                # Get user-configured swap charge (required for accurate calculation)
-                swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
-
-                self.active_assets[asset_key] = {
-                    'config': asset_config,
-                    'spot_symbol': spot_symbol,
-                    'futures_symbol': futures_symbol,
-                    'swap_charge': swap_charge
-                }
-                logger.info(f"{asset_key}: {spot_symbol} + {futures_symbol} | Swap: ${swap_charge:.2f}/lot/day")
+        # Validate spot symbol in MT5
+        if config_spot:
+            symbol_info = mt5.symbol_info(config_spot)
+            if symbol_info:
+                spot_symbol = config_spot
+                mt5.symbol_select(config_spot, True)
+                logger.info(f"{asset_name}: Using configured spot symbol: {config_spot}")
             else:
-                logger.warning(f"{asset_key}: Could not find symbols - Spot: {spot_symbol}, Futures: {futures_symbol}")
+                logger.warning(f"{asset_name}: Configured spot symbol '{config_spot}' not found in MT5")
+
+        # Validate futures symbol in MT5
+        if config_futures:
+            if mt5.symbol_info(config_futures):
+                futures_symbol = config_futures
+                mt5.symbol_select(config_futures, True)
+                logger.info(f"{asset_name}: Using configured futures symbol: {config_futures}")
+            else:
+                logger.warning(f"{asset_name}: Configured futures symbol '{config_futures}' not found in MT5")
+
+        if spot_symbol and futures_symbol:
+            # Get user-configured swap charge
+            swap_charge = self.config.get('swap_charge', 0)
+
+            self.active_assets['ACTIVE'] = {
+                'config': self.assets['ACTIVE'],
+                'spot_symbol': spot_symbol,
+                'futures_symbol': futures_symbol,
+                'swap_charge': swap_charge
+            }
+            logger.info(f"{asset_name}: {spot_symbol} + {futures_symbol} | Swap: ${swap_charge:.2f}/lot/day")
+        else:
+            logger.warning(f"{asset_name}: Could not find symbols - Spot: {config_spot}, Futures: {config_futures}")
+            logger.warning("Please configure valid MT5 symbols in Setup page")
 
         return len(self.active_assets) > 0
 
@@ -720,8 +761,8 @@ class TradingMonitor:
         while self.running:
             try:
                 # Collect prices every 0.3 seconds for fast UI updates
-                # HARDCODED: Only process GOLD (single asset mode)
-                for asset_key in ['GOLD'] if 'GOLD' in self.active_assets else []:
+                # SINGLE ASSET MODE: Only process the active asset
+                for asset_key in ['ACTIVE'] if 'ACTIVE' in self.active_assets else []:
                     data = self.get_market_data(asset_key)
                     if data:
                         # Determine save interval based on lookback_unit
@@ -762,8 +803,8 @@ class TradingMonitor:
 
     def calculate_swap_basis(self, asset_key, spot_price, time_to_expiry):
         """Calculate swap-based basis using user-configured swap charge (like Arb_Monitor)"""
-        # Use user-configured swap charge - must be entered manually for accuracy
-        swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
+        # Use user-configured swap charge from generic field (single asset mode)
+        swap_charge = self.config.get('swap_charge', 0)
         lot_size = self.assets[asset_key]['lot_size']
 
         if swap_charge <= 0:
@@ -1014,7 +1055,7 @@ class TradingMonitor:
                 swap_premium_pct = 0
                 swap_diff = 0
                 annual_swap_rate = 0
-                swap_charge = self.config.get(f'{asset_key.lower()}_swap_charge', 0)
+                swap_charge = self.config.get('swap_charge', 0)
 
             # Determine status (like Arb_Monitor)
             if swap_diff < 0:
@@ -1793,14 +1834,13 @@ class TradingMonitor:
         del self.positions[asset_key]
 
     def get_all_data(self):
-        """Get data for GOLD only (single-asset mode)"""
+        """Get data for the active asset (single-asset mode)"""
         data = {}
 
-        # HARDCODED to GOLD only - no Silver trading
-        # This ensures only one asset is ever processed
-        market_data = self.get_market_data('GOLD')
+        # SINGLE ASSET MODE: Only process the active asset
+        market_data = self.get_market_data('ACTIVE')
         if market_data:
-            data['GOLD'] = market_data
+            data['ACTIVE'] = market_data
 
         self.last_update = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         return data
@@ -1996,41 +2036,33 @@ def setup():
     """Setup page for configuration"""
     if request.method == 'POST':
         try:
-            # Get asset configurations
-            gold_asset_name = request.form.get('gold_asset_name', 'GOLD').strip() or 'GOLD'
-            gold_spot = request.form.get('gold_spot_symbol', '').strip()
-            gold_futures = request.form.get('gold_futures_symbol', '').strip()
-            gold_expiry = request.form.get('gold_futures_expiry', '').strip()
-            gold_contract_size = float(request.form.get('gold_contract_size', 100) or 100)
+            # Get generic asset configuration (single asset mode)
+            asset_name = request.form.get('asset_name', 'GOLD').strip() or 'GOLD'
+            spot_symbol = request.form.get('spot_symbol', '').strip()
+            futures_symbol = request.form.get('futures_symbol', '').strip()
+            futures_expiry = request.form.get('futures_expiry', '').strip()
+            contract_size = float(request.form.get('contract_size', 100) or 100)
+            swap_charge = float(request.form.get('swap_charge', 0) or 0)
 
-            silver_asset_name = request.form.get('silver_asset_name', 'SILVER').strip() or 'SILVER'
-            silver_spot = request.form.get('silver_spot_symbol', '').strip()
-            silver_futures = request.form.get('silver_futures_symbol', '').strip()
-            silver_expiry = request.form.get('silver_futures_expiry', '').strip()
-            silver_contract_size = float(request.form.get('silver_contract_size', 5000) or 5000)
+            # Save to generic config fields
+            monitor.config['asset_name'] = asset_name
+            monitor.config['spot_symbol'] = spot_symbol
+            monitor.config['futures_symbol'] = futures_symbol
+            monitor.config['futures_expiry'] = futures_expiry
+            monitor.config['contract_size'] = contract_size
+            monitor.config['swap_charge'] = swap_charge
 
-            # Swap charges are optional - will auto-detect from MT5
-            gold_swap = float(request.form.get('gold_swap', 0) or 0)
-            silver_swap = float(request.form.get('silver_swap', 0) or 0)
-
-            # Save config
-            monitor.config['gold_asset_name'] = gold_asset_name
-            monitor.config['gold_spot_symbol'] = gold_spot
-            monitor.config['gold_futures_symbol'] = gold_futures
-            monitor.config['gold_futures_expiry'] = gold_expiry
-            monitor.config['gold_contract_size'] = gold_contract_size
-            monitor.config['gold_swap_charge'] = gold_swap
-
-            monitor.config['silver_asset_name'] = silver_asset_name
-            monitor.config['silver_spot_symbol'] = silver_spot
-            monitor.config['silver_futures_symbol'] = silver_futures
-            monitor.config['silver_futures_expiry'] = silver_expiry
-            monitor.config['silver_contract_size'] = silver_contract_size
-            monitor.config['silver_swap_charge'] = silver_swap
+            # Also save to gold_* fields for backwards compatibility
+            monitor.config['gold_asset_name'] = asset_name
+            monitor.config['gold_spot_symbol'] = spot_symbol
+            monitor.config['gold_futures_symbol'] = futures_symbol
+            monitor.config['gold_futures_expiry'] = futures_expiry
+            monitor.config['gold_contract_size'] = contract_size
+            monitor.config['gold_swap_charge'] = swap_charge
 
             monitor.db.save_config(monitor.config)
 
-            logger.info(f"Setup: {gold_asset_name}={gold_spot}/{gold_futures}, {silver_asset_name}={silver_spot}/{silver_futures}")
+            logger.info(f"Setup: {asset_name}={spot_symbol}/{futures_symbol}")
 
             if monitor.initialize_mt5():
                 monitor.is_initialized = True
@@ -2106,16 +2138,14 @@ def get_data():
     trade_history = monitor.db.get_trades(limit=500)
     trade_summary = monitor.db.get_trade_summary()
 
-    # Get z-score history for charting
+    # Get z-score history for charting (single asset mode)
     zscore_history = {
-        'GOLD': list(monitor.zscore_history.get('GOLD', [])),
-        'SILVER': list(monitor.zscore_history.get('SILVER', []))
+        'ACTIVE': list(monitor.zscore_history.get('ACTIVE', []))
     }
 
-    # Get price history for charting
+    # Get price history for charting (single asset mode)
     price_history = {
-        'GOLD': list(monitor.price_history.get('GOLD', [])),
-        'SILVER': list(monitor.price_history.get('SILVER', []))
+        'ACTIVE': list(monitor.price_history.get('ACTIVE', []))
     }
 
     return jsonify({
@@ -2438,35 +2468,35 @@ SETUP_HTML = '''<!DOCTYPE html>
 
         <form method="POST">
             <div class="section">
-                <div class="section-title">ASSET CONFIGURATION</div>
+                <div class="section-title">ASSET CONFIGURATION (Single Asset Mode)</div>
                 <div class="form-group">
                     <label>Asset Name</label>
-                    <input type="text" name="gold_asset_name" value="{{ config.gold_asset_name or 'GOLD' }}" placeholder="e.g., GOLD, COFFEE, PALLADIUM, S&P500">
-                    <div class="help-text">Display name for this asset (e.g., GOLD, COFFEE, CRUDE OIL)</div>
+                    <input type="text" name="asset_name" value="{{ config.asset_name or config.gold_asset_name or 'GOLD' }}" placeholder="e.g., GOLD, SILVER, COFFEE, CRUDE OIL">
+                    <div class="help-text">Display name for this asset (e.g., GOLD, SILVER, COFFEE, CRUDE OIL)</div>
                 </div>
                 <div class="form-group">
                     <label>Spot Symbol</label>
-                    <input type="text" name="gold_spot_symbol" value="{{ config.gold_spot_symbol or '' }}" placeholder="e.g., XAUUSD, KC, XPDUSD">
+                    <input type="text" name="spot_symbol" value="{{ config.spot_symbol or config.gold_spot_symbol or '' }}" placeholder="e.g., XAUUSD, XAGUSD, KC">
                     <div class="help-text">Your broker's spot/cash symbol from MT5 Market Watch</div>
                 </div>
                 <div class="form-group">
                     <label>Futures Symbol</label>
-                    <input type="text" name="gold_futures_symbol" value="{{ config.gold_futures_symbol or '' }}" placeholder="e.g., GC0226, KC0325, PA0326">
+                    <input type="text" name="futures_symbol" value="{{ config.futures_symbol or config.gold_futures_symbol or '' }}" placeholder="e.g., GC0226, SI0326, KC0325">
                     <div class="help-text">Your broker's futures symbol (required for basis trading)</div>
                 </div>
                 <div class="form-group">
                     <label>Futures Expiry Date</label>
-                    <input type="date" name="gold_futures_expiry" value="{{ config.gold_futures_expiry or '' }}">
+                    <input type="date" name="futures_expiry" value="{{ config.futures_expiry or config.gold_futures_expiry or '' }}">
                     <div class="help-text">Futures contract expiry date</div>
                 </div>
                 <div class="form-group">
                     <label>Contract Size (units per lot)</label>
-                    <input type="number" name="gold_contract_size" step="0.01" min="0.01" value="{{ config.gold_contract_size or 100 }}" placeholder="e.g., 100">
-                    <div class="help-text">Units per lot: Gold=100oz, Coffee=37500lbs, Crude=1000bbl</div>
+                    <input type="number" name="contract_size" step="0.01" min="0.01" value="{{ config.contract_size or config.gold_contract_size or 100 }}" placeholder="e.g., 100">
+                    <div class="help-text">Units per lot: Gold=100oz, Silver=5000oz, Coffee=37500lbs</div>
                 </div>
                 <div class="form-group">
                     <label>Daily Swap Charge (USD per lot)</label>
-                    <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or 0 }}" placeholder="e.g., 45.67">
+                    <input type="number" name="swap_charge" step="0.01" min="0" value="{{ config.swap_charge or config.gold_swap_charge or 0 }}" placeholder="e.g., 45.67">
                     <div class="help-text">Check MT5: Right-click symbol → Specification → Swap Long</div>
                 </div>
             </div>
@@ -3569,8 +3599,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
         // Z-Score Chart
         let zscoreChart = null;
-        let currentChartAsset = 'GOLD';
-        let zscoreData = { GOLD: [], SILVER: [] };
+        let currentChartAsset = 'ACTIVE';
+        let zscoreData = { ACTIVE: [] };
         let tradeMarkers = [];
 
         function initChart() {
@@ -3775,8 +3805,8 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
         // Price Chart
         let priceChart = null;
-        let currentPriceChartAsset = 'GOLD';
-        let priceData = { GOLD: [], SILVER: [] };
+        let currentPriceChartAsset = 'ACTIVE';
+        let priceData = { ACTIVE: [] };
 
         function initPriceChart() {
             const ctx = document.getElementById('price-chart').getContext('2d');
