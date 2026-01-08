@@ -1363,16 +1363,19 @@ class TradingMonitor:
                 volume = round(volume, 2)
 
             # Determine filling mode based on what the symbol/broker supports
+            # For market orders, prefer IOC as it's more flexible than FOK
             filling_mode = symbol_info.filling_mode
-            if filling_mode & 1:  # FOK supported
+            if not use_limit and (filling_mode & 2):  # Market order and IOC supported
+                filling_type = mt5.ORDER_FILLING_IOC
+            elif filling_mode & 1:  # FOK supported
                 filling_type = mt5.ORDER_FILLING_FOK
             elif filling_mode & 2:  # IOC supported
                 filling_type = mt5.ORDER_FILLING_IOC
-            else:  # Use RETURN as fallback
-                filling_type = mt5.ORDER_FILLING_RETURN
+            else:  # Use IOC as fallback when filling_mode is 0 (some brokers don't report correctly)
+                filling_type = mt5.ORDER_FILLING_IOC if filling_mode == 0 else mt5.ORDER_FILLING_RETURN
 
             order_mode = "LIMIT" if use_limit else "MARKET"
-            logger.info(f"MT5 {order_mode} order: {symbol} volume={volume} price={price} filling={filling_type}")
+            logger.info(f"MT5 {order_mode} order: {symbol} volume={volume} price={price} filling={filling_type} (mode={filling_mode})")
 
             # Build request - same structure for both limit and market, just different deviation
             request = {
@@ -1451,16 +1454,19 @@ class TradingMonitor:
                 volume = round(volume, 2)
 
             # Determine filling mode based on what the symbol/broker supports
+            # For market orders (especially closes), prefer IOC as it's more flexible
             filling_mode = symbol_info.filling_mode
-            if filling_mode & 1:  # FOK supported
+            if not use_limit and (filling_mode & 2):  # Market order and IOC supported
+                filling_type = mt5.ORDER_FILLING_IOC
+            elif filling_mode & 1:  # FOK supported
                 filling_type = mt5.ORDER_FILLING_FOK
             elif filling_mode & 2:  # IOC supported
                 filling_type = mt5.ORDER_FILLING_IOC
-            else:  # Use RETURN as fallback
-                filling_type = mt5.ORDER_FILLING_RETURN
+            else:  # Use RETURN as fallback (or try IOC if filling_mode is 0)
+                filling_type = mt5.ORDER_FILLING_IOC if filling_mode == 0 else mt5.ORDER_FILLING_RETURN
 
             order_mode = "LIMIT" if use_limit else "MARKET"
-            logger.info(f"MT5 {order_mode} close: {symbol} ticket={ticket} volume={volume} price={price} filling={filling_type}")
+            logger.info(f"MT5 {order_mode} close: {symbol} ticket={ticket} volume={volume} price={price} filling={filling_type} (mode={filling_mode})")
 
             # Build request - same structure for both limit and market, just different deviation
             request = {
