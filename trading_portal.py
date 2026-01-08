@@ -121,7 +121,7 @@ class DatabaseManager:
             ('overnight_close_hour', 'INTEGER DEFAULT 16'),
             ('overnight_close_minute', 'INTEGER DEFAULT 55'),
             ('selected_asset', "TEXT DEFAULT 'GOLD'"),
-            ('min_profit_per_trade', 'REAL DEFAULT 20')
+            ('min_profit_per_lot', 'REAL DEFAULT 50')
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -270,7 +270,7 @@ class DatabaseManager:
                 'overnight_close_hour': row[28] if row[28] is not None else 16,
                 'overnight_close_minute': row[29] if row[29] is not None else 55,
                 'selected_asset': row[30] if row[30] is not None else 'GOLD',
-                'min_profit_per_trade': row[31] if len(row) > 31 and row[31] is not None else 20
+                'min_profit_per_lot': row[31] if len(row) > 31 and row[31] is not None else 50
             }
         return None
 
@@ -311,7 +311,7 @@ class DatabaseManager:
                     overnight_close_hour = ?,
                     overnight_close_minute = ?,
                     selected_asset = ?,
-                    min_profit_per_trade = ?,
+                    min_profit_per_lot = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -345,7 +345,7 @@ class DatabaseManager:
                 config.get('overnight_close_hour', 16),
                 config.get('overnight_close_minute', 55),
                 config.get('selected_asset', 'GOLD'),
-                config.get('min_profit_per_trade', 20),
+                config.get('min_profit_per_lot', 50),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -1523,7 +1523,9 @@ class TradingMonitor:
         # COST-AWARE TARGET CALCULATION
         # Round-trip cost = entry spread cost + exit spread cost (approximately 2x entry)
         round_trip_cost = spread_cost * 2
-        min_profit = self.config.get('min_profit_per_trade', 20)
+        # Min profit scales with lot size: min_profit_per_lot * lot_size
+        min_profit_per_lot = self.config.get('min_profit_per_lot', 50)
+        min_profit = min_profit_per_lot * lot_size
         total_required = round_trip_cost + min_profit
 
         # Minimum spread move needed to achieve target profit
@@ -1531,7 +1533,8 @@ class TradingMonitor:
         min_spread_move = total_required / (lot_size * contract_size)
 
         logger.info(f"Cost calculation: Entry cost=${spread_cost:.2f}, Round-trip=${round_trip_cost:.2f}, "
-                    f"Min profit=${min_profit:.2f}, Required spread move={min_spread_move:.4f}")
+                    f"Min profit=${min_profit:.2f} (${min_profit_per_lot}/lot × {lot_size} lots), "
+                    f"Required spread move={min_spread_move:.4f}")
 
         # Calculate target exit and stop loss based on entry statistics
         # Long Spread: entered low (z < -2), exit when z >= -exit_std (spread rises to lower_exit)
@@ -2063,7 +2066,7 @@ def settings():
             monitor.config['max_positions'] = int(request.form.get('max_positions', 3))
             monitor.config['lot_size'] = float(request.form.get('lot_size', 0.1))
             monitor.config['commission_per_lot'] = float(request.form.get('commission_per_lot', 0))
-            monitor.config['min_profit_per_trade'] = float(request.form.get('min_profit_per_trade', 20))
+            monitor.config['min_profit_per_lot'] = float(request.form.get('min_profit_per_lot', 50))
             monitor.config['hurst_threshold'] = float(request.form.get('hurst_threshold', 0.5))
             monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 15))
             monitor.config['hurst_enabled'] = request.form.get('hurst_enabled') == 'on'
@@ -4132,9 +4135,9 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                 </div>
 
                 <div class="form-group">
-                    <label>Minimum Profit per Trade ($)</label>
-                    <input type="number" name="min_profit_per_trade" value="{{ config.min_profit_per_trade }}" min="0" max="500" step="1">
-                    <div class="help-text">Target exit will ensure this profit AFTER bid-ask spread costs. Set to 0 to use statistical exit only.</div>
+                    <label>Minimum Profit per Lot ($)</label>
+                    <input type="number" name="min_profit_per_lot" value="{{ config.min_profit_per_lot }}" min="0" max="500" step="1">
+                    <div class="help-text">Target profit per lot AFTER costs. Total = this × lot size. E.g., $50/lot × 30 lots = $1,500 min profit. Set to 0 for statistical exit only.</div>
                 </div>
             </div>
 
