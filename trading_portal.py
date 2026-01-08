@@ -2384,6 +2384,42 @@ def api_clear_trades():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/close_position', methods=['POST'])
+def api_close_position():
+    """Manually close an open position"""
+    try:
+        asset_key = request.json.get('asset_key', 'ACTIVE')
+
+        if asset_key not in monitor.positions:
+            return jsonify({
+                'status': 'error',
+                'message': f'No open position found for {asset_key}'
+            }), 400
+
+        # Get current market data for the close
+        market_data = monitor.get_market_data(asset_key)
+        if not market_data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Could not get current market data'
+            }), 400
+
+        # Close the position with MANUAL reason
+        position = monitor.positions[asset_key]
+        logger.info(f"Manual close requested for {asset_key} position: {position['direction']}")
+
+        monitor._close_position(asset_key, 'MANUAL', market_data)
+
+        return jsonify({
+            'status': 'success',
+            'message': f'Position {asset_key} closed manually'
+        })
+
+    except Exception as e:
+        logger.error(f"Error closing position: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/search_symbols', methods=['GET'])
 def api_search_symbols():
     """Search for available symbols in MT5
@@ -3925,6 +3961,32 @@ MONITOR_HTML = '''<!DOCTYPE html>
             return card;
         }
 
+        async function closePosition(assetKey) {
+            if (!confirm('Are you sure you want to close this position?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/close_position', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ asset_key: assetKey })
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('Position closed successfully');
+                    // Refresh data immediately
+                    fetchData();
+                } else {
+                    alert('Error closing position: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error closing position: ' + error.message);
+            }
+        }
+
         function updatePositions(positions) {
             const container = document.getElementById('positions-container');
             if (!positions || positions.length === 0) {
@@ -3968,6 +4030,11 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #ddd; text-align: center;">
                         <div style="font-size: 0.8em; color: #888;">Unrealized P&L</div>
                         <div class="${pnlClass}" style="font-size: 1.3em; font-weight: bold;">${pnlSign}$${Math.abs(unrealizedPnl).toFixed(2)}</div>
+                    </div>
+                    <div style="margin-top: 10px; text-align: center;">
+                        <button onclick="closePosition('${p.asset}')" style="background: #d9534f; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-weight: 500;">
+                            Close Position
+                        </button>
                     </div>
                 </div>
             `}).join('');
