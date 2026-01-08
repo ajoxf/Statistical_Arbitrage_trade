@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ALGORITHMIC TRADING PORTAL - GOLD & SILVER
+ALGORITHMIC TRADING PORTAL - Single Asset Mode
 Based on Arb_Monitor UI style with added algo trading capabilities
 
 Features:
@@ -2418,7 +2418,7 @@ SETUP_HTML = '''<!DOCTYPE html>
 
         <form method="POST">
             <div class="section">
-                <div class="section-title">ASSET 1 (Slot 1)</div>
+                <div class="section-title">ASSET CONFIGURATION</div>
                 <div class="form-group">
                     <label>Asset Name</label>
                     <input type="text" name="gold_asset_name" value="{{ config.gold_asset_name or 'GOLD' }}" placeholder="e.g., GOLD, COFFEE, PALLADIUM, S&P500">
@@ -2442,45 +2442,11 @@ SETUP_HTML = '''<!DOCTYPE html>
                 <div class="form-group">
                     <label>Contract Size (units per lot)</label>
                     <input type="number" name="gold_contract_size" step="0.01" min="0.01" value="{{ config.gold_contract_size or 100 }}" placeholder="e.g., 100">
-                    <div class="help-text">Units per lot: Gold=100oz, Silver=5000oz, Coffee=37500lbs, Crude=1000bbl</div>
+                    <div class="help-text">Units per lot: Gold=100oz, Coffee=37500lbs, Crude=1000bbl</div>
                 </div>
                 <div class="form-group">
                     <label>Daily Swap Charge (USD per lot)</label>
                     <input type="number" name="gold_swap" step="0.01" min="0" value="{{ config.gold_swap_charge or 0 }}" placeholder="e.g., 45.67">
-                    <div class="help-text">Check MT5: Right-click symbol → Specification → Swap Long</div>
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-title">ASSET 2 (Slot 2)</div>
-                <div class="form-group">
-                    <label>Asset Name</label>
-                    <input type="text" name="silver_asset_name" value="{{ config.silver_asset_name or 'SILVER' }}" placeholder="e.g., SILVER, COCOA, PLATINUM, NASDAQ">
-                    <div class="help-text">Display name for this asset (e.g., SILVER, COCOA, NATURAL GAS)</div>
-                </div>
-                <div class="form-group">
-                    <label>Spot Symbol</label>
-                    <input type="text" name="silver_spot_symbol" value="{{ config.silver_spot_symbol or '' }}" placeholder="e.g., XAGUSD, CC, XPTUSD">
-                    <div class="help-text">Your broker's spot/cash symbol from MT5 Market Watch</div>
-                </div>
-                <div class="form-group">
-                    <label>Futures Symbol</label>
-                    <input type="text" name="silver_futures_symbol" value="{{ config.silver_futures_symbol or '' }}" placeholder="e.g., SI0326, CC0325, PL0326">
-                    <div class="help-text">Your broker's futures symbol (required for basis trading)</div>
-                </div>
-                <div class="form-group">
-                    <label>Futures Expiry Date</label>
-                    <input type="date" name="silver_futures_expiry" value="{{ config.silver_futures_expiry or '' }}">
-                    <div class="help-text">Futures contract expiry date</div>
-                </div>
-                <div class="form-group">
-                    <label>Contract Size (units per lot)</label>
-                    <input type="number" name="silver_contract_size" step="0.01" min="0.01" value="{{ config.silver_contract_size or 5000 }}" placeholder="e.g., 5000">
-                    <div class="help-text">Units per lot: Gold=100oz, Silver=5000oz, Coffee=37500lbs, Crude=1000bbl</div>
-                </div>
-                <div class="form-group">
-                    <label>Daily Swap Charge (USD per lot)</label>
-                    <input type="number" name="silver_swap" step="0.01" min="0" value="{{ config.silver_swap_charge or 0 }}" placeholder="e.g., 5.23">
                     <div class="help-text">Check MT5: Right-click symbol → Specification → Swap Long</div>
                 </div>
             </div>
@@ -2973,10 +2939,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
     <div class="chart-section">
         <div class="chart-header">
             <div class="chart-title">Z-Score Chart</div>
-            <div class="chart-tabs">
-                <div class="chart-tab active" id="tab-asset1" onclick="switchChart('GOLD')">Asset 1</div>
-                <div class="chart-tab" id="tab-asset2" onclick="switchChart('SILVER')">Asset 2</div>
-            </div>
         </div>
         <div class="chart-container">
             <canvas id="zscore-chart"></canvas>
@@ -2986,10 +2948,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
     <div class="chart-section">
         <div class="chart-header">
             <div class="chart-title" id="price-chart-title">Price Chart</div>
-            <div class="chart-tabs">
-                <div class="chart-tab active" id="price-tab-asset1" onclick="switchPriceChart('GOLD')">Asset 1</div>
-                <div class="chart-tab" id="price-tab-asset2" onclick="switchPriceChart('SILVER')">Asset 2</div>
-            </div>
         </div>
         <div class="chart-container">
             <canvas id="price-chart"></canvas>
@@ -3112,35 +3070,14 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         filteredKeys = [selectedAssetKey];
                     }
 
-                    // Update chart tab names and visibility
-                    const tabsContainer = document.querySelector('.chart-tabs');
-                    const priceTabsContainer = document.querySelectorAll('.chart-tabs')[1];
-                    if (assetFilter) {
-                        // Single asset mode - hide tabs, show asset name as title
-                        tabsContainer.style.display = 'none';
-                        if (priceTabsContainer) priceTabsContainer.style.display = 'none';
-                        const assetName = filteredData[filteredKeys[0]]?.asset_name || 'Asset';
-                        document.querySelector('.chart-title').textContent = `${assetName} Z-Score`;
-                        document.getElementById('price-chart-title').textContent = `${assetName} Price`;
-                        // Set charts to this asset
-                        if (selectedAssetKey) {
-                            currentChartAsset = selectedAssetKey;
-                            currentPriceChartAsset = selectedAssetKey;
-                        }
-                    } else {
-                        // Multi-asset mode - show tabs
-                        tabsContainer.style.display = 'flex';
-                        if (priceTabsContainer) priceTabsContainer.style.display = 'flex';
-                        document.querySelector('.chart-title').textContent = 'Z-Score Chart';
-                        document.getElementById('price-chart-title').textContent = 'Price Chart';
-                        if (assetKeys.length > 0 && data.data[assetKeys[0]]) {
-                            document.getElementById('tab-asset1').textContent = data.data[assetKeys[0]].asset_name;
-                            document.getElementById('price-tab-asset1').textContent = data.data[assetKeys[0]].asset_name;
-                        }
-                        if (assetKeys.length > 1 && data.data[assetKeys[1]]) {
-                            document.getElementById('tab-asset2').textContent = data.data[assetKeys[1]].asset_name;
-                            document.getElementById('price-tab-asset2').textContent = data.data[assetKeys[1]].asset_name;
-                        }
+                    // Update chart titles with asset name (single asset mode)
+                    const assetName = filteredData[filteredKeys[0]]?.asset_name || 'Asset';
+                    document.querySelector('.chart-title').textContent = `${assetName} Z-Score`;
+                    document.getElementById('price-chart-title').textContent = `${assetName} Price`;
+                    // Set charts to this asset
+                    if (filteredKeys.length > 0) {
+                        currentChartAsset = filteredKeys[0];
+                        currentPriceChartAsset = filteredKeys[0];
                     }
 
                     const container = document.getElementById('assets-container');
@@ -3744,14 +3681,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
             });
         }
 
-        function switchChart(asset) {
-            currentChartAsset = asset;
-            // Use IDs to toggle active state (textContent changes to asset names)
-            document.getElementById('tab-asset1').classList.toggle('active', asset === 'GOLD');
-            document.getElementById('tab-asset2').classList.toggle('active', asset === 'SILVER');
-            updateChartDisplay();
-        }
-
         function updateZscoreChart(zscore_history, trade_history) {
             if (!zscore_history) return;
 
@@ -3929,14 +3858,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     }
                 }
             });
-        }
-
-        function switchPriceChart(asset) {
-            currentPriceChartAsset = asset;
-            // Use IDs to toggle active state (textContent changes to asset names)
-            document.getElementById('price-tab-asset1').classList.toggle('active', asset === 'GOLD');
-            document.getElementById('price-tab-asset2').classList.toggle('active', asset === 'SILVER');
-            updatePriceChartDisplay();
         }
 
         function updatePriceChart(price_history) {
@@ -4169,19 +4090,6 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <label>Trending Duration (Minutes)</label>
                     <input type="number" name="trending_duration_minutes" value="{{ config.trending_duration_minutes or 15 }}" min="0" max="120" step="5">
                     <div class="help-text">Only block if trending for X minutes continuously (0 = immediate, 15 = recommended)</div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-title">Asset Selection</div>
-
-                <div class="form-group">
-                    <label>Active Asset</label>
-                    <select name="selected_asset">
-                        <option value="GOLD" {% if config.selected_asset == 'GOLD' %}selected{% endif %}>Gold</option>
-                        <option value="SILVER" {% if config.selected_asset == 'SILVER' %}selected{% endif %}>Silver</option>
-                    </select>
-                    <div class="help-text">Only ONE asset is active at a time to avoid multiple simultaneous positions. Open another browser window for other assets.</div>
                 </div>
             </div>
 
