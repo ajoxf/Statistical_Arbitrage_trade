@@ -1530,18 +1530,18 @@ class TradingMonitor:
 
         mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
 
-        # Execute futures order (use limit order for better price)
+        # Execute futures order (market order for guaranteed fill)
         futures_result = self._execute_mt5_order(
             futures_symbol, futures_order_type, lot_size,
             f"{asset_key} {direction} Futures",
-            use_limit=True
+            use_limit=False
         )
 
-        # Execute spot order (use limit order for better price)
+        # Execute spot order (market order for guaranteed fill)
         spot_result = self._execute_mt5_order(
             spot_symbol, spot_order_type, lot_size,
             f"{asset_key} {direction} Spot",
-            use_limit=True
+            use_limit=False
         )
 
         if futures_result['success'] and spot_result['success']:
@@ -1665,10 +1665,7 @@ class TradingMonitor:
         spot_symbol = asset_data.get('spot_symbol')
         futures_symbol = asset_data.get('futures_symbol')
 
-        # Use limit orders for profit exits (CLOSE), market orders for urgent exits (STOP_LOSS, TIME_STOP, OVERNIGHT_CLOSE)
-        use_limit_for_close = (close_reason == 'CLOSE')
-
-        # Track if MT5 closes were successful
+        # Track if MT5 closes were successful (always use market orders for guaranteed fill)
         futures_closed = False
         spot_closed = False
 
@@ -1677,25 +1674,13 @@ class TradingMonitor:
                 position['mt5_futures_ticket'],
                 futures_symbol, lot_size,
                 mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL,
-                use_limit=use_limit_for_close
+                use_limit=False
             )
             if result['success']:
                 futures_closed = True
-                logger.info(f"Futures position closed successfully: ticket {position['mt5_futures_ticket']}")
+                logger.info(f"Futures position closed: ticket {position['mt5_futures_ticket']}")
             else:
-                # Retry with market order if limit failed
-                logger.warning(f"Futures limit close failed: {result.get('error')}. Retrying with market order...")
-                result = self._close_mt5_position(
-                    position['mt5_futures_ticket'],
-                    futures_symbol, lot_size,
-                    mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL,
-                    use_limit=False
-                )
-                if result['success']:
-                    futures_closed = True
-                    logger.info(f"Futures position closed with market order: ticket {position['mt5_futures_ticket']}")
-                else:
-                    logger.error(f"CRITICAL: Failed to close futures position {position['mt5_futures_ticket']}: {result.get('error')}")
+                logger.error(f"CRITICAL: Failed to close futures position {position['mt5_futures_ticket']}: {result.get('error')}")
         else:
             futures_closed = True  # No ticket to close
 
@@ -1704,25 +1689,13 @@ class TradingMonitor:
                 position['mt5_spot_ticket'],
                 spot_symbol, lot_size,
                 mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY,
-                use_limit=use_limit_for_close
+                use_limit=False
             )
             if result['success']:
                 spot_closed = True
-                logger.info(f"Spot position closed successfully: ticket {position['mt5_spot_ticket']}")
+                logger.info(f"Spot position closed: ticket {position['mt5_spot_ticket']}")
             else:
-                # Retry with market order if limit failed
-                logger.warning(f"Spot limit close failed: {result.get('error')}. Retrying with market order...")
-                result = self._close_mt5_position(
-                    position['mt5_spot_ticket'],
-                    spot_symbol, lot_size,
-                    mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY,
-                    use_limit=False
-                )
-                if result['success']:
-                    spot_closed = True
-                    logger.info(f"Spot position closed with market order: ticket {position['mt5_spot_ticket']}")
-                else:
-                    logger.error(f"CRITICAL: Failed to close spot position {position['mt5_spot_ticket']}: {result.get('error')}")
+                logger.error(f"CRITICAL: Failed to close spot position {position['mt5_spot_ticket']}: {result.get('error')}")
         else:
             spot_closed = True  # No ticket to close
 
