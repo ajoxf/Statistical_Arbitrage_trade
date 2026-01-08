@@ -1504,6 +1504,24 @@ class TradingMonitor:
         futures_spread_cents = data.get('futures_spread', 0)  # in cents
         spread_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * 100
 
+        # Get current statistics to lock in target/stop levels at entry
+        stats = self.get_statistics(asset_key)
+        entry_spread = data['futures_price'] - data['spot_price']
+
+        # Calculate target exit and stop loss based on entry statistics
+        # Long Spread: entered low (z < -2), exit when z >= -exit_std (spread rises to lower_exit)
+        # Short Spread: entered high (z > 2), exit when z <= exit_std (spread falls to upper_exit)
+        if direction == 'Long Spread':
+            # Target: spread rises toward mean (exit at lower_exit or mean)
+            target_exit = stats.get('lower_exit', stats.get('mean', entry_spread)) if stats else entry_spread
+            # Stop: spread falls further (hits lower_stop)
+            stop_loss_spread = stats.get('lower_stop', entry_spread) if stats else entry_spread
+        else:  # Short Spread
+            # Target: spread falls toward mean (exit at upper_exit or mean)
+            target_exit = stats.get('upper_exit', stats.get('mean', entry_spread)) if stats else entry_spread
+            # Stop: spread rises further (hits upper_stop)
+            stop_loss_spread = stats.get('upper_stop', entry_spread) if stats else entry_spread
+
         position = {
             'trade_id': trade_id,
             'asset': asset_key,
@@ -1512,6 +1530,9 @@ class TradingMonitor:
             'entry_zscore': data['zscore'],
             'entry_spot_price': data['spot_price'],
             'entry_futures_price': data['futures_price'],
+            'entry_spread': entry_spread,
+            'target_exit': target_exit,
+            'stop_loss_spread': stop_loss_spread,
             'lot_size': lot_size,
             'spread_cost': spread_cost,
             'status': 'OPEN',
@@ -1866,18 +1887,11 @@ class TradingMonitor:
                     pos_copy['current_spot'] = current_spot
                     pos_copy['current_futures'] = current_futures
                     pos_copy['current_spread'] = current_futures - current_spot
-                    pos_copy['entry_spread'] = entry_futures - entry_spot
+                    pos_copy['entry_spread'] = position.get('entry_spread', entry_futures - entry_spot)
 
-                    # Get target exit price from statistics
-                    stats = self.get_statistics(asset_key)
-                    if stats:
-                        # Exit target is based on exit bands (mean if exit_std=0)
-                        if position.get('direction') == 'Long Spread':
-                            pos_copy['target_exit'] = stats.get('upper_exit', stats.get('mean', 0))
-                            pos_copy['stop_loss_exit'] = stats.get('lower_stop', stats.get('mean', 0))
-                        else:
-                            pos_copy['target_exit'] = stats.get('lower_exit', stats.get('mean', 0))
-                            pos_copy['stop_loss_exit'] = stats.get('upper_stop', stats.get('mean', 0))
+                    # Use stored target/stop from entry time (locked in when position opened)
+                    pos_copy['target_exit'] = position.get('target_exit', pos_copy['entry_spread'])
+                    pos_copy['stop_loss_exit'] = position.get('stop_loss_spread', pos_copy['entry_spread'])
 
                     # Calculate spread cost (bid-ask spread for both spot + futures)
                     spot_spread_cents = current_data.get('spot_spread', 0)  # in cents
