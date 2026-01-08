@@ -66,6 +66,15 @@ class AlgoTradingConfig:
         'DISCOUNT_ENTRY': -15.0,  # % discount to enter buy basis
         'DISCOUNT_EXIT': -5.0     # % discount to exit buy basis
     }
+
+    # Cost-aware exit settings (alternative to percentage-based)
+    COST_AWARE_EXITS = {
+        'ENABLED': True,                    # Use cost-aware exit targets
+        'MIN_PROFIT_PER_LOT': 144.0,        # Minimum profit target per lot ($)
+        'SPREAD_COST_SPOT': 15.0,           # Estimated spot spread cost per lot ($)
+        'SPREAD_COST_FUTURES': 34.0,        # Estimated futures spread cost per lot ($)
+        'USE_DYNAMIC_SPREAD': True,         # Calculate spread costs from live data
+    }
     
     RISK_LIMITS = {
         'MAX_POSITIONS_PER_ASSET': 3,
@@ -86,8 +95,8 @@ class AlgoTradingConfig:
         'GOLD': {
             'name': 'GOLD',
             'spot_symbols': ['XAUUSD_', 'XAUUSD', 'GOLD'],
-            'futures_symbols': ['GC1225', 'XAUUSD.f', 'GCZ4'],
-            'futures_expiry': datetime(2025, 11, 26),
+            'futures_symbols': ['GC0226', 'GC1226', 'XAUUSD.f', 'GCZ4'],
+            'futures_expiry': datetime(2026, 2, 26),  # Updated to Feb 2026 contract
             'risk_free_rate': 0.0425,
             'multiplier': 1.0,
             'lot_size': 100,  # oz per lot
@@ -97,8 +106,8 @@ class AlgoTradingConfig:
         'SILVER': {
             'name': 'SILVER',
             'spot_symbols': ['XAGUSD_', 'XAGUSD', 'SILVER'],
-            'futures_symbols': ['SI1225', 'XAGUSD.f', 'SIU4'],
-            'futures_expiry': datetime(2025, 11, 26),
+            'futures_symbols': ['SI0226', 'SI1226', 'XAGUSD.f', 'SIU4'],
+            'futures_expiry': datetime(2026, 2, 26),  # Updated to Feb 2026 contract
             'risk_free_rate': 0.0425,
             'multiplier': 1.0,
             'lot_size': 5000,  # oz per lot
@@ -133,11 +142,53 @@ class Position:
         self.entry_time = datetime.now()
         self.entry_premium = None
         self.current_premium = None
+        self.entry_spread = None       # Absolute spread at entry (futures - spot)
+        self.target_exit_spread = None # Cost-aware target exit spread
+        self.stop_loss_spread = None   # Stop loss spread level
         self.status = PositionStatus.ACTIVE
         self.unrealized_pnl = 0.0
         self.realized_pnl = 0.0
         self.close_time = None
         self.close_reason = None
+
+    def calculate_exit_targets(self, config, contract_size, spot_spread_cost=0, futures_spread_cost=0):
+        """
+        Calculate cost-aware exit targets.
+
+        IMPORTANT: Target exit is based on min_profit only, NOT min_profit + costs.
+        Costs are already factored into P&L calculation at close.
+
+        For SHORT spread (sell futures, buy spot): profit when spread DECREASES
+        For LONG spread (buy futures, sell spot): profit when spread INCREASES
+        """
+        if self.entry_spread is None:
+            return
+
+        cost_config = config.COST_AWARE_EXITS
+        min_profit = cost_config['MIN_PROFIT_PER_LOT']
+        stop_loss_pct = config.RISK_LIMITS['STOP_LOSS_PCT']
+
+        # Calculate required spread movement for target profit
+        # Each $1 spread movement = $contract_size profit per lot
+        required_spread_move = min_profit / contract_size
+
+        if self.signal_type == SignalType.SELL_BASIS:
+            # Short spread: profit when spread decreases
+            # Target = entry - (min_profit / contract_size)
+            # DO NOT add costs here - costs are subtracted from realized P&L
+            self.target_exit_spread = self.entry_spread - required_spread_move
+            # Stop loss when spread increases
+            stop_move = (self.entry_spread * stop_loss_pct / 100)
+            self.stop_loss_spread = self.entry_spread + stop_move
+        else:  # BUY_BASIS
+            # Long spread: profit when spread increases
+            self.target_exit_spread = self.entry_spread + required_spread_move
+            # Stop loss when spread decreases
+            stop_move = (self.entry_spread * stop_loss_pct / 100)
+            self.stop_loss_spread = self.entry_spread - stop_move
+
+        logging.info(f"Position {self.position_id}: Entry={self.entry_spread:.2f}, "
+                     f"Target={self.target_exit_spread:.2f}, Stop={self.stop_loss_spread:.2f}")
 
 class DataLogger:
     """Database logger for trades and market data"""
@@ -277,7 +328,24 @@ class OrderManager:
                 mt5.symbol_select(trade.symbol, True)
             
             point = symbol_info.point
-            
+
+            # Validate and adjust lot size to meet symbol requirements
+            volume_min = symbol_info.volume_min
+            volume_max = symbol_info.volume_max
+            volume_step = symbol_info.volume_step
+
+            if trade.lot_size < volume_min:
+                logging.warning(f"Lot size {trade.lot_size} below minimum {volume_min}, adjusting")
+                trade.lot_size = volume_min
+            elif trade.lot_size > volume_max:
+                logging.warning(f"Lot size {trade.lot_size} above maximum {volume_max}, adjusting")
+                trade.lot_size = volume_max
+
+            # Round to valid step increment
+            if volume_step > 0:
+                trade.lot_size = round(trade.lot_size / volume_step) * volume_step
+                trade.lot_size = max(trade.lot_size, volume_min)  # Ensure not rounded below min
+
             # Get current price
             tick = mt5.symbol_info_tick(trade.symbol)
             if not tick:
@@ -385,23 +453,34 @@ class PositionManager:
         self.data_logger = data_logger
         self.position_counter = 0
     
-    def create_position(self, asset, signal_type, spot_trade, futures_trade, entry_premium):
-        """Create new position"""
+    def create_position(self, asset, signal_type, spot_trade, futures_trade, entry_premium,
+                        entry_spread=None, config=None, contract_size=100):
+        """Create new position with cost-aware exit targets"""
         self.position_counter += 1
         position_id = f"POS_{self.position_counter:04d}"
-        
+
         position = Position(position_id, asset, signal_type, spot_trade, futures_trade)
         position.entry_premium = entry_premium
         position.current_premium = entry_premium
-        
+
+        # Set entry spread and calculate exit targets
+        if entry_spread is not None:
+            position.entry_spread = entry_spread
+            if config and config.COST_AWARE_EXITS.get('ENABLED', False):
+                position.calculate_exit_targets(config, contract_size)
+
         self.positions[position_id] = position
-        
+
         # Log to database
         self.data_logger.log_position(position)
         self.data_logger.log_trade(spot_trade, position_id)
         self.data_logger.log_trade(futures_trade, position_id)
-        
-        logging.info(f"Position created: {position_id} - {asset} {signal_type.value} at {entry_premium:.2f}%")
+
+        exit_info = ""
+        if position.target_exit_spread is not None:
+            exit_info = f" | Target: {position.target_exit_spread:.2f}, Stop: {position.stop_loss_spread:.2f}"
+
+        logging.info(f"Position created: {position_id} - {asset} {signal_type.value} at {entry_premium:.2f}%{exit_info}")
         return position
     
     def update_position_pnl(self, position_id, current_spot_price, current_futures_price, current_premium):
@@ -545,34 +624,65 @@ class RiskManager:
 
 class SignalGenerator:
     """Generates trading signals based on swap premium analysis"""
-    
+
     def __init__(self, config):
         self.config = config
-    
+
     def generate_signal(self, asset, market_data, active_positions):
         """Generate trading signal for asset"""
         swap_premium = market_data['swap_premium_pct']
-        
+        current_spread = market_data['actual_basis']  # futures - spot
+
         # Check for entry signals only if no active positions
         if not active_positions:
             if swap_premium > self.config.SIGNAL_THRESHOLDS['PREMIUM_ENTRY']:
                 return SignalType.SELL_BASIS
             elif swap_premium < self.config.SIGNAL_THRESHOLDS['DISCOUNT_ENTRY']:
                 return SignalType.BUY_BASIS
-        
+
         # Check for exit signals on existing positions
         exit_signals = []
         for position_id, position in active_positions.items():
-            if position.signal_type == SignalType.SELL_BASIS:
-                if swap_premium <= self.config.SIGNAL_THRESHOLDS['PREMIUM_EXIT']:
-                    exit_signals.append((position_id, SignalType.CLOSE_LONG))
-            elif position.signal_type == SignalType.BUY_BASIS:
-                if swap_premium >= self.config.SIGNAL_THRESHOLDS['DISCOUNT_EXIT']:
-                    exit_signals.append((position_id, SignalType.CLOSE_SHORT))
-        
+            should_exit = False
+            exit_reason = None
+
+            # Check cost-aware exit targets (if enabled and calculated)
+            if self.config.COST_AWARE_EXITS.get('ENABLED', False) and position.target_exit_spread is not None:
+                if position.signal_type == SignalType.SELL_BASIS:
+                    # Short spread: exit when spread falls to target OR rises to stop
+                    if current_spread <= position.target_exit_spread:
+                        should_exit = True
+                        exit_reason = "TARGET_HIT"
+                    elif current_spread >= position.stop_loss_spread:
+                        should_exit = True
+                        exit_reason = "STOP_LOSS"
+                elif position.signal_type == SignalType.BUY_BASIS:
+                    # Long spread: exit when spread rises to target OR falls to stop
+                    if current_spread >= position.target_exit_spread:
+                        should_exit = True
+                        exit_reason = "TARGET_HIT"
+                    elif current_spread <= position.stop_loss_spread:
+                        should_exit = True
+                        exit_reason = "STOP_LOSS"
+
+            # Fallback to percentage-based exits if cost-aware not triggered
+            if not should_exit:
+                if position.signal_type == SignalType.SELL_BASIS:
+                    if swap_premium <= self.config.SIGNAL_THRESHOLDS['PREMIUM_EXIT']:
+                        should_exit = True
+                        exit_reason = "PREMIUM_NORMALIZED"
+                elif position.signal_type == SignalType.BUY_BASIS:
+                    if swap_premium >= self.config.SIGNAL_THRESHOLDS['DISCOUNT_EXIT']:
+                        should_exit = True
+                        exit_reason = "DISCOUNT_NORMALIZED"
+
+            if should_exit:
+                close_signal = SignalType.CLOSE_LONG if position.signal_type == SignalType.SELL_BASIS else SignalType.CLOSE_SHORT
+                exit_signals.append((position_id, close_signal, exit_reason))
+
         if exit_signals:
-            return exit_signals[0]  # Return first exit signal
-        
+            return exit_signals[0]  # Return first exit signal (position_id, signal, reason)
+
         return SignalType.NO_SIGNAL
 
 class PerformanceTracker:
@@ -970,9 +1080,11 @@ class AlgorithmicTradingSystem:
             # Process signal
             if signal == SignalType.SELL_BASIS or signal == SignalType.BUY_BASIS:
                 self.execute_entry_signal(asset_key, signal, market_data)
-            elif isinstance(signal, tuple) and len(signal) == 2:
-                position_id, close_signal = signal
-                self.position_manager.close_position(position_id, "SIGNAL_EXIT", self.order_manager)
+            elif isinstance(signal, tuple) and len(signal) >= 2:
+                # Handle exit signals: (position_id, close_signal, exit_reason)
+                position_id = signal[0]
+                exit_reason = signal[2] if len(signal) > 2 else "SIGNAL_EXIT"
+                self.position_manager.close_position(position_id, exit_reason, self.order_manager)
                 if position_id in self.position_manager.positions:
                     self.performance_tracker.update_with_closed_position(
                         self.position_manager.positions[position_id]
@@ -982,41 +1094,59 @@ class AlgorithmicTradingSystem:
         """Execute entry signal"""
         # Validate with risk manager
         lot_size = self.config.RISK_LIMITS['MAX_LOT_SIZE']  # Use max lot size for now
-        
+
         valid, reason = self.risk_manager.validate_new_position(
             asset_key, signal_type, lot_size, self.position_manager
         )
-        
+
         if not valid:
             logging.info(f"Signal rejected for {asset_key}: {reason}")
             return
-        
-        # Get symbols
+
+        # Get symbols and contract info
         asset = self.active_assets[asset_key]
         spot_symbol = asset['spot_symbol']
         futures_symbol = asset['futures_symbol']
-        
+        contract_size = asset['config'].get('lot_size', 100)  # oz per lot
+
+        # Get entry spread (futures - spot)
+        entry_spread = market_data['actual_basis']
+
         if self.trading_mode == "LIVE":
             # Execute real trades
             success, spot_trade, futures_trade = self.order_manager.execute_trade_pair(
                 asset_key, signal_type, lot_size, spot_symbol, futures_symbol
             )
-            
+
             if success:
-                # Create position
+                # Create position with cost-aware exit targets
                 position = self.position_manager.create_position(
-                    asset_key, signal_type, spot_trade, futures_trade, 
-                    market_data['swap_premium_pct']
+                    asset_key, signal_type, spot_trade, futures_trade,
+                    market_data['swap_premium_pct'],
+                    entry_spread=entry_spread,
+                    config=self.config,
+                    contract_size=contract_size
                 )
-                
+
                 self.risk_manager.record_trade(asset_key)
                 logging.info(f"Position opened: {position.position_id} - {asset_key} {signal_type.value}")
             else:
                 logging.error(f"Failed to execute trades for {asset_key} {signal_type.value}")
-                
+
         else:  # PAPER mode
-            # Simulate trades
-            logging.info(f"PAPER TRADE: {asset_key} {signal_type.value} at premium {market_data['swap_premium_pct']:.2f}%")
+            # Simulate trades with cost-aware targets
+            logging.info(f"PAPER TRADE: {asset_key} {signal_type.value} at spread {entry_spread:.2f}, premium {market_data['swap_premium_pct']:.2f}%")
+
+            # Calculate what targets would be for display
+            if self.config.COST_AWARE_EXITS.get('ENABLED', False):
+                min_profit = self.config.COST_AWARE_EXITS['MIN_PROFIT_PER_LOT']
+                required_move = min_profit / contract_size
+                if signal_type == SignalType.SELL_BASIS:
+                    target = entry_spread - required_move
+                else:
+                    target = entry_spread + required_move
+                logging.info(f"  → Entry: {entry_spread:.2f}, Target: {target:.2f} (move: {required_move:.2f})")
+
             self.risk_manager.record_trade(asset_key)
     
     def print_trading_display(self, all_market_data):
