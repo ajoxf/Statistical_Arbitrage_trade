@@ -2344,6 +2344,199 @@ def api_clear_trades():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/test_orders', methods=['POST'])
+def api_test_orders():
+    """Test order placement for both Spot and Futures symbols
+
+    Opens and immediately closes a minimum lot size position on each symbol
+    to verify that order execution is working correctly.
+    """
+    results = {
+        'spot': {'symbol': '', 'open': None, 'close': None},
+        'futures': {'symbol': '', 'open': None, 'close': None},
+        'summary': {'success': False, 'message': ''}
+    }
+
+    try:
+        # Get configured symbols
+        spot_symbol = monitor.config.get('spot_symbol', '')
+        futures_symbol = monitor.config.get('futures_symbol', '')
+
+        if not spot_symbol or not futures_symbol:
+            return jsonify({
+                'status': 'error',
+                'message': 'Spot and Futures symbols must be configured in Setup page first',
+                'results': results
+            }), 400
+
+        results['spot']['symbol'] = spot_symbol
+        results['futures']['symbol'] = futures_symbol
+
+        # Check MT5 connection
+        if not mt5.terminal_info():
+            return jsonify({
+                'status': 'error',
+                'message': 'MT5 not connected. Please restart the portal.',
+                'results': results
+            }), 500
+
+        all_success = True
+        errors = []
+
+        # ========== TEST SPOT SYMBOL ==========
+        logger.info(f"Testing SPOT symbol: {spot_symbol}")
+
+        # Get minimum lot size for spot
+        spot_info = mt5.symbol_info(spot_symbol)
+        if spot_info is None:
+            results['spot']['open'] = {'success': False, 'error': f'Symbol {spot_symbol} not found in MT5'}
+            all_success = False
+            errors.append(f"Spot: {spot_symbol} not found")
+        else:
+            spot_min_lot = spot_info.volume_min
+            spot_filling = spot_info.filling_mode
+
+            # Test BUY order on spot
+            logger.info(f"Opening test BUY on {spot_symbol} with {spot_min_lot} lots (filling_mode={spot_filling})")
+            spot_open = monitor._execute_mt5_order(
+                spot_symbol,
+                mt5.ORDER_TYPE_BUY,
+                spot_min_lot,
+                comment="TEST_ORDER"
+            )
+            results['spot']['open'] = {
+                'success': spot_open['success'],
+                'volume': spot_min_lot,
+                'filling_mode': spot_filling,
+                'filling_mode_desc': _describe_filling_mode(spot_filling),
+                'price': spot_open.get('price'),
+                'ticket': spot_open.get('ticket'),
+                'error': spot_open.get('error')
+            }
+
+            if spot_open['success']:
+                # Immediately close the position
+                import time
+                time.sleep(0.5)  # Small delay to ensure position is registered
+
+                spot_close = monitor._close_mt5_position(
+                    spot_open['ticket'],
+                    spot_symbol,
+                    spot_min_lot,
+                    mt5.ORDER_TYPE_BUY
+                )
+                results['spot']['close'] = {
+                    'success': spot_close['success'],
+                    'price': spot_close.get('price'),
+                    'error': spot_close.get('error')
+                }
+
+                if not spot_close['success']:
+                    all_success = False
+                    errors.append(f"Spot close failed: {spot_close.get('error')}")
+            else:
+                all_success = False
+                errors.append(f"Spot open failed: {spot_open.get('error')}")
+
+        # ========== TEST FUTURES SYMBOL ==========
+        logger.info(f"Testing FUTURES symbol: {futures_symbol}")
+
+        # Get minimum lot size for futures
+        futures_info = mt5.symbol_info(futures_symbol)
+        if futures_info is None:
+            results['futures']['open'] = {'success': False, 'error': f'Symbol {futures_symbol} not found in MT5'}
+            all_success = False
+            errors.append(f"Futures: {futures_symbol} not found")
+        else:
+            futures_min_lot = futures_info.volume_min
+            futures_filling = futures_info.filling_mode
+
+            # Test SELL order on futures (opposite of spot to simulate spread)
+            logger.info(f"Opening test SELL on {futures_symbol} with {futures_min_lot} lots (filling_mode={futures_filling})")
+            futures_open = monitor._execute_mt5_order(
+                futures_symbol,
+                mt5.ORDER_TYPE_SELL,
+                futures_min_lot,
+                comment="TEST_ORDER"
+            )
+            results['futures']['open'] = {
+                'success': futures_open['success'],
+                'volume': futures_min_lot,
+                'filling_mode': futures_filling,
+                'filling_mode_desc': _describe_filling_mode(futures_filling),
+                'price': futures_open.get('price'),
+                'ticket': futures_open.get('ticket'),
+                'error': futures_open.get('error')
+            }
+
+            if futures_open['success']:
+                # Immediately close the position
+                import time
+                time.sleep(0.5)
+
+                futures_close = monitor._close_mt5_position(
+                    futures_open['ticket'],
+                    futures_symbol,
+                    futures_min_lot,
+                    mt5.ORDER_TYPE_SELL
+                )
+                results['futures']['close'] = {
+                    'success': futures_close['success'],
+                    'price': futures_close.get('price'),
+                    'error': futures_close.get('error')
+                }
+
+                if not futures_close['success']:
+                    all_success = False
+                    errors.append(f"Futures close failed: {futures_close.get('error')}")
+            else:
+                all_success = False
+                errors.append(f"Futures open failed: {futures_open.get('error')}")
+
+        # Summary
+        if all_success:
+            results['summary'] = {
+                'success': True,
+                'message': 'All order tests passed! Both Spot and Futures orders opened and closed successfully.'
+            }
+            logger.info("Order test completed successfully")
+        else:
+            results['summary'] = {
+                'success': False,
+                'message': 'Some tests failed: ' + '; '.join(errors)
+            }
+            logger.warning(f"Order test had failures: {errors}")
+
+        return jsonify({
+            'status': 'success' if all_success else 'partial',
+            'results': results
+        })
+
+    except Exception as e:
+        import traceback
+        logger.error(f"Order test error: {e}\n{traceback.format_exc()}")
+        results['summary'] = {'success': False, 'message': str(e)}
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'results': results
+        }), 500
+
+
+def _describe_filling_mode(mode):
+    """Convert filling mode bitmask to human readable description"""
+    if mode == 0:
+        return "Not specified (broker default)"
+    parts = []
+    if mode & 1:
+        parts.append("FOK")
+    if mode & 2:
+        parts.append("IOC")
+    if mode & 4:
+        parts.append("RETURN")
+    return " | ".join(parts) if parts else f"Unknown ({mode})"
+
+
 # =============================================================================
 # HTML TEMPLATES
 # =============================================================================
@@ -4174,7 +4367,120 @@ SETTINGS_HTML = '''<!DOCTYPE html>
             <button type="submit" class="btn">Save Settings</button>
             <a href="/" class="btn btn-secondary" style="display: block; text-align: center; margin-top: 10px;">← Back to Monitor</a>
         </form>
+
+        <!-- Test Order Section (outside form) -->
+        <div class="card" style="margin-top: 30px; border: 2px solid #ff9800;">
+            <div class="card-title" style="color: #ff9800;">Order Connectivity Test</div>
+            <p style="margin-bottom: 15px; color: #666;">
+                Test that orders can be placed and closed correctly before enabling the algo.
+                This will open and immediately close minimum lot size positions on both Spot and Futures symbols.
+            </p>
+            <p style="margin-bottom: 15px; color: #c62828; font-weight: 500;">
+                ⚠ WARNING: This places REAL orders (even in paper mode if broker doesn't support it).
+                Uses minimum lot size to minimize cost.
+            </p>
+            <button type="button" id="test-orders-btn" class="btn" style="background: #ff9800;" onclick="testOrders()">
+                Run Order Test
+            </button>
+            <div id="test-results" style="margin-top: 20px; display: none;">
+                <div class="card-title" style="font-size: 0.9em;">Test Results</div>
+                <div id="test-results-content"></div>
+            </div>
+        </div>
     </div>
+
+    <script>
+        async function testOrders() {
+            const btn = document.getElementById('test-orders-btn');
+            const resultsDiv = document.getElementById('test-results');
+            const resultsContent = document.getElementById('test-results-content');
+
+            btn.disabled = true;
+            btn.textContent = 'Testing... Please wait';
+            resultsDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/test_orders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await response.json();
+                resultsDiv.style.display = 'block';
+
+                let html = '';
+
+                // Spot Results
+                html += '<div style="margin-bottom: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">';
+                html += '<strong>SPOT: ' + (data.results.spot.symbol || 'Not configured') + '</strong><br>';
+                if (data.results.spot.open) {
+                    const spotOpen = data.results.spot.open;
+                    if (spotOpen.success) {
+                        html += '<span style="color: green;">✓ OPEN: Success</span>';
+                        html += ' (Lot: ' + spotOpen.volume + ', Price: ' + (spotOpen.price || 'N/A') + ', Filling: ' + spotOpen.filling_mode_desc + ')<br>';
+                    } else {
+                        html += '<span style="color: red;">✗ OPEN: Failed - ' + spotOpen.error + '</span><br>';
+                    }
+
+                    if (data.results.spot.close) {
+                        const spotClose = data.results.spot.close;
+                        if (spotClose.success) {
+                            html += '<span style="color: green;">✓ CLOSE: Success</span>';
+                            html += ' (Price: ' + (spotClose.price || 'N/A') + ')';
+                        } else {
+                            html += '<span style="color: red;">✗ CLOSE: Failed - ' + spotClose.error + '</span>';
+                        }
+                    }
+                } else {
+                    html += '<span style="color: red;">✗ ' + (data.results.spot.open?.error || 'Not tested') + '</span>';
+                }
+                html += '</div>';
+
+                // Futures Results
+                html += '<div style="margin-bottom: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">';
+                html += '<strong>FUTURES: ' + (data.results.futures.symbol || 'Not configured') + '</strong><br>';
+                if (data.results.futures.open) {
+                    const futuresOpen = data.results.futures.open;
+                    if (futuresOpen.success) {
+                        html += '<span style="color: green;">✓ OPEN: Success</span>';
+                        html += ' (Lot: ' + futuresOpen.volume + ', Price: ' + (futuresOpen.price || 'N/A') + ', Filling: ' + futuresOpen.filling_mode_desc + ')<br>';
+                    } else {
+                        html += '<span style="color: red;">✗ OPEN: Failed - ' + futuresOpen.error + '</span><br>';
+                    }
+
+                    if (data.results.futures.close) {
+                        const futuresClose = data.results.futures.close;
+                        if (futuresClose.success) {
+                            html += '<span style="color: green;">✓ CLOSE: Success</span>';
+                            html += ' (Price: ' + (futuresClose.price || 'N/A') + ')';
+                        } else {
+                            html += '<span style="color: red;">✗ CLOSE: Failed - ' + futuresClose.error + '</span>';
+                        }
+                    }
+                } else {
+                    html += '<span style="color: red;">✗ ' + (data.results.futures.open?.error || 'Not tested') + '</span>';
+                }
+                html += '</div>';
+
+                // Summary
+                html += '<div style="padding: 10px; border-radius: 4px; ' +
+                    (data.results.summary.success ? 'background: #e8f5e9; border: 1px solid #4caf50;' : 'background: #ffebee; border: 1px solid #f44336;') + '">';
+                html += '<strong>' + (data.results.summary.success ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED') + '</strong><br>';
+                html += data.results.summary.message;
+                html += '</div>';
+
+                resultsContent.innerHTML = html;
+
+            } catch (error) {
+                resultsDiv.style.display = 'block';
+                resultsContent.innerHTML = '<div style="color: red; padding: 10px; background: #ffebee; border-radius: 4px;">' +
+                    '<strong>Error:</strong> ' + error.message + '</div>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Run Order Test';
+            }
+        }
+    </script>
 </body>
 </html>'''
 
