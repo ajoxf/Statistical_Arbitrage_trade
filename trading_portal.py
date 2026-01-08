@@ -716,7 +716,8 @@ class TradingMonitor:
         while self.running:
             try:
                 # Collect prices every 0.3 seconds for fast UI updates
-                for asset_key in self.active_assets.keys():
+                # HARDCODED: Only process GOLD (single asset mode)
+                for asset_key in ['GOLD'] if 'GOLD' in self.active_assets else []:
                     data = self.get_market_data(asset_key)
                     if data:
                         # Determine save interval based on lookback_unit
@@ -1549,21 +1550,14 @@ class TradingMonitor:
             position['order_status'] = 'FILLED'
 
             # Use ACTUAL fill prices from MT5 (not signal-time prices)
+            # Keep original signal z-score (shows where signal fired)
             actual_futures_price = futures_result.get('price')
             actual_spot_price = spot_result.get('price')
 
             if actual_futures_price and actual_spot_price:
                 position['entry_futures_price'] = actual_futures_price
                 position['entry_spot_price'] = actual_spot_price
-
-                # Recalculate z-score based on actual fill prices
-                actual_basis = actual_futures_price - actual_spot_price
-                actual_zscore, _ = self.calculate_zscore(asset_key, actual_basis)
-                if actual_zscore is not None:
-                    position['entry_zscore'] = actual_zscore
-                    logger.info(f"Using actual fill prices: Futures={actual_futures_price:.2f}, Spot={actual_spot_price:.2f}, Z-score={actual_zscore:.2f}")
-                else:
-                    logger.info(f"Using actual fill prices: Futures={actual_futures_price:.2f}, Spot={actual_spot_price:.2f}")
+                logger.info(f"Using actual fill prices: Futures={actual_futures_price:.2f}, Spot={actual_spot_price:.2f}")
 
             logger.info(f"{mode_label} TRADE FILLED: {asset_key} {direction} - Futures #{futures_result['ticket']}, Spot #{spot_result['ticket']}")
         else:
