@@ -122,6 +122,7 @@ class DatabaseManager:
             ('overnight_close_minute', 'INTEGER DEFAULT 55'),
             ('selected_asset', "TEXT DEFAULT 'GOLD'"),
             ('min_profit_per_lot', 'REAL DEFAULT 50'),
+            ('max_loss_per_lot', 'REAL DEFAULT 100'),
             # Generic asset fields (replaces gold_*/silver_* for single-asset mode)
             ('asset_name', "TEXT DEFAULT ''"),
             ('spot_symbol', "TEXT DEFAULT ''"),
@@ -254,7 +255,7 @@ class DatabaseManager:
                    time_stop_loss_days, max_positions, lot_size, algo_enabled,
                    paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes,
                    hurst_enabled, close_before_overnight, overnight_close_hour, overnight_close_minute,
-                   selected_asset, min_profit_per_lot,
+                   selected_asset, min_profit_per_lot, max_loss_per_lot,
                    asset_name, spot_symbol, futures_symbol, futures_expiry, contract_size, swap_charge
             FROM trading_config WHERE id = 1
         ''')
@@ -263,13 +264,14 @@ class DatabaseManager:
 
         if row:
             # Column order matches the explicit SELECT above
-            # Generic fields (32-37) with fallback to gold_* fields for migration
-            asset_name = row[32] if len(row) > 32 and row[32] else (row[6] or 'GOLD')
-            spot_symbol = row[33] if len(row) > 33 and row[33] else (row[3] or '')
-            futures_symbol = row[34] if len(row) > 34 and row[34] else (row[4] or '')
-            futures_expiry = row[35] if len(row) > 35 and row[35] else (row[5] or '')
-            contract_size = row[36] if len(row) > 36 and row[36] is not None else (row[7] if row[7] is not None else 100)
-            swap_charge = row[37] if len(row) > 37 and row[37] is not None else (row[1] if row[1] is not None else 0)
+            # Generic fields (33-38) with fallback to gold_* fields for migration
+            # (indices shifted by 1 due to max_loss_per_lot at index 32)
+            asset_name = row[33] if len(row) > 33 and row[33] else (row[6] or 'GOLD')
+            spot_symbol = row[34] if len(row) > 34 and row[34] else (row[3] or '')
+            futures_symbol = row[35] if len(row) > 35 and row[35] else (row[4] or '')
+            futures_expiry = row[36] if len(row) > 36 and row[36] else (row[5] or '')
+            contract_size = row[37] if len(row) > 37 and row[37] is not None else (row[7] if row[7] is not None else 100)
+            swap_charge = row[38] if len(row) > 38 and row[38] is not None else (row[1] if row[1] is not None else 0)
 
             return {
                 # Legacy fields (kept for backward compatibility)
@@ -305,6 +307,7 @@ class DatabaseManager:
                 'overnight_close_minute': row[29] if row[29] is not None else 55,
                 'selected_asset': row[30] if row[30] is not None else 'GOLD',
                 'min_profit_per_lot': row[31] if row[31] is not None else 50,
+                'max_loss_per_lot': row[32] if row[32] is not None else 100,
                 # NEW: Generic asset fields (single-asset mode)
                 'asset_name': asset_name,
                 'spot_symbol': spot_symbol,
@@ -353,6 +356,7 @@ class DatabaseManager:
                     overnight_close_minute = ?,
                     selected_asset = ?,
                     min_profit_per_lot = ?,
+                    max_loss_per_lot = ?,
                     asset_name = ?,
                     spot_symbol = ?,
                     futures_symbol = ?,
@@ -393,6 +397,7 @@ class DatabaseManager:
                 config.get('overnight_close_minute', 55),
                 config.get('selected_asset', 'GOLD'),
                 config.get('min_profit_per_lot', 50),
+                config.get('max_loss_per_lot', 100),
                 config.get('asset_name', 'GOLD'),
                 config.get('spot_symbol', ''),
                 config.get('futures_symbol', ''),
@@ -1074,8 +1079,8 @@ class TradingMonitor:
             # Calculate Hurst exponent for regime detection
             hurst_value, hurst_regime = self.calculate_hurst_exponent(asset_key)
 
-            # Generate signal (pass stats and hurst for filtering)
-            signal = self._generate_signal(asset_key, zscore, stats, hurst_value, hurst_regime)
+            # Generate signal (pass stats, hurst, and current prices for filtering)
+            signal = self._generate_signal(asset_key, zscore, stats, hurst_value, hurst_regime, spot_price, futures_price)
 
             # Store z-score in history for charting
             entry_threshold = self.config.get('entry_std_dev', 2.0)
@@ -1209,7 +1214,7 @@ class TradingMonitor:
             return " | ".join(sessions)
         return "Between Sessions"
 
-    def _generate_signal(self, asset_key, zscore, stats=None, hurst_value=None, hurst_regime=None):
+    def _generate_signal(self, asset_key, zscore, stats=None, hurst_value=None, hurst_regime=None, current_spot=None, current_futures=None):
         """Generate trading signal based on z-score with Hurst exponent regime filter"""
         if zscore is None:
             # Show progress if stats available
@@ -1312,6 +1317,40 @@ class TradingMonitor:
                         'action': 'Close position to avoid overnight swap'
                     }
 
+            # Check MAX LOSS (absolute dollar stop - regardless of z-score)
+            max_loss_per_lot = self.config.get('max_loss_per_lot', 0)
+            if max_loss_per_lot > 0 and current_spot is not None and current_futures is not None:
+                lot_size = position.get('lot_size', 0.1)
+                max_loss = max_loss_per_lot * lot_size
+
+                # Get contract size
+                asset_config = self.assets.get(asset_key, {})
+                contract_size = asset_config.get('lot_size', 100)
+
+                # Calculate unrealized P&L
+                entry_spot = position.get('entry_spot_price', current_spot)
+                entry_futures = position.get('entry_futures_price', current_futures)
+                spot_diff = current_spot - entry_spot
+                futures_diff = current_futures - entry_futures
+
+                if position['direction'] == 'Short Spread':
+                    # Short Spread: Sold Futures, Bought Spot
+                    futures_pnl = -futures_diff * lot_size * contract_size
+                    spot_pnl = spot_diff * lot_size * contract_size
+                else:
+                    # Long Spread: Bought Futures, Sold Spot
+                    futures_pnl = futures_diff * lot_size * contract_size
+                    spot_pnl = -spot_diff * lot_size * contract_size
+
+                unrealized_pnl = spot_pnl + futures_pnl
+
+                if unrealized_pnl < -max_loss:
+                    return {
+                        'type': 'MAX_LOSS',
+                        'reason': f'Unrealized loss ${abs(unrealized_pnl):.2f} > max ${max_loss:.2f} (${max_loss_per_lot}/lot × {lot_size} lots)',
+                        'action': 'Max loss stop - Close position immediately'
+                    }
+
             if position['direction'] == 'Short Spread':
                 if zscore <= exit_std:
                     return {
@@ -1355,7 +1394,7 @@ class TradingMonitor:
             elif len(self.positions) >= max_positions:
                 logger.info(f"Skipping {signal_type} - max positions ({max_positions}) reached")
 
-        elif signal_type in ['CLOSE', 'STOP_LOSS', 'TIME_STOP', 'OVERNIGHT_CLOSE']:
+        elif signal_type in ['CLOSE', 'STOP_LOSS', 'TIME_STOP', 'OVERNIGHT_CLOSE', 'MAX_LOSS']:
             if asset_key in self.positions:
                 self._close_position(asset_key, signal_type, data)
 
@@ -2099,6 +2138,7 @@ def settings():
             monitor.config['lot_size'] = float(request.form.get('lot_size', 0.1))
             monitor.config['commission_per_lot'] = float(request.form.get('commission_per_lot', 0))
             monitor.config['min_profit_per_lot'] = float(request.form.get('min_profit_per_lot', 50))
+            monitor.config['max_loss_per_lot'] = float(request.form.get('max_loss_per_lot', 100))
             monitor.config['hurst_threshold'] = float(request.form.get('hurst_threshold', 0.5))
             monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 15))
             monitor.config['hurst_enabled'] = request.form.get('hurst_enabled') == 'on'
@@ -3585,6 +3625,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             else if (signal.type === 'TIME_STOP') signalClass = 'time-stop';
             else if (signal.type === 'OVERNIGHT_CLOSE') signalClass = 'overnight-close';
             else if (signal.type === 'STOP_LOSS') signalClass = 'stop-loss';
+            else if (signal.type === 'MAX_LOSS') signalClass = 'stop-loss';
             else if (signal.type === 'REGIME_FILTER') signalClass = 'regime-filter';
 
             // Hurst exponent display
@@ -4483,6 +4524,12 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <label>Minimum Profit per Lot ($)</label>
                     <input type="number" name="min_profit_per_lot" id="min_profit_per_lot" value="{{ config.min_profit_per_lot }}" min="0" max="500" step="1">
                     <div class="help-text">Target profit per lot AFTER costs. Total = this × lot size. E.g., $50/lot × 30 lots = $1,500 min profit. Set to 0 for statistical exit only.</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Maximum Loss per Lot ($)</label>
+                    <input type="number" name="max_loss_per_lot" value="{{ config.max_loss_per_lot or 100 }}" min="0" max="1000" step="1">
+                    <div class="help-text">Absolute stop loss per lot. If unrealized loss exceeds this × lot size, position closes immediately regardless of z-score. Set to 0 to disable.</div>
                 </div>
 
                 <!-- Cost Estimator -->
