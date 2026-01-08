@@ -2537,6 +2537,128 @@ def _describe_filling_mode(mode):
     return " | ".join(parts) if parts else f"Unknown ({mode})"
 
 
+@app.route('/api/estimate_costs', methods=['GET'])
+def api_estimate_costs():
+    """Estimate round-trip trading costs based on current bid-ask spreads
+
+    Returns cost breakdown to help set appropriate min_profit_per_lot
+    """
+    try:
+        # Get configured symbols and settings
+        spot_symbol = monitor.config.get('spot_symbol', '')
+        futures_symbol = monitor.config.get('futures_symbol', '')
+        contract_size = monitor.config.get('contract_size', 100)
+        lot_size = monitor.config.get('lot_size', 1)
+        asset_name = monitor.config.get('asset_name', 'Asset')
+
+        if not spot_symbol or not futures_symbol:
+            return jsonify({
+                'status': 'error',
+                'message': 'Spot and Futures symbols must be configured first'
+            }), 400
+
+        # Check MT5 connection
+        if not mt5.terminal_info():
+            return jsonify({
+                'status': 'error',
+                'message': 'MT5 not connected'
+            }), 500
+
+        results = {
+            'asset_name': asset_name,
+            'contract_size': contract_size,
+            'lot_size': lot_size,
+            'spot': {},
+            'futures': {},
+            'totals': {}
+        }
+
+        # Get spot bid-ask spread
+        spot_tick = mt5.symbol_info_tick(spot_symbol)
+        if spot_tick:
+            spot_spread = spot_tick.ask - spot_tick.bid
+            spot_cost_per_lot = spot_spread * contract_size
+            results['spot'] = {
+                'symbol': spot_symbol,
+                'bid': spot_tick.bid,
+                'ask': spot_tick.ask,
+                'spread': spot_spread,
+                'spread_display': f"${spot_spread:.4f}" if spot_spread >= 0.01 else f"{spot_spread*100:.2f}¢",
+                'cost_per_lot': spot_cost_per_lot,
+                'cost_per_lot_display': f"${spot_cost_per_lot:.2f}"
+            }
+        else:
+            results['spot'] = {'error': f'Cannot get tick for {spot_symbol}'}
+
+        # Get futures bid-ask spread
+        futures_tick = mt5.symbol_info_tick(futures_symbol)
+        if futures_tick:
+            futures_spread = futures_tick.ask - futures_tick.bid
+            futures_cost_per_lot = futures_spread * contract_size
+            results['futures'] = {
+                'symbol': futures_symbol,
+                'bid': futures_tick.bid,
+                'ask': futures_tick.ask,
+                'spread': futures_spread,
+                'spread_display': f"${futures_spread:.4f}" if futures_spread >= 0.01 else f"{futures_spread*100:.2f}¢",
+                'cost_per_lot': futures_cost_per_lot,
+                'cost_per_lot_display': f"${futures_cost_per_lot:.2f}"
+            }
+        else:
+            results['futures'] = {'error': f'Cannot get tick for {futures_symbol}'}
+
+        # Calculate totals
+        if 'cost_per_lot' in results['spot'] and 'cost_per_lot' in results['futures']:
+            entry_cost = results['spot']['cost_per_lot'] + results['futures']['cost_per_lot']
+            round_trip_cost = entry_cost * 2  # Entry + Exit
+
+            # Add commission if configured
+            commission_per_lot = monitor.config.get('commission_per_lot', 0)
+            total_commission = commission_per_lot * 2  # Both legs, entry + exit
+
+            total_cost_per_lot = round_trip_cost + total_commission
+
+            # Suggested minimums
+            suggested_min = total_cost_per_lot * 1.5  # 50% profit margin
+            conservative_min = total_cost_per_lot * 2  # 100% profit margin
+
+            results['totals'] = {
+                'entry_cost_per_lot': entry_cost,
+                'entry_cost_display': f"${entry_cost:.2f}",
+                'round_trip_spread_cost': round_trip_cost,
+                'round_trip_spread_display': f"${round_trip_cost:.2f}",
+                'commission_per_lot': total_commission,
+                'commission_display': f"${total_commission:.2f}",
+                'total_cost_per_lot': total_cost_per_lot,
+                'total_cost_display': f"${total_cost_per_lot:.2f}",
+                'suggested_min_profit': suggested_min,
+                'suggested_min_display': f"${suggested_min:.0f}",
+                'conservative_min_profit': conservative_min,
+                'conservative_min_display': f"${conservative_min:.0f}",
+                'current_min_profit': monitor.config.get('min_profit_per_lot', 50)
+            }
+
+            # Check if current setting covers costs
+            current_min = monitor.config.get('min_profit_per_lot', 50)
+            if current_min < total_cost_per_lot:
+                results['totals']['warning'] = f"Current min profit (${current_min}) is LESS than costs (${total_cost_per_lot:.2f})!"
+            elif current_min < suggested_min:
+                results['totals']['warning'] = f"Current min profit (${current_min}) covers costs but leaves thin margin"
+
+        return jsonify({
+            'status': 'success',
+            'results': results
+        })
+
+    except Exception as e:
+        import traceback
+        logger.error(f"Cost estimation error: {e}\n{traceback.format_exc()}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+
 # =============================================================================
 # HTML TEMPLATES
 # =============================================================================
@@ -4359,8 +4481,20 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
                 <div class="form-group">
                     <label>Minimum Profit per Lot ($)</label>
-                    <input type="number" name="min_profit_per_lot" value="{{ config.min_profit_per_lot }}" min="0" max="500" step="1">
+                    <input type="number" name="min_profit_per_lot" id="min_profit_per_lot" value="{{ config.min_profit_per_lot }}" min="0" max="500" step="1">
                     <div class="help-text">Target profit per lot AFTER costs. Total = this × lot size. E.g., $50/lot × 30 lots = $1,500 min profit. Set to 0 for statistical exit only.</div>
+                </div>
+
+                <!-- Cost Estimator -->
+                <div style="margin-top: 20px; padding: 15px; background: #f5f5f5; border-radius: 8px; border: 1px solid #ddd;">
+                    <div style="font-weight: 600; margin-bottom: 10px;">📊 Cost Estimator</div>
+                    <p style="color: #666; font-size: 0.9em; margin-bottom: 10px;">
+                        Calculate round-trip costs based on current bid-ask spreads to set appropriate min profit.
+                    </p>
+                    <button type="button" id="estimate-costs-btn" class="btn btn-secondary" style="width: auto; padding: 10px 20px;" onclick="estimateCosts()">
+                        Calculate Costs
+                    </button>
+                    <div id="cost-results" style="margin-top: 15px; display: none;"></div>
                 </div>
             </div>
 
@@ -4478,6 +4612,99 @@ SETTINGS_HTML = '''<!DOCTYPE html>
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Run Order Test';
+            }
+        }
+
+        async function estimateCosts() {
+            const btn = document.getElementById('estimate-costs-btn');
+            const resultsDiv = document.getElementById('cost-results');
+
+            btn.disabled = true;
+            btn.textContent = 'Calculating...';
+
+            try {
+                const response = await fetch('/api/estimate_costs');
+                const data = await response.json();
+
+                if (data.status === 'error') {
+                    resultsDiv.innerHTML = '<div style="color: red; padding: 10px; background: #ffebee; border-radius: 4px;">' +
+                        '<strong>Error:</strong> ' + data.message + '</div>';
+                    resultsDiv.style.display = 'block';
+                    return;
+                }
+
+                const r = data.results;
+                let html = '<table style="width: 100%; font-size: 0.9em; border-collapse: collapse;">';
+
+                // Asset info
+                html += '<tr style="background: #e3f2fd;"><td colspan="2" style="padding: 8px; font-weight: 600;">' +
+                    r.asset_name + ' (Contract: ' + r.contract_size + ' units/lot)</td></tr>';
+
+                // Spot spread
+                if (r.spot.spread_display) {
+                    html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Spot Spread (' + r.spot.symbol + ')</td>' +
+                        '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.spot.spread_display + ' → <strong>' + r.spot.cost_per_lot_display + '/lot</strong></td></tr>';
+                }
+
+                // Futures spread
+                if (r.futures.spread_display) {
+                    html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Futures Spread (' + r.futures.symbol + ')</td>' +
+                        '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.futures.spread_display + ' → <strong>' + r.futures.cost_per_lot_display + '/lot</strong></td></tr>';
+                }
+
+                // Entry cost
+                if (r.totals.entry_cost_display) {
+                    html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Entry Cost (both legs)</td>' +
+                        '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.totals.entry_cost_display + '/lot</td></tr>';
+                }
+
+                // Round-trip spread cost
+                if (r.totals.round_trip_spread_display) {
+                    html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Round-Trip Spread Cost</td>' +
+                        '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.totals.round_trip_spread_display + '/lot</td></tr>';
+                }
+
+                // Commission
+                if (r.totals.commission_per_lot > 0) {
+                    html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Commission (entry + exit)</td>' +
+                        '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.totals.commission_display + '/lot</td></tr>';
+                }
+
+                // Total cost
+                html += '<tr style="background: #fff3e0;"><td style="padding: 8px; font-weight: 600;">TOTAL COST</td>' +
+                    '<td style="padding: 8px; text-align: right; font-weight: 600; font-size: 1.1em;">' + r.totals.total_cost_display + '/lot</td></tr>';
+
+                // Current setting
+                html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Current Min Profit Setting</td>' +
+                    '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">$' + r.totals.current_min_profit + '/lot</td></tr>';
+
+                // Suggestions
+                html += '<tr style="background: #e8f5e9;"><td style="padding: 8px;">Suggested Min (50% margin)</td>' +
+                    '<td style="padding: 8px; text-align: right;"><button type="button" onclick="document.getElementById(\'min_profit_per_lot\').value=' + Math.round(r.totals.suggested_min_profit) + '" style="padding: 4px 12px; cursor: pointer;">' +
+                    'Use ' + r.totals.suggested_min_display + '</button></td></tr>';
+
+                html += '<tr style="background: #e8f5e9;"><td style="padding: 8px;">Conservative Min (100% margin)</td>' +
+                    '<td style="padding: 8px; text-align: right;"><button type="button" onclick="document.getElementById(\'min_profit_per_lot\').value=' + Math.round(r.totals.conservative_min_profit) + '" style="padding: 4px 12px; cursor: pointer;">' +
+                    'Use ' + r.totals.conservative_min_display + '</button></td></tr>';
+
+                html += '</table>';
+
+                // Warning if applicable
+                if (r.totals.warning) {
+                    html += '<div style="margin-top: 10px; padding: 10px; background: #ffebee; border: 1px solid #f44336; border-radius: 4px; color: #c62828;">' +
+                        '<strong>⚠ Warning:</strong> ' + r.totals.warning + '</div>';
+                }
+
+                resultsDiv.innerHTML = html;
+                resultsDiv.style.display = 'block';
+
+            } catch (error) {
+                resultsDiv.innerHTML = '<div style="color: red; padding: 10px; background: #ffebee; border-radius: 4px;">' +
+                    '<strong>Error:</strong> ' + error.message + '</div>';
+                resultsDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Calculate Costs';
             }
         }
     </script>
