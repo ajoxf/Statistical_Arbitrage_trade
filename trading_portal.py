@@ -4680,11 +4680,11 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
                 // Suggestions
                 html += '<tr style="background: #e8f5e9;"><td style="padding: 8px;">Suggested Min (50% margin)</td>' +
-                    '<td style="padding: 8px; text-align: right;"><button type="button" onclick="document.getElementById(\'min_profit_per_lot\').value=' + Math.round(r.totals.suggested_min_profit) + '" style="padding: 4px 12px; cursor: pointer;">' +
+                    '<td style="padding: 8px; text-align: right;"><button type="button" onclick="document.getElementById(\\'min_profit_per_lot\\').value=' + Math.round(r.totals.suggested_min_profit) + '" style="padding: 4px 12px; cursor: pointer;">' +
                     'Use ' + r.totals.suggested_min_display + '</button></td></tr>';
 
                 html += '<tr style="background: #e8f5e9;"><td style="padding: 8px;">Conservative Min (100% margin)</td>' +
-                    '<td style="padding: 8px; text-align: right;"><button type="button" onclick="document.getElementById(\'min_profit_per_lot\').value=' + Math.round(r.totals.conservative_min_profit) + '" style="padding: 4px 12px; cursor: pointer;">' +
+                    '<td style="padding: 8px; text-align: right;"><button type="button" onclick="document.getElementById(\\'min_profit_per_lot\\').value=' + Math.round(r.totals.conservative_min_profit) + '" style="padding: 4px 12px; cursor: pointer;">' +
                     'Use ' + r.totals.conservative_min_display + '</button></td></tr>';
 
                 html += '</table>';
