@@ -3139,17 +3139,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     // Update account info
                     updateAccountInfo(data.account);
 
-                    // Update MT5 positions - filter by asset if single-asset mode
-                    let filteredMT5Positions = data.mt5_positions;
-                    if (assetFilter && selectedAssetKey && data.mt5_positions) {
-                        const assetSymbols = filteredData[selectedAssetKey];
-                        if (assetSymbols) {
-                            filteredMT5Positions = data.mt5_positions.filter(p =>
-                                p.symbol === assetSymbols.spot_symbol || p.symbol === assetSymbols.futures_symbol
-                            );
-                        }
-                    }
-                    updateMT5Positions(filteredMT5Positions);
+                    // Show ALL MT5 positions (matching MT5's Trade tab exactly)
+                    // Don't filter - user needs to see everything in their account
+                    updateMT5Positions(data.mt5_positions);
 
                     // Update algo positions - filter by asset if single-asset mode
                     let filteredPositions = data.positions;
