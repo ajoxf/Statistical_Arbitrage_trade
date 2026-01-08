@@ -1547,6 +1547,24 @@ class TradingMonitor:
             position['mt5_futures_ticket'] = futures_result['ticket']
             position['mt5_spot_ticket'] = spot_result['ticket']
             position['order_status'] = 'FILLED'
+
+            # Use ACTUAL fill prices from MT5 (not signal-time prices)
+            actual_futures_price = futures_result.get('price')
+            actual_spot_price = spot_result.get('price')
+
+            if actual_futures_price and actual_spot_price:
+                position['entry_futures_price'] = actual_futures_price
+                position['entry_spot_price'] = actual_spot_price
+
+                # Recalculate z-score based on actual fill prices
+                actual_basis = actual_futures_price - actual_spot_price
+                actual_zscore, _ = self.calculate_zscore(asset_key, actual_basis)
+                if actual_zscore is not None:
+                    position['entry_zscore'] = actual_zscore
+                    logger.info(f"Using actual fill prices: Futures={actual_futures_price:.2f}, Spot={actual_spot_price:.2f}, Z-score={actual_zscore:.2f}")
+                else:
+                    logger.info(f"Using actual fill prices: Futures={actual_futures_price:.2f}, Spot={actual_spot_price:.2f}")
+
             logger.info(f"{mode_label} TRADE FILLED: {asset_key} {direction} - Futures #{futures_result['ticket']}, Spot #{spot_result['ticket']}")
         else:
             position['order_status'] = 'PARTIAL' if (futures_result['success'] or spot_result['success']) else 'REJECTED'
