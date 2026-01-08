@@ -1749,15 +1749,14 @@ class TradingMonitor:
         del self.positions[asset_key]
 
     def get_all_data(self):
-        """Get data for selected asset only (single-asset mode)"""
+        """Get data for GOLD only (single-asset mode)"""
         data = {}
 
-        # Only process the selected asset to avoid multiple simultaneous positions
-        selected_asset = self.config.get('selected_asset', 'GOLD')
-
-        market_data = self.get_market_data(selected_asset)
+        # HARDCODED to GOLD only - no Silver trading
+        # This ensures only one asset is ever processed
+        market_data = self.get_market_data('GOLD')
         if market_data:
-            data[selected_asset] = market_data
+            data['GOLD'] = market_data
 
         self.last_update = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         return data
