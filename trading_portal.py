@@ -3186,14 +3186,19 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 return;
             }
 
+            // Calculate total P&L
+            let totalPnL = 0;
+            positions.forEach(pos => { totalPnL += pos.profit; });
+
             let html = `
-                <div class="position-header">
+                <div class="position-header" style="grid-template-columns: repeat(7, 1fr);">
                     <div>Symbol</div>
                     <div>Type</div>
                     <div>Volume</div>
                     <div>Open Price</div>
+                    <div>Current</div>
                     <div>P&L</div>
-                    <div>Return %</div>
+                    <div>Time</div>
                 </div>
             `;
 
@@ -3201,19 +3206,37 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 const pnlClass = pos.profit >= 0 ? 'positive' : 'negative';
                 const typeClass = pos.type.toLowerCase();
                 const pnlSign = pos.profit >= 0 ? '+' : '';
-                const returnSign = pos.return_pct >= 0 ? '+' : '';
+                const priceDecimals = pos.price_open > 100 ? 2 : 4;
+                // Extract just time from datetime string
+                const timeOnly = pos.time ? pos.time.split(' ')[1] || pos.time : '--';
 
                 html += `
-                    <div class="position-card">
+                    <div class="position-card" style="grid-template-columns: repeat(7, 1fr);">
                         <div class="pos-symbol">${pos.symbol}</div>
                         <div><span class="pos-type ${typeClass}">${pos.type}</span></div>
                         <div>${pos.volume}</div>
-                        <div>${pos.price_open.toFixed(pos.price_open > 100 ? 2 : 4)}</div>
+                        <div>${pos.price_open.toFixed(priceDecimals)}</div>
+                        <div>${pos.price_current.toFixed(priceDecimals)}</div>
                         <div class="pos-pnl ${pnlClass}">${pnlSign}$${pos.profit.toFixed(2)}</div>
-                        <div class="pos-return ${pnlClass}">${returnSign}${pos.return_pct.toFixed(2)}%</div>
+                        <div style="font-size: 0.85em;">${timeOnly}</div>
                     </div>
                 `;
             });
+
+            // Add total P&L row
+            const totalClass = totalPnL >= 0 ? 'positive' : 'negative';
+            const totalSign = totalPnL >= 0 ? '+' : '';
+            html += `
+                <div class="position-card" style="grid-template-columns: repeat(7, 1fr); background: #f8f9fa; font-weight: bold; margin-top: 5px; border-top: 2px solid #dee2e6;">
+                    <div>TOTAL</div>
+                    <div></div>
+                    <div></div>
+                    <div></div>
+                    <div></div>
+                    <div class="pos-pnl ${totalClass}">${totalSign}$${totalPnL.toFixed(2)}</div>
+                    <div></div>
+                </div>
+            `;
 
             container.innerHTML = html;
         }
