@@ -120,7 +120,8 @@ class DatabaseManager:
             ('close_before_overnight', 'INTEGER DEFAULT 0'),
             ('overnight_close_hour', 'INTEGER DEFAULT 16'),
             ('overnight_close_minute', 'INTEGER DEFAULT 55'),
-            ('selected_asset', "TEXT DEFAULT 'GOLD'")
+            ('selected_asset', "TEXT DEFAULT 'GOLD'"),
+            ('min_profit_per_trade', 'REAL DEFAULT 20')
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -268,7 +269,8 @@ class DatabaseManager:
                 'close_before_overnight': bool(row[27]) if row[27] is not None else False,
                 'overnight_close_hour': row[28] if row[28] is not None else 16,
                 'overnight_close_minute': row[29] if row[29] is not None else 55,
-                'selected_asset': row[30] if row[30] is not None else 'GOLD'
+                'selected_asset': row[30] if row[30] is not None else 'GOLD',
+                'min_profit_per_trade': row[31] if len(row) > 31 and row[31] is not None else 20
             }
         return None
 
@@ -309,6 +311,7 @@ class DatabaseManager:
                     overnight_close_hour = ?,
                     overnight_close_minute = ?,
                     selected_asset = ?,
+                    min_profit_per_trade = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -342,6 +345,7 @@ class DatabaseManager:
                 config.get('overnight_close_hour', 16),
                 config.get('overnight_close_minute', 55),
                 config.get('selected_asset', 'GOLD'),
+                config.get('min_profit_per_trade', 20),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -1499,28 +1503,53 @@ class TradingMonitor:
         #            BUY_BASIS = Long Spread (Buy Futures, Sell Spot)
         direction = 'Short Spread' if signal_type == 'SELL_BASIS' else 'Long Spread'
 
-        # Calculate spread cost (FYI only - bid-ask spread)
+        # Calculate spread cost (bid-ask spread for entry)
         spot_spread_cents = data.get('spot_spread', 0)  # in cents
         futures_spread_cents = data.get('futures_spread', 0)  # in cents
-        spread_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * 100
+        asset_config = self.assets.get(asset_key, {})
+        contract_size = asset_config.get('lot_size', 100)  # oz per lot
+        spread_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * contract_size
 
         # Get current statistics to lock in target/stop levels at entry
         stats = self.get_statistics(asset_key)
         entry_spread = data['futures_price'] - data['spot_price']
 
+        # COST-AWARE TARGET CALCULATION
+        # Round-trip cost = entry spread cost + exit spread cost (approximately 2x entry)
+        round_trip_cost = spread_cost * 2
+        min_profit = self.config.get('min_profit_per_trade', 20)
+        total_required = round_trip_cost + min_profit
+
+        # Minimum spread move needed to achieve target profit
+        # spread_move * lot_size * contract_size = total_required
+        min_spread_move = total_required / (lot_size * contract_size)
+
+        logger.info(f"Cost calculation: Entry cost=${spread_cost:.2f}, Round-trip=${round_trip_cost:.2f}, "
+                    f"Min profit=${min_profit:.2f}, Required spread move={min_spread_move:.4f}")
+
         # Calculate target exit and stop loss based on entry statistics
         # Long Spread: entered low (z < -2), exit when z >= -exit_std (spread rises to lower_exit)
         # Short Spread: entered high (z > 2), exit when z <= exit_std (spread falls to upper_exit)
         if direction == 'Long Spread':
-            # Target: spread rises toward mean (exit at lower_exit or mean)
-            target_exit = stats.get('lower_exit', stats.get('mean', entry_spread)) if stats else entry_spread
+            # Statistical target: spread rises toward mean
+            statistical_target = stats.get('lower_exit', stats.get('mean', entry_spread)) if stats else entry_spread
+            # Cost-aware target: ensure minimum profit (spread must rise at least min_spread_move)
+            cost_aware_target = entry_spread + min_spread_move
+            # Use the HIGHER of the two (further from entry = more profit)
+            target_exit = max(statistical_target, cost_aware_target)
             # Stop: spread falls further (hits lower_stop)
             stop_loss_spread = stats.get('lower_stop', entry_spread) if stats else entry_spread
+            logger.info(f"Long Spread targets: Statistical={statistical_target:.4f}, Cost-aware={cost_aware_target:.4f}, Final={target_exit:.4f}")
         else:  # Short Spread
-            # Target: spread falls toward mean (exit at upper_exit or mean)
-            target_exit = stats.get('upper_exit', stats.get('mean', entry_spread)) if stats else entry_spread
+            # Statistical target: spread falls toward mean
+            statistical_target = stats.get('upper_exit', stats.get('mean', entry_spread)) if stats else entry_spread
+            # Cost-aware target: ensure minimum profit (spread must fall at least min_spread_move)
+            cost_aware_target = entry_spread - min_spread_move
+            # Use the LOWER of the two (further from entry = more profit)
+            target_exit = min(statistical_target, cost_aware_target)
             # Stop: spread rises further (hits upper_stop)
             stop_loss_spread = stats.get('upper_stop', entry_spread) if stats else entry_spread
+            logger.info(f"Short Spread targets: Statistical={statistical_target:.4f}, Cost-aware={cost_aware_target:.4f}, Final={target_exit:.4f}")
 
         position = {
             'trade_id': trade_id,
@@ -2028,6 +2057,7 @@ def settings():
             monitor.config['max_positions'] = int(request.form.get('max_positions', 3))
             monitor.config['lot_size'] = float(request.form.get('lot_size', 0.1))
             monitor.config['commission_per_lot'] = float(request.form.get('commission_per_lot', 0))
+            monitor.config['min_profit_per_trade'] = float(request.form.get('min_profit_per_trade', 20))
             monitor.config['hurst_threshold'] = float(request.form.get('hurst_threshold', 0.5))
             monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 15))
             monitor.config['hurst_enabled'] = request.form.get('hurst_enabled') == 'on'
@@ -4093,6 +4123,12 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <label>Commission per Lot ($)</label>
                     <input type="number" name="commission_per_lot" value="{{ config.commission_per_lot }}" min="0" max="100" step="0.01">
                     <div class="help-text">Manual commission charge per lot (both entry + exit)</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Minimum Profit per Trade ($)</label>
+                    <input type="number" name="min_profit_per_trade" value="{{ config.min_profit_per_trade }}" min="0" max="500" step="1">
+                    <div class="help-text">Target exit will ensure this profit AFTER bid-ask spread costs. Set to 0 to use statistical exit only.</div>
                 </div>
             </div>
 
