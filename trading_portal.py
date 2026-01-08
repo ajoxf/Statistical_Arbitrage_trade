@@ -2699,6 +2699,95 @@ def api_estimate_costs():
         }), 500
 
 
+@app.route('/api/calculate_max_loss', methods=['GET'])
+def api_calculate_max_loss():
+    """Calculate what max loss per lot means in terms of spread movement"""
+    try:
+        # Get config values
+        max_loss_per_lot = monitor.config.get('max_loss_per_lot', 100)
+        lot_size = monitor.config.get('lot_size', 0.1)
+        contract_size = monitor.config.get('contract_size', 100)
+        asset_name = monitor.config.get('asset_name', 'Asset')
+
+        # Calculate total max loss for configured lot size
+        total_max_loss = max_loss_per_lot * lot_size
+
+        # Calculate spread move that would trigger max loss
+        # Loss = spread_move × lot_size × contract_size
+        # spread_move = Loss / (lot_size × contract_size)
+        if lot_size > 0 and contract_size > 0:
+            spread_move_to_trigger = max_loss_per_lot / contract_size
+        else:
+            spread_move_to_trigger = 0
+
+        # Get current spread statistics for context
+        stats = monitor.get_statistics('ACTIVE')
+        current_std = stats.get('std', 0) if stats else 0
+
+        # Calculate how many standard deviations the max loss represents
+        std_equivalent = spread_move_to_trigger / current_std if current_std > 0 else 0
+
+        # Get cost estimate for suggestions
+        spot_symbol = monitor.config.get('spot_symbol', '')
+        futures_symbol = monitor.config.get('futures_symbol', '')
+        round_trip_cost = 0
+
+        if spot_symbol and futures_symbol and mt5.terminal_info():
+            spot_tick = mt5.symbol_info_tick(spot_symbol)
+            futures_tick = mt5.symbol_info_tick(futures_symbol)
+            if spot_tick and futures_tick:
+                spot_spread = spot_tick.ask - spot_tick.bid
+                futures_spread = futures_tick.ask - futures_tick.bid
+                entry_cost = (spot_spread + futures_spread) * contract_size
+                round_trip_cost = entry_cost * 2
+
+        # Suggestions based on costs
+        suggested_2x = round_trip_cost * 2 if round_trip_cost > 0 else 100
+        suggested_3x = round_trip_cost * 3 if round_trip_cost > 0 else 150
+
+        results = {
+            'asset_name': asset_name,
+            'contract_size': contract_size,
+            'lot_size': lot_size,
+            'max_loss_per_lot': max_loss_per_lot,
+            'total_max_loss': total_max_loss,
+            'total_max_loss_display': f"${total_max_loss:.2f}",
+            'spread_move_to_trigger': spread_move_to_trigger,
+            'spread_move_display': f"${spread_move_to_trigger:.4f}" if spread_move_to_trigger >= 0.01 else f"{spread_move_to_trigger*100:.2f}¢",
+            'current_std': current_std,
+            'current_std_display': f"${current_std:.4f}" if current_std >= 0.01 else f"{current_std*100:.2f}¢",
+            'std_equivalent': std_equivalent,
+            'std_equivalent_display': f"{std_equivalent:.1f}σ",
+            'round_trip_cost': round_trip_cost,
+            'round_trip_cost_display': f"${round_trip_cost:.2f}",
+            'suggested_2x': suggested_2x,
+            'suggested_2x_display': f"${suggested_2x:.0f}",
+            'suggested_3x': suggested_3x,
+            'suggested_3x_display': f"${suggested_3x:.0f}",
+            'is_disabled': max_loss_per_lot == 0
+        }
+
+        # Warnings
+        if max_loss_per_lot > 0:
+            if round_trip_cost > 0 and max_loss_per_lot < round_trip_cost:
+                results['warning'] = f"Max loss (${max_loss_per_lot}) is less than round-trip cost (${round_trip_cost:.2f})! You'll always lose money."
+            elif std_equivalent > 0 and std_equivalent < 1.5:
+                results['warning'] = f"Max loss triggers at only {std_equivalent:.1f}σ - might exit too early on normal volatility."
+
+        return jsonify({
+            'status': 'success',
+            'results': results
+        })
+
+    except Exception as e:
+        import traceback
+        logger.error(f"Max loss calculation error: {e}\n{traceback.format_exc()}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+
 # =============================================================================
 # HTML TEMPLATES
 # =============================================================================
@@ -4528,8 +4617,20 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
                 <div class="form-group">
                     <label>Maximum Loss per Lot ($)</label>
-                    <input type="number" name="max_loss_per_lot" value="{{ config.max_loss_per_lot or 100 }}" min="0" max="1000" step="1">
+                    <input type="number" name="max_loss_per_lot" id="max_loss_per_lot" value="{{ config.max_loss_per_lot or 100 }}" min="0" max="1000" step="1">
                     <div class="help-text">Absolute stop loss per lot. If unrealized loss exceeds this × lot size, position closes immediately regardless of z-score. Set to 0 to disable.</div>
+                </div>
+
+                <!-- Max Loss Calculator -->
+                <div style="margin-top: 20px; padding: 15px; background: #fff3e0; border-radius: 8px; border: 1px solid #ff9800;">
+                    <div style="font-weight: 600; margin-bottom: 10px; color: #e65100;">🛡️ Max Loss Calculator</div>
+                    <p style="color: #666; font-size: 0.9em; margin-bottom: 10px;">
+                        See what your max loss setting means in terms of spread movement and get suggestions.
+                    </p>
+                    <button type="button" id="calc-max-loss-btn" class="btn btn-secondary" style="width: auto; padding: 10px 20px;" onclick="calculateMaxLoss()">
+                        Calculate Max Loss
+                    </button>
+                    <div id="max-loss-results" style="margin-top: 15px; display: none;"></div>
                 </div>
 
                 <!-- Cost Estimator -->
@@ -4752,6 +4853,101 @@ SETTINGS_HTML = '''<!DOCTYPE html>
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Calculate Costs';
+            }
+        }
+
+        async function calculateMaxLoss() {
+            const btn = document.getElementById('calc-max-loss-btn');
+            const resultsDiv = document.getElementById('max-loss-results');
+
+            btn.disabled = true;
+            btn.textContent = 'Calculating...';
+
+            try {
+                const response = await fetch('/api/calculate_max_loss');
+                const data = await response.json();
+
+                if (data.status === 'error') {
+                    resultsDiv.innerHTML = '<div style="color: red; padding: 10px; background: #ffebee; border-radius: 4px;">' +
+                        '<strong>Error:</strong> ' + data.message + '</div>';
+                    resultsDiv.style.display = 'block';
+                    return;
+                }
+
+                const r = data.results;
+                let html = '<table style="width: 100%; font-size: 0.9em; border-collapse: collapse;">';
+
+                // Status
+                if (r.is_disabled) {
+                    html += '<tr style="background: #fff3e0;"><td colspan="2" style="padding: 8px; color: #e65100;">' +
+                        '<strong>⚠ Max Loss is DISABLED</strong> (set to $0)</td></tr>';
+                }
+
+                // Asset info
+                html += '<tr style="background: #e3f2fd;"><td colspan="2" style="padding: 8px; font-weight: 600;">' +
+                    r.asset_name + ' (Contract: ' + r.contract_size + ' units/lot)</td></tr>';
+
+                // Current setting
+                html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Max Loss per Lot Setting</td>' +
+                    '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right; font-weight: 600;">$' + r.max_loss_per_lot + '</td></tr>';
+
+                // Total max loss with lot size
+                html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Total Max Loss (' + r.lot_size + ' lots)</td>' +
+                    '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.total_max_loss_display + '</td></tr>';
+
+                // Spread move to trigger
+                html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Spread Move to Trigger</td>' +
+                    '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.spread_move_display + '</td></tr>';
+
+                // Current std
+                if (r.current_std > 0) {
+                    html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Current Spread σ</td>' +
+                        '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.current_std_display + '</td></tr>';
+
+                    // Sigma equivalent
+                    html += '<tr style="background: #fff8e1;"><td style="padding: 8px; font-weight: 600;">Triggers at</td>' +
+                        '<td style="padding: 8px; text-align: right; font-weight: 600; font-size: 1.1em;">' + r.std_equivalent_display + ' from entry</td></tr>';
+                }
+
+                // Round-trip cost reference
+                if (r.round_trip_cost > 0) {
+                    html += '<tr><td style="padding: 6px; border-bottom: 1px solid #eee;">Round-Trip Cost (reference)</td>' +
+                        '<td style="padding: 6px; border-bottom: 1px solid #eee; text-align: right;">' + r.round_trip_cost_display + '/lot</td></tr>';
+
+                    // Suggestions
+                    html += '<tr style="background: #e8f5e9;"><td style="padding: 8px;">Suggested (2× cost)</td>' +
+                        '<td style="padding: 8px; text-align: right;"><button type="button" onclick="document.getElementById(\\'max_loss_per_lot\\').value=' + Math.round(r.suggested_2x) + '" style="padding: 4px 12px; cursor: pointer;">' +
+                        'Use ' + r.suggested_2x_display + '</button></td></tr>';
+
+                    html += '<tr style="background: #e8f5e9;"><td style="padding: 8px;">Conservative (3× cost)</td>' +
+                        '<td style="padding: 8px; text-align: right;"><button type="button" onclick="document.getElementById(\\'max_loss_per_lot\\').value=' + Math.round(r.suggested_3x) + '" style="padding: 4px 12px; cursor: pointer;">' +
+                        'Use ' + r.suggested_3x_display + '</button></td></tr>';
+                }
+
+                html += '</table>';
+
+                // Warning if applicable
+                if (r.warning) {
+                    html += '<div style="margin-top: 10px; padding: 10px; background: #ffebee; border: 1px solid #f44336; border-radius: 4px; color: #c62828;">' +
+                        '<strong>⚠ Warning:</strong> ' + r.warning + '</div>';
+                }
+
+                // Tip
+                if (!r.is_disabled && r.std_equivalent >= 2 && r.std_equivalent <= 4) {
+                    html += '<div style="margin-top: 10px; padding: 10px; background: #e8f5e9; border: 1px solid #4caf50; border-radius: 4px; color: #2e7d32;">' +
+                        '✓ Good range: ' + r.std_equivalent_display + ' gives room for normal volatility while protecting against tail risk.</div>';
+                }
+
+                resultsDiv.innerHTML = html;
+                resultsDiv.style.display = 'block';
+
+            } catch (error) {
+                resultsDiv.innerHTML = '<div style="color: red; padding: 10px; background: #ffebee; border-radius: 4px;">' +
+                    '<strong>Error:</strong> ' + error.message + '</div>';
+                resultsDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Calculate Max Loss';
             }
         }
     </script>
