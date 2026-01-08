@@ -1357,37 +1357,31 @@ class TradingMonitor:
                 volume = round(volume / vol_step) * vol_step
                 volume = round(volume, 2)
 
-            order_mode = "LIMIT" if use_limit else "MARKET"
-            logger.info(f"MT5 {order_mode} order: {symbol} volume={volume} price={price}")
+            # Determine filling mode based on what the symbol/broker supports
+            filling_mode = symbol_info.filling_mode
+            if filling_mode & 1:  # FOK supported
+                filling_type = mt5.ORDER_FILLING_FOK
+            elif filling_mode & 2:  # IOC supported
+                filling_type = mt5.ORDER_FILLING_IOC
+            else:  # Use RETURN as fallback
+                filling_type = mt5.ORDER_FILLING_RETURN
 
-            if use_limit:
-                # Limit order - guaranteed price, may not fill
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": symbol,
-                    "volume": volume,
-                    "type": order_type,
-                    "price": price,
-                    "deviation": 0,  # No deviation - exact price only
-                    "magic": 123456,
-                    "comment": comment,
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_FOK,  # Fill or Kill - all or nothing at this price
-                }
-            else:
-                # Market order - guaranteed fill, may have slippage
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": symbol,
-                    "volume": volume,
-                    "type": order_type,
-                    "price": price,
-                    "deviation": 20,  # Allow 20 points slippage
-                    "magic": 123456,
-                    "comment": comment,
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,  # Immediate or Cancel
-                }
+            order_mode = "LIMIT" if use_limit else "MARKET"
+            logger.info(f"MT5 {order_mode} order: {symbol} volume={volume} price={price} filling={filling_type}")
+
+            # Build request - same structure for both limit and market, just different deviation
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": order_type,
+                "price": price,
+                "deviation": 0 if use_limit else 20,
+                "magic": 123456,
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling_type,
+            }
 
             result = mt5.order_send(request)
             if result is None:
@@ -1451,39 +1445,32 @@ class TradingMonitor:
                 volume = round(volume / vol_step) * vol_step
                 volume = round(volume, 2)
 
-            order_mode = "LIMIT" if use_limit else "MARKET"
-            logger.info(f"MT5 {order_mode} close: {symbol} ticket={ticket} volume={volume} price={price}")
+            # Determine filling mode based on what the symbol/broker supports
+            filling_mode = symbol_info.filling_mode
+            if filling_mode & 1:  # FOK supported
+                filling_type = mt5.ORDER_FILLING_FOK
+            elif filling_mode & 2:  # IOC supported
+                filling_type = mt5.ORDER_FILLING_IOC
+            else:  # Use RETURN as fallback
+                filling_type = mt5.ORDER_FILLING_RETURN
 
-            if use_limit:
-                # Limit order - guaranteed price, may not fill (for profit exits)
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": symbol,
-                    "volume": volume,
-                    "type": close_type,
-                    "position": ticket,
-                    "price": price,
-                    "deviation": 0,  # No deviation - exact price only
-                    "magic": 123456,
-                    "comment": "Close position",
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_FOK,  # Fill or Kill
-                }
-            else:
-                # Market order - guaranteed fill (for stop losses, time-sensitive exits)
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": symbol,
-                    "volume": volume,
-                    "type": close_type,
-                    "position": ticket,
-                    "price": price,
-                    "deviation": 20,  # Allow slippage
-                    "magic": 123456,
-                    "comment": "Close position",
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,  # Immediate or Cancel
-                }
+            order_mode = "LIMIT" if use_limit else "MARKET"
+            logger.info(f"MT5 {order_mode} close: {symbol} ticket={ticket} volume={volume} price={price} filling={filling_type}")
+
+            # Build request - same structure for both limit and market, just different deviation
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": close_type,
+                "position": ticket,
+                "price": price,
+                "deviation": 0 if use_limit else 20,
+                "magic": 123456,
+                "comment": "Close position",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling_type,
+            }
 
             result = mt5.order_send(request)
             if result is None:
@@ -1576,9 +1563,9 @@ class TradingMonitor:
             if positions and len(positions) > 0:
                 pos = positions[0]
                 return {
-                    'swap': pos.swap,
-                    'commission': pos.commission,
-                    'profit': pos.profit
+                    'swap': getattr(pos, 'swap', 0),
+                    'commission': getattr(pos, 'commission', 0),
+                    'profit': getattr(pos, 'profit', 0)
                 }
         except Exception as e:
             logger.error(f"Error getting MT5 position costs: {e}")
@@ -1830,15 +1817,15 @@ class TradingMonitor:
                     'volume': pos.volume,
                     'price_open': pos.price_open,
                     'price_current': pos.price_current,
-                    'sl': pos.sl,
-                    'tp': pos.tp,
-                    'profit': pos.profit,
+                    'sl': getattr(pos, 'sl', 0),
+                    'tp': getattr(pos, 'tp', 0),
+                    'profit': getattr(pos, 'profit', 0),
                     'return_pct': return_pct,
-                    'swap': pos.swap,
-                    'commission': pos.commission,
+                    'swap': getattr(pos, 'swap', 0),
+                    'commission': getattr(pos, 'commission', 0),
                     'time': datetime.fromtimestamp(pos.time).strftime('%Y-%m-%d %H:%M:%S'),
-                    'magic': pos.magic,
-                    'comment': pos.comment
+                    'magic': getattr(pos, 'magic', 0),
+                    'comment': getattr(pos, 'comment', '')
                 })
 
             return result
