@@ -13,7 +13,7 @@ Features:
 - Shareable web interface
 """
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, render_template_string, request, jsonify, redirect, url_for
 import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
