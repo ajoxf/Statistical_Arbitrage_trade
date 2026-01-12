@@ -3317,7 +3317,8 @@ def api_sd_touches():
         contract_size = monitor.config.get('contract_size', 100)
         spot_symbol = monitor.config.get('spot_symbol', '')
         futures_symbol = monitor.config.get('futures_symbol', '')
-        round_trip_cost = 0
+        commission_per_lot = monitor.config.get('commission_per_lot', 0)
+        round_trip_cost = commission_per_lot * 2  # Commission on entry + exit (even if no MT5 data)
 
         if spot_symbol and futures_symbol and mt5.terminal_info():
             spot_tick = mt5.symbol_info_tick(spot_symbol)
@@ -3326,7 +3327,8 @@ def api_sd_touches():
                 spot_spread = spot_tick.ask - spot_tick.bid
                 futures_spread = futures_tick.ask - futures_tick.bid
                 entry_cost = (spot_spread + futures_spread) * contract_size
-                round_trip_cost = entry_cost * 2
+                # Round-trip = spread cost × 2 + commission × 2
+                round_trip_cost = (entry_cost * 2) + (commission_per_lot * 2)
 
         return jsonify({
             'status': 'success',
