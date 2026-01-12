@@ -847,7 +847,10 @@ class SDTouchTracker:
                 AVG(CASE WHEN reached_mean = 1 THEN potential_profit ELSE NULL END) as avg_profit,
                 SUM(CASE WHEN reached_mean = 1 THEN potential_profit ELSE 0 END) as total_profit,
                 AVG(max_adverse_move) as avg_max_adverse,
-                MAX(max_adverse_move) as worst_adverse
+                MAX(max_adverse_move) as worst_adverse,
+                AVG(CASE WHEN reached_mean = 1 THEN
+                    (entry_spot_spread + entry_futures_spread + exit_spot_spread + exit_futures_spread) * 100
+                    ELSE NULL END) as avg_round_trip_cost
             FROM sd_touch_log
             WHERE touch_date >= date('now', ?)
         '''
@@ -866,16 +869,21 @@ class SDTouchTracker:
         results = []
         for row in rows:
             success_rate = (row[3] / row[2] * 100) if row[2] > 0 else 0
+            avg_profit = round(row[4], 2) if row[4] else 0
+            avg_cost = round(row[8], 2) if row[8] else 0
+            avg_net_profit = round(avg_profit - avg_cost, 2)
             results.append({
                 'sd_level': row[0],
                 'direction': row[1],
                 'total_touches': row[2],
                 'reached_mean': row[3],
                 'success_rate': round(success_rate, 1),
-                'avg_profit': round(row[4], 2) if row[4] else 0,
+                'avg_profit': avg_profit,
                 'total_profit': round(row[5], 2) if row[5] else 0,
                 'avg_max_adverse': round(row[6], 2) if row[6] else 0,
-                'worst_adverse': round(row[7], 2) if row[7] else 0
+                'worst_adverse': round(row[7], 2) if row[7] else 0,
+                'avg_round_trip_cost': avg_cost,
+                'avg_net_profit': avg_net_profit
             })
 
         return results
@@ -3530,9 +3538,9 @@ SD_ANALYSIS_TEMPLATE = '''
                         <th>Total Touches</th>
                         <th>Reached Mean</th>
                         <th>Success Rate</th>
-                        <th>Avg Profit</th>
-                        <th>Total Profit</th>
-                        <th>Avg Max Adverse</th>
+                        <th>Avg Gross Profit</th>
+                        <th>Avg Cost</th>
+                        <th>Avg Net Profit</th>
                         <th>Profitable?</th>
                     </tr>
                 </thead>
@@ -3738,10 +3746,12 @@ SD_ANALYSIS_TEMPLATE = '''
             document.getElementById('deleteSummaryBtn').style.display = 'none';
 
             tbody.innerHTML = data.map(row => {
-                const profitable = row.avg_profit > roundTripCost;
+                // Use actual costs from trades, not live cost
+                const avgCost = row.avg_round_trip_cost || 0;
+                const netProfit = row.avg_net_profit || 0;
+                const profitable = netProfit > 0;
                 const profitClass = profitable ? 'profit' : 'loss';
                 const verdict = profitable ? '✅ YES' : '❌ NO';
-                const netProfit = row.avg_profit - roundTripCost;
                 return `
                     <tr class="${profitable ? 'highlight' : ''}">
                         <td class="checkbox-col">
@@ -3756,9 +3766,9 @@ SD_ANALYSIS_TEMPLATE = '''
                         <td>${row.reached_mean}</td>
                         <td>${row.success_rate}%</td>
                         <td>$${row.avg_profit.toFixed(2)}</td>
-                        <td>$${row.total_profit.toFixed(2)}</td>
-                        <td>$${row.avg_max_adverse.toFixed(2)}</td>
-                        <td class="${profitClass}">${verdict}<br><small>Net: $${netProfit.toFixed(2)}</small></td>
+                        <td>$${avgCost.toFixed(2)}</td>
+                        <td class="${profitClass}">$${netProfit.toFixed(2)}</td>
+                        <td class="${profitClass}">${verdict}</td>
                     </tr>
                 `;
             }).join('');
