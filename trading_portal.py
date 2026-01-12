@@ -2127,7 +2127,7 @@ class TradingMonitor:
         except Exception as e:
             logger.error(f"Failed to log limit order: {e}")
 
-    def _execute_pegged_limit_order(self, symbol, order_type, volume, comment=""):
+    def _execute_pegged_limit_order(self, symbol, order_type, volume, comment="", ticket=None):
         """
         Execute a pegged limit order that follows the bid/ask price until filled.
 
@@ -2139,6 +2139,7 @@ class TradingMonitor:
             order_type: mt5.ORDER_TYPE_BUY or mt5.ORDER_TYPE_SELL
             volume: Lot size
             comment: Order comment
+            ticket: Optional position ticket to close (if provided, closes existing position)
 
         Returns:
             dict with success, ticket, price, volume, or error
@@ -2259,6 +2260,9 @@ class TradingMonitor:
                         "type_time": mt5.ORDER_TIME_GTC,
                         "type_filling": filling_type,
                     }
+                    # If closing a position by ticket, include the position field
+                    if ticket is not None:
+                        request["position"] = ticket
 
                     result = mt5.order_send(request)
 
@@ -3614,34 +3618,48 @@ def api_test_limit_orders():
         all_success = True
         errors = []
 
+        # Get symbol info for both symbols first to determine common lot size
+        spot_info = mt5.symbol_info(spot_symbol)
+        futures_info = mt5.symbol_info(futures_symbol)
+
+        # Calculate common lot size (max of the two minimum lot sizes)
+        # This ensures both symbols can trade the same lot size
+        if spot_info and futures_info:
+            common_lot_size = max(spot_info.volume_min, futures_info.volume_min)
+            logger.info(f"Using common lot size: {common_lot_size} (spot_min={spot_info.volume_min}, futures_min={futures_info.volume_min})")
+        elif spot_info:
+            common_lot_size = spot_info.volume_min
+        elif futures_info:
+            common_lot_size = futures_info.volume_min
+        else:
+            common_lot_size = 0.1  # fallback
+
         # ========== TEST SPOT SYMBOL WITH LIMIT ORDER ==========
         logger.info(f"Testing LIMIT ORDER on SPOT symbol: {spot_symbol} (timeout={timeout}s, peg_interval={peg_interval}s)")
 
-        # Get minimum lot size for spot
-        spot_info = mt5.symbol_info(spot_symbol)
         if spot_info is None:
             results['spot']['open'] = {'success': False, 'error': f'Symbol {spot_symbol} not found in MT5'}
             all_success = False
             errors.append(f"Spot: {spot_symbol} not found")
         else:
-            spot_min_lot = spot_info.volume_min
+            spot_lot_size = common_lot_size
             spot_filling = spot_info.filling_mode
 
             # Test BUY limit order on spot
-            logger.info(f"Opening test LIMIT BUY on {spot_symbol} with {spot_min_lot} lots")
+            logger.info(f"Opening test LIMIT BUY on {spot_symbol} with {spot_lot_size} lots")
             import time
             spot_start = time.time()
             spot_open = monitor._execute_pegged_limit_order(
                 spot_symbol,
                 mt5.ORDER_TYPE_BUY,
-                spot_min_lot,
+                spot_lot_size,
                 comment="TEST_LIMIT_ORDER"
             )
             spot_open_elapsed = time.time() - spot_start
 
             results['spot']['open'] = {
                 'success': spot_open['success'],
-                'volume': spot_min_lot,
+                'volume': spot_lot_size,
                 'filling_mode': spot_filling,
                 'filling_mode_desc': _describe_filling_mode(spot_filling),
                 'price': spot_open.get('price'),
@@ -3652,16 +3670,18 @@ def api_test_limit_orders():
             }
 
             if spot_open['success']:
-                # Immediately close the position with limit order
+                # Immediately close the position with limit order using the ticket
                 time.sleep(0.5)  # Small delay to ensure position is registered
 
-                logger.info(f"Closing test LIMIT SELL on {spot_symbol}")
+                spot_ticket = spot_open.get('ticket')
+                logger.info(f"Closing test LIMIT SELL on {spot_symbol} (ticket={spot_ticket})")
                 spot_close_start = time.time()
                 spot_close = monitor._execute_pegged_limit_order(
                     spot_symbol,
                     mt5.ORDER_TYPE_SELL,
-                    spot_min_lot,
-                    comment="TEST_LIMIT_ORDER_CLOSE"
+                    spot_lot_size,
+                    comment="TEST_LIMIT_ORDER_CLOSE",
+                    ticket=spot_ticket
                 )
                 spot_close_elapsed = time.time() - spot_close_start
 
@@ -3683,31 +3703,30 @@ def api_test_limit_orders():
         # ========== TEST FUTURES SYMBOL WITH LIMIT ORDER ==========
         logger.info(f"Testing LIMIT ORDER on FUTURES symbol: {futures_symbol}")
 
-        # Get minimum lot size for futures
-        futures_info = mt5.symbol_info(futures_symbol)
+        # futures_info already fetched above
         if futures_info is None:
             results['futures']['open'] = {'success': False, 'error': f'Symbol {futures_symbol} not found in MT5'}
             all_success = False
             errors.append(f"Futures: {futures_symbol} not found")
         else:
-            futures_min_lot = futures_info.volume_min
+            futures_lot_size = common_lot_size
             futures_filling = futures_info.filling_mode
 
             # Test SELL limit order on futures (opposite of spot to simulate spread)
-            logger.info(f"Opening test LIMIT SELL on {futures_symbol} with {futures_min_lot} lots")
+            logger.info(f"Opening test LIMIT SELL on {futures_symbol} with {futures_lot_size} lots")
             import time
             futures_start = time.time()
             futures_open = monitor._execute_pegged_limit_order(
                 futures_symbol,
                 mt5.ORDER_TYPE_SELL,
-                futures_min_lot,
+                futures_lot_size,
                 comment="TEST_LIMIT_ORDER"
             )
             futures_open_elapsed = time.time() - futures_start
 
             results['futures']['open'] = {
                 'success': futures_open['success'],
-                'volume': futures_min_lot,
+                'volume': futures_lot_size,
                 'filling_mode': futures_filling,
                 'filling_mode_desc': _describe_filling_mode(futures_filling),
                 'price': futures_open.get('price'),
@@ -3718,17 +3737,19 @@ def api_test_limit_orders():
             }
 
             if futures_open['success']:
-                # Immediately close the position with limit order
+                # Immediately close the position with limit order using the ticket
                 import time
                 time.sleep(0.5)
 
-                logger.info(f"Closing test LIMIT BUY on {futures_symbol}")
+                futures_ticket = futures_open.get('ticket')
+                logger.info(f"Closing test LIMIT BUY on {futures_symbol} (ticket={futures_ticket})")
                 futures_close_start = time.time()
                 futures_close = monitor._execute_pegged_limit_order(
                     futures_symbol,
                     mt5.ORDER_TYPE_BUY,
-                    futures_min_lot,
-                    comment="TEST_LIMIT_ORDER_CLOSE"
+                    futures_lot_size,
+                    comment="TEST_LIMIT_ORDER_CLOSE",
+                    ticket=futures_ticket
                 )
                 futures_close_elapsed = time.time() - futures_close_start
 
