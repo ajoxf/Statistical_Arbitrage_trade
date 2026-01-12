@@ -2360,10 +2360,24 @@ class TradingMonitor:
                         result = mt5.order_send(request)
 
                         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                            logger.info(f"Limit order immediately filled: {symbol} @ {result.price}")
+                            # Need to find the actual POSITION ticket (not order ticket)
+                            # result.order is the order ID, but position has its own ticket
+                            position_ticket = result.order
+                            time_module.sleep(0.1)  # Brief delay for position to register
+
+                            # Look up the position that was just created
+                            positions = mt5.positions_get(symbol=symbol)
+                            if positions:
+                                # Find the most recent position with matching magic number
+                                for pos in sorted(positions, key=lambda p: p.time, reverse=True):
+                                    if pos.magic == 123456 and abs(pos.volume - volume) < 0.01:
+                                        position_ticket = pos.ticket
+                                        break
+
+                            logger.info(f"Limit order immediately filled: {symbol} @ {result.price}, position_ticket={position_ticket}")
                             return {
                                 'success': True,
-                                'ticket': result.order,
+                                'ticket': position_ticket,
                                 'price': result.price,
                                 'volume': result.volume
                             }
