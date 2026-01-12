@@ -1912,6 +1912,12 @@ class TradingMonitor:
                       If False, use market order (guaranteed fill, may have slippage)
         """
         try:
+            # Check if position actually exists before trying to close
+            existing_positions = mt5.positions_get(ticket=ticket)
+            if not existing_positions:
+                logger.warning(f"Position {ticket} not found in MT5 (may already be closed)")
+                return {'success': True, 'already_closed': True, 'ticket': ticket, 'price': 0}
+
             # Opposite order to close
             close_type = mt5.ORDER_TYPE_SELL if position_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
 
