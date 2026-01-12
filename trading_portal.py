@@ -232,6 +232,25 @@ class DatabaseManager:
             except:
                 pass  # Column already exists
 
+        # Create limit order tracking table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS limit_order_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                order_type TEXT NOT NULL,
+                side TEXT NOT NULL,
+                volume REAL NOT NULL,
+                target_price REAL,
+                fill_price REAL,
+                status TEXT NOT NULL,
+                elapsed_seconds REAL,
+                iterations INTEGER,
+                error_message TEXT,
+                context TEXT
+            )
+        ''')
+
         # Insert default config if not exists
         cursor.execute('SELECT COUNT(*) FROM trading_config')
         if cursor.fetchone()[0] == 0:
@@ -2078,6 +2097,36 @@ class TradingMonitor:
             logger.error(f"MT5 close position error: {e}")
             return {'success': False, 'error': str(e)}
 
+    def _log_limit_order(self, symbol, order_type, side, volume, target_price, fill_price,
+                         status, elapsed, iterations, error_msg=None, context=None):
+        """Log limit order attempt to database for analysis"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO limit_order_log
+                (timestamp, symbol, order_type, side, volume, target_price, fill_price,
+                 status, elapsed_seconds, iterations, error_message, context)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                datetime.now().isoformat(),
+                symbol,
+                order_type,
+                side,
+                volume,
+                target_price,
+                fill_price,
+                status,
+                elapsed,
+                iterations,
+                error_msg,
+                context
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to log limit order: {e}")
+
     def _execute_pegged_limit_order(self, symbol, order_type, volume, comment=""):
         """
         Execute a pegged limit order that follows the bid/ask price until filled.
@@ -2100,6 +2149,8 @@ class TradingMonitor:
         peg_interval = self.config.get('limit_peg_interval', 1.5)
         start_time = time_module.time()
         pending_order = None
+        first_price = None
+        side = "BUY" if order_type == mt5.ORDER_TYPE_BUY else "SELL"
 
         logger.info(f"Pegged limit order starting: {symbol}, timeout={timeout}s, peg_interval={peg_interval}s")
 
@@ -2147,7 +2198,10 @@ class TradingMonitor:
                         if deals and len(deals) > 0:
                             # Found a deal - order was filled
                             deal = deals[-1]
+                            elapsed = time_module.time() - start_time
                             logger.info(f"*** LIMIT ORDER FILLED: {symbol} @ {deal.price} (zero spread cost!) ***")
+                            self._log_limit_order(symbol, 'PEGGED_LIMIT', side, volume, first_price,
+                                                 deal.price, 'FILLED', elapsed, iteration, context=comment)
                             return {
                                 'success': True,
                                 'ticket': deal.position_id or pending_order,
@@ -2160,7 +2214,10 @@ class TradingMonitor:
                         if positions:
                             for pos in positions:
                                 if pos.ticket == pending_order or (pos.magic == 123456 and abs(pos.volume - volume) < 0.001):
+                                    elapsed = time_module.time() - start_time
                                     logger.info(f"*** LIMIT ORDER FILLED: {symbol} @ {pos.price_open} (zero spread cost!) ***")
+                                    self._log_limit_order(symbol, 'PEGGED_LIMIT', side, volume, first_price,
+                                                         pos.price_open, 'FILLED', elapsed, iteration, context=comment)
                                     return {
                                         'success': True,
                                         'ticket': pos.ticket,
@@ -2209,6 +2266,8 @@ class TradingMonitor:
                     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                         pending_order = result.order
                         last_price = current_price
+                        if first_price is None:
+                            first_price = current_price
                         logger.info(f"*** LIMIT ORDER PLACED: {symbol} {order_side} @ {current_price}, ticket={pending_order} ***")
                     elif result and result.retcode == mt5.TRADE_RETCODE_PLACED:
                         pending_order = result.order
@@ -2242,9 +2301,12 @@ class TradingMonitor:
                 mt5.order_send(cancel_request)
 
             logger.warning(f"Pegged limit order TIMEOUT for {symbol} (elapsed={elapsed:.1f}s, configured timeout={timeout}s, iterations={iteration})")
+            self._log_limit_order(symbol, 'PEGGED_LIMIT', side, volume, first_price,
+                                 None, 'TIMEOUT', elapsed, iteration, f'Timeout after {timeout}s', context=comment)
             return {'success': False, 'error': f'Timeout after {timeout}s', 'timeout': True}
 
         except Exception as e:
+            elapsed = time_module.time() - start_time
             logger.error(f"Pegged limit order error: {e}")
             # Try to cancel any pending order
             if pending_order is not None:
@@ -2256,6 +2318,9 @@ class TradingMonitor:
                     mt5.order_send(cancel_request)
                 except:
                     pass
+            self._log_limit_order(symbol, 'PEGGED_LIMIT', side, volume, first_price,
+                                 None, 'ERROR', elapsed, iteration if 'iteration' in dir() else 0,
+                                 str(e), context=comment)
             return {'success': False, 'error': str(e)}
 
     def _open_position(self, asset_key, signal_type, data):
@@ -3845,6 +3910,116 @@ def api_sd_touches_delete_by_level():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/limit_orders')
+def api_limit_orders():
+    """Get limit order statistics and recent attempts"""
+    try:
+        view = request.args.get('view', 'summary')  # 'summary' or 'recent'
+        days = request.args.get('days', 7, type=int)
+        limit = request.args.get('limit', 100, type=int)
+
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+
+        if view == 'summary':
+            cursor.execute('''
+                SELECT
+                    symbol,
+                    status,
+                    COUNT(*) as count,
+                    AVG(elapsed_seconds) as avg_elapsed,
+                    AVG(CASE WHEN fill_price IS NOT NULL AND target_price IS NOT NULL
+                        THEN fill_price - target_price ELSE NULL END) as avg_slippage
+                FROM limit_order_log
+                WHERE timestamp > datetime('now', ?)
+                GROUP BY symbol, status
+                ORDER BY symbol, status
+            ''', (f'-{days} days',))
+            rows = cursor.fetchall()
+            data = [{'symbol': r[0], 'status': r[1], 'count': r[2],
+                    'avg_elapsed': round(r[3], 2) if r[3] else 0,
+                    'avg_slippage': round(r[4], 4) if r[4] else 0} for r in rows]
+
+            # Calculate totals
+            cursor.execute('''
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status = 'FILLED' THEN 1 ELSE 0 END) as filled,
+                    SUM(CASE WHEN status = 'TIMEOUT' THEN 1 ELSE 0 END) as timeout,
+                    SUM(CASE WHEN status = 'ERROR' THEN 1 ELSE 0 END) as errors
+                FROM limit_order_log
+                WHERE timestamp > datetime('now', ?)
+            ''', (f'-{days} days',))
+            totals = cursor.fetchone()
+            summary = {
+                'total': totals[0] or 0,
+                'filled': totals[1] or 0,
+                'timeout': totals[2] or 0,
+                'errors': totals[3] or 0,
+                'fill_rate': round((totals[1] or 0) / totals[0] * 100, 1) if totals[0] else 0
+            }
+        else:
+            cursor.execute('''
+                SELECT id, timestamp, symbol, order_type, side, volume,
+                       target_price, fill_price, status, elapsed_seconds,
+                       iterations, error_message, context
+                FROM limit_order_log
+                WHERE timestamp > datetime('now', ?)
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (f'-{days} days', limit))
+            rows = cursor.fetchall()
+            data = [{
+                'id': r[0], 'timestamp': r[1], 'symbol': r[2], 'order_type': r[3],
+                'side': r[4], 'volume': r[5], 'target_price': r[6], 'fill_price': r[7],
+                'status': r[8], 'elapsed': round(r[9], 2) if r[9] else 0,
+                'iterations': r[10], 'error': r[11], 'context': r[12]
+            } for r in rows]
+            summary = None
+
+        conn.close()
+        return jsonify({'status': 'success', 'data': data, 'summary': summary})
+    except Exception as e:
+        logger.error(f"Limit orders API error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/limit_orders/csv')
+def api_limit_orders_csv():
+    """Download limit order log as CSV"""
+    try:
+        days = request.args.get('days', 7, type=int)
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT timestamp, symbol, order_type, side, volume,
+                   target_price, fill_price, status, elapsed_seconds,
+                   iterations, error_message, context
+            FROM limit_order_log
+            WHERE timestamp > datetime('now', ?)
+            ORDER BY timestamp DESC
+        ''', (f'-{days} days',))
+        rows = cursor.fetchall()
+        conn.close()
+
+        # Build CSV
+        headers = ['Timestamp', 'Symbol', 'Order Type', 'Side', 'Volume',
+                   'Target Price', 'Fill Price', 'Status', 'Elapsed (s)',
+                   'Iterations', 'Error', 'Context']
+        csv_content = ','.join(headers) + '\n'
+        for r in rows:
+            csv_content += ','.join([f'"{str(c) if c else ""}"' for c in r]) + '\n'
+
+        from flask import Response
+        return Response(
+            csv_content,
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment;filename=limit_orders_{datetime.now().strftime("%Y%m%d")}.csv'}
+        )
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/sd_analysis')
 def sd_analysis_page():
     """SD Touch Analysis page"""
@@ -3933,6 +4108,7 @@ SD_ANALYSIS_TEMPLATE = '''
             <button class="tab active" onclick="switchTab('summary')">Summary by SD Level</button>
             <button class="tab" onclick="switchTab('daily')">Daily Breakdown</button>
             <button class="tab" onclick="switchTab('recent')">Recent Touches</button>
+            <button class="tab" onclick="switchTab('limitorders')">Limit Orders</button>
         </div>
 
         <div class="card" id="summaryCard">
@@ -3980,6 +4156,7 @@ SD_ANALYSIS_TEMPLATE = '''
         <div class="card" id="recentCard" style="display:none;">
             <h2>Recent Touches</h2>
             <div class="action-bar">
+                <button class="btn-success" onclick="downloadCSV()">📥 Download CSV</button>
                 <button class="btn-danger" onclick="deleteSelectedRecent()" id="deleteRecentBtn" style="display:none;">Delete Selected</button>
                 <span id="selectedCount" style="color: #666;"></span>
             </div>
@@ -3990,6 +4167,7 @@ SD_ANALYSIS_TEMPLATE = '''
                         <th>Date</th>
                         <th>Time</th>
                         <th>SD</th>
+                        <th>Std Dev</th>
                         <th>Dir</th>
                         <th>Entry Price</th>
                         <th>Exit Price</th>
@@ -4001,6 +4179,55 @@ SD_ANALYSIS_TEMPLATE = '''
                         <th>Exit Fut</th>
                         <th>Round-Trip Cost</th>
                         <th>Net Profit</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="card" id="limitordersCard" style="display:none;">
+            <h2>Limit Order Tracking</h2>
+            <div class="info-box" style="margin-bottom: 15px;">
+                <strong>What this shows:</strong> Tracks all limit order attempts - when they were placed, whether they filled or timed out, and execution statistics.
+            </div>
+            <div id="limitOrderSummary" style="display: flex; gap: 20px; margin-bottom: 20px;">
+                <div class="stat-box" style="flex: 1; background: #e3f2fd; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: bold;" id="loTotal">0</div>
+                    <div style="font-size: 12px; color: #666;">Total Orders</div>
+                </div>
+                <div class="stat-box" style="flex: 1; background: #e8f5e9; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: bold; color: #28a745;" id="loFilled">0</div>
+                    <div style="font-size: 12px; color: #666;">Filled</div>
+                </div>
+                <div class="stat-box" style="flex: 1; background: #fff3e0; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: bold; color: #ff9800;" id="loTimeout">0</div>
+                    <div style="font-size: 12px; color: #666;">Timeout</div>
+                </div>
+                <div class="stat-box" style="flex: 1; background: #ffebee; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: bold; color: #dc3545;" id="loErrors">0</div>
+                    <div style="font-size: 12px; color: #666;">Errors</div>
+                </div>
+                <div class="stat-box" style="flex: 1; background: #f3e5f5; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: bold; color: #9c27b0;" id="loFillRate">0%</div>
+                    <div style="font-size: 12px; color: #666;">Fill Rate</div>
+                </div>
+            </div>
+            <div class="action-bar">
+                <button class="btn-success" onclick="downloadLimitOrderCSV()">📥 Download CSV</button>
+            </div>
+            <table id="limitOrderTable">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Volume</th>
+                        <th>Target Price</th>
+                        <th>Fill Price</th>
+                        <th>Status</th>
+                        <th>Time (s)</th>
+                        <th>Iterations</th>
+                        <th>Context</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
@@ -4020,11 +4247,37 @@ SD_ANALYSIS_TEMPLATE = '''
             document.getElementById('summaryCard').style.display = view === 'summary' ? 'block' : 'none';
             document.getElementById('dailyCard').style.display = view === 'daily' ? 'block' : 'none';
             document.getElementById('recentCard').style.display = view === 'recent' ? 'block' : 'none';
+            document.getElementById('limitordersCard').style.display = view === 'limitorders' ? 'block' : 'none';
             loadData();
         }
 
         function loadData() {
             const days = document.getElementById('daysSelect').value;
+
+            if (currentView === 'limitorders') {
+                // Load limit order data
+                fetch(`/api/limit_orders?view=recent&days=${days}&limit=100`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            renderLimitOrders(data.data);
+                        }
+                    });
+                // Also load summary stats
+                fetch(`/api/limit_orders?view=summary&days=${days}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.status === 'success' && data.summary) {
+                            document.getElementById('loTotal').textContent = data.summary.total;
+                            document.getElementById('loFilled').textContent = data.summary.filled;
+                            document.getElementById('loTimeout').textContent = data.summary.timeout;
+                            document.getElementById('loErrors').textContent = data.summary.errors;
+                            document.getElementById('loFillRate').textContent = data.summary.fill_rate + '%';
+                        }
+                    });
+                return;
+            }
+
             fetch(`/api/sd_touches?view=${currentView}&days=${days}&limit=100`)
                 .then(r => r.json())
                 .then(data => {
@@ -4105,6 +4358,98 @@ SD_ANALYSIS_TEMPLATE = '''
             const checked = document.querySelectorAll('.recent-checkbox:checked').length;
             document.getElementById('deleteRecentBtn').style.display = checked > 0 ? 'inline-block' : 'none';
             document.getElementById('selectedCount').textContent = checked > 0 ? `${checked} selected` : '';
+        }
+
+        function downloadCSV() {
+            const days = document.getElementById('daysSelect').value;
+            fetch(`/api/sd_touches?view=recent&days=${days}&limit=1000`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status !== 'success' || !data.data.length) {
+                        alert('No data to download');
+                        return;
+                    }
+
+                    // CSV headers
+                    const headers = [
+                        'Date', 'Time', 'SD Level', 'Std Dev', 'Direction',
+                        'Entry Spread', 'Exit Spread', 'Mean', 'Status',
+                        'Gross Profit', 'Entry Spot (cents)', 'Entry Futures (cents)',
+                        'Exit Spot (cents)', 'Exit Futures (cents)',
+                        'Round Trip Cost', 'Net Profit'
+                    ];
+
+                    const rows = data.data.map(row => {
+                        const grossProfit = row.profit !== null ? row.profit : 0;
+                        const rtCost = row.round_trip_cost || 0;
+                        const netProfit = grossProfit - rtCost;
+
+                        return [
+                            row.date,
+                            row.time,
+                            row.sd_level,
+                            row.std || '',
+                            row.direction,
+                            row.touch_spread ? row.touch_spread.toFixed(4) : '',
+                            row.spread_at_mean ? row.spread_at_mean.toFixed(4) : '',
+                            row.mean ? row.mean.toFixed(4) : '',
+                            row.status,
+                            row.profit !== null ? row.profit.toFixed(2) : '',
+                            (row.entry_spot_spread * 100).toFixed(1),
+                            (row.entry_futures_spread * 100).toFixed(1),
+                            row.reached_mean ? (row.exit_spot_spread * 100).toFixed(1) : '',
+                            row.reached_mean ? (row.exit_futures_spread * 100).toFixed(1) : '',
+                            rtCost.toFixed(2),
+                            row.reached_mean ? netProfit.toFixed(2) : ''
+                        ];
+                    });
+
+                    // Build CSV content
+                    let csv = headers.join(',') + '\\n';
+                    rows.forEach(row => {
+                        csv += row.map(cell => `"${cell}"`).join(',') + '\\n';
+                    });
+
+                    // Download
+                    const blob = new Blob([csv], { type: 'text/csv' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `sd_touches_${new Date().toISOString().slice(0,10)}.csv`;
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                });
+        }
+
+        function downloadLimitOrderCSV() {
+            const days = document.getElementById('daysSelect').value;
+            window.location.href = `/api/limit_orders/csv?days=${days}`;
+        }
+
+        function renderLimitOrders(data) {
+            const tbody = document.querySelector('#limitOrderTable tbody');
+            tbody.innerHTML = data.map(row => {
+                const statusClass = row.status === 'FILLED' ? 'success' :
+                                   (row.status === 'TIMEOUT' ? 'warning' : 'loss');
+                const timestamp = row.timestamp ? row.timestamp.replace('T', ' ').slice(0, 19) : '-';
+                const slippage = row.fill_price && row.target_price ?
+                                 (row.fill_price - row.target_price).toFixed(4) : '-';
+
+                return `
+                    <tr>
+                        <td>${timestamp}</td>
+                        <td><strong>${row.symbol}</strong></td>
+                        <td><span class="badge badge-${row.side.toLowerCase()}">${row.side}</span></td>
+                        <td>${row.volume}</td>
+                        <td>${row.target_price ? row.target_price.toFixed(2) : '-'}</td>
+                        <td>${row.fill_price ? row.fill_price.toFixed(2) : '-'}</td>
+                        <td class="${statusClass}">${row.status}</td>
+                        <td>${row.elapsed}s</td>
+                        <td>${row.iterations || '-'}</td>
+                        <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${row.context || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
         }
 
         function deleteSelectedSummary() {
@@ -4227,6 +4572,7 @@ SD_ANALYSIS_TEMPLATE = '''
                         <td>${row.date}</td>
                         <td>${row.time}</td>
                         <td><strong>${row.sd_level}σ</strong></td>
+                        <td>${row.std ? row.std.toFixed(4) : '-'}</td>
                         <td><span class="badge badge-${row.direction.toLowerCase()}">${row.direction}</span></td>
                         <td>${row.touch_spread ? row.touch_spread.toFixed(4) : '-'}</td>
                         <td>${row.spread_at_mean ? row.spread_at_mean.toFixed(4) : '-'}</td>
