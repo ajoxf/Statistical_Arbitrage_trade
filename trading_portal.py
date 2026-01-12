@@ -3878,11 +3878,15 @@ def api_test_limit_orders():
 
     except Exception as e:
         import traceback
-        logger.error(f"Limit order test error: {e}\n{traceback.format_exc()}")
+        error_trace = traceback.format_exc()
+        print(f"!!! LIMIT ORDER TEST ERROR: {e}")
+        print(error_trace)
+        logger.error(f"Limit order test error: {e}\n{error_trace}")
         results['summary'] = {'success': False, 'message': str(e)}
         return jsonify({
             'status': 'error',
             'message': str(e),
+            'traceback': error_trace,
             'results': results
         }), 500
 
