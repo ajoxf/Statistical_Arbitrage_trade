@@ -2542,9 +2542,12 @@ class TradingMonitor:
         futures_closed = False
         spot_closed = False
 
-        # Determine order types for closing
-        futures_close_type = mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL
-        spot_close_type = mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
+        # Determine ORIGINAL position types (not close types)
+        # _close_mt5_position will calculate the close type internally
+        # Short Spread: Sold Futures (SELL), Bought Spot (BUY)
+        # Long Spread: Bought Futures (BUY), Sold Spot (SELL)
+        futures_original_type = mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
+        spot_original_type = mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL
 
         if order_type_setting == 'LIMIT':
             logger.info(f"========== EXIT MODE: LIMIT ORDERS (timeout={self.config.get('limit_order_timeout', 60)}s, fallback to MARKET) ==========")
@@ -2556,7 +2559,7 @@ class TradingMonitor:
                 result = self._close_mt5_position(
                     position['mt5_futures_ticket'],
                     futures_symbol, futures_volume,
-                    futures_close_type,
+                    futures_original_type,
                     use_limit=True  # Try limit first
                 )
                 if not result['success']:
@@ -2565,7 +2568,7 @@ class TradingMonitor:
                     result = self._close_mt5_position(
                         position['mt5_futures_ticket'],
                         futures_symbol, futures_volume,
-                        futures_close_type,
+                        futures_original_type,
                         use_limit=False
                     )
                 if result['success']:
@@ -2580,7 +2583,7 @@ class TradingMonitor:
                 result = self._close_mt5_position(
                     position['mt5_spot_ticket'],
                     spot_symbol, spot_volume,
-                    spot_close_type,
+                    spot_original_type,
                     use_limit=True
                 )
                 if not result['success']:
@@ -2588,7 +2591,7 @@ class TradingMonitor:
                     result = self._close_mt5_position(
                         position['mt5_spot_ticket'],
                         spot_symbol, spot_volume,
-                        spot_close_type,
+                        spot_original_type,
                         use_limit=False
                     )
                 if result['success']:
@@ -2604,7 +2607,7 @@ class TradingMonitor:
                 result = self._close_mt5_position(
                     position['mt5_futures_ticket'],
                     futures_symbol, futures_volume,
-                    futures_close_type,
+                    futures_original_type,
                     use_limit=False
                 )
                 if result['success']:
@@ -2619,7 +2622,7 @@ class TradingMonitor:
                 result = self._close_mt5_position(
                     position['mt5_spot_ticket'],
                     spot_symbol, spot_volume,
-                    spot_close_type,
+                    spot_original_type,
                     use_limit=False
                 )
                 if result['success']:
