@@ -2005,6 +2005,9 @@ class TradingMonitor:
 
             # Opposite order to close
             close_type = mt5.ORDER_TYPE_SELL if position_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+            close_type_name = "SELL" if close_type == mt5.ORDER_TYPE_SELL else "BUY"
+            original_type_name = "BUY" if position_type == mt5.ORDER_TYPE_BUY else "SELL"
+            logger.debug(f"Close position: original={original_type_name}, close_with={close_type_name}")
 
             symbol_info = mt5.symbol_info(symbol)
             if symbol_info is None:
@@ -2065,7 +2068,9 @@ class TradingMonitor:
                 return {'success': False, 'error': 'Close order failed - no result'}
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
-                return {'success': False, 'error': f'Close failed: {result.comment}'}
+                logger.error(f"MT5 close failed - retcode={result.retcode}, comment='{result.comment}', "
+                            f"request_id={result.request_id}, deal={result.deal}, order={result.order}")
+                return {'success': False, 'error': f'Close failed: {result.comment} (retcode={result.retcode})'}
 
             return {'success': True, 'ticket': result.order, 'price': result.price}
 
