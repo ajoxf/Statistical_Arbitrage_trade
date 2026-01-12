@@ -2133,7 +2133,7 @@ class TradingMonitor:
                         if deals and len(deals) > 0:
                             # Found a deal - order was filled
                             deal = deals[-1]
-                            logger.info(f"Pegged limit order FILLED: {symbol} @ {deal.price}")
+                            logger.info(f"*** LIMIT ORDER FILLED: {symbol} @ {deal.price} (zero spread cost!) ***")
                             return {
                                 'success': True,
                                 'ticket': deal.position_id or pending_order,
@@ -2146,7 +2146,7 @@ class TradingMonitor:
                         if positions:
                             for pos in positions:
                                 if pos.ticket == pending_order or (pos.magic == 123456 and abs(pos.volume - volume) < 0.001):
-                                    logger.info(f"Pegged limit order FILLED (position check): {symbol} @ {pos.price_open}")
+                                    logger.info(f"*** LIMIT ORDER FILLED: {symbol} @ {pos.price_open} (zero spread cost!) ***")
                                     return {
                                         'success': True,
                                         'ticket': pos.ticket,
@@ -2191,10 +2191,11 @@ class TradingMonitor:
 
                     result = mt5.order_send(request)
 
+                    order_side = "BUY_LIMIT" if order_type == mt5.ORDER_TYPE_BUY else "SELL_LIMIT"
                     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                         pending_order = result.order
                         last_price = current_price
-                        logger.debug(f"Pegged limit placed: {symbol} @ {current_price}, ticket={pending_order}")
+                        logger.info(f"*** LIMIT ORDER PLACED: {symbol} {order_side} @ {current_price}, ticket={pending_order} ***")
                     elif result and result.retcode == mt5.TRADE_RETCODE_PLACED:
                         pending_order = result.order
                         last_price = current_price
@@ -2350,7 +2351,7 @@ class TradingMonitor:
 
         if order_type_setting == 'LIMIT':
             # Use pegged limit orders (zero spread cost, but may not fill)
-            logger.info(f"Using LIMIT orders for entry (timeout={self.config.get('limit_order_timeout', 60)}s)")
+            logger.info(f"========== ENTRY MODE: LIMIT ORDERS (timeout={self.config.get('limit_order_timeout', 60)}s) ==========")
 
             # Execute both legs with pegged limit orders
             futures_result = self._execute_pegged_limit_order(
@@ -2381,7 +2382,7 @@ class TradingMonitor:
                 spot_result = {'success': False, 'error': 'Skipped - futures leg failed'}
         else:
             # Use market orders (guaranteed fill, but pay spread)
-            logger.info(f"Using MARKET orders for entry")
+            logger.info(f"========== ENTRY MODE: MARKET ORDERS (instant fill, paying spread) ==========")
 
             # Execute futures order (market order for guaranteed fill)
             futures_result = self._execute_mt5_order(
@@ -2536,7 +2537,7 @@ class TradingMonitor:
         spot_close_type = mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
 
         if order_type_setting == 'LIMIT':
-            logger.info(f"Using LIMIT orders for exit (timeout={self.config.get('limit_order_timeout', 60)}s, fallback to MARKET)")
+            logger.info(f"========== EXIT MODE: LIMIT ORDERS (timeout={self.config.get('limit_order_timeout', 60)}s, fallback to MARKET) ==========")
 
             # Try limit orders first, with market order fallback
             if position.get('mt5_futures_ticket'):
