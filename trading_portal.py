@@ -1804,6 +1804,88 @@ class TradingMonitor:
             if asset_key in self.positions:
                 self._close_position(asset_key, signal_type, data)
 
+    def _calculate_hedge_volumes(self, futures_symbol, spot_symbol, base_lot_size):
+        """Calculate hedge-equivalent volumes for futures and spot legs.
+
+        Ensures equal dollar exposure on both legs by adjusting for different
+        contract sizes between futures and spot symbols.
+
+        Returns:
+            dict with futures_volume, spot_volume, and contract_sizes
+        """
+        try:
+            futures_info = mt5.symbol_info(futures_symbol)
+            spot_info = mt5.symbol_info(spot_symbol)
+
+            if futures_info is None or spot_info is None:
+                logger.warning(f"Could not get symbol info - using base lot size for both")
+                return {
+                    'futures_volume': base_lot_size,
+                    'spot_volume': base_lot_size,
+                    'futures_contract_size': 100,
+                    'spot_contract_size': 100
+                }
+
+            # Get contract sizes (trade_contract_size = units per lot)
+            futures_contract_size = futures_info.trade_contract_size
+            spot_contract_size = spot_info.trade_contract_size
+
+            logger.info(f"Contract sizes - Futures ({futures_symbol}): {futures_contract_size}, Spot ({spot_symbol}): {spot_contract_size}")
+
+            # Calculate equivalent volumes
+            # exposure = lots × contract_size
+            # For equal exposure: futures_lots × futures_contract = spot_lots × spot_contract
+            # spot_lots = futures_lots × (futures_contract / spot_contract)
+            futures_volume = base_lot_size
+            spot_volume = base_lot_size * (futures_contract_size / spot_contract_size)
+
+            # Validate and round to symbol requirements
+            # Futures
+            if futures_volume < futures_info.volume_min:
+                futures_volume = futures_info.volume_min
+            elif futures_volume > futures_info.volume_max:
+                futures_volume = futures_info.volume_max
+            if futures_info.volume_step > 0:
+                futures_volume = round(futures_volume / futures_info.volume_step) * futures_info.volume_step
+                futures_volume = round(futures_volume, 2)
+
+            # Spot
+            if spot_volume < spot_info.volume_min:
+                spot_volume = spot_info.volume_min
+            elif spot_volume > spot_info.volume_max:
+                spot_volume = spot_info.volume_max
+            if spot_info.volume_step > 0:
+                spot_volume = round(spot_volume / spot_info.volume_step) * spot_info.volume_step
+                spot_volume = round(spot_volume, 2)
+
+            # Calculate actual exposures after rounding
+            futures_exposure = futures_volume * futures_contract_size
+            spot_exposure = spot_volume * spot_contract_size
+
+            logger.info(f"Hedge volumes - Futures: {futures_volume} lots ({futures_exposure} oz), "
+                       f"Spot: {spot_volume} lots ({spot_exposure} oz)")
+
+            if abs(futures_exposure - spot_exposure) > 1:  # More than 1 oz difference
+                logger.warning(f"Hedge mismatch: {abs(futures_exposure - spot_exposure):.1f} oz difference")
+
+            return {
+                'futures_volume': futures_volume,
+                'spot_volume': spot_volume,
+                'futures_contract_size': futures_contract_size,
+                'spot_contract_size': spot_contract_size,
+                'futures_exposure': futures_exposure,
+                'spot_exposure': spot_exposure
+            }
+
+        except Exception as e:
+            logger.error(f"Error calculating hedge volumes: {e}")
+            return {
+                'futures_volume': base_lot_size,
+                'spot_volume': base_lot_size,
+                'futures_contract_size': 100,
+                'spot_contract_size': 100
+            }
+
     def _execute_mt5_order(self, symbol, order_type, volume, comment="", use_limit=False):
         """Execute an order through MT5
 
@@ -2258,6 +2340,11 @@ class TradingMonitor:
             futures_order_type = mt5.ORDER_TYPE_BUY
             spot_order_type = mt5.ORDER_TYPE_SELL
 
+        # Calculate hedge-equivalent volumes (accounts for different contract sizes)
+        hedge_volumes = self._calculate_hedge_volumes(futures_symbol, spot_symbol, lot_size)
+        futures_volume = hedge_volumes['futures_volume']
+        spot_volume = hedge_volumes['spot_volume']
+
         mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
         order_type_setting = self.config.get('order_type', 'MARKET')
 
@@ -2267,13 +2354,13 @@ class TradingMonitor:
 
             # Execute both legs with pegged limit orders
             futures_result = self._execute_pegged_limit_order(
-                futures_symbol, futures_order_type, lot_size,
+                futures_symbol, futures_order_type, futures_volume,
                 f"{asset_key} {direction} Futures"
             )
 
             if futures_result['success']:
                 spot_result = self._execute_pegged_limit_order(
-                    spot_symbol, spot_order_type, lot_size,
+                    spot_symbol, spot_order_type, spot_volume,
                     f"{asset_key} {direction} Spot"
                 )
 
@@ -2282,7 +2369,7 @@ class TradingMonitor:
                     logger.warning(f"Spot leg failed after futures filled - aborting entry")
                     # Close the futures position with market order to exit quickly
                     abort_result = self._close_mt5_position(
-                        futures_result['ticket'], futures_symbol, lot_size,
+                        futures_result['ticket'], futures_symbol, futures_volume,
                         futures_order_type, use_limit=False
                     )
                     if abort_result['success']:
@@ -2298,14 +2385,14 @@ class TradingMonitor:
 
             # Execute futures order (market order for guaranteed fill)
             futures_result = self._execute_mt5_order(
-                futures_symbol, futures_order_type, lot_size,
+                futures_symbol, futures_order_type, futures_volume,
                 f"{asset_key} {direction} Futures",
                 use_limit=False
             )
 
             # Execute spot order (market order for guaranteed fill)
             spot_result = self._execute_mt5_order(
-                spot_symbol, spot_order_type, lot_size,
+                spot_symbol, spot_order_type, spot_volume,
                 f"{asset_key} {direction} Spot",
                 use_limit=False
             )
@@ -2314,6 +2401,10 @@ class TradingMonitor:
             position['mt5_futures_ticket'] = futures_result['ticket']
             position['mt5_spot_ticket'] = spot_result['ticket']
             position['order_status'] = 'FILLED'
+
+            # Store actual volumes used (for proper hedge sizing at close)
+            position['futures_volume'] = futures_volume
+            position['spot_volume'] = spot_volume
 
             # Use ACTUAL fill prices from MT5 (not signal-time prices)
             # Keep original signal z-score (shows where signal fired)
@@ -2325,7 +2416,7 @@ class TradingMonitor:
                 position['entry_spot_price'] = actual_spot_price
                 logger.info(f"Using actual fill prices: Futures={actual_futures_price:.2f}, Spot={actual_spot_price:.2f}")
 
-            logger.info(f"{mode_label} TRADE FILLED: {asset_key} {direction} - Futures #{futures_result['ticket']}, Spot #{spot_result['ticket']}")
+            logger.info(f"{mode_label} TRADE FILLED: {asset_key} {direction} - Futures #{futures_result['ticket']} ({futures_volume} lots), Spot #{spot_result['ticket']} ({spot_volume} lots)")
         else:
             position['order_status'] = 'PARTIAL' if (futures_result['success'] or spot_result['success']) else 'REJECTED'
             error_msg = f"Futures: {futures_result.get('error', 'OK')}, Spot: {spot_result.get('error', 'OK')}"
@@ -2432,6 +2523,10 @@ class TradingMonitor:
         spot_symbol = asset_data.get('spot_symbol')
         futures_symbol = asset_data.get('futures_symbol')
 
+        # Get stored volumes (use lot_size as fallback for old positions)
+        futures_volume = position.get('futures_volume', lot_size)
+        spot_volume = position.get('spot_volume', lot_size)
+
         # Track if MT5 closes were successful
         futures_closed = False
         spot_closed = False
@@ -2449,7 +2544,7 @@ class TradingMonitor:
                 # So we use market close but with pegged limit price approach
                 result = self._close_mt5_position(
                     position['mt5_futures_ticket'],
-                    futures_symbol, lot_size,
+                    futures_symbol, futures_volume,
                     futures_close_type,
                     use_limit=True  # Try limit first
                 )
@@ -2458,7 +2553,7 @@ class TradingMonitor:
                     logger.warning(f"Limit close failed for futures, using market order")
                     result = self._close_mt5_position(
                         position['mt5_futures_ticket'],
-                        futures_symbol, lot_size,
+                        futures_symbol, futures_volume,
                         futures_close_type,
                         use_limit=False
                     )
@@ -2473,7 +2568,7 @@ class TradingMonitor:
             if position.get('mt5_spot_ticket'):
                 result = self._close_mt5_position(
                     position['mt5_spot_ticket'],
-                    spot_symbol, lot_size,
+                    spot_symbol, spot_volume,
                     spot_close_type,
                     use_limit=True
                 )
@@ -2481,7 +2576,7 @@ class TradingMonitor:
                     logger.warning(f"Limit close failed for spot, using market order")
                     result = self._close_mt5_position(
                         position['mt5_spot_ticket'],
-                        spot_symbol, lot_size,
+                        spot_symbol, spot_volume,
                         spot_close_type,
                         use_limit=False
                     )
@@ -2497,7 +2592,7 @@ class TradingMonitor:
             if position.get('mt5_futures_ticket'):
                 result = self._close_mt5_position(
                     position['mt5_futures_ticket'],
-                    futures_symbol, lot_size,
+                    futures_symbol, futures_volume,
                     futures_close_type,
                     use_limit=False
                 )
@@ -2512,7 +2607,7 @@ class TradingMonitor:
             if position.get('mt5_spot_ticket'):
                 result = self._close_mt5_position(
                     position['mt5_spot_ticket'],
-                    spot_symbol, lot_size,
+                    spot_symbol, spot_volume,
                     spot_close_type,
                     use_limit=False
                 )
