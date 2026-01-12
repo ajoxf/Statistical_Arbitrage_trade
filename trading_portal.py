@@ -4197,6 +4197,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             <span style="color: #1976d2; font-weight: 500;" id="market-session">Loading...</span>
         </div>
         <a href="/settings" class="settings-link">⚙ Settings</a>
+        <a href="/sd_analysis" class="settings-link">📊 SD Analysis</a>
         <button class="reset-btn" onclick="resetStatistics()">↺ Reset Stats</button>
         <button class="reset-btn" onclick="clearTrades()">🗑 Clear Trades</button>
     </div>
