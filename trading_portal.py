@@ -3568,6 +3568,215 @@ def _describe_filling_mode(mode):
     return " | ".join(parts) if parts else f"Unknown ({mode})"
 
 
+@app.route('/api/test_limit_orders', methods=['POST'])
+def api_test_limit_orders():
+    """Test limit order placement for both Spot and Futures symbols
+
+    Opens and immediately closes a minimum lot size position on each symbol
+    using pegged limit orders to verify that limit order execution is working correctly.
+    Uses the user's saved limit_order_timeout and limit_peg_interval settings.
+    """
+    results = {
+        'spot': {'symbol': '', 'open': None, 'close': None},
+        'futures': {'symbol': '', 'open': None, 'close': None},
+        'settings': {'timeout': 60, 'peg_interval': 1.5},
+        'summary': {'success': False, 'message': ''}
+    }
+
+    try:
+        # Get configured symbols
+        spot_symbol = monitor.config.get('spot_symbol', '')
+        futures_symbol = monitor.config.get('futures_symbol', '')
+
+        # Get limit order settings
+        timeout = monitor.config.get('limit_order_timeout', 60)
+        peg_interval = monitor.config.get('limit_peg_interval', 1.5)
+        results['settings'] = {'timeout': timeout, 'peg_interval': peg_interval}
+
+        if not spot_symbol or not futures_symbol:
+            return jsonify({
+                'status': 'error',
+                'message': 'Spot and Futures symbols must be configured in Setup page first',
+                'results': results
+            }), 400
+
+        results['spot']['symbol'] = spot_symbol
+        results['futures']['symbol'] = futures_symbol
+
+        # Check MT5 connection
+        if not mt5.terminal_info():
+            return jsonify({
+                'status': 'error',
+                'message': 'MT5 not connected. Please restart the portal.',
+                'results': results
+            }), 500
+
+        all_success = True
+        errors = []
+
+        # ========== TEST SPOT SYMBOL WITH LIMIT ORDER ==========
+        logger.info(f"Testing LIMIT ORDER on SPOT symbol: {spot_symbol} (timeout={timeout}s, peg_interval={peg_interval}s)")
+
+        # Get minimum lot size for spot
+        spot_info = mt5.symbol_info(spot_symbol)
+        if spot_info is None:
+            results['spot']['open'] = {'success': False, 'error': f'Symbol {spot_symbol} not found in MT5'}
+            all_success = False
+            errors.append(f"Spot: {spot_symbol} not found")
+        else:
+            spot_min_lot = spot_info.volume_min
+            spot_filling = spot_info.filling_mode
+
+            # Test BUY limit order on spot
+            logger.info(f"Opening test LIMIT BUY on {spot_symbol} with {spot_min_lot} lots")
+            import time
+            spot_start = time.time()
+            spot_open = monitor._execute_pegged_limit_order(
+                spot_symbol,
+                mt5.ORDER_TYPE_BUY,
+                spot_min_lot,
+                comment="TEST_LIMIT_ORDER"
+            )
+            spot_open_elapsed = time.time() - spot_start
+
+            results['spot']['open'] = {
+                'success': spot_open['success'],
+                'volume': spot_min_lot,
+                'filling_mode': spot_filling,
+                'filling_mode_desc': _describe_filling_mode(spot_filling),
+                'price': spot_open.get('price'),
+                'ticket': spot_open.get('ticket'),
+                'elapsed_seconds': round(spot_open_elapsed, 2),
+                'iterations': spot_open.get('iterations', 0),
+                'error': spot_open.get('error')
+            }
+
+            if spot_open['success']:
+                # Immediately close the position with limit order
+                time.sleep(0.5)  # Small delay to ensure position is registered
+
+                logger.info(f"Closing test LIMIT SELL on {spot_symbol}")
+                spot_close_start = time.time()
+                spot_close = monitor._execute_pegged_limit_order(
+                    spot_symbol,
+                    mt5.ORDER_TYPE_SELL,
+                    spot_min_lot,
+                    comment="TEST_LIMIT_ORDER_CLOSE"
+                )
+                spot_close_elapsed = time.time() - spot_close_start
+
+                results['spot']['close'] = {
+                    'success': spot_close['success'],
+                    'price': spot_close.get('price'),
+                    'elapsed_seconds': round(spot_close_elapsed, 2),
+                    'iterations': spot_close.get('iterations', 0),
+                    'error': spot_close.get('error')
+                }
+
+                if not spot_close['success']:
+                    all_success = False
+                    errors.append(f"Spot limit close failed: {spot_close.get('error')}")
+            else:
+                all_success = False
+                errors.append(f"Spot limit open failed: {spot_open.get('error')}")
+
+        # ========== TEST FUTURES SYMBOL WITH LIMIT ORDER ==========
+        logger.info(f"Testing LIMIT ORDER on FUTURES symbol: {futures_symbol}")
+
+        # Get minimum lot size for futures
+        futures_info = mt5.symbol_info(futures_symbol)
+        if futures_info is None:
+            results['futures']['open'] = {'success': False, 'error': f'Symbol {futures_symbol} not found in MT5'}
+            all_success = False
+            errors.append(f"Futures: {futures_symbol} not found")
+        else:
+            futures_min_lot = futures_info.volume_min
+            futures_filling = futures_info.filling_mode
+
+            # Test SELL limit order on futures (opposite of spot to simulate spread)
+            logger.info(f"Opening test LIMIT SELL on {futures_symbol} with {futures_min_lot} lots")
+            import time
+            futures_start = time.time()
+            futures_open = monitor._execute_pegged_limit_order(
+                futures_symbol,
+                mt5.ORDER_TYPE_SELL,
+                futures_min_lot,
+                comment="TEST_LIMIT_ORDER"
+            )
+            futures_open_elapsed = time.time() - futures_start
+
+            results['futures']['open'] = {
+                'success': futures_open['success'],
+                'volume': futures_min_lot,
+                'filling_mode': futures_filling,
+                'filling_mode_desc': _describe_filling_mode(futures_filling),
+                'price': futures_open.get('price'),
+                'ticket': futures_open.get('ticket'),
+                'elapsed_seconds': round(futures_open_elapsed, 2),
+                'iterations': futures_open.get('iterations', 0),
+                'error': futures_open.get('error')
+            }
+
+            if futures_open['success']:
+                # Immediately close the position with limit order
+                import time
+                time.sleep(0.5)
+
+                logger.info(f"Closing test LIMIT BUY on {futures_symbol}")
+                futures_close_start = time.time()
+                futures_close = monitor._execute_pegged_limit_order(
+                    futures_symbol,
+                    mt5.ORDER_TYPE_BUY,
+                    futures_min_lot,
+                    comment="TEST_LIMIT_ORDER_CLOSE"
+                )
+                futures_close_elapsed = time.time() - futures_close_start
+
+                results['futures']['close'] = {
+                    'success': futures_close['success'],
+                    'price': futures_close.get('price'),
+                    'elapsed_seconds': round(futures_close_elapsed, 2),
+                    'iterations': futures_close.get('iterations', 0),
+                    'error': futures_close.get('error')
+                }
+
+                if not futures_close['success']:
+                    all_success = False
+                    errors.append(f"Futures limit close failed: {futures_close.get('error')}")
+            else:
+                all_success = False
+                errors.append(f"Futures limit open failed: {futures_open.get('error')}")
+
+        # Summary
+        if all_success:
+            results['summary'] = {
+                'success': True,
+                'message': 'All limit order tests passed! Both Spot and Futures limit orders opened and closed successfully.'
+            }
+            logger.info("Limit order test completed successfully")
+        else:
+            results['summary'] = {
+                'success': False,
+                'message': 'Some tests failed: ' + '; '.join(errors)
+            }
+            logger.warning(f"Limit order test had failures: {errors}")
+
+        return jsonify({
+            'status': 'success' if all_success else 'partial',
+            'results': results
+        })
+
+    except Exception as e:
+        import traceback
+        logger.error(f"Limit order test error: {e}\n{traceback.format_exc()}")
+        results['summary'] = {'success': False, 'message': str(e)}
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'results': results
+        }), 500
+
+
 @app.route('/api/estimate_costs', methods=['GET'])
 def api_estimate_costs():
     """Estimate round-trip trading costs based on current bid-ask spreads
@@ -6538,9 +6747,134 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                 <div id="test-results-content"></div>
             </div>
         </div>
+
+        <!-- Limit Order Test Section -->
+        <div class="card" style="margin-top: 20px; border: 2px solid #2196f3;">
+            <div class="card-title" style="color: #2196f3;">Limit Order Connectivity Test</div>
+            <p style="margin-bottom: 15px; color: #666;">
+                Test that LIMIT orders can be placed and filled correctly using your saved settings.
+                This uses pegged limit orders that follow the bid/ask price until filled.
+            </p>
+            <p style="margin-bottom: 10px; color: #1565c0;">
+                <strong>Current Settings:</strong> Timeout = {{ config.limit_order_timeout or 60 }}s, Peg Interval = {{ config.limit_peg_interval or 1.5 }}s
+            </p>
+            <p style="margin-bottom: 15px; color: #c62828; font-weight: 500;">
+                ⚠ WARNING: This places REAL limit orders. Test may take up to {{ config.limit_order_timeout or 60 }} seconds per order.
+                Uses minimum lot size to minimize cost.
+            </p>
+            <button type="button" id="test-limit-orders-btn" class="btn" style="background: #2196f3;" onclick="testLimitOrders()">
+                Run Limit Order Test
+            </button>
+            <div id="limit-test-results" style="margin-top: 20px; display: none;">
+                <div class="card-title" style="font-size: 0.9em;">Limit Order Test Results</div>
+                <div id="limit-test-results-content"></div>
+            </div>
+        </div>
     </div>
 
     <script>
+        async function testLimitOrders() {
+            const btn = document.getElementById('test-limit-orders-btn');
+            const resultsDiv = document.getElementById('limit-test-results');
+            const resultsContent = document.getElementById('limit-test-results-content');
+
+            btn.disabled = true;
+            btn.textContent = 'Testing Limit Orders... Please wait';
+            resultsDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/test_limit_orders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await response.json();
+                resultsDiv.style.display = 'block';
+
+                let html = '';
+
+                // Settings info
+                html += '<div style="margin-bottom: 15px; padding: 8px; background: #e3f2fd; border-radius: 4px;">';
+                html += '<strong>Settings Used:</strong> Timeout = ' + data.results.settings.timeout + 's, Peg Interval = ' + data.results.settings.peg_interval + 's';
+                html += '</div>';
+
+                // Spot Results
+                html += '<div style="margin-bottom: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">';
+                html += '<strong>SPOT (LIMIT): ' + (data.results.spot.symbol || 'Not configured') + '</strong><br>';
+                if (data.results.spot.open) {
+                    const spotOpen = data.results.spot.open;
+                    if (spotOpen.success) {
+                        html += '<span style="color: green;">✓ OPEN: Success</span>';
+                        html += ' (Lot: ' + spotOpen.volume + ', Price: ' + (spotOpen.price || 'N/A') + ', Time: ' + spotOpen.elapsed_seconds + 's, Iterations: ' + spotOpen.iterations + ')<br>';
+                    } else {
+                        html += '<span style="color: red;">✗ OPEN: Failed - ' + spotOpen.error + '</span>';
+                        if (spotOpen.elapsed_seconds) html += ' (Elapsed: ' + spotOpen.elapsed_seconds + 's)';
+                        html += '<br>';
+                    }
+
+                    if (data.results.spot.close) {
+                        const spotClose = data.results.spot.close;
+                        if (spotClose.success) {
+                            html += '<span style="color: green;">✓ CLOSE: Success</span>';
+                            html += ' (Price: ' + (spotClose.price || 'N/A') + ', Time: ' + spotClose.elapsed_seconds + 's, Iterations: ' + spotClose.iterations + ')';
+                        } else {
+                            html += '<span style="color: red;">✗ CLOSE: Failed - ' + spotClose.error + '</span>';
+                            if (spotClose.elapsed_seconds) html += ' (Elapsed: ' + spotClose.elapsed_seconds + 's)';
+                        }
+                    }
+                } else {
+                    html += '<span style="color: red;">✗ ' + (data.results.spot.open?.error || 'Not tested') + '</span>';
+                }
+                html += '</div>';
+
+                // Futures Results
+                html += '<div style="margin-bottom: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">';
+                html += '<strong>FUTURES (LIMIT): ' + (data.results.futures.symbol || 'Not configured') + '</strong><br>';
+                if (data.results.futures.open) {
+                    const futuresOpen = data.results.futures.open;
+                    if (futuresOpen.success) {
+                        html += '<span style="color: green;">✓ OPEN: Success</span>';
+                        html += ' (Lot: ' + futuresOpen.volume + ', Price: ' + (futuresOpen.price || 'N/A') + ', Time: ' + futuresOpen.elapsed_seconds + 's, Iterations: ' + futuresOpen.iterations + ')<br>';
+                    } else {
+                        html += '<span style="color: red;">✗ OPEN: Failed - ' + futuresOpen.error + '</span>';
+                        if (futuresOpen.elapsed_seconds) html += ' (Elapsed: ' + futuresOpen.elapsed_seconds + 's)';
+                        html += '<br>';
+                    }
+
+                    if (data.results.futures.close) {
+                        const futuresClose = data.results.futures.close;
+                        if (futuresClose.success) {
+                            html += '<span style="color: green;">✓ CLOSE: Success</span>';
+                            html += ' (Price: ' + (futuresClose.price || 'N/A') + ', Time: ' + futuresClose.elapsed_seconds + 's, Iterations: ' + futuresClose.iterations + ')';
+                        } else {
+                            html += '<span style="color: red;">✗ CLOSE: Failed - ' + futuresClose.error + '</span>';
+                            if (futuresClose.elapsed_seconds) html += ' (Elapsed: ' + futuresClose.elapsed_seconds + 's)';
+                        }
+                    }
+                } else {
+                    html += '<span style="color: red;">✗ ' + (data.results.futures.open?.error || 'Not tested') + '</span>';
+                }
+                html += '</div>';
+
+                // Summary
+                html += '<div style="padding: 10px; border-radius: 4px; ' +
+                    (data.results.summary.success ? 'background: #e8f5e9; border: 1px solid #4caf50;' : 'background: #ffebee; border: 1px solid #f44336;') + '">';
+                html += '<strong>' + (data.results.summary.success ? '✓ ALL LIMIT ORDER TESTS PASSED' : '✗ SOME TESTS FAILED') + '</strong><br>';
+                html += data.results.summary.message;
+                html += '</div>';
+
+                resultsContent.innerHTML = html;
+
+            } catch (error) {
+                resultsDiv.style.display = 'block';
+                resultsContent.innerHTML = '<div style="color: red; padding: 10px; background: #ffebee; border-radius: 4px;">' +
+                    '<strong>Error:</strong> ' + error.message + '</div>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Run Limit Order Test';
+            }
+        }
+
         async function testOrders() {
             const btn = document.getElementById('test-orders-btn');
             const resultsDiv = document.getElementById('test-results');
