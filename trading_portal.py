@@ -3572,6 +3572,8 @@ SD_ANALYSIS_TEMPLATE = '''
                         <th>Time</th>
                         <th>SD</th>
                         <th>Dir</th>
+                        <th>Entry Price</th>
+                        <th>Exit Price</th>
                         <th>Status</th>
                         <th>Gross Profit</th>
                         <th>Entry Spot</th>
@@ -3805,6 +3807,8 @@ SD_ANALYSIS_TEMPLATE = '''
                         <td>${row.time}</td>
                         <td><strong>${row.sd_level}σ</strong></td>
                         <td><span class="badge badge-${row.direction.toLowerCase()}">${row.direction}</span></td>
+                        <td>${row.touch_spread ? row.touch_spread.toFixed(4) : '-'}</td>
+                        <td>${row.spread_at_mean ? row.spread_at_mean.toFixed(4) : '-'}</td>
                         <td class="${statusClass}">${row.status}</td>
                         <td>${row.profit !== null ? '$' + row.profit.toFixed(2) : '-'}</td>
                         <td>${entrySpot}¢</td>
