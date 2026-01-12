@@ -1832,16 +1832,12 @@ class TradingMonitor:
 
             logger.info(f"Contract sizes - Futures ({futures_symbol}): {futures_contract_size}, Spot ({spot_symbol}): {spot_contract_size}")
 
-            # Calculate equivalent volumes
-            # exposure = lots × contract_size
-            # For equal exposure: futures_lots × futures_contract = spot_lots × spot_contract
-            # spot_lots = futures_lots × (futures_contract / spot_contract)
+            # Step 1: Start with base lot size for futures
             futures_volume = base_lot_size
-            spot_volume = base_lot_size * (futures_contract_size / spot_contract_size)
 
-            # Validate and round to symbol requirements
-            # Futures
+            # Step 2: Adjust futures to meet symbol requirements FIRST
             if futures_volume < futures_info.volume_min:
+                logger.info(f"Futures volume {futures_volume} below min {futures_info.volume_min}, adjusting up")
                 futures_volume = futures_info.volume_min
             elif futures_volume > futures_info.volume_max:
                 futures_volume = futures_info.volume_max
@@ -1849,8 +1845,15 @@ class TradingMonitor:
                 futures_volume = round(futures_volume / futures_info.volume_step) * futures_info.volume_step
                 futures_volume = round(futures_volume, 2)
 
-            # Spot
+            # Step 3: Calculate spot volume based on ADJUSTED futures volume for equal exposure
+            # exposure = lots × contract_size
+            # For equal exposure: futures_lots × futures_contract = spot_lots × spot_contract
+            # spot_lots = futures_lots × (futures_contract / spot_contract)
+            spot_volume = futures_volume * (futures_contract_size / spot_contract_size)
+
+            # Step 4: Adjust spot to meet symbol requirements
             if spot_volume < spot_info.volume_min:
+                logger.warning(f"Spot volume {spot_volume} below min {spot_info.volume_min}, adjusting up (will cause hedge mismatch)")
                 spot_volume = spot_info.volume_min
             elif spot_volume > spot_info.volume_max:
                 spot_volume = spot_info.volume_max
