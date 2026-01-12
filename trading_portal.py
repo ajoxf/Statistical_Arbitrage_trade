@@ -2176,6 +2176,92 @@ class TradingMonitor:
             last_price = None
             iteration = 0
 
+            # Determine filling mode once
+            filling_mode = symbol_info.filling_mode
+            if filling_mode & 2:
+                filling_type = mt5.ORDER_FILLING_IOC
+            elif filling_mode & 1:
+                filling_type = mt5.ORDER_FILLING_FOK
+            else:
+                filling_type = mt5.ORDER_FILLING_RETURN
+
+            # ========== CLOSE BY TICKET MODE ==========
+            # When closing a position by ticket, use TRADE_ACTION_DEAL with position field
+            # MT5 pending orders don't support closing positions - only DEAL orders do
+            if ticket is not None:
+                logger.info(f"Pegged limit CLOSE mode: closing ticket {ticket} on {symbol}")
+                while time_module.time() - start_time < timeout:
+                    iteration += 1
+
+                    # Check if position still exists
+                    existing_positions = mt5.positions_get(ticket=ticket)
+                    if not existing_positions:
+                        elapsed = time_module.time() - start_time
+                        logger.info(f"*** POSITION CLOSED: {symbol} ticket={ticket} (position no longer exists) ***")
+                        self._log_limit_order(symbol, 'PEGGED_LIMIT_CLOSE', side, volume, first_price,
+                                             last_price, 'FILLED', elapsed, iteration, context=comment)
+                        return {
+                            'success': True,
+                            'ticket': ticket,
+                            'price': last_price or 0,
+                            'volume': volume
+                        }
+
+                    tick = mt5.symbol_info_tick(symbol)
+                    if tick is None:
+                        time_module.sleep(0.5)
+                        continue
+
+                    # For closing: SELL uses ASK, BUY uses BID (same as opening)
+                    current_price = tick.bid if order_type == mt5.ORDER_TYPE_BUY else tick.ask
+                    if first_price is None:
+                        first_price = current_price
+
+                    # Try to close at current price with no slippage (limit-like behavior)
+                    request = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": symbol,
+                        "volume": volume,
+                        "type": order_type,
+                        "position": ticket,
+                        "price": current_price,
+                        "deviation": 0,  # No slippage for limit-like behavior
+                        "magic": 123456,
+                        "comment": comment,
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": filling_type,
+                    }
+
+                    result = mt5.order_send(request)
+
+                    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                        elapsed = time_module.time() - start_time
+                        logger.info(f"*** POSITION CLOSED: {symbol} ticket={ticket} @ {result.price} (zero spread cost!) ***")
+                        self._log_limit_order(symbol, 'PEGGED_LIMIT_CLOSE', side, volume, first_price,
+                                             result.price, 'FILLED', elapsed, iteration, context=comment)
+                        return {
+                            'success': True,
+                            'ticket': result.order,
+                            'price': result.price,
+                            'volume': result.volume
+                        }
+                    else:
+                        # Order not filled at this price, will retry at next interval
+                        if iteration == 1 or (last_price and abs(current_price - last_price) > 0.001):
+                            logger.debug(f"Close attempt {iteration}: {symbol} @ {current_price} - waiting for fill (retcode={result.retcode if result else 'None'})")
+                        last_price = current_price
+
+                    time_module.sleep(peg_interval)
+
+                # Timeout for close
+                elapsed = time_module.time() - start_time
+                logger.warning(f"Pegged limit CLOSE TIMEOUT for {symbol} ticket={ticket} (elapsed={elapsed:.1f}s)")
+                self._log_limit_order(symbol, 'PEGGED_LIMIT_CLOSE', side, volume, first_price,
+                                     None, 'TIMEOUT', elapsed, iteration, f'Timeout after {timeout}s', context=comment)
+                return {'success': False, 'error': f'Close timeout after {timeout}s', 'timeout': True}
+
+            # ========== OPEN NEW POSITION MODE ==========
+            # Use pending limit orders for opening new positions
             while time_module.time() - start_time < timeout:
                 iteration += 1
                 tick = mt5.symbol_info_tick(symbol)
@@ -2240,15 +2326,7 @@ class TradingMonitor:
                         mt5.order_send(cancel_request)
                         pending_order = None
 
-                    # Place new limit order
-                    filling_mode = symbol_info.filling_mode
-                    if filling_mode & 2:
-                        filling_type = mt5.ORDER_FILLING_IOC
-                    elif filling_mode & 1:
-                        filling_type = mt5.ORDER_FILLING_FOK
-                    else:
-                        filling_type = mt5.ORDER_FILLING_RETURN
-
+                    # Place new pending limit order
                     request = {
                         "action": mt5.TRADE_ACTION_PENDING,
                         "symbol": symbol,
@@ -2260,9 +2338,6 @@ class TradingMonitor:
                         "type_time": mt5.ORDER_TIME_GTC,
                         "type_filling": filling_type,
                     }
-                    # If closing a position by ticket, include the position field
-                    if ticket is not None:
-                        request["position"] = ticket
 
                     result = mt5.order_send(request)
 
