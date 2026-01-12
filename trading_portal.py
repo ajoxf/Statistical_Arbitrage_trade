@@ -189,6 +189,28 @@ class DatabaseManager:
         except:
             pass  # Column already exists
 
+        # SD Touch Tracking - tracks when spread touches various SD levels and returns to mean
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sd_touch_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset TEXT NOT NULL,
+                touch_date TEXT NOT NULL,
+                touch_time TEXT NOT NULL,
+                sd_level REAL NOT NULL,
+                direction TEXT NOT NULL,
+                touch_spread REAL NOT NULL,
+                touch_zscore REAL NOT NULL,
+                mean_at_touch REAL NOT NULL,
+                std_at_touch REAL NOT NULL,
+                reached_mean INTEGER DEFAULT 0,
+                mean_reached_time TEXT,
+                spread_at_mean REAL,
+                potential_profit REAL,
+                max_adverse_move REAL DEFAULT 0,
+                status TEXT DEFAULT 'PENDING'
+            )
+        ''')
+
         # Insert default config if not exists
         cursor.execute('SELECT COUNT(*) FROM trading_config')
         if cursor.fetchone()[0] == 0:
@@ -587,6 +609,292 @@ class DatabaseManager:
 
 
 # =============================================================================
+# SD TOUCH TRACKER - Track spread touches at various SD levels
+# =============================================================================
+class SDTouchTracker:
+    """
+    Tracks when spread touches various standard deviation levels and whether
+    it subsequently returns to mean. Helps analyze which SD entry levels
+    would result in profitable trades.
+
+    Tracked SD levels: 4.0, 3.5, 3.0, 2.5, 2.0
+    """
+
+    SD_LEVELS = [4.0, 3.5, 3.0, 2.5, 2.0]
+
+    def __init__(self, db_manager):
+        self.db = db_manager
+        self.active_touches = {}  # Track pending touches waiting for mean reversion
+        self.last_zscore = None
+        self.cooldown = {}  # Prevent duplicate touches within cooldown period
+
+    def check_and_log_touches(self, asset, current_spread, zscore, mean, std, contract_size=100):
+        """
+        Check if spread has touched any SD level and track it.
+        Also check if any pending touches have reached mean.
+        """
+        if std <= 0:
+            return
+
+        now = datetime.now()
+        results = []
+
+        # Check for new SD level touches
+        for sd_level in self.SD_LEVELS:
+            # Check upper touch (spread above mean + sd*std)
+            upper_key = f"{asset}_upper_{sd_level}"
+            if zscore >= sd_level:
+                if upper_key not in self.cooldown or (now - self.cooldown[upper_key]).total_seconds() > 300:
+                    if upper_key not in self.active_touches:
+                        touch_id = self._log_touch(asset, sd_level, 'SHORT', current_spread, zscore, mean, std)
+                        self.active_touches[upper_key] = {
+                            'id': touch_id,
+                            'sd_level': sd_level,
+                            'direction': 'SHORT',
+                            'touch_spread': current_spread,
+                            'mean': mean,
+                            'std': std,
+                            'touch_time': now,
+                            'max_adverse': 0,
+                            'contract_size': contract_size
+                        }
+                        self.cooldown[upper_key] = now
+                        results.append(f"Touch logged: {sd_level}σ SHORT at spread {current_spread:.4f}")
+
+            # Check lower touch (spread below mean - sd*std)
+            lower_key = f"{asset}_lower_{sd_level}"
+            if zscore <= -sd_level:
+                if lower_key not in self.cooldown or (now - self.cooldown[lower_key]).total_seconds() > 300:
+                    if lower_key not in self.active_touches:
+                        touch_id = self._log_touch(asset, sd_level, 'LONG', current_spread, zscore, mean, std)
+                        self.active_touches[lower_key] = {
+                            'id': touch_id,
+                            'sd_level': sd_level,
+                            'direction': 'LONG',
+                            'touch_spread': current_spread,
+                            'mean': mean,
+                            'std': std,
+                            'touch_time': now,
+                            'max_adverse': 0,
+                            'contract_size': contract_size
+                        }
+                        self.cooldown[lower_key] = now
+                        results.append(f"Touch logged: {sd_level}σ LONG at spread {current_spread:.4f}")
+
+        # Check if any active touches have reached mean (z-score crosses 0)
+        keys_to_remove = []
+        for key, touch in self.active_touches.items():
+            # Track max adverse move
+            if touch['direction'] == 'SHORT':
+                adverse = current_spread - touch['touch_spread']
+                if adverse > touch['max_adverse']:
+                    touch['max_adverse'] = adverse
+                # Check if reached mean (zscore <= 0)
+                if zscore <= 0:
+                    profit = (touch['touch_spread'] - current_spread) * touch['contract_size']
+                    self._update_touch_reached_mean(touch['id'], current_spread, profit, touch['max_adverse'])
+                    results.append(f"Mean reached: {touch['sd_level']}σ SHORT, Profit: ${profit:.2f}")
+                    keys_to_remove.append(key)
+            else:  # LONG
+                adverse = touch['touch_spread'] - current_spread
+                if adverse > touch['max_adverse']:
+                    touch['max_adverse'] = adverse
+                # Check if reached mean (zscore >= 0)
+                if zscore >= 0:
+                    profit = (current_spread - touch['touch_spread']) * touch['contract_size']
+                    self._update_touch_reached_mean(touch['id'], current_spread, profit, touch['max_adverse'])
+                    results.append(f"Mean reached: {touch['sd_level']}σ LONG, Profit: ${profit:.2f}")
+                    keys_to_remove.append(key)
+
+        # Clean up completed touches
+        for key in keys_to_remove:
+            del self.active_touches[key]
+
+        self.last_zscore = zscore
+        return results
+
+    def _log_touch(self, asset, sd_level, direction, spread, zscore, mean, std):
+        """Log a new SD touch to database"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        now = datetime.now()
+        cursor.execute('''
+            INSERT INTO sd_touch_log
+            (asset, touch_date, touch_time, sd_level, direction, touch_spread,
+             touch_zscore, mean_at_touch, std_at_touch, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+        ''', (asset, now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S'),
+              sd_level, direction, spread, zscore, mean, std))
+        touch_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        logger.info(f"SD Touch logged: {asset} {sd_level}σ {direction} at {spread:.4f} (z={zscore:.2f})")
+        return touch_id
+
+    def _update_touch_reached_mean(self, touch_id, spread_at_mean, profit, max_adverse):
+        """Update touch record when mean is reached"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        now = datetime.now()
+        cursor.execute('''
+            UPDATE sd_touch_log
+            SET reached_mean = 1,
+                mean_reached_time = ?,
+                spread_at_mean = ?,
+                potential_profit = ?,
+                max_adverse_move = ?,
+                status = 'REACHED_MEAN'
+            WHERE id = ?
+        ''', (now.strftime('%H:%M:%S'), spread_at_mean, profit, max_adverse, touch_id))
+        conn.commit()
+        conn.close()
+        logger.info(f"SD Touch #{touch_id} reached mean: profit=${profit:.2f}, max_adverse=${max_adverse:.2f}")
+
+    def get_daily_statistics(self, asset=None, days=7):
+        """Get SD touch statistics grouped by date and SD level"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT
+                touch_date,
+                sd_level,
+                direction,
+                COUNT(*) as total_touches,
+                SUM(CASE WHEN reached_mean = 1 THEN 1 ELSE 0 END) as reached_mean_count,
+                AVG(CASE WHEN reached_mean = 1 THEN potential_profit ELSE NULL END) as avg_profit,
+                AVG(max_adverse_move) as avg_max_adverse,
+                MAX(max_adverse_move) as worst_adverse
+            FROM sd_touch_log
+            WHERE touch_date >= date('now', ?)
+        '''
+        params = [f'-{days} days']
+
+        if asset:
+            query += ' AND asset = ?'
+            params.append(asset)
+
+        query += ' GROUP BY touch_date, sd_level, direction ORDER BY touch_date DESC, sd_level DESC'
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+
+        results = []
+        for row in rows:
+            success_rate = (row[4] / row[3] * 100) if row[3] > 0 else 0
+            results.append({
+                'date': row[0],
+                'sd_level': row[1],
+                'direction': row[2],
+                'total_touches': row[3],
+                'reached_mean': row[4],
+                'success_rate': round(success_rate, 1),
+                'avg_profit': round(row[5], 2) if row[5] else 0,
+                'avg_max_adverse': round(row[6], 2) if row[6] else 0,
+                'worst_adverse': round(row[7], 2) if row[7] else 0
+            })
+
+        return results
+
+    def get_summary_by_sd_level(self, asset=None, days=30):
+        """Get aggregated statistics by SD level"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT
+                sd_level,
+                direction,
+                COUNT(*) as total_touches,
+                SUM(CASE WHEN reached_mean = 1 THEN 1 ELSE 0 END) as reached_mean_count,
+                AVG(CASE WHEN reached_mean = 1 THEN potential_profit ELSE NULL END) as avg_profit,
+                SUM(CASE WHEN reached_mean = 1 THEN potential_profit ELSE 0 END) as total_profit,
+                AVG(max_adverse_move) as avg_max_adverse,
+                MAX(max_adverse_move) as worst_adverse
+            FROM sd_touch_log
+            WHERE touch_date >= date('now', ?)
+        '''
+        params = [f'-{days} days']
+
+        if asset:
+            query += ' AND asset = ?'
+            params.append(asset)
+
+        query += ' GROUP BY sd_level, direction ORDER BY sd_level DESC'
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+
+        results = []
+        for row in rows:
+            success_rate = (row[3] / row[2] * 100) if row[2] > 0 else 0
+            results.append({
+                'sd_level': row[0],
+                'direction': row[1],
+                'total_touches': row[2],
+                'reached_mean': row[3],
+                'success_rate': round(success_rate, 1),
+                'avg_profit': round(row[4], 2) if row[4] else 0,
+                'total_profit': round(row[5], 2) if row[5] else 0,
+                'avg_max_adverse': round(row[6], 2) if row[6] else 0,
+                'worst_adverse': round(row[7], 2) if row[7] else 0
+            })
+
+        return results
+
+    def get_recent_touches(self, asset=None, limit=50):
+        """Get recent touch events with details"""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT
+                id, asset, touch_date, touch_time, sd_level, direction,
+                touch_spread, touch_zscore, mean_at_touch, std_at_touch,
+                reached_mean, mean_reached_time, spread_at_mean,
+                potential_profit, max_adverse_move, status
+            FROM sd_touch_log
+        '''
+        params = []
+
+        if asset:
+            query += ' WHERE asset = ?'
+            params.append(asset)
+
+        query += ' ORDER BY touch_date DESC, touch_time DESC LIMIT ?'
+        params.append(limit)
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+
+        results = []
+        for row in rows:
+            results.append({
+                'id': row[0],
+                'asset': row[1],
+                'date': row[2],
+                'time': row[3],
+                'sd_level': row[4],
+                'direction': row[5],
+                'touch_spread': row[6],
+                'touch_zscore': round(row[7], 2),
+                'mean': round(row[8], 4),
+                'std': round(row[9], 4),
+                'reached_mean': bool(row[10]),
+                'mean_time': row[11],
+                'spread_at_mean': row[12],
+                'profit': round(row[13], 2) if row[13] else None,
+                'max_adverse': round(row[14], 2) if row[14] else 0,
+                'status': row[15]
+            })
+
+        return results
+
+
+# =============================================================================
 # TRADING MONITOR - Core monitoring and trading logic
 # =============================================================================
 class TradingMonitor:
@@ -639,6 +947,9 @@ class TradingMonitor:
 
         # Background thread
         self.running = False
+
+        # SD Touch Tracker - tracks touches at various SD levels
+        self.sd_tracker = SDTouchTracker(self.db)
         self.update_thread = None
 
     def _load_open_positions(self):
@@ -1103,6 +1414,18 @@ class TradingMonitor:
                 'futures_price': futures_price,
                 'spread': current_spread
             })
+
+            # Track SD level touches for analysis
+            if zscore is not None and stats:
+                contract_size_for_tracking = config.get('lot_size', 100)
+                self.sd_tracker.check_and_log_touches(
+                    asset_key,
+                    current_spread,
+                    zscore,
+                    stats.get('mean', 0),
+                    stats.get('std', 0),
+                    contract_size_for_tracking
+                )
 
             # Margin calculations
             # Get account leverage
@@ -2914,6 +3237,289 @@ def api_calculate_max_loss():
             'status': 'error',
             'message': str(e)
         }), 500
+
+
+# =============================================================================
+# SD TOUCH STATISTICS API
+# =============================================================================
+@app.route('/api/sd_touches')
+def api_sd_touches():
+    """Get SD touch statistics and recent touches"""
+    try:
+        days = request.args.get('days', 7, type=int)
+        view = request.args.get('view', 'summary')  # 'summary', 'daily', 'recent'
+
+        if view == 'summary':
+            data = monitor.sd_tracker.get_summary_by_sd_level(days=days)
+        elif view == 'daily':
+            data = monitor.sd_tracker.get_daily_statistics(days=days)
+        elif view == 'recent':
+            limit = request.args.get('limit', 50, type=int)
+            data = monitor.sd_tracker.get_recent_touches(limit=limit)
+        else:
+            data = monitor.sd_tracker.get_summary_by_sd_level(days=days)
+
+        # Get current cost for context
+        contract_size = monitor.config.get('contract_size', 100)
+        spot_symbol = monitor.config.get('spot_symbol', '')
+        futures_symbol = monitor.config.get('futures_symbol', '')
+        round_trip_cost = 0
+
+        if spot_symbol and futures_symbol and mt5.terminal_info():
+            spot_tick = mt5.symbol_info_tick(spot_symbol)
+            futures_tick = mt5.symbol_info_tick(futures_symbol)
+            if spot_tick and futures_tick:
+                spot_spread = spot_tick.ask - spot_tick.bid
+                futures_spread = futures_tick.ask - futures_tick.bid
+                entry_cost = (spot_spread + futures_spread) * contract_size
+                round_trip_cost = entry_cost * 2
+
+        return jsonify({
+            'status': 'success',
+            'view': view,
+            'days': days,
+            'round_trip_cost': round_trip_cost,
+            'data': data
+        })
+
+    except Exception as e:
+        import traceback
+        logger.error(f"SD touches API error: {e}\n{traceback.format_exc()}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/sd_analysis')
+def sd_analysis_page():
+    """SD Touch Analysis page"""
+    return render_template_string(SD_ANALYSIS_TEMPLATE)
+
+
+SD_ANALYSIS_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SD Touch Analysis</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { margin-bottom: 20px; color: #333; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card h2 { margin-bottom: 15px; color: #444; font-size: 1.2em; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; font-weight: 600; }
+        .success { color: #28a745; }
+        .danger { color: #dc3545; }
+        .warning { color: #ffc107; }
+        .profit { color: #28a745; font-weight: bold; }
+        .loss { color: #dc3545; font-weight: bold; }
+        .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.85em; }
+        .badge-short { background: #ffe0e0; color: #c00; }
+        .badge-long { background: #e0ffe0; color: #080; }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; }
+        select, button { padding: 8px 16px; border-radius: 4px; border: 1px solid #ddd; }
+        button { background: #007bff; color: white; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .info-box { background: #e7f3ff; border: 1px solid #b8daff; border-radius: 4px; padding: 15px; margin-bottom: 20px; }
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+        .highlight { background: #fffde7; }
+        .tabs { display: flex; gap: 5px; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; background: #e9ecef; border: none; cursor: pointer; border-radius: 4px 4px 0 0; }
+        .tab.active { background: white; border-bottom: 2px solid #007bff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Monitor</a>
+        <h1>📊 SD Touch Analysis</h1>
+
+        <div class="info-box">
+            <strong>What this shows:</strong> Tracks when the spread touches various standard deviation levels (2σ, 2.5σ, 3σ, 3.5σ, 4σ)
+            and whether it subsequently returns to the mean. Helps identify which entry levels have the best success rates.
+            <br><br>
+            <strong>Round-trip Cost:</strong> <span id="roundTripCost">Loading...</span>
+        </div>
+
+        <div class="controls">
+            <label>Time Period:</label>
+            <select id="daysSelect">
+                <option value="1">Today</option>
+                <option value="7" selected>Last 7 days</option>
+                <option value="14">Last 14 days</option>
+                <option value="30">Last 30 days</option>
+            </select>
+            <button onclick="loadData()">Refresh</button>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('summary')">Summary by SD Level</button>
+            <button class="tab" onclick="switchTab('daily')">Daily Breakdown</button>
+            <button class="tab" onclick="switchTab('recent')">Recent Touches</button>
+        </div>
+
+        <div class="card" id="summaryCard">
+            <h2>Summary by SD Level</h2>
+            <table id="summaryTable">
+                <thead>
+                    <tr>
+                        <th>SD Level</th>
+                        <th>Direction</th>
+                        <th>Total Touches</th>
+                        <th>Reached Mean</th>
+                        <th>Success Rate</th>
+                        <th>Avg Profit</th>
+                        <th>Total Profit</th>
+                        <th>Avg Max Adverse</th>
+                        <th>Profitable?</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="card" id="dailyCard" style="display:none;">
+            <h2>Daily Breakdown</h2>
+            <table id="dailyTable">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>SD Level</th>
+                        <th>Direction</th>
+                        <th>Touches</th>
+                        <th>Reached Mean</th>
+                        <th>Success Rate</th>
+                        <th>Avg Profit</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="card" id="recentCard" style="display:none;">
+            <h2>Recent Touches</h2>
+            <table id="recentTable">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Time</th>
+                        <th>SD Level</th>
+                        <th>Direction</th>
+                        <th>Touch Spread</th>
+                        <th>Mean</th>
+                        <th>Status</th>
+                        <th>Profit</th>
+                        <th>Max Adverse</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let currentView = 'summary';
+        let roundTripCost = 0;
+
+        function switchTab(view) {
+            currentView = view;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('summaryCard').style.display = view === 'summary' ? 'block' : 'none';
+            document.getElementById('dailyCard').style.display = view === 'daily' ? 'block' : 'none';
+            document.getElementById('recentCard').style.display = view === 'recent' ? 'block' : 'none';
+            loadData();
+        }
+
+        function loadData() {
+            const days = document.getElementById('daysSelect').value;
+            fetch(`/api/sd_touches?view=${currentView}&days=${days}&limit=100`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        roundTripCost = data.round_trip_cost;
+                        document.getElementById('roundTripCost').innerHTML =
+                            `<strong>$${roundTripCost.toFixed(2)}/lot</strong> (Break-even profit needed)`;
+
+                        if (currentView === 'summary') renderSummary(data.data);
+                        else if (currentView === 'daily') renderDaily(data.data);
+                        else if (currentView === 'recent') renderRecent(data.data);
+                    }
+                });
+        }
+
+        function renderSummary(data) {
+            const tbody = document.querySelector('#summaryTable tbody');
+            tbody.innerHTML = data.map(row => {
+                const profitable = row.avg_profit > roundTripCost;
+                const profitClass = profitable ? 'profit' : 'loss';
+                const verdict = profitable ? '✅ YES' : '❌ NO';
+                const netProfit = row.avg_profit - roundTripCost;
+                return `
+                    <tr class="${profitable ? 'highlight' : ''}">
+                        <td><strong>${row.sd_level}σ</strong></td>
+                        <td><span class="badge badge-${row.direction.toLowerCase()}">${row.direction}</span></td>
+                        <td>${row.total_touches}</td>
+                        <td>${row.reached_mean}</td>
+                        <td>${row.success_rate}%</td>
+                        <td>$${row.avg_profit.toFixed(2)}</td>
+                        <td>$${row.total_profit.toFixed(2)}</td>
+                        <td>$${row.avg_max_adverse.toFixed(2)}</td>
+                        <td class="${profitClass}">${verdict}<br><small>Net: $${netProfit.toFixed(2)}</small></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderDaily(data) {
+            const tbody = document.querySelector('#dailyTable tbody');
+            tbody.innerHTML = data.map(row => `
+                <tr>
+                    <td>${row.date}</td>
+                    <td><strong>${row.sd_level}σ</strong></td>
+                    <td><span class="badge badge-${row.direction.toLowerCase()}">${row.direction}</span></td>
+                    <td>${row.total_touches}</td>
+                    <td>${row.reached_mean}</td>
+                    <td>${row.success_rate}%</td>
+                    <td>$${row.avg_profit.toFixed(2)}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderRecent(data) {
+            const tbody = document.querySelector('#recentTable tbody');
+            tbody.innerHTML = data.map(row => {
+                const statusClass = row.reached_mean ? 'success' : 'warning';
+                const profitDisplay = row.profit !== null ? `$${row.profit.toFixed(2)}` : '-';
+                return `
+                    <tr>
+                        <td>${row.date}</td>
+                        <td>${row.time}</td>
+                        <td><strong>${row.sd_level}σ</strong></td>
+                        <td><span class="badge badge-${row.direction.toLowerCase()}">${row.direction}</span></td>
+                        <td>${row.touch_spread.toFixed(4)}</td>
+                        <td>${row.mean.toFixed(4)}</td>
+                        <td class="${statusClass}">${row.status}</td>
+                        <td>${profitDisplay}</td>
+                        <td>$${row.max_adverse.toFixed(2)}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // Initial load
+        loadData();
+        // Auto-refresh every 30 seconds
+        setInterval(loadData, 30000);
+    </script>
+</body>
+</html>
+'''
 
 
 # =============================================================================
