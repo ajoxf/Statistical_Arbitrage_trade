@@ -643,6 +643,7 @@ class SDTouchTracker:
         self.active_touches = {}  # Track pending touches waiting for mean reversion
         self.last_zscore = None
         self.cooldown = {}  # Prevent duplicate touches within cooldown period
+        self.paused = False  # Pause tracking new touches
 
     def check_and_log_touches(self, asset, current_spread, zscore, mean, std, contract_size=100,
                                spot_bid_ask=0, futures_bid_ask=0):
@@ -655,54 +656,55 @@ class SDTouchTracker:
             futures_bid_ask: Current bid-ask spread for futures (ask - bid)
         """
         if std <= 0:
-            return
+            return []
 
         now = datetime.now()
         results = []
 
-        # Check for new SD level touches
-        for sd_level in self.SD_LEVELS:
-            # Check upper touch (spread above mean + sd*std)
-            upper_key = f"{asset}_upper_{sd_level}"
-            if zscore >= sd_level:
-                if upper_key not in self.cooldown or (now - self.cooldown[upper_key]).total_seconds() > 300:
-                    if upper_key not in self.active_touches:
-                        touch_id = self._log_touch(asset, sd_level, 'SHORT', current_spread, zscore, mean, std,
-                                                   spot_bid_ask, futures_bid_ask)
-                        self.active_touches[upper_key] = {
-                            'id': touch_id,
-                            'sd_level': sd_level,
-                            'direction': 'SHORT',
-                            'touch_spread': current_spread,
-                            'mean': mean,
-                            'std': std,
-                            'touch_time': now,
-                            'max_adverse': 0,
-                            'contract_size': contract_size
-                        }
-                        self.cooldown[upper_key] = now
-                        results.append(f"Touch logged: {sd_level}σ SHORT at spread {current_spread:.4f}")
+        # Check for new SD level touches (only if not paused)
+        if not self.paused:
+            for sd_level in self.SD_LEVELS:
+                # Check upper touch (spread above mean + sd*std)
+                upper_key = f"{asset}_upper_{sd_level}"
+                if zscore >= sd_level:
+                    if upper_key not in self.cooldown or (now - self.cooldown[upper_key]).total_seconds() > 300:
+                        if upper_key not in self.active_touches:
+                            touch_id = self._log_touch(asset, sd_level, 'SHORT', current_spread, zscore, mean, std,
+                                                       spot_bid_ask, futures_bid_ask)
+                            self.active_touches[upper_key] = {
+                                'id': touch_id,
+                                'sd_level': sd_level,
+                                'direction': 'SHORT',
+                                'touch_spread': current_spread,
+                                'mean': mean,
+                                'std': std,
+                                'touch_time': now,
+                                'max_adverse': 0,
+                                'contract_size': contract_size
+                            }
+                            self.cooldown[upper_key] = now
+                            results.append(f"Touch logged: {sd_level}σ SHORT at spread {current_spread:.4f}")
 
-            # Check lower touch (spread below mean - sd*std)
-            lower_key = f"{asset}_lower_{sd_level}"
-            if zscore <= -sd_level:
-                if lower_key not in self.cooldown or (now - self.cooldown[lower_key]).total_seconds() > 300:
-                    if lower_key not in self.active_touches:
-                        touch_id = self._log_touch(asset, sd_level, 'LONG', current_spread, zscore, mean, std,
-                                                   spot_bid_ask, futures_bid_ask)
-                        self.active_touches[lower_key] = {
-                            'id': touch_id,
-                            'sd_level': sd_level,
-                            'direction': 'LONG',
-                            'touch_spread': current_spread,
-                            'mean': mean,
-                            'std': std,
-                            'touch_time': now,
-                            'max_adverse': 0,
-                            'contract_size': contract_size
-                        }
-                        self.cooldown[lower_key] = now
-                        results.append(f"Touch logged: {sd_level}σ LONG at spread {current_spread:.4f}")
+                # Check lower touch (spread below mean - sd*std)
+                lower_key = f"{asset}_lower_{sd_level}"
+                if zscore <= -sd_level:
+                    if lower_key not in self.cooldown or (now - self.cooldown[lower_key]).total_seconds() > 300:
+                        if lower_key not in self.active_touches:
+                            touch_id = self._log_touch(asset, sd_level, 'LONG', current_spread, zscore, mean, std,
+                                                       spot_bid_ask, futures_bid_ask)
+                            self.active_touches[lower_key] = {
+                                'id': touch_id,
+                                'sd_level': sd_level,
+                                'direction': 'LONG',
+                                'touch_spread': current_spread,
+                                'mean': mean,
+                                'std': std,
+                                'touch_time': now,
+                                'max_adverse': 0,
+                                'contract_size': contract_size
+                            }
+                            self.cooldown[lower_key] = now
+                            results.append(f"Touch logged: {sd_level}σ LONG at spread {current_spread:.4f}")
 
         # Check if any active touches have reached mean (z-score crosses 0)
         keys_to_remove = []
@@ -3335,6 +3337,7 @@ def api_sd_touches():
             'view': view,
             'days': days,
             'round_trip_cost': round_trip_cost,
+            'paused': monitor.sd_tracker.paused,
             'data': data
         })
 
@@ -3345,6 +3348,82 @@ def api_sd_touches():
             'status': 'error',
             'message': str(e)
         }), 500
+
+
+@app.route('/api/sd_touches/pause', methods=['POST'])
+def api_sd_touches_pause():
+    """Toggle pause state for SD touch tracking"""
+    try:
+        monitor.sd_tracker.paused = not monitor.sd_tracker.paused
+        return jsonify({
+            'status': 'success',
+            'paused': monitor.sd_tracker.paused
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/sd_touches/reset', methods=['POST'])
+def api_sd_touches_reset():
+    """Delete all SD touch records"""
+    try:
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM sd_touch_log')
+        conn.commit()
+        conn.close()
+        # Clear active touches in memory
+        monitor.sd_tracker.active_touches = {}
+        monitor.sd_tracker.cooldown = {}
+        return jsonify({'status': 'success', 'message': 'All SD touch records deleted'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/sd_touches/delete', methods=['POST'])
+def api_sd_touches_delete():
+    """Delete specific SD touch records by ID"""
+    try:
+        data = request.get_json()
+        ids = data.get('ids', [])
+        if not ids:
+            return jsonify({'status': 'error', 'message': 'No IDs provided'}), 400
+
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+        placeholders = ','.join('?' * len(ids))
+        cursor.execute(f'DELETE FROM sd_touch_log WHERE id IN ({placeholders})', ids)
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success', 'deleted': deleted})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/sd_touches/delete_by_level', methods=['POST'])
+def api_sd_touches_delete_by_level():
+    """Delete SD touch records by SD level and direction"""
+    try:
+        data = request.get_json()
+        levels = data.get('levels', [])
+        if not levels:
+            return jsonify({'status': 'error', 'message': 'No levels provided'}), 400
+
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+        total_deleted = 0
+        for level in levels:
+            cursor.execute(
+                'DELETE FROM sd_touch_log WHERE sd_level = ? AND direction = ?',
+                (level['sd_level'], level['direction'])
+            )
+            total_deleted += cursor.rowcount
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success', 'deleted': total_deleted})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 @app.route('/sd_analysis')
@@ -3362,7 +3441,7 @@ SD_ANALYSIS_TEMPLATE = '''
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
         h1 { margin-bottom: 20px; color: #333; }
         .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .card h2 { margin-bottom: 15px; color: #444; font-size: 1.2em; }
@@ -3377,10 +3456,16 @@ SD_ANALYSIS_TEMPLATE = '''
         .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.85em; }
         .badge-short { background: #ffe0e0; color: #c00; }
         .badge-long { background: #e0ffe0; color: #080; }
-        .controls { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
         select, button { padding: 8px 16px; border-radius: 4px; border: 1px solid #ddd; }
         button { background: #007bff; color: white; border: none; cursor: pointer; }
         button:hover { background: #0056b3; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-warning { background: #ffc107; color: #333; }
+        .btn-warning:hover { background: #e0a800; }
+        .btn-success { background: #28a745; }
+        .btn-success:hover { background: #218838; }
         .info-box { background: #e7f3ff; border: 1px solid #b8daff; border-radius: 4px; padding: 15px; margin-bottom: 20px; }
         .back-link { display: inline-block; margin-bottom: 20px; color: #007bff; text-decoration: none; }
         .back-link:hover { text-decoration: underline; }
@@ -3388,6 +3473,12 @@ SD_ANALYSIS_TEMPLATE = '''
         .tabs { display: flex; gap: 5px; margin-bottom: 20px; }
         .tab { padding: 10px 20px; background: #e9ecef; border: none; cursor: pointer; border-radius: 4px 4px 0 0; }
         .tab.active { background: white; border-bottom: 2px solid #007bff; }
+        .status-box { padding: 10px 15px; border-radius: 4px; margin-bottom: 15px; }
+        .status-running { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+        .status-paused { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; }
+        .action-bar { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+        .checkbox-col { width: 30px; text-align: center; }
+        input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -3402,6 +3493,10 @@ SD_ANALYSIS_TEMPLATE = '''
             <strong>Round-trip Cost:</strong> <span id="roundTripCost">Loading...</span>
         </div>
 
+        <div id="trackingStatus" class="status-box status-running">
+            <strong>Status:</strong> <span id="statusText">Tracking Active</span>
+        </div>
+
         <div class="controls">
             <label>Time Period:</label>
             <select id="daysSelect">
@@ -3411,6 +3506,8 @@ SD_ANALYSIS_TEMPLATE = '''
                 <option value="30">Last 30 days</option>
             </select>
             <button onclick="loadData()">Refresh</button>
+            <button id="pauseBtn" class="btn-warning" onclick="togglePause()">⏸ Pause</button>
+            <button class="btn-danger" onclick="resetAllTouches()">🗑 Reset All</button>
         </div>
 
         <div class="tabs">
@@ -3421,9 +3518,13 @@ SD_ANALYSIS_TEMPLATE = '''
 
         <div class="card" id="summaryCard">
             <h2>Summary by SD Level</h2>
+            <div class="action-bar">
+                <button class="btn-danger" onclick="deleteSelectedSummary()" id="deleteSummaryBtn" style="display:none;">Delete Selected SD Levels</button>
+            </div>
             <table id="summaryTable">
                 <thead>
                     <tr>
+                        <th class="checkbox-col"><input type="checkbox" id="selectAllSummary" onclick="toggleSelectAllSummary()"></th>
                         <th>SD Level</th>
                         <th>Direction</th>
                         <th>Total Touches</th>
@@ -3459,9 +3560,14 @@ SD_ANALYSIS_TEMPLATE = '''
 
         <div class="card" id="recentCard" style="display:none;">
             <h2>Recent Touches</h2>
+            <div class="action-bar">
+                <button class="btn-danger" onclick="deleteSelectedRecent()" id="deleteRecentBtn" style="display:none;">Delete Selected</button>
+                <span id="selectedCount" style="color: #666;"></span>
+            </div>
             <table id="recentTable">
                 <thead>
                     <tr>
+                        <th class="checkbox-col"><input type="checkbox" id="selectAllRecent" onclick="toggleSelectAllRecent()"></th>
                         <th>Date</th>
                         <th>Time</th>
                         <th>SD</th>
@@ -3484,6 +3590,7 @@ SD_ANALYSIS_TEMPLATE = '''
     <script>
         let currentView = 'summary';
         let roundTripCost = 0;
+        let isPaused = false;
 
         function switchTab(view) {
             currentView = view;
@@ -3502,6 +3609,8 @@ SD_ANALYSIS_TEMPLATE = '''
                 .then(data => {
                     if (data.status === 'success') {
                         roundTripCost = data.round_trip_cost;
+                        isPaused = data.paused || false;
+                        updatePauseStatus();
                         document.getElementById('roundTripCost').innerHTML =
                             `<strong>$${roundTripCost.toFixed(2)}/lot</strong> (Break-even profit needed)`;
 
@@ -3512,8 +3621,120 @@ SD_ANALYSIS_TEMPLATE = '''
                 });
         }
 
+        function updatePauseStatus() {
+            const statusBox = document.getElementById('trackingStatus');
+            const statusText = document.getElementById('statusText');
+            const pauseBtn = document.getElementById('pauseBtn');
+
+            if (isPaused) {
+                statusBox.className = 'status-box status-paused';
+                statusText.textContent = 'Tracking Paused';
+                pauseBtn.textContent = '▶ Resume';
+                pauseBtn.className = 'btn-success';
+            } else {
+                statusBox.className = 'status-box status-running';
+                statusText.textContent = 'Tracking Active';
+                pauseBtn.textContent = '⏸ Pause';
+                pauseBtn.className = 'btn-warning';
+            }
+        }
+
+        function togglePause() {
+            fetch('/api/sd_touches/pause', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        isPaused = data.paused;
+                        updatePauseStatus();
+                    }
+                });
+        }
+
+        function resetAllTouches() {
+            if (!confirm('Are you sure you want to delete ALL SD touch records? This cannot be undone.')) return;
+
+            fetch('/api/sd_touches/reset', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        alert('All SD touch records have been deleted.');
+                        loadData();
+                    }
+                });
+        }
+
+        function toggleSelectAllSummary() {
+            const checked = document.getElementById('selectAllSummary').checked;
+            document.querySelectorAll('.summary-checkbox').forEach(cb => cb.checked = checked);
+            updateSummaryDeleteBtn();
+        }
+
+        function toggleSelectAllRecent() {
+            const checked = document.getElementById('selectAllRecent').checked;
+            document.querySelectorAll('.recent-checkbox').forEach(cb => cb.checked = checked);
+            updateRecentDeleteBtn();
+        }
+
+        function updateSummaryDeleteBtn() {
+            const checked = document.querySelectorAll('.summary-checkbox:checked').length;
+            document.getElementById('deleteSummaryBtn').style.display = checked > 0 ? 'inline-block' : 'none';
+        }
+
+        function updateRecentDeleteBtn() {
+            const checked = document.querySelectorAll('.recent-checkbox:checked').length;
+            document.getElementById('deleteRecentBtn').style.display = checked > 0 ? 'inline-block' : 'none';
+            document.getElementById('selectedCount').textContent = checked > 0 ? `${checked} selected` : '';
+        }
+
+        function deleteSelectedSummary() {
+            const selected = [];
+            document.querySelectorAll('.summary-checkbox:checked').forEach(cb => {
+                selected.push({ sd_level: cb.dataset.sdLevel, direction: cb.dataset.direction });
+            });
+
+            if (selected.length === 0) return;
+            if (!confirm(`Delete all touches for ${selected.length} SD level(s)?`)) return;
+
+            fetch('/api/sd_touches/delete_by_level', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ levels: selected })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    loadData();
+                }
+            });
+        }
+
+        function deleteSelectedRecent() {
+            const ids = [];
+            document.querySelectorAll('.recent-checkbox:checked').forEach(cb => {
+                ids.push(parseInt(cb.dataset.id));
+            });
+
+            if (ids.length === 0) return;
+            if (!confirm(`Delete ${ids.length} selected touch record(s)?`)) return;
+
+            fetch('/api/sd_touches/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: ids })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    loadData();
+                }
+            });
+        }
+
         function renderSummary(data) {
             const tbody = document.querySelector('#summaryTable tbody');
+            document.getElementById('selectAllSummary').checked = false;
+            document.getElementById('deleteSummaryBtn').style.display = 'none';
+
             tbody.innerHTML = data.map(row => {
                 const profitable = row.avg_profit > roundTripCost;
                 const profitClass = profitable ? 'profit' : 'loss';
@@ -3521,6 +3742,12 @@ SD_ANALYSIS_TEMPLATE = '''
                 const netProfit = row.avg_profit - roundTripCost;
                 return `
                     <tr class="${profitable ? 'highlight' : ''}">
+                        <td class="checkbox-col">
+                            <input type="checkbox" class="summary-checkbox"
+                                data-sd-level="${row.sd_level}"
+                                data-direction="${row.direction}"
+                                onchange="updateSummaryDeleteBtn()">
+                        </td>
                         <td><strong>${row.sd_level}σ</strong></td>
                         <td><span class="badge badge-${row.direction.toLowerCase()}">${row.direction}</span></td>
                         <td>${row.total_touches}</td>
@@ -3552,6 +3779,10 @@ SD_ANALYSIS_TEMPLATE = '''
 
         function renderRecent(data) {
             const tbody = document.querySelector('#recentTable tbody');
+            document.getElementById('selectAllRecent').checked = false;
+            document.getElementById('deleteRecentBtn').style.display = 'none';
+            document.getElementById('selectedCount').textContent = '';
+
             tbody.innerHTML = data.map(row => {
                 const statusClass = row.reached_mean ? 'success' : 'warning';
                 const grossProfit = row.profit !== null ? row.profit : 0;
@@ -3567,6 +3798,9 @@ SD_ANALYSIS_TEMPLATE = '''
 
                 return `
                     <tr>
+                        <td class="checkbox-col">
+                            <input type="checkbox" class="recent-checkbox" data-id="${row.id}" onchange="updateRecentDeleteBtn()">
+                        </td>
                         <td>${row.date}</td>
                         <td>${row.time}</td>
                         <td><strong>${row.sd_level}σ</strong></td>
