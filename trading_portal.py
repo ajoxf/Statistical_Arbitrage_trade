@@ -129,7 +129,12 @@ class DatabaseManager:
             ('futures_symbol', "TEXT DEFAULT ''"),
             ('futures_expiry', "TEXT DEFAULT ''"),
             ('contract_size', 'REAL DEFAULT 100'),
-            ('swap_charge', 'REAL DEFAULT 0')
+            ('swap_charge', 'REAL DEFAULT 0'),
+            # Limit order settings
+            ('order_type', "TEXT DEFAULT 'MARKET'"),  # MARKET or LIMIT
+            ('limit_order_timeout', 'INTEGER DEFAULT 60'),  # seconds to wait for limit fill
+            ('limit_peg_interval', 'REAL DEFAULT 1.5'),  # seconds between price updates
+            ('exit_at_opposite_sd', 'REAL DEFAULT 0')  # 0 = exit at mean, >0 = exit at opposite SD (e.g., 1.0 = -1σ for shorts)
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -294,7 +299,8 @@ class DatabaseManager:
                    paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes,
                    hurst_enabled, close_before_overnight, overnight_close_hour, overnight_close_minute,
                    selected_asset, min_profit_per_lot, max_loss_per_lot,
-                   asset_name, spot_symbol, futures_symbol, futures_expiry, contract_size, swap_charge
+                   asset_name, spot_symbol, futures_symbol, futures_expiry, contract_size, swap_charge,
+                   order_type, limit_order_timeout, limit_peg_interval, exit_at_opposite_sd
             FROM trading_config WHERE id = 1
         ''')
         row = cursor.fetchone()
@@ -352,7 +358,12 @@ class DatabaseManager:
                 'futures_symbol': futures_symbol,
                 'futures_expiry': futures_expiry,
                 'contract_size': contract_size,
-                'swap_charge': swap_charge
+                'swap_charge': swap_charge,
+                # Limit order settings
+                'order_type': row[39] if len(row) > 39 and row[39] else 'MARKET',
+                'limit_order_timeout': row[40] if len(row) > 40 and row[40] is not None else 60,
+                'limit_peg_interval': row[41] if len(row) > 41 and row[41] is not None else 1.5,
+                'exit_at_opposite_sd': row[42] if len(row) > 42 and row[42] is not None else 0
             }
         return None
 
@@ -401,6 +412,10 @@ class DatabaseManager:
                     futures_expiry = ?,
                     contract_size = ?,
                     swap_charge = ?,
+                    order_type = ?,
+                    limit_order_timeout = ?,
+                    limit_peg_interval = ?,
+                    exit_at_opposite_sd = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -442,6 +457,10 @@ class DatabaseManager:
                 config.get('futures_expiry', ''),
                 config.get('contract_size', 100),
                 config.get('swap_charge', 0),
+                config.get('order_type', 'MARKET'),
+                config.get('limit_order_timeout', 60),
+                config.get('limit_peg_interval', 1.5),
+                config.get('exit_at_opposite_sd', 0),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -1963,6 +1982,178 @@ class TradingMonitor:
             logger.error(f"MT5 close position error: {e}")
             return {'success': False, 'error': str(e)}
 
+    def _execute_pegged_limit_order(self, symbol, order_type, volume, comment=""):
+        """
+        Execute a pegged limit order that follows the bid/ask price until filled.
+
+        This places a limit order at the current bid (for BUY) or ask (for SELL),
+        then monitors and updates the price periodically until filled or timeout.
+
+        Args:
+            symbol: Trading symbol
+            order_type: mt5.ORDER_TYPE_BUY or mt5.ORDER_TYPE_SELL
+            volume: Lot size
+            comment: Order comment
+
+        Returns:
+            dict with success, ticket, price, volume, or error
+        """
+        import time as time_module
+
+        timeout = self.config.get('limit_order_timeout', 60)
+        peg_interval = self.config.get('limit_peg_interval', 1.5)
+        start_time = time_module.time()
+        pending_order = None
+
+        try:
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                return {'success': False, 'error': f'Symbol {symbol} not found'}
+
+            # Validate and adjust volume
+            vol_min = symbol_info.volume_min
+            vol_max = symbol_info.volume_max
+            vol_step = symbol_info.volume_step
+
+            if volume < vol_min:
+                volume = vol_min
+            elif volume > vol_max:
+                volume = vol_max
+            if vol_step > 0:
+                volume = round(volume / vol_step) * vol_step
+                volume = round(volume, 2)
+
+            last_price = None
+
+            while time_module.time() - start_time < timeout:
+                tick = mt5.symbol_info_tick(symbol)
+                if tick is None:
+                    time_module.sleep(0.5)
+                    continue
+
+                # For BUY: place at BID (we want to buy where sellers are selling)
+                # For SELL: place at ASK (we want to sell where buyers are buying)
+                current_price = tick.bid if order_type == mt5.ORDER_TYPE_BUY else tick.ask
+
+                # Check if we have a pending order that got filled
+                if pending_order is not None:
+                    # Check order status
+                    orders = mt5.orders_get(ticket=pending_order)
+                    if orders is None or len(orders) == 0:
+                        # Order no longer pending - check if it was filled
+                        deals = mt5.history_deals_get(position=pending_order)
+                        if deals and len(deals) > 0:
+                            # Found a deal - order was filled
+                            deal = deals[-1]
+                            logger.info(f"Pegged limit order FILLED: {symbol} @ {deal.price}")
+                            return {
+                                'success': True,
+                                'ticket': deal.position_id or pending_order,
+                                'price': deal.price,
+                                'volume': deal.volume
+                            }
+
+                        # Also check positions directly
+                        positions = mt5.positions_get(symbol=symbol)
+                        if positions:
+                            for pos in positions:
+                                if pos.ticket == pending_order or (pos.magic == 123456 and abs(pos.volume - volume) < 0.001):
+                                    logger.info(f"Pegged limit order FILLED (position check): {symbol} @ {pos.price_open}")
+                                    return {
+                                        'success': True,
+                                        'ticket': pos.ticket,
+                                        'price': pos.price_open,
+                                        'volume': pos.volume
+                                    }
+
+                        # Order was cancelled or rejected - try again
+                        pending_order = None
+
+                # Need to place or update order
+                if pending_order is None or (last_price is not None and abs(current_price - last_price) > 0.0001):
+                    # Cancel existing order if price changed
+                    if pending_order is not None:
+                        cancel_request = {
+                            "action": mt5.TRADE_ACTION_REMOVE,
+                            "order": pending_order
+                        }
+                        mt5.order_send(cancel_request)
+                        pending_order = None
+
+                    # Place new limit order
+                    filling_mode = symbol_info.filling_mode
+                    if filling_mode & 2:
+                        filling_type = mt5.ORDER_FILLING_IOC
+                    elif filling_mode & 1:
+                        filling_type = mt5.ORDER_FILLING_FOK
+                    else:
+                        filling_type = mt5.ORDER_FILLING_RETURN
+
+                    request = {
+                        "action": mt5.TRADE_ACTION_PENDING,
+                        "symbol": symbol,
+                        "volume": volume,
+                        "type": mt5.ORDER_TYPE_BUY_LIMIT if order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_SELL_LIMIT,
+                        "price": current_price,
+                        "magic": 123456,
+                        "comment": comment,
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": filling_type,
+                    }
+
+                    result = mt5.order_send(request)
+
+                    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                        pending_order = result.order
+                        last_price = current_price
+                        logger.debug(f"Pegged limit placed: {symbol} @ {current_price}, ticket={pending_order}")
+                    elif result and result.retcode == mt5.TRADE_RETCODE_PLACED:
+                        pending_order = result.order
+                        last_price = current_price
+                        logger.debug(f"Pegged limit placed: {symbol} @ {current_price}, ticket={pending_order}")
+                    else:
+                        # Try as immediate execution instead of pending
+                        request["action"] = mt5.TRADE_ACTION_DEAL
+                        request["type"] = order_type
+                        request["deviation"] = 0  # No slippage for limit
+                        result = mt5.order_send(request)
+
+                        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                            logger.info(f"Limit order immediately filled: {symbol} @ {result.price}")
+                            return {
+                                'success': True,
+                                'ticket': result.order,
+                                'price': result.price,
+                                'volume': result.volume
+                            }
+
+                time_module.sleep(peg_interval)
+
+            # Timeout - cancel any pending order
+            if pending_order is not None:
+                cancel_request = {
+                    "action": mt5.TRADE_ACTION_REMOVE,
+                    "order": pending_order
+                }
+                mt5.order_send(cancel_request)
+
+            logger.warning(f"Pegged limit order TIMEOUT after {timeout}s for {symbol}")
+            return {'success': False, 'error': f'Timeout after {timeout}s', 'timeout': True}
+
+        except Exception as e:
+            logger.error(f"Pegged limit order error: {e}")
+            # Try to cancel any pending order
+            if pending_order is not None:
+                try:
+                    cancel_request = {
+                        "action": mt5.TRADE_ACTION_REMOVE,
+                        "order": pending_order
+                    }
+                    mt5.order_send(cancel_request)
+                except:
+                    pass
+            return {'success': False, 'error': str(e)}
+
     def _open_position(self, asset_key, signal_type, data):
         """Open a new position with full trade tracking"""
         trade_id = str(uuid.uuid4())[:8]
@@ -2062,20 +2253,56 @@ class TradingMonitor:
             spot_order_type = mt5.ORDER_TYPE_SELL
 
         mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
+        order_type_setting = self.config.get('order_type', 'MARKET')
 
-        # Execute futures order (market order for guaranteed fill)
-        futures_result = self._execute_mt5_order(
-            futures_symbol, futures_order_type, lot_size,
-            f"{asset_key} {direction} Futures",
-            use_limit=False
-        )
+        if order_type_setting == 'LIMIT':
+            # Use pegged limit orders (zero spread cost, but may not fill)
+            logger.info(f"Using LIMIT orders for entry (timeout={self.config.get('limit_order_timeout', 60)}s)")
 
-        # Execute spot order (market order for guaranteed fill)
-        spot_result = self._execute_mt5_order(
-            spot_symbol, spot_order_type, lot_size,
-            f"{asset_key} {direction} Spot",
-            use_limit=False
-        )
+            # Execute both legs with pegged limit orders
+            futures_result = self._execute_pegged_limit_order(
+                futures_symbol, futures_order_type, lot_size,
+                f"{asset_key} {direction} Futures"
+            )
+
+            if futures_result['success']:
+                spot_result = self._execute_pegged_limit_order(
+                    spot_symbol, spot_order_type, lot_size,
+                    f"{asset_key} {direction} Spot"
+                )
+
+                # Handle partial fill - if spot fails, close the futures position
+                if not spot_result['success']:
+                    logger.warning(f"Spot leg failed after futures filled - aborting entry")
+                    # Close the futures position with market order to exit quickly
+                    abort_result = self._close_mt5_position(
+                        futures_result['ticket'], futures_symbol, lot_size,
+                        futures_order_type, use_limit=False
+                    )
+                    if abort_result['success']:
+                        logger.info(f"Aborted entry: closed futures position {futures_result['ticket']}")
+                    else:
+                        logger.error(f"CRITICAL: Failed to close orphan futures position {futures_result['ticket']}")
+                    futures_result = {'success': False, 'error': 'Aborted - spot leg failed'}
+            else:
+                spot_result = {'success': False, 'error': 'Skipped - futures leg failed'}
+        else:
+            # Use market orders (guaranteed fill, but pay spread)
+            logger.info(f"Using MARKET orders for entry")
+
+            # Execute futures order (market order for guaranteed fill)
+            futures_result = self._execute_mt5_order(
+                futures_symbol, futures_order_type, lot_size,
+                f"{asset_key} {direction} Futures",
+                use_limit=False
+            )
+
+            # Execute spot order (market order for guaranteed fill)
+            spot_result = self._execute_mt5_order(
+                spot_symbol, spot_order_type, lot_size,
+                f"{asset_key} {direction} Spot",
+                use_limit=False
+            )
 
         if futures_result['success'] and spot_result['success']:
             position['mt5_futures_ticket'] = futures_result['ticket']
@@ -2192,45 +2419,104 @@ class TradingMonitor:
         position['return_pct'] = (position['net_pnl'] / margin_with_buffer * 100) if margin_with_buffer > 0 else 0
 
         mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
+        order_type_setting = self.config.get('order_type', 'MARKET')
 
         # Close MT5 positions (both paper and live mode)
         asset_data = self.active_assets.get(asset_key, {})
         spot_symbol = asset_data.get('spot_symbol')
         futures_symbol = asset_data.get('futures_symbol')
 
-        # Track if MT5 closes were successful (always use market orders for guaranteed fill)
+        # Track if MT5 closes were successful
         futures_closed = False
         spot_closed = False
 
-        if position.get('mt5_futures_ticket'):
-            result = self._close_mt5_position(
-                position['mt5_futures_ticket'],
-                futures_symbol, lot_size,
-                mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL,
-                use_limit=False
-            )
-            if result['success']:
-                futures_closed = True
-                logger.info(f"Futures position closed: ticket {position['mt5_futures_ticket']}")
-            else:
-                logger.error(f"CRITICAL: Failed to close futures position {position['mt5_futures_ticket']}: {result.get('error')}")
-        else:
-            futures_closed = True  # No ticket to close
+        # Determine order types for closing
+        futures_close_type = mt5.ORDER_TYPE_BUY if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_SELL
+        spot_close_type = mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
 
-        if position.get('mt5_spot_ticket'):
-            result = self._close_mt5_position(
-                position['mt5_spot_ticket'],
-                spot_symbol, lot_size,
-                mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY,
-                use_limit=False
-            )
-            if result['success']:
-                spot_closed = True
-                logger.info(f"Spot position closed: ticket {position['mt5_spot_ticket']}")
+        if order_type_setting == 'LIMIT':
+            logger.info(f"Using LIMIT orders for exit (timeout={self.config.get('limit_order_timeout', 60)}s, fallback to MARKET)")
+
+            # Try limit orders first, with market order fallback
+            if position.get('mt5_futures_ticket'):
+                # Note: For closing, we need to place opposite order, not close by ticket with pending
+                # So we use market close but with pegged limit price approach
+                result = self._close_mt5_position(
+                    position['mt5_futures_ticket'],
+                    futures_symbol, lot_size,
+                    futures_close_type,
+                    use_limit=True  # Try limit first
+                )
+                if not result['success']:
+                    # Fallback to market order
+                    logger.warning(f"Limit close failed for futures, using market order")
+                    result = self._close_mt5_position(
+                        position['mt5_futures_ticket'],
+                        futures_symbol, lot_size,
+                        futures_close_type,
+                        use_limit=False
+                    )
+                if result['success']:
+                    futures_closed = True
+                    logger.info(f"Futures position closed: ticket {position['mt5_futures_ticket']}")
+                else:
+                    logger.error(f"CRITICAL: Failed to close futures position {position['mt5_futures_ticket']}: {result.get('error')}")
             else:
-                logger.error(f"CRITICAL: Failed to close spot position {position['mt5_spot_ticket']}: {result.get('error')}")
+                futures_closed = True
+
+            if position.get('mt5_spot_ticket'):
+                result = self._close_mt5_position(
+                    position['mt5_spot_ticket'],
+                    spot_symbol, lot_size,
+                    spot_close_type,
+                    use_limit=True
+                )
+                if not result['success']:
+                    logger.warning(f"Limit close failed for spot, using market order")
+                    result = self._close_mt5_position(
+                        position['mt5_spot_ticket'],
+                        spot_symbol, lot_size,
+                        spot_close_type,
+                        use_limit=False
+                    )
+                if result['success']:
+                    spot_closed = True
+                    logger.info(f"Spot position closed: ticket {position['mt5_spot_ticket']}")
+                else:
+                    logger.error(f"CRITICAL: Failed to close spot position {position['mt5_spot_ticket']}: {result.get('error')}")
+            else:
+                spot_closed = True
         else:
-            spot_closed = True  # No ticket to close
+            # Use market orders (guaranteed fill)
+            if position.get('mt5_futures_ticket'):
+                result = self._close_mt5_position(
+                    position['mt5_futures_ticket'],
+                    futures_symbol, lot_size,
+                    futures_close_type,
+                    use_limit=False
+                )
+                if result['success']:
+                    futures_closed = True
+                    logger.info(f"Futures position closed: ticket {position['mt5_futures_ticket']}")
+                else:
+                    logger.error(f"CRITICAL: Failed to close futures position {position['mt5_futures_ticket']}: {result.get('error')}")
+            else:
+                futures_closed = True  # No ticket to close
+
+            if position.get('mt5_spot_ticket'):
+                result = self._close_mt5_position(
+                    position['mt5_spot_ticket'],
+                    spot_symbol, lot_size,
+                    spot_close_type,
+                    use_limit=False
+                )
+                if result['success']:
+                    spot_closed = True
+                    logger.info(f"Spot position closed: ticket {position['mt5_spot_ticket']}")
+                else:
+                    logger.error(f"CRITICAL: Failed to close spot position {position['mt5_spot_ticket']}: {result.get('error')}")
+            else:
+                spot_closed = True  # No ticket to close
 
         # Only mark as closed if BOTH positions were successfully closed
         if not (futures_closed and spot_closed):
@@ -2540,6 +2826,11 @@ def settings():
             monitor.config['overnight_close_hour'] = int(request.form.get('overnight_close_hour', 16))
             monitor.config['overnight_close_minute'] = int(request.form.get('overnight_close_minute', 55))
             monitor.config['selected_asset'] = request.form.get('selected_asset', 'GOLD')
+
+            # Order type settings
+            monitor.config['order_type'] = request.form.get('order_type', 'MARKET')
+            monitor.config['limit_order_timeout'] = int(request.form.get('limit_order_timeout', 60))
+            monitor.config['limit_peg_interval'] = float(request.form.get('limit_peg_interval', 1.5))
 
             monitor.db.save_config(monitor.config)
             return redirect(url_for('settings') + '?saved=1')
@@ -5705,6 +5996,32 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <label>Maximum Loss per Lot ($)</label>
                     <input type="number" name="max_loss_per_lot" id="max_loss_per_lot" value="{{ config.max_loss_per_lot or 100 }}" min="0" max="50000" step="1">
                     <div class="help-text">Absolute stop loss per lot. If unrealized loss exceeds this × lot size, position closes immediately regardless of z-score. Set to 0 to disable.</div>
+                </div>
+
+                <!-- Order Type Settings -->
+                <div style="margin-top: 25px; padding: 15px; background: #e8f5e9; border-radius: 8px; border: 1px solid #4caf50;">
+                    <div style="font-weight: 600; margin-bottom: 15px; color: #2e7d32;">📈 Order Execution Settings</div>
+
+                    <div class="form-group">
+                        <label>Order Type</label>
+                        <select name="order_type">
+                            <option value="MARKET" {{ 'selected' if config.order_type == 'MARKET' or not config.order_type else '' }}>MARKET (Instant fill, pay spread)</option>
+                            <option value="LIMIT" {{ 'selected' if config.order_type == 'LIMIT' else '' }}>LIMIT (Zero spread cost, may not fill)</option>
+                        </select>
+                        <div class="help-text">MARKET: Guaranteed fill but pays bid-ask spread (~$100/lot). LIMIT: Places orders at bid/ask to avoid spread cost, but may timeout if not filled.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Limit Order Timeout (seconds)</label>
+                        <input type="number" name="limit_order_timeout" value="{{ config.limit_order_timeout or 60 }}" min="10" max="300" step="5">
+                        <div class="help-text">How long to wait for limit orders to fill before aborting entry or falling back to market order for exits.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Price Update Interval (seconds)</label>
+                        <input type="number" name="limit_peg_interval" value="{{ config.limit_peg_interval or 1.5 }}" min="0.5" max="10" step="0.5">
+                        <div class="help-text">How often to update the limit order price to follow the bid/ask (pegged limit order).</div>
+                    </div>
                 </div>
 
                 <!-- Max Loss Calculator -->
