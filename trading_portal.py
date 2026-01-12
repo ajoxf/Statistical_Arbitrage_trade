@@ -207,9 +207,25 @@ class DatabaseManager:
                 spread_at_mean REAL,
                 potential_profit REAL,
                 max_adverse_move REAL DEFAULT 0,
-                status TEXT DEFAULT 'PENDING'
+                status TEXT DEFAULT 'PENDING',
+                entry_spot_spread REAL DEFAULT 0,
+                entry_futures_spread REAL DEFAULT 0,
+                exit_spot_spread REAL DEFAULT 0,
+                exit_futures_spread REAL DEFAULT 0
             )
         ''')
+
+        # Add bid-ask spread columns if they don't exist (for existing DBs)
+        for col_def in [
+            ('entry_spot_spread', 'REAL DEFAULT 0'),
+            ('entry_futures_spread', 'REAL DEFAULT 0'),
+            ('exit_spot_spread', 'REAL DEFAULT 0'),
+            ('exit_futures_spread', 'REAL DEFAULT 0')
+        ]:
+            try:
+                cursor.execute(f'ALTER TABLE sd_touch_log ADD COLUMN {col_def[0]} {col_def[1]}')
+            except:
+                pass  # Column already exists
 
         # Insert default config if not exists
         cursor.execute('SELECT COUNT(*) FROM trading_config')
@@ -628,10 +644,15 @@ class SDTouchTracker:
         self.last_zscore = None
         self.cooldown = {}  # Prevent duplicate touches within cooldown period
 
-    def check_and_log_touches(self, asset, current_spread, zscore, mean, std, contract_size=100):
+    def check_and_log_touches(self, asset, current_spread, zscore, mean, std, contract_size=100,
+                               spot_bid_ask=0, futures_bid_ask=0):
         """
         Check if spread has touched any SD level and track it.
         Also check if any pending touches have reached mean.
+
+        Args:
+            spot_bid_ask: Current bid-ask spread for spot (ask - bid)
+            futures_bid_ask: Current bid-ask spread for futures (ask - bid)
         """
         if std <= 0:
             return
@@ -646,7 +667,8 @@ class SDTouchTracker:
             if zscore >= sd_level:
                 if upper_key not in self.cooldown or (now - self.cooldown[upper_key]).total_seconds() > 300:
                     if upper_key not in self.active_touches:
-                        touch_id = self._log_touch(asset, sd_level, 'SHORT', current_spread, zscore, mean, std)
+                        touch_id = self._log_touch(asset, sd_level, 'SHORT', current_spread, zscore, mean, std,
+                                                   spot_bid_ask, futures_bid_ask)
                         self.active_touches[upper_key] = {
                             'id': touch_id,
                             'sd_level': sd_level,
@@ -666,7 +688,8 @@ class SDTouchTracker:
             if zscore <= -sd_level:
                 if lower_key not in self.cooldown or (now - self.cooldown[lower_key]).total_seconds() > 300:
                     if lower_key not in self.active_touches:
-                        touch_id = self._log_touch(asset, sd_level, 'LONG', current_spread, zscore, mean, std)
+                        touch_id = self._log_touch(asset, sd_level, 'LONG', current_spread, zscore, mean, std,
+                                                   spot_bid_ask, futures_bid_ask)
                         self.active_touches[lower_key] = {
                             'id': touch_id,
                             'sd_level': sd_level,
@@ -692,7 +715,8 @@ class SDTouchTracker:
                 # Check if reached mean (zscore <= 0)
                 if zscore <= 0:
                     profit = (touch['touch_spread'] - current_spread) * touch['contract_size']
-                    self._update_touch_reached_mean(touch['id'], current_spread, profit, touch['max_adverse'])
+                    self._update_touch_reached_mean(touch['id'], current_spread, profit, touch['max_adverse'],
+                                                    spot_bid_ask, futures_bid_ask)
                     results.append(f"Mean reached: {touch['sd_level']}σ SHORT, Profit: ${profit:.2f}")
                     keys_to_remove.append(key)
             else:  # LONG
@@ -702,7 +726,8 @@ class SDTouchTracker:
                 # Check if reached mean (zscore >= 0)
                 if zscore >= 0:
                     profit = (current_spread - touch['touch_spread']) * touch['contract_size']
-                    self._update_touch_reached_mean(touch['id'], current_spread, profit, touch['max_adverse'])
+                    self._update_touch_reached_mean(touch['id'], current_spread, profit, touch['max_adverse'],
+                                                    spot_bid_ask, futures_bid_ask)
                     results.append(f"Mean reached: {touch['sd_level']}σ LONG, Profit: ${profit:.2f}")
                     keys_to_remove.append(key)
 
@@ -713,26 +738,31 @@ class SDTouchTracker:
         self.last_zscore = zscore
         return results
 
-    def _log_touch(self, asset, sd_level, direction, spread, zscore, mean, std):
-        """Log a new SD touch to database"""
+    def _log_touch(self, asset, sd_level, direction, spread, zscore, mean, std,
+                   spot_bid_ask=0, futures_bid_ask=0):
+        """Log a new SD touch to database with bid-ask spread data"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
         now = datetime.now()
         cursor.execute('''
             INSERT INTO sd_touch_log
             (asset, touch_date, touch_time, sd_level, direction, touch_spread,
-             touch_zscore, mean_at_touch, std_at_touch, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+             touch_zscore, mean_at_touch, std_at_touch, status,
+             entry_spot_spread, entry_futures_spread)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
         ''', (asset, now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S'),
-              sd_level, direction, spread, zscore, mean, std))
+              sd_level, direction, spread, zscore, mean, std,
+              spot_bid_ask, futures_bid_ask))
         touch_id = cursor.lastrowid
         conn.commit()
         conn.close()
-        logger.info(f"SD Touch logged: {asset} {sd_level}σ {direction} at {spread:.4f} (z={zscore:.2f})")
+        logger.info(f"SD Touch logged: {asset} {sd_level}σ {direction} at {spread:.4f} "
+                    f"(z={zscore:.2f}, spot_spread={spot_bid_ask:.4f}, fut_spread={futures_bid_ask:.4f})")
         return touch_id
 
-    def _update_touch_reached_mean(self, touch_id, spread_at_mean, profit, max_adverse):
-        """Update touch record when mean is reached"""
+    def _update_touch_reached_mean(self, touch_id, spread_at_mean, profit, max_adverse,
+                                   spot_bid_ask=0, futures_bid_ask=0):
+        """Update touch record when mean is reached, including exit bid-ask spreads"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
         now = datetime.now()
@@ -743,12 +773,16 @@ class SDTouchTracker:
                 spread_at_mean = ?,
                 potential_profit = ?,
                 max_adverse_move = ?,
+                exit_spot_spread = ?,
+                exit_futures_spread = ?,
                 status = 'REACHED_MEAN'
             WHERE id = ?
-        ''', (now.strftime('%H:%M:%S'), spread_at_mean, profit, max_adverse, touch_id))
+        ''', (now.strftime('%H:%M:%S'), spread_at_mean, profit, max_adverse,
+              spot_bid_ask, futures_bid_ask, touch_id))
         conn.commit()
         conn.close()
-        logger.info(f"SD Touch #{touch_id} reached mean: profit=${profit:.2f}, max_adverse=${max_adverse:.2f}")
+        logger.info(f"SD Touch #{touch_id} reached mean: profit=${profit:.2f}, max_adverse=${max_adverse:.2f}, "
+                    f"exit_spreads=(spot={spot_bid_ask:.4f}, fut={futures_bid_ask:.4f})")
 
     def get_daily_statistics(self, asset=None, days=7):
         """Get SD touch statistics grouped by date and SD level"""
@@ -845,7 +879,7 @@ class SDTouchTracker:
         return results
 
     def get_recent_touches(self, asset=None, limit=50):
-        """Get recent touch events with details"""
+        """Get recent touch events with details including bid-ask spreads"""
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
@@ -854,7 +888,9 @@ class SDTouchTracker:
                 id, asset, touch_date, touch_time, sd_level, direction,
                 touch_spread, touch_zscore, mean_at_touch, std_at_touch,
                 reached_mean, mean_reached_time, spread_at_mean,
-                potential_profit, max_adverse_move, status
+                potential_profit, max_adverse_move, status,
+                entry_spot_spread, entry_futures_spread,
+                exit_spot_spread, exit_futures_spread
             FROM sd_touch_log
         '''
         params = []
@@ -872,6 +908,12 @@ class SDTouchTracker:
 
         results = []
         for row in rows:
+            # Calculate entry and exit costs
+            entry_spot = row[16] if row[16] else 0
+            entry_futures = row[17] if row[17] else 0
+            exit_spot = row[18] if row[18] else 0
+            exit_futures = row[19] if row[19] else 0
+
             results.append({
                 'id': row[0],
                 'asset': row[1],
@@ -888,7 +930,14 @@ class SDTouchTracker:
                 'spread_at_mean': row[12],
                 'profit': round(row[13], 2) if row[13] else None,
                 'max_adverse': round(row[14], 2) if row[14] else 0,
-                'status': row[15]
+                'status': row[15],
+                'entry_spot_spread': round(entry_spot, 4),
+                'entry_futures_spread': round(entry_futures, 4),
+                'exit_spot_spread': round(exit_spot, 4),
+                'exit_futures_spread': round(exit_futures, 4),
+                'entry_cost': round((entry_spot + entry_futures) * 100, 2),  # Per lot
+                'exit_cost': round((exit_spot + exit_futures) * 100, 2),     # Per lot
+                'round_trip_cost': round((entry_spot + entry_futures + exit_spot + exit_futures) * 100, 2)
             })
 
         return results
@@ -1418,13 +1467,18 @@ class TradingMonitor:
             # Track SD level touches for analysis
             if zscore is not None and stats:
                 contract_size_for_tracking = config.get('lot_size', 100)
+                # Get raw bid-ask spreads (in dollars, not cents)
+                spot_bid_ask = spot_tick.ask - spot_tick.bid
+                futures_bid_ask = futures_tick.ask - futures_tick.bid
                 self.sd_tracker.check_and_log_touches(
                     asset_key,
                     current_spread,
                     zscore,
                     stats.get('mean', 0),
                     stats.get('std', 0),
-                    contract_size_for_tracking
+                    contract_size_for_tracking,
+                    spot_bid_ask,
+                    futures_bid_ask
                 )
 
             # Margin calculations
@@ -3408,13 +3462,16 @@ SD_ANALYSIS_TEMPLATE = '''
                     <tr>
                         <th>Date</th>
                         <th>Time</th>
-                        <th>SD Level</th>
-                        <th>Direction</th>
-                        <th>Touch Spread</th>
-                        <th>Mean</th>
+                        <th>SD</th>
+                        <th>Dir</th>
                         <th>Status</th>
-                        <th>Profit</th>
-                        <th>Max Adverse</th>
+                        <th>Gross Profit</th>
+                        <th>Entry Spot</th>
+                        <th>Entry Fut</th>
+                        <th>Exit Spot</th>
+                        <th>Exit Fut</th>
+                        <th>Round-Trip Cost</th>
+                        <th>Net Profit</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
@@ -3495,18 +3552,31 @@ SD_ANALYSIS_TEMPLATE = '''
             const tbody = document.querySelector('#recentTable tbody');
             tbody.innerHTML = data.map(row => {
                 const statusClass = row.reached_mean ? 'success' : 'warning';
-                const profitDisplay = row.profit !== null ? `$${row.profit.toFixed(2)}` : '-';
+                const grossProfit = row.profit !== null ? row.profit : 0;
+                const rtCost = row.round_trip_cost || 0;
+                const netProfit = grossProfit - rtCost;
+                const netClass = netProfit > 0 ? 'profit' : (netProfit < 0 ? 'loss' : '');
+
+                // Format bid-ask spreads in cents for readability
+                const entrySpot = (row.entry_spot_spread * 100).toFixed(1);
+                const entryFut = (row.entry_futures_spread * 100).toFixed(1);
+                const exitSpot = (row.exit_spot_spread * 100).toFixed(1);
+                const exitFut = (row.exit_futures_spread * 100).toFixed(1);
+
                 return `
                     <tr>
                         <td>${row.date}</td>
                         <td>${row.time}</td>
                         <td><strong>${row.sd_level}σ</strong></td>
                         <td><span class="badge badge-${row.direction.toLowerCase()}">${row.direction}</span></td>
-                        <td>${row.touch_spread.toFixed(4)}</td>
-                        <td>${row.mean.toFixed(4)}</td>
                         <td class="${statusClass}">${row.status}</td>
-                        <td>${profitDisplay}</td>
-                        <td>$${row.max_adverse.toFixed(2)}</td>
+                        <td>${row.profit !== null ? '$' + row.profit.toFixed(2) : '-'}</td>
+                        <td>${entrySpot}¢</td>
+                        <td>${entryFut}¢</td>
+                        <td>${row.reached_mean ? exitSpot + '¢' : '-'}</td>
+                        <td>${row.reached_mean ? exitFut + '¢' : '-'}</td>
+                        <td>$${rtCost.toFixed(2)}</td>
+                        <td class="${netClass}">${row.reached_mean ? '$' + netProfit.toFixed(2) : '-'}</td>
                     </tr>
                 `;
             }).join('');
