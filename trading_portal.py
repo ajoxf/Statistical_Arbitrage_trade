@@ -6596,8 +6596,8 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
                 <div class="form-group">
                     <label>Exit Threshold (Standard Deviations)</label>
-                    <input type="number" name="exit_std_dev" value="{{ config.exit_std_dev }}" min="0" max="2" step="0.1">
-                    <div class="help-text">Z-score threshold to close position (e.g., 0.5 = ±0.5σ)</div>
+                    <input type="number" name="exit_std_dev" value="{{ config.exit_std_dev }}" min="-5" max="5" step="0.1">
+                    <div class="help-text">Z-score threshold to close position (e.g., 0.5 = ±0.5σ, negative values for earlier exit)</div>
                 </div>
 
                 <div class="form-group">
