@@ -2096,6 +2096,8 @@ class TradingMonitor:
         start_time = time_module.time()
         pending_order = None
 
+        logger.info(f"Pegged limit order starting: {symbol}, timeout={timeout}s, peg_interval={peg_interval}s")
+
         try:
             symbol_info = mt5.symbol_info(symbol)
             if symbol_info is None:
@@ -2115,8 +2117,10 @@ class TradingMonitor:
                 volume = round(volume, 2)
 
             last_price = None
+            iteration = 0
 
             while time_module.time() - start_time < timeout:
+                iteration += 1
                 tick = mt5.symbol_info_tick(symbol)
                 if tick is None:
                     time_module.sleep(0.5)
@@ -2130,9 +2134,11 @@ class TradingMonitor:
                 if pending_order is not None:
                     # Check order status
                     orders = mt5.orders_get(ticket=pending_order)
+                    logger.debug(f"Iteration {iteration}: checking order {pending_order}, found {len(orders) if orders else 0} orders")
                     if orders is None or len(orders) == 0:
                         # Order no longer pending - check if it was filled
                         deals = mt5.history_deals_get(position=pending_order)
+                        logger.debug(f"Order not pending, checking deals: found {len(deals) if deals else 0}")
                         if deals and len(deals) > 0:
                             # Found a deal - order was filled
                             deal = deals[-1]
@@ -2222,6 +2228,7 @@ class TradingMonitor:
                 time_module.sleep(peg_interval)
 
             # Timeout - cancel any pending order
+            elapsed = time_module.time() - start_time
             if pending_order is not None:
                 cancel_request = {
                     "action": mt5.TRADE_ACTION_REMOVE,
@@ -2229,7 +2236,7 @@ class TradingMonitor:
                 }
                 mt5.order_send(cancel_request)
 
-            logger.warning(f"Pegged limit order TIMEOUT after {timeout}s for {symbol}")
+            logger.warning(f"Pegged limit order TIMEOUT for {symbol} (elapsed={elapsed:.1f}s, configured timeout={timeout}s, iterations={iteration})")
             return {'success': False, 'error': f'Timeout after {timeout}s', 'timeout': True}
 
         except Exception as e:
