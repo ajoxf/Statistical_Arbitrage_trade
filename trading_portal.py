@@ -2494,28 +2494,29 @@ class TradingMonitor:
                     f"Required spread move={min_spread_move:.4f} (costs deducted at close)")
 
         # Calculate target exit and stop loss based on entry statistics
-        # Long Spread: entered low (z < -2), exit when z >= -exit_std (spread rises to lower_exit)
-        # Short Spread: entered high (z > 2), exit when z <= exit_std (spread falls to upper_exit)
+        # NEW EXIT LOGIC: Exit on OPPOSITE side of mean
+        # Long Spread: entered low (z < -3.5), exit when z >= +exit_std (spread rises to upper_exit)
+        # Short Spread: entered high (z > +3.5), exit when z <= -exit_std (spread falls to lower_exit)
         if direction == 'Long Spread':
-            # Statistical target: spread rises toward mean
-            statistical_target = stats.get('lower_exit', stats.get('mean', entry_spread)) if stats else entry_spread
+            # Statistical target: spread rises THROUGH mean to upper_exit (Z = +exit_std)
+            statistical_target = stats.get('upper_exit', stats.get('mean', entry_spread)) if stats else entry_spread
             # Cost-aware target: ensure minimum profit (spread must rise at least min_spread_move)
             cost_aware_target = entry_spread + min_spread_move
             # Use the HIGHER of the two (further from entry = more profit)
             target_exit = max(statistical_target, cost_aware_target)
-            # Stop: spread falls further (hits lower_stop)
+            # Stop: spread falls further (hits lower_stop, Z goes more negative)
             stop_loss_spread = stats.get('lower_stop', entry_spread) if stats else entry_spread
-            logger.info(f"Long Spread targets: Statistical={statistical_target:.4f}, Cost-aware={cost_aware_target:.4f}, Final={target_exit:.4f}")
+            logger.info(f"Long Spread targets: Statistical(upper_exit)={statistical_target:.4f}, Cost-aware={cost_aware_target:.4f}, Final={target_exit:.4f}")
         else:  # Short Spread
-            # Statistical target: spread falls toward mean
-            statistical_target = stats.get('upper_exit', stats.get('mean', entry_spread)) if stats else entry_spread
+            # Statistical target: spread falls THROUGH mean to lower_exit (Z = -exit_std)
+            statistical_target = stats.get('lower_exit', stats.get('mean', entry_spread)) if stats else entry_spread
             # Cost-aware target: ensure minimum profit (spread must fall at least min_spread_move)
             cost_aware_target = entry_spread - min_spread_move
             # Use the LOWER of the two (further from entry = more profit)
             target_exit = min(statistical_target, cost_aware_target)
-            # Stop: spread rises further (hits upper_stop)
+            # Stop: spread rises further (hits upper_stop, Z goes more positive)
             stop_loss_spread = stats.get('upper_stop', entry_spread) if stats else entry_spread
-            logger.info(f"Short Spread targets: Statistical={statistical_target:.4f}, Cost-aware={cost_aware_target:.4f}, Final={target_exit:.4f}")
+            logger.info(f"Short Spread targets: Statistical(lower_exit)={statistical_target:.4f}, Cost-aware={cost_aware_target:.4f}, Final={target_exit:.4f}")
 
         position = {
             'trade_id': trade_id,
