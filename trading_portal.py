@@ -3440,6 +3440,16 @@ def analyze_trade(trade_id):
         conn = monitor.db.get_connection()
         cursor = conn.cursor()
 
+        # Check if trade_journal table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trade_journal'")
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({
+                'error': 'No trade history yet',
+                'details': 'The trade journal is empty because no trades have been completed yet. Once the algorithm opens AND closes a position, it will appear here for analysis.',
+                'suggestion': 'Wait for trades to complete, or check that algo trading is enabled.'
+            }), 404
+
         # Get column names
         cursor.execute('PRAGMA table_info(trade_journal)')
         columns = [col[1] for col in cursor.fetchall()]
@@ -3450,7 +3460,11 @@ def analyze_trade(trade_id):
         conn.close()
 
         if not row:
-            return jsonify({'error': 'Trade not found'}), 404
+            return jsonify({
+                'error': 'Trade not found',
+                'details': f'Trade #{trade_id} does not exist in the trade journal. It may have been deleted or the ID is incorrect.',
+                'suggestion': 'Check the trade journal table for valid trade IDs.'
+            }), 404
 
         # Parse trade data
         def safe_float(val, default=0):
@@ -7901,8 +7915,14 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     if (data.error) {
                         body.innerHTML = `
                             <div class="analysis-section">
-                                <h3>Error</h3>
-                                <p style="color: #f44336;">${data.error}</p>
+                                <h3 style="color: #ff9800;">⚠️ ${data.error}</h3>
+                                ${data.details ? `<p style="margin: 15px 0; line-height: 1.6;">${data.details}</p>` : ''}
+                                ${data.suggestion ? `
+                                    <div style="background: #e8f5e9; border-left: 4px solid #4CAF50; padding: 12px; border-radius: 4px; margin-top: 15px;">
+                                        <strong>💡 What to do:</strong><br>
+                                        ${data.suggestion}
+                                    </div>
+                                ` : ''}
                             </div>
                         `;
                         return;
@@ -7913,8 +7933,12 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 .catch(err => {
                     body.innerHTML = `
                         <div class="analysis-section">
-                            <h3>Error</h3>
-                            <p style="color: #f44336;">Failed to analyze trade: ${err.message}</p>
+                            <h3 style="color: #f44336;">❌ Connection Error</h3>
+                            <p style="margin: 15px 0;">Failed to analyze trade: ${err.message}</p>
+                            <div style="background: #e8f5e9; border-left: 4px solid #4CAF50; padding: 12px; border-radius: 4px;">
+                                <strong>💡 What to do:</strong><br>
+                                Check that the trading portal server is running and refresh the page.
+                            </div>
                         </div>
                     `;
                 });
