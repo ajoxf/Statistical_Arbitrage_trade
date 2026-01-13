@@ -3760,6 +3760,18 @@ def analyze_trade(trade_id):
             recommendations.append('This is a historical trade - close reason was not recorded at that time')
             recommendations.append('All new trades will record the exact exit trigger for accurate analysis')
 
+        # Create human-friendly exit reason explanation
+        exit_reason_labels = {
+            'CLOSE': {'icon': '✅', 'label': 'Target Reached', 'color': '#4CAF50'},
+            'STOP_LOSS': {'icon': '🛑', 'label': 'Stop Loss Hit', 'color': '#f44336'},
+            'MAX_LOSS': {'icon': '💰', 'label': 'Max Loss Limit', 'color': '#ff5722'},
+            'OVERNIGHT_CLOSE': {'icon': '🌙', 'label': 'Overnight Close', 'color': '#9c27b0'},
+            'TIME_STOP': {'icon': '⏰', 'label': 'Time Limit', 'color': '#ff9800'},
+        }
+
+        close_reason_code = trade['close_reason'].upper() if trade['close_reason'] else 'UNKNOWN'
+        exit_label_info = exit_reason_labels.get(close_reason_code, {'icon': '❓', 'label': 'Unknown', 'color': '#666'})
+
         # Build response
         return jsonify({
             'trade_id': trade_id,
@@ -3767,10 +3779,21 @@ def analyze_trade(trade_id):
             'trade': trade,
             'duration': duration_str,
             'duration_seconds': duration_seconds,
+            'entry_time': trade['entry_time'],
+            'exit_time': trade['exit_time'],
+            'direction': trade['direction'],
+            'lot_size': trade['lot_size'],
+            'entry_zscore': trade['entry_zscore'],
+            'exit_zscore': trade['exit_zscore'],
+            'gross_pnl': trade['gross_pnl'],
+            'net_pnl': trade['net_pnl'],
+            'swap_cost': trade['swap_cost'],
+            'commission': trade['commission'],
+            'spread_cost': trade['spread_cost'],
             'settings': {
-                'entry_std': entry_std,
-                'exit_std': exit_std,
-                'stop_loss_std': stop_loss_std,
+                'entry_threshold': entry_std,
+                'exit_threshold': exit_std,
+                'stop_loss_threshold': stop_loss_std,
                 'max_loss_per_lot': max_loss_per_lot,
                 'lot_size': config.get('lot_size', 20),
                 'overnight_close_enabled': overnight_close_enabled,
@@ -3785,7 +3808,11 @@ def analyze_trade(trade_id):
                 'expected_exit_zscore': expected_exit_z,
                 'reached_target': reached_target,
                 'hit_stop_loss': hit_stop_loss,
-                'close_reason': trade['close_reason']
+                'close_reason': trade['close_reason'],
+                'close_reason_code': close_reason_code,
+                'close_reason_icon': exit_label_info['icon'],
+                'close_reason_label': exit_label_info['label'],
+                'close_reason_color': exit_label_info['color']
             },
             'cost_analysis': {
                 'spread_cost': trade['spread_cost'],
@@ -8014,10 +8041,32 @@ MONITOR_HTML = '''<!DOCTYPE html>
             const resultClass = isWinner ? 'win' : 'loss';
             const resultIcon = isWinner ? '✅' : '❌';
 
+            // Get exit reason info
+            const exitInfo = data.exit_analysis || {};
+            const rootCause = data.root_cause || {};
+
             let html = `
                 <div class="root-cause-box ${resultClass}">
                     <div class="root-cause-title">${resultIcon} ${isWinner ? 'WINNING' : 'LOSING'} TRADE - Net P&L: $${data.net_pnl.toFixed(2)}</div>
-                    <div><strong>Primary Cause:</strong> ${data.root_cause || 'Analysis complete'}</div>
+                </div>
+
+                <!-- WHY DID THIS TRADE CLOSE? - Main explanation box -->
+                <div class="analysis-section" style="background: linear-gradient(135deg, ${exitInfo.close_reason_color || '#666'}15, ${exitInfo.close_reason_color || '#666'}05); border-left: 4px solid ${exitInfo.close_reason_color || '#666'};">
+                    <h3 style="color: ${exitInfo.close_reason_color || '#666'}; border-bottom-color: ${exitInfo.close_reason_color || '#666'};">
+                        ${exitInfo.close_reason_icon || '❓'} Why Did This Trade Close?
+                    </h3>
+                    <div style="font-size: 1.3em; font-weight: 600; margin-bottom: 10px; color: ${exitInfo.close_reason_color || '#666'};">
+                        ${exitInfo.close_reason_label || 'Unknown'}
+                    </div>
+                    <div style="line-height: 1.6; margin-bottom: 12px;">
+                        ${rootCause.description || 'No detailed description available.'}
+                    </div>
+                    ${rootCause.fix ? `
+                        <div style="background: rgba(76,175,80,0.1); border-radius: 6px; padding: 10px 12px; margin-top: 10px;">
+                            <strong style="color: #2e7d32;">💡 Recommendation:</strong><br>
+                            ${rootCause.fix}
+                        </div>
+                    ` : ''}
                 </div>
 
                 <div class="analysis-section ${resultClass}">
@@ -8039,8 +8088,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <span class="analysis-value">${data.direction || '--'}</span>
                     </div>
                     <div class="analysis-stat">
-                        <span class="analysis-label">Exit Reason</span>
-                        <span class="analysis-value">${data.exit_reason || '--'}</span>
+                        <span class="analysis-label">Exit Trigger</span>
+                        <span class="analysis-value" style="color: ${exitInfo.close_reason_color || '#333'}; font-weight: 600;">
+                            ${exitInfo.close_reason_icon || ''} ${exitInfo.close_reason_label || exitInfo.close_reason || '--'}
+                        </span>
                     </div>
                 </div>
 
