@@ -2091,7 +2091,18 @@ class TradingMonitor:
                             f"request_id={result.request_id}, deal={result.deal}, order={result.order}")
                 return {'success': False, 'error': f'Close failed: {result.comment} (retcode={result.retcode})'}
 
-            return {'success': True, 'ticket': result.order, 'price': result.price}
+            # Get ACTUAL fill price from deal history (result.price is just the requested price!)
+            actual_fill_price = result.price  # Default to requested price
+            if result.deal:
+                time_module.sleep(0.1)  # Brief delay for deal to be recorded
+                deals = mt5.history_deals_get(ticket=result.deal)
+                if deals and len(deals) > 0:
+                    actual_fill_price = deals[0].price
+                    logger.info(f"Actual fill price from deal {result.deal}: {actual_fill_price} (requested: {result.price})")
+                else:
+                    logger.warning(f"Could not get deal {result.deal} from history, using requested price {result.price}")
+
+            return {'success': True, 'ticket': result.order, 'price': actual_fill_price}
 
         except Exception as e:
             logger.error(f"MT5 close position error: {e}")
@@ -2236,13 +2247,21 @@ class TradingMonitor:
 
                     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                         elapsed = time_module.time() - start_time
-                        logger.info(f"*** POSITION CLOSED: {symbol} ticket={ticket} @ {result.price} (zero spread cost!) ***")
+                        # Get ACTUAL fill price from deal history
+                        actual_fill_price = result.price
+                        if result.deal:
+                            time_module.sleep(0.1)
+                            deals = mt5.history_deals_get(ticket=result.deal)
+                            if deals and len(deals) > 0:
+                                actual_fill_price = deals[0].price
+                                logger.info(f"Actual close fill price: {actual_fill_price} (requested: {result.price})")
+                        logger.info(f"*** POSITION CLOSED: {symbol} ticket={ticket} @ {actual_fill_price} (zero spread cost!) ***")
                         self._log_limit_order(symbol, 'PEGGED_LIMIT_CLOSE', side, volume, first_price,
-                                             result.price, 'FILLED', elapsed, iteration, context=comment)
+                                             actual_fill_price, 'FILLED', elapsed, iteration, context=comment)
                         return {
                             'success': True,
                             'ticket': result.order,
-                            'price': result.price,
+                            'price': actual_fill_price,
                             'volume': result.volume
                         }
                     else:
@@ -2365,6 +2384,14 @@ class TradingMonitor:
                             position_ticket = result.order
                             time_module.sleep(0.1)  # Brief delay for position to register
 
+                            # Get ACTUAL fill price from deal history
+                            actual_fill_price = result.price
+                            if result.deal:
+                                deals = mt5.history_deals_get(ticket=result.deal)
+                                if deals and len(deals) > 0:
+                                    actual_fill_price = deals[0].price
+                                    logger.info(f"Actual open fill price: {actual_fill_price} (requested: {result.price})")
+
                             # Look up the position that was just created
                             positions = mt5.positions_get(symbol=symbol)
                             if positions:
@@ -2372,13 +2399,14 @@ class TradingMonitor:
                                 for pos in sorted(positions, key=lambda p: p.time, reverse=True):
                                     if pos.magic == 123456 and abs(pos.volume - volume) < 0.01:
                                         position_ticket = pos.ticket
+                                        actual_fill_price = pos.price_open  # Use position's actual open price
                                         break
 
-                            logger.info(f"Limit order immediately filled: {symbol} @ {result.price}, position_ticket={position_ticket}")
+                            logger.info(f"Limit order immediately filled: {symbol} @ {actual_fill_price}, position_ticket={position_ticket}")
                             return {
                                 'success': True,
                                 'ticket': position_ticket,
-                                'price': result.price,
+                                'price': actual_fill_price,
                                 'volume': result.volume
                             }
 
