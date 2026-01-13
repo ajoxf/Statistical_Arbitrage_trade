@@ -3665,11 +3665,26 @@ def analyze_trade(trade_id):
 
         # Map close_reason directly to root cause - no guessing!
         if is_winner:
+            # Calculate profit metrics for winning trades
+            z_movement = abs(trade['exit_zscore'] - trade['entry_zscore'])
+            profit_after_costs = trade['net_pnl']
+            cost_ratio = (total_costs / trade['gross_pnl'] * 100) if trade['gross_pnl'] > 0 else 0
+
+            win_description = f"Mean reversion successful! Z-score moved from {trade['entry_zscore']:.2f}σ to {trade['exit_zscore']:.2f}σ ({z_movement:.2f}σ total movement). "
+            win_description += f"Gross profit: ${trade['gross_pnl']:.2f}, Costs: ${total_costs:.2f}, Net: ${profit_after_costs:.2f}"
+
+            if cost_ratio > 50:
+                win_tip = f"Trade was profitable but {cost_ratio:.0f}% went to fees. Consider reducing lot size or using LIMIT orders to improve net profit."
+            elif cost_ratio > 30:
+                win_tip = f"Good trade! {cost_ratio:.0f}% of gross profit went to fees - acceptable but room for improvement."
+            else:
+                win_tip = f"Excellent execution! Only {cost_ratio:.0f}% of gross profit went to fees. Keep these settings for similar conditions."
+
             root_cause = {
                 'cause': 'CLOSE',
-                'description': 'Trade reached exit target (Z-score crossed to opposite side of mean)',
+                'description': win_description,
                 'severity': 'SUCCESS',
-                'fix': None
+                'fix': win_tip
             }
         elif close_reason_value == 'STOP_LOSS':
             root_cause = {
