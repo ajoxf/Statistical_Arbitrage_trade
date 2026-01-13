@@ -189,13 +189,20 @@ class DatabaseManager:
                 mt5_spot_ticket INTEGER,
                 mt5_futures_ticket INTEGER,
                 order_status TEXT DEFAULT 'PENDING',
-                status TEXT DEFAULT 'OPEN'
+                status TEXT DEFAULT 'OPEN',
+                close_reason TEXT DEFAULT ''
             )
         ''')
 
         # Add spread_cost column if it doesn't exist (for existing DBs)
         try:
             cursor.execute('ALTER TABLE trades ADD COLUMN spread_cost REAL DEFAULT 0')
+        except:
+            pass  # Column already exists
+
+        # Add close_reason column if it doesn't exist (for existing DBs)
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN close_reason TEXT DEFAULT ''")
         except:
             pass  # Column already exists
 
@@ -513,8 +520,9 @@ class DatabaseManager:
                     entry_zscore, exit_zscore, entry_spot_price, entry_futures_price,
                     exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
                     gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
-                    lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status,
+                    close_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 trade['trade_id'],
                 trade['asset'],
@@ -540,7 +548,8 @@ class DatabaseManager:
                 trade.get('mt5_spot_ticket'),
                 trade.get('mt5_futures_ticket'),
                 trade.get('order_status', 'PENDING'),
-                trade['status']
+                trade['status'],
+                trade.get('close_reason', '')
             ))
             conn.commit()
             conn.close()
@@ -557,7 +566,8 @@ class DatabaseManager:
             entry_zscore, exit_zscore, entry_spot_price, entry_futures_price,
             exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
             gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
-            lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status
+            lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status,
+            close_reason
         '''
         if status:
             cursor.execute(f'SELECT {columns} FROM trades WHERE status = ? ORDER BY entry_date DESC LIMIT ?', (status, limit))
@@ -579,7 +589,8 @@ class DatabaseManager:
             'gross_pnl': r[15], 'swap_cost': r[16], 'commission': r[17],
             'spread_cost': r[18], 'net_pnl': r[19], 'return_pct': r[20],
             'lot_size': r[21], 'mt5_spot_ticket': r[22], 'mt5_futures_ticket': r[23],
-            'order_status': r[24], 'status': r[25]
+            'order_status': r[24], 'status': r[25],
+            'close_reason': r[26] if len(r) > 26 else ''  # Close reason for AI analysis
         } for r in rows]
 
     def get_trade_summary(self):
@@ -2904,6 +2915,8 @@ class TradingMonitor:
                 logger.info(f"Resetting stop loss counter (was {self.consecutive_stop_losses})")
             self.consecutive_stop_losses = 0
 
+        # Store the close reason for AI analysis
+        position['close_reason'] = close_reason
         position['status'] = 'CLOSED'
         self.db.save_trade(position)
         del self.positions[asset_key]
@@ -3646,63 +3659,106 @@ def analyze_trade(trade_id):
                 'message': f'Trade was profitable (${trade["gross_pnl"]:.2f} gross) but costs (${total_costs:.2f}) resulted in net loss.'
             })
 
-        # === DETERMINE ROOT CAUSE ===
-        root_cause = {
-            'cause': 'WINNING_TRADE' if is_winner else 'UNKNOWN',
-            'description': 'Trade reached profit target successfully' if is_winner else 'Analysis could not determine specific cause',
-            'severity': 'SUCCESS' if is_winner else 'MEDIUM',
-            'fix': None
-        }
+        # === DETERMINE ROOT CAUSE (from actual close_reason stored in database) ===
+        close_reason_value = trade['close_reason'].upper() if trade['close_reason'] else ''
+        max_loss_total = max_loss_per_lot * trade['lot_size']
 
-        if not is_winner:
-            # Priority 1: Timing issues
-            timing_issues = [i for i in issues if i['type'] in ['ENTRY_AFTER_OVERNIGHT', 'OVERNIGHT_CLOSE_EXIT', 'IMMEDIATE_EXIT']]
-            if timing_issues:
+        # Map close_reason directly to root cause - no guessing!
+        if is_winner:
+            root_cause = {
+                'cause': 'CLOSE',
+                'description': 'Trade reached exit target (Z-score crossed to opposite side of mean)',
+                'severity': 'SUCCESS',
+                'fix': None
+            }
+        elif close_reason_value == 'STOP_LOSS':
+            root_cause = {
+                'cause': 'STOP_LOSS',
+                'description': f'Z-score hit stop loss threshold (±{stop_loss_std}σ). Entry Z: {trade["entry_zscore"]:.2f}, Exit Z: {trade["exit_zscore"]:.2f}',
+                'severity': 'HIGH',
+                'fix': 'Market moved against the position. Consider tighter entry threshold or wider stop loss.'
+            }
+        elif close_reason_value == 'MAX_LOSS':
+            root_cause = {
+                'cause': 'MAX_LOSS',
+                'description': f'Dollar loss limit triggered: ${max_loss_per_lot}/lot × {trade["lot_size"]} lots = ${max_loss_total:.0f} max allowed',
+                'severity': 'HIGH',
+                'fix': f'Increase max_loss_per_lot from ${max_loss_per_lot:.0f} to ${max_loss_per_lot * 2.5:.0f}, OR reduce lot size to {trade["lot_size"] / 2:.0f}'
+            }
+        elif close_reason_value == 'OVERNIGHT_CLOSE':
+            root_cause = {
+                'cause': 'OVERNIGHT_CLOSE',
+                'description': f'Position closed before market close ({overnight_close_hour:02d}:{overnight_close_minute:02d} server time) to avoid overnight swap/gap risk',
+                'severity': 'MEDIUM',
+                'fix': f'Trade entered too late to reach exit target. Enable "No Entry After" to prevent late entries.'
+            }
+        elif close_reason_value == 'TIME_STOP':
+            time_stop_days = config.get('time_stop_loss_days', 0)
+            root_cause = {
+                'cause': 'TIME_STOP',
+                'description': f'Position held too long without mean reversion (>{time_stop_days} days limit)',
+                'severity': 'MEDIUM',
+                'fix': 'Mean reversion did not occur within time limit. Consider adjusting time_stop_loss_days or entry criteria.'
+            }
+        elif close_reason_value == 'CLOSE':
+            # Normal exit but still a loss (costs exceeded profit)
+            root_cause = {
+                'cause': 'COSTS_EXCEEDED_PROFIT',
+                'description': f'Trade reached exit target but transaction costs (${total_costs:.2f}) exceeded gross profit (${trade["gross_pnl"]:.2f})',
+                'severity': 'MEDIUM',
+                'fix': 'Reduce lot size or switch to LIMIT orders to reduce spread costs.'
+            }
+        elif not close_reason_value:
+            # Old trades without close_reason - try to infer
+            if any(i['type'] in ['ENTRY_AFTER_OVERNIGHT', 'OVERNIGHT_CLOSE_EXIT', 'IMMEDIATE_EXIT'] for i in issues):
                 root_cause = {
-                    'cause': 'TIMING_ISSUE',
-                    'description': f'Trade entered too late and was closed by OVERNIGHT_CLOSE. Server is in {server_timezone}, overnight close at {overnight_close_hour:02d}:{overnight_close_minute:02d}.',
-                    'severity': 'CRITICAL',
-                    'fix': f'For 4:55 PM EST, set overnight close to 21:55 if server is UTC. Enable "No Entry After" to prevent late entries.'
-                }
-            # Priority 2: MAX_LOSS
-            elif any(i['type'] == 'MAX_LOSS_EXIT' for i in issues):
-                max_loss_total = max_loss_per_lot * trade['lot_size']
-                root_cause = {
-                    'cause': 'MAX_LOSS_TOO_TIGHT',
-                    'description': f'MAX_LOSS (${max_loss_total:.0f}) triggered before reaching exit target.',
-                    'severity': 'HIGH',
-                    'fix': f'Increase max_loss_per_lot from ${max_loss_per_lot:.0f} to ${max_loss_per_lot * 2:.0f}-${max_loss_per_lot * 3:.0f}, OR reduce lot size.'
-                }
-            # Priority 3: Costs
-            elif any(i['type'] in ['HIGH_COSTS', 'COSTS_ATE_PROFIT'] for i in issues):
-                root_cause = {
-                    'cause': 'EXCESSIVE_COSTS',
-                    'description': f'Transaction costs (${total_costs:.2f}) exceed profit potential.',
-                    'severity': 'HIGH',
-                    'fix': 'Reduce lot size or switch to LIMIT orders to reduce spread costs.'
+                    'cause': 'LIKELY_OVERNIGHT_CLOSE',
+                    'description': f'(Historical trade - close reason not recorded) Likely closed by OVERNIGHT_CLOSE based on timing analysis.',
+                    'severity': 'MEDIUM',
+                    'fix': 'New trades will record exact close reason.'
                 }
             else:
                 root_cause = {
-                    'cause': 'ADVERSE_MARKET_MOVEMENT',
-                    'description': 'Trade lost due to unfavorable market conditions.',
-                    'severity': 'MEDIUM',
-                    'fix': 'Review entry timing and market conditions.'
+                    'cause': 'UNKNOWN',
+                    'description': '(Historical trade - close reason not recorded) Unable to determine exact exit trigger.',
+                    'severity': 'LOW',
+                    'fix': 'New trades will record exact close reason for accurate analysis.'
                 }
+        else:
+            root_cause = {
+                'cause': close_reason_value,
+                'description': f'Trade closed with reason: {close_reason_value}',
+                'severity': 'MEDIUM',
+                'fix': None
+            }
 
-        # Build recommendations
+        # Build recommendations based on close reason
         recommendations = []
-        if root_cause['cause'] == 'TIMING_ISSUE':
-            recommendations.append(f'Your server is in {server_timezone}. Overnight close is set to {overnight_close_hour:02d}:{overnight_close_minute:02d}.')
+        if root_cause['cause'] == 'STOP_LOSS':
+            recommendations.append(f'Z-score moved from {trade["entry_zscore"]:.2f} to {trade["exit_zscore"]:.2f} (stop at ±{stop_loss_std}σ)')
+            recommendations.append('Consider: Wider stop loss threshold, or tighter entry threshold for higher probability trades')
+            recommendations.append('Check Hurst exponent - market may have been trending instead of mean-reverting')
+        elif root_cause['cause'] == 'MAX_LOSS':
+            recommendations.append(f'Current: max_loss_per_lot = ${max_loss_per_lot:.0f}')
+            recommendations.append(f'Recommendation: Increase to ${max_loss_per_lot * 2.5:.0f} OR reduce lot size to {trade["lot_size"] / 2:.0f}')
+            recommendations.append('Max loss should allow enough room for mean reversion to occur')
+        elif root_cause['cause'] == 'OVERNIGHT_CLOSE':
+            recommendations.append(f'Server timezone: {server_timezone}, Overnight close: {overnight_close_hour:02d}:{overnight_close_minute:02d}')
             if server_timezone in ['UTC', 'Etc/UTC']:
-                recommendations.append('For 4:55 PM EST overnight close, set to 21:55 (not 16:55) since server is UTC.')
-            recommendations.append(f'Enable "No Entry After" and set to {overnight_close_hour - 1:02d}:00 to prevent late entries.')
-        elif root_cause['cause'] == 'MAX_LOSS_TOO_TIGHT':
-            recommendations.append(f'Increase max_loss_per_lot from ${max_loss_per_lot:.0f} to ${max_loss_per_lot * 2.5:.0f}')
-            recommendations.append(f'Alternative: Reduce lot size from {trade["lot_size"]} to {trade["lot_size"] / 2:.0f}')
-        elif root_cause['cause'] == 'EXCESSIVE_COSTS':
+                recommendations.append('For 4:55 PM EST, set overnight close to 21:55 (not 16:55) since server is UTC')
+            recommendations.append(f'Enable "No Entry After" to prevent entries too close to market close')
+        elif root_cause['cause'] == 'TIME_STOP':
+            time_stop_days = config.get('time_stop_loss_days', 0)
+            recommendations.append(f'Position exceeded {time_stop_days} day holding limit')
+            recommendations.append('Consider: Increase time_stop_loss_days or review entry criteria')
+        elif root_cause['cause'] == 'COSTS_EXCEEDED_PROFIT':
+            recommendations.append(f'Gross profit: ${trade["gross_pnl"]:.2f}, but costs: ${total_costs:.2f}')
             recommendations.append(f'Reduce lot size from {trade["lot_size"]} to {trade["lot_size"] / 2:.0f} to halve costs')
             if config.get('order_type', 'MARKET') == 'MARKET':
                 recommendations.append('Switch to LIMIT orders to avoid paying bid-ask spread')
+        elif root_cause['cause'] in ['LIKELY_OVERNIGHT_CLOSE', 'UNKNOWN']:
+            recommendations.append('This is a historical trade - close reason was not recorded at that time')
+            recommendations.append('All new trades will record the exact exit trigger for accurate analysis')
 
         # Build response
         return jsonify({
