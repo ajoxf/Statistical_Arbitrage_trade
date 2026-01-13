@@ -134,7 +134,11 @@ class DatabaseManager:
             ('order_type', "TEXT DEFAULT 'MARKET'"),  # MARKET or LIMIT
             ('limit_order_timeout', 'INTEGER DEFAULT 60'),  # seconds to wait for limit fill
             ('limit_peg_interval', 'REAL DEFAULT 1.5'),  # seconds between price updates
-            ('exit_at_opposite_sd', 'REAL DEFAULT 0')  # 0 = exit at mean, >0 = exit at opposite SD (e.g., 1.0 = -1σ for shorts)
+            ('exit_at_opposite_sd', 'REAL DEFAULT 0'),  # 0 = exit at mean, >0 = exit at opposite SD (e.g., 1.0 = -1σ for shorts)
+            # No new entries after time setting
+            ('no_entry_after_enabled', 'INTEGER DEFAULT 0'),
+            ('no_entry_after_hour', 'INTEGER DEFAULT 16'),  # Default 4:30 PM EST = 21:30 UTC
+            ('no_entry_after_minute', 'INTEGER DEFAULT 30')
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trading_config ADD COLUMN {col_def[0]} {col_def[1]}')
@@ -382,7 +386,11 @@ class DatabaseManager:
                 'order_type': row[39] if len(row) > 39 and row[39] else 'MARKET',
                 'limit_order_timeout': row[40] if len(row) > 40 and row[40] is not None else 60,
                 'limit_peg_interval': row[41] if len(row) > 41 and row[41] is not None else 1.5,
-                'exit_at_opposite_sd': row[42] if len(row) > 42 and row[42] is not None else 0
+                'exit_at_opposite_sd': row[42] if len(row) > 42 and row[42] is not None else 0,
+                # No new entries after time
+                'no_entry_after_enabled': bool(row[43]) if len(row) > 43 and row[43] is not None else False,
+                'no_entry_after_hour': row[44] if len(row) > 44 and row[44] is not None else 16,
+                'no_entry_after_minute': row[45] if len(row) > 45 and row[45] is not None else 30
             }
         return None
 
@@ -435,6 +443,9 @@ class DatabaseManager:
                     limit_order_timeout = ?,
                     limit_peg_interval = ?,
                     exit_at_opposite_sd = ?,
+                    no_entry_after_enabled = ?,
+                    no_entry_after_hour = ?,
+                    no_entry_after_minute = ?,
                     updated_at = ?
                 WHERE id = 1
             ''', (
@@ -480,6 +491,9 @@ class DatabaseManager:
                 config.get('limit_order_timeout', 60),
                 config.get('limit_peg_interval', 1.5),
                 config.get('exit_at_opposite_sd', 0),
+                1 if config.get('no_entry_after_enabled', False) else 0,
+                config.get('no_entry_after_hour', 16),
+                config.get('no_entry_after_minute', 30),
                 datetime.now().isoformat()
             ))
             conn.commit()
@@ -1698,6 +1712,19 @@ class TradingMonitor:
             else:
                 # Reset trending tracker when mean-reverting again
                 self.trending_since[asset_key] = None
+
+            # Check if new entries are blocked after specified time
+            no_entry_after_enabled = self.config.get('no_entry_after_enabled', False)
+            if no_entry_after_enabled:
+                no_entry_hour = self.config.get('no_entry_after_hour', 16)
+                no_entry_minute = self.config.get('no_entry_after_minute', 30)
+                now = datetime.now()
+                if now.hour > no_entry_hour or (now.hour == no_entry_hour and now.minute >= no_entry_minute):
+                    return {
+                        'type': 'TIME_BLOCK',
+                        'reason': f'New entries blocked after {no_entry_hour:02d}:{no_entry_minute:02d} (current: {now.strftime("%H:%M")})',
+                        'action': 'No new trades - Outside trading hours'
+                    }
 
             if zscore > entry_std:
                 return {
@@ -3150,6 +3177,9 @@ def settings():
             monitor.config['close_before_overnight'] = request.form.get('close_before_overnight') == 'on'
             monitor.config['overnight_close_hour'] = int(request.form.get('overnight_close_hour', 16))
             monitor.config['overnight_close_minute'] = int(request.form.get('overnight_close_minute', 55))
+            monitor.config['no_entry_after_enabled'] = request.form.get('no_entry_after_enabled') == 'on'
+            monitor.config['no_entry_after_hour'] = int(request.form.get('no_entry_after_hour', 16))
+            monitor.config['no_entry_after_minute'] = int(request.form.get('no_entry_after_minute', 30))
             monitor.config['selected_asset'] = request.form.get('selected_asset', 'GOLD')
 
             # Order type settings
@@ -6783,6 +6813,33 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     </div>
                 </div>
                 <div class="help-text">Default 16:55 (4:55 PM) - close before 5 PM EST swap rollover. Adjust based on your broker's swap time.</div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">🚫 No New Entries After Time</div>
+
+                <div class="form-group">
+                    <label class="toggle-label">
+                        <input type="checkbox" name="no_entry_after_enabled" {% if config.no_entry_after_enabled %}checked{% endif %}>
+                        <span>Block New Entries After Specified Time</span>
+                    </label>
+                    <div class="help-text">When enabled, prevents any new trade entries after the specified time. Existing positions can still exit normally.</div>
+                </div>
+
+                <div class="form-group" style="display: flex; gap: 15px; align-items: flex-end;">
+                    <div style="flex: 1;">
+                        <label>No Entry After Hour (24h format)</label>
+                        <input type="number" name="no_entry_after_hour" value="{{ config.no_entry_after_hour or 16 }}" min="0" max="23" step="1">
+                    </div>
+                    <div style="flex: 1;">
+                        <label>No Entry After Minute</label>
+                        <input type="number" name="no_entry_after_minute" value="{{ config.no_entry_after_minute or 30 }}" min="0" max="59" step="1">
+                    </div>
+                </div>
+                <div class="help-text">
+                    <strong>For 4:30 PM EST:</strong> Set to 16:30 if your server is in EST, or 21:30 if server is in UTC.<br>
+                    This prevents late-session entries that may not have time to reach exit targets before overnight close.
+                </div>
             </div>
 
             <div class="card">
