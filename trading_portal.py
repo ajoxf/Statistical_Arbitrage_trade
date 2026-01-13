@@ -24,8 +24,9 @@ import time
 import logging
 import uuid
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import deque
+import time as time_module
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'change-this-in-production')
@@ -3285,6 +3286,143 @@ def toggle_paper():
     return jsonify({'status': 'success', 'paper_mode': paper})
 
 
+@app.route('/api/market_times')
+def get_market_times():
+    """Get server timezone and market session times"""
+    import subprocess
+
+    # Get server timezone
+    try:
+        # Try to read timezone file
+        if os.path.exists('/etc/timezone'):
+            with open('/etc/timezone', 'r') as f:
+                server_timezone = f.read().strip()
+        else:
+            # Fallback to checking TZ environment or using time module
+            server_timezone = time_module.tzname[0] if time_module.tzname[0] else 'UTC'
+    except:
+        server_timezone = 'UTC'
+
+    # Current times
+    now_local = datetime.now()
+    now_utc = datetime.utcnow()
+
+    # Market sessions in UTC (these are the actual market hours)
+    # Note: Adjust for daylight saving time as needed
+    MARKET_SESSIONS = {
+        'china': {
+            'name': 'China (Shanghai)',
+            'open_utc': (1, 30),   # 9:30 AM CST = 01:30 UTC
+            'close_utc': (7, 0),   # 3:00 PM CST = 07:00 UTC
+            'local_hours': '9:30 AM - 3:00 PM CST'
+        },
+        'london': {
+            'name': 'London (LSE)',
+            'open_utc': (8, 0),    # 8:00 AM GMT = 08:00 UTC
+            'close_utc': (16, 30), # 4:30 PM GMT = 16:30 UTC
+            'local_hours': '8:00 AM - 4:30 PM GMT'
+        },
+        'new_york': {
+            'name': 'New York (NYSE)',
+            'open_utc': (14, 30),  # 9:30 AM EST = 14:30 UTC (winter)
+            'close_utc': (21, 0),  # 4:00 PM EST = 21:00 UTC (winter)
+            'local_hours': '9:30 AM - 4:00 PM EST'
+        }
+    }
+
+    def time_until(target_hour, target_minute, now):
+        """Calculate time until a specific UTC time"""
+        target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        if target <= now:
+            # Already passed today, calculate for tomorrow
+            target += timedelta(days=1)
+        diff = target - now
+        return diff
+
+    def time_since(target_hour, target_minute, now):
+        """Calculate time since a specific UTC time (if it's in the past today)"""
+        target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        if target > now:
+            return None  # Hasn't happened yet today
+        diff = now - target
+        return diff
+
+    def format_timedelta(td):
+        """Format timedelta as human-readable string"""
+        total_seconds = int(td.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        elif minutes > 0:
+            return f"{minutes}m {seconds}s"
+        else:
+            return f"{seconds}s"
+
+    def is_market_open(open_h, open_m, close_h, close_m, now):
+        """Check if market is currently open"""
+        now_minutes = now.hour * 60 + now.minute
+        open_minutes = open_h * 60 + open_m
+        close_minutes = close_h * 60 + close_m
+
+        if close_minutes > open_minutes:
+            # Normal case: open and close on same day
+            return open_minutes <= now_minutes < close_minutes
+        else:
+            # Wraps around midnight
+            return now_minutes >= open_minutes or now_minutes < close_minutes
+
+    sessions = {}
+    for key, session in MARKET_SESSIONS.items():
+        open_h, open_m = session['open_utc']
+        close_h, close_m = session['close_utc']
+
+        is_open = is_market_open(open_h, open_m, close_h, close_m, now_utc)
+
+        if is_open:
+            # Market is open - show time until close
+            time_to_close = time_until(close_h, close_m, now_utc)
+            sessions[key] = {
+                'name': session['name'],
+                'status': 'OPEN',
+                'status_class': 'open',
+                'local_hours': session['local_hours'],
+                'time_to_open': None,
+                'time_to_close': format_timedelta(time_to_close),
+                'time_to_close_seconds': time_to_close.total_seconds()
+            }
+        else:
+            # Market is closed - show time until open
+            time_to_open = time_until(open_h, open_m, now_utc)
+            sessions[key] = {
+                'name': session['name'],
+                'status': 'CLOSED',
+                'status_class': 'closed',
+                'local_hours': session['local_hours'],
+                'time_to_open': format_timedelta(time_to_open),
+                'time_to_close': None,
+                'time_to_open_seconds': time_to_open.total_seconds()
+            }
+
+    # Calculate time to "market close" - use NY close as primary
+    ny_close_h, ny_close_m = MARKET_SESSIONS['new_york']['close_utc']
+    time_to_ny_close = time_until(ny_close_h, ny_close_m, now_utc)
+
+    return jsonify({
+        'server': {
+            'timezone': server_timezone,
+            'local_time': now_local.strftime('%Y-%m-%d %H:%M:%S'),
+            'utc_time': now_utc.strftime('%Y-%m-%d %H:%M:%S'),
+            'utc_hour': now_utc.hour,
+            'utc_minute': now_utc.minute
+        },
+        'sessions': sessions,
+        'time_to_market_close': format_timedelta(time_to_ny_close),
+        'time_to_market_close_seconds': time_to_ny_close.total_seconds(),
+        'note': 'All market times shown in UTC. Adjust for daylight saving time if needed.'
+    })
+
+
 @app.route('/api/reset_statistics', methods=['POST'])
 def reset_statistics():
     """Reset all statistics - clears spread cache, price history, and z-score history"""
@@ -5642,6 +5780,57 @@ MONITOR_HTML = '''<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Market Times Panel -->
+    <div class="market-times-section" style="background: linear-gradient(135deg, #1a237e 0%, #283593 100%); border-radius: 12px; padding: 15px 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <div style="font-size: 1.1em; font-weight: 600;">🌍 Market Sessions</div>
+            <div style="font-size: 0.85em; opacity: 0.9;">
+                Server: <span id="server-timezone">UTC</span> |
+                <span id="server-time">--:--</span> UTC
+            </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px;">
+            <!-- NY Close Timer -->
+            <div style="background: rgba(255,255,255,0.15); border-radius: 8px; padding: 12px; text-align: center;">
+                <div style="font-size: 0.75em; opacity: 0.8; margin-bottom: 4px;">⏰ NY MARKET CLOSE</div>
+                <div id="time-to-close" style="font-size: 1.4em; font-weight: bold;">--:--</div>
+            </div>
+            <!-- China -->
+            <div style="background: rgba(255,255,255,0.1); border-radius: 8px; padding: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <span style="font-weight: 600;">🇨🇳 China</span>
+                    <span id="china-status" class="market-status" style="font-size: 0.75em; padding: 2px 8px; border-radius: 10px; background: #f44336;">CLOSED</span>
+                </div>
+                <div style="font-size: 0.8em; opacity: 0.9;">
+                    <span id="china-timer-label">Opens in:</span> <span id="china-timer" style="font-weight: 600;">--:--</span>
+                </div>
+                <div style="font-size: 0.7em; opacity: 0.7; margin-top: 4px;">9:30 AM - 3:00 PM CST</div>
+            </div>
+            <!-- London -->
+            <div style="background: rgba(255,255,255,0.1); border-radius: 8px; padding: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <span style="font-weight: 600;">🇬🇧 London</span>
+                    <span id="london-status" class="market-status" style="font-size: 0.75em; padding: 2px 8px; border-radius: 10px; background: #f44336;">CLOSED</span>
+                </div>
+                <div style="font-size: 0.8em; opacity: 0.9;">
+                    <span id="london-timer-label">Opens in:</span> <span id="london-timer" style="font-weight: 600;">--:--</span>
+                </div>
+                <div style="font-size: 0.7em; opacity: 0.7; margin-top: 4px;">8:00 AM - 4:30 PM GMT</div>
+            </div>
+            <!-- New York -->
+            <div style="background: rgba(255,255,255,0.1); border-radius: 8px; padding: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <span style="font-weight: 600;">🇺🇸 New York</span>
+                    <span id="ny-status" class="market-status" style="font-size: 0.75em; padding: 2px 8px; border-radius: 10px; background: #f44336;">CLOSED</span>
+                </div>
+                <div style="font-size: 0.8em; opacity: 0.9;">
+                    <span id="ny-timer-label">Opens in:</span> <span id="ny-timer" style="font-weight: 600;">--:--</span>
+                </div>
+                <div style="font-size: 0.7em; opacity: 0.7; margin-top: 4px;">9:30 AM - 4:00 PM EST</div>
+            </div>
+        </div>
+    </div>
+
     <div class="chart-section">
         <div class="chart-header">
             <div class="chart-title">Z-Score Chart</div>
@@ -5733,6 +5922,49 @@ MONITOR_HTML = '''<!DOCTYPE html>
         // Get asset filter from URL parameter (?asset=1 or ?asset=2)
         const urlParams = new URLSearchParams(window.location.search);
         const assetFilter = urlParams.get('asset'); // '1', '2', or null (show all)
+
+        // Fetch and update market times
+        function updateMarketTimes() {
+            fetch('/api/market_times')
+                .then(res => res.json())
+                .then(data => {
+                    // Update server info
+                    document.getElementById('server-timezone').textContent = data.server.timezone;
+                    document.getElementById('server-time').textContent = data.server.utc_time.split(' ')[1];
+
+                    // Update NY close timer
+                    document.getElementById('time-to-close').textContent = data.time_to_market_close;
+
+                    // Update China
+                    const china = data.sessions.china;
+                    const chinaStatus = document.getElementById('china-status');
+                    chinaStatus.textContent = china.status;
+                    chinaStatus.style.background = china.status === 'OPEN' ? '#4caf50' : '#f44336';
+                    document.getElementById('china-timer-label').textContent = china.status === 'OPEN' ? 'Closes in:' : 'Opens in:';
+                    document.getElementById('china-timer').textContent = china.status === 'OPEN' ? china.time_to_close : china.time_to_open;
+
+                    // Update London
+                    const london = data.sessions.london;
+                    const londonStatus = document.getElementById('london-status');
+                    londonStatus.textContent = london.status;
+                    londonStatus.style.background = london.status === 'OPEN' ? '#4caf50' : '#f44336';
+                    document.getElementById('london-timer-label').textContent = london.status === 'OPEN' ? 'Closes in:' : 'Opens in:';
+                    document.getElementById('london-timer').textContent = london.status === 'OPEN' ? london.time_to_close : london.time_to_open;
+
+                    // Update New York
+                    const ny = data.sessions.new_york;
+                    const nyStatus = document.getElementById('ny-status');
+                    nyStatus.textContent = ny.status;
+                    nyStatus.style.background = ny.status === 'OPEN' ? '#4caf50' : '#f44336';
+                    document.getElementById('ny-timer-label').textContent = ny.status === 'OPEN' ? 'Closes in:' : 'Opens in:';
+                    document.getElementById('ny-timer').textContent = ny.status === 'OPEN' ? ny.time_to_close : ny.time_to_open;
+                })
+                .catch(err => console.error('Market times error:', err));
+        }
+
+        // Update market times every 10 seconds
+        updateMarketTimes();
+        setInterval(updateMarketTimes, 10000);
 
         function updateData() {
             fetch('/api/data')
