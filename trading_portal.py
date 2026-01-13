@@ -3423,6 +3423,486 @@ def get_market_times():
     })
 
 
+@app.route('/api/analyze_trade/<int:trade_id>')
+def analyze_trade(trade_id):
+    """Analyze a specific trade and return insights"""
+    try:
+        # Get server timezone
+        server_timezone = 'UTC'
+        try:
+            if os.path.exists('/etc/timezone'):
+                with open('/etc/timezone', 'r') as f:
+                    server_timezone = f.read().strip()
+        except:
+            pass
+
+        # Get trade from database
+        conn = monitor.db.get_connection()
+        cursor = conn.cursor()
+
+        # Get column names
+        cursor.execute('PRAGMA table_info(trade_journal)')
+        columns = [col[1] for col in cursor.fetchall()]
+        col_map = {col: idx for idx, col in enumerate(columns)}
+
+        cursor.execute('SELECT * FROM trade_journal WHERE rowid = ?', (trade_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({'error': 'Trade not found'}), 404
+
+        # Parse trade data
+        def safe_float(val, default=0):
+            try:
+                return float(val) if val else default
+            except:
+                return default
+
+        def safe_str(val, default=''):
+            return str(val) if val else default
+
+        trade = {
+            'id': trade_id,
+            'direction': safe_str(row[col_map.get('direction', 2)]) if 'direction' in col_map else '',
+            'lot_size': safe_float(row[col_map.get('lot_size', 3)]) if 'lot_size' in col_map else 20,
+            'entry_time': safe_str(row[col_map.get('entry_date', 4)]) if 'entry_date' in col_map else '',
+            'exit_time': safe_str(row[col_map.get('exit_date', 5)]) if 'exit_date' in col_map else '',
+            'entry_zscore': safe_float(row[col_map.get('entry_zscore', 6)]) if 'entry_zscore' in col_map else 0,
+            'exit_zscore': safe_float(row[col_map.get('exit_zscore', 7)]) if 'exit_zscore' in col_map else 0,
+            'entry_spread': safe_float(row[col_map.get('entry_spread', 8)]) if 'entry_spread' in col_map else 0,
+            'exit_spread': safe_float(row[col_map.get('exit_spread', 9)]) if 'exit_spread' in col_map else 0,
+            'gross_pnl': safe_float(row[col_map.get('gross_pnl', 10)]) if 'gross_pnl' in col_map else 0,
+            'net_pnl': safe_float(row[col_map.get('net_pnl', 11)]) if 'net_pnl' in col_map else 0,
+            'swap_cost': safe_float(row[col_map.get('swap_cost', 12)]) if 'swap_cost' in col_map else 0,
+            'commission': safe_float(row[col_map.get('commission', 13)]) if 'commission' in col_map else 0,
+            'spread_cost': safe_float(row[col_map.get('spread_cost', 14)]) if 'spread_cost' in col_map else 0,
+            'close_reason': safe_str(row[col_map.get('close_reason', 15)]) if 'close_reason' in col_map else '',
+            'entry_spot_price': safe_float(row[col_map.get('entry_spot_price', -1)]) if 'entry_spot_price' in col_map else 0,
+            'entry_futures_price': safe_float(row[col_map.get('entry_futures_price', -1)]) if 'entry_futures_price' in col_map else 0,
+            'exit_spot_price': safe_float(row[col_map.get('exit_spot_price', -1)]) if 'exit_spot_price' in col_map else 0,
+            'exit_futures_price': safe_float(row[col_map.get('exit_futures_price', -1)]) if 'exit_futures_price' in col_map else 0,
+        }
+
+        # Get current settings
+        config = monitor.config
+
+        # Calculate duration
+        duration_seconds = 0
+        try:
+            if trade['entry_time'] and trade['exit_time']:
+                entry_dt = datetime.strptime(trade['entry_time'], '%Y-%m-%d %H:%M:%S')
+                exit_dt = datetime.strptime(trade['exit_time'], '%Y-%m-%d %H:%M:%S')
+                duration_seconds = int((exit_dt - entry_dt).total_seconds())
+        except:
+            pass
+
+        # Format duration
+        if duration_seconds < 60:
+            duration_str = f'{duration_seconds}s'
+        elif duration_seconds < 3600:
+            duration_str = f'{duration_seconds // 60}m {duration_seconds % 60}s'
+        else:
+            hours = duration_seconds // 3600
+            mins = (duration_seconds % 3600) // 60
+            duration_str = f'{hours}h {mins}m'
+
+        # Analyze the trade
+        issues = []
+        is_winner = trade['net_pnl'] > 0
+
+        # Get settings values
+        entry_std = config.get('entry_std_dev', 3.5)
+        exit_std = config.get('exit_std_dev', 2.0)
+        stop_loss_std = config.get('stop_loss_std_dev', 6.0)
+        max_loss_per_lot = config.get('max_loss_per_lot', 100)
+        overnight_close_enabled = config.get('close_before_overnight', False)
+        overnight_close_hour = config.get('overnight_close_hour', 16)
+        overnight_close_minute = config.get('overnight_close_minute', 55)
+        no_entry_after_enabled = config.get('no_entry_after_enabled', False)
+        no_entry_after_hour = config.get('no_entry_after_hour', 16)
+        no_entry_after_minute = config.get('no_entry_after_minute', 30)
+
+        # Parse entry/exit times for timing analysis
+        entry_hour = 0
+        entry_minute = 0
+        exit_hour = 0
+        exit_minute = 0
+        try:
+            if trade['entry_time']:
+                entry_dt = datetime.strptime(trade['entry_time'], '%Y-%m-%d %H:%M:%S')
+                entry_hour = entry_dt.hour
+                entry_minute = entry_dt.minute
+            if trade['exit_time']:
+                exit_dt = datetime.strptime(trade['exit_time'], '%Y-%m-%d %H:%M:%S')
+                exit_hour = exit_dt.hour
+                exit_minute = exit_dt.minute
+        except:
+            pass
+
+        # === TIMING ANALYSIS ===
+        # Check if entered after overnight close
+        if overnight_close_enabled:
+            overnight_minutes = overnight_close_hour * 60 + overnight_close_minute
+            entry_minutes = entry_hour * 60 + entry_minute
+
+            if entry_minutes >= overnight_minutes:
+                issues.append({
+                    'type': 'ENTRY_AFTER_OVERNIGHT',
+                    'severity': 'CRITICAL',
+                    'icon': '🔴',
+                    'message': f'Trade entered at {entry_hour:02d}:{entry_minute:02d} AFTER overnight close time ({overnight_close_hour:02d}:{overnight_close_minute:02d}). Trade was immediately closed!'
+                })
+
+            # Check if exit was caused by overnight close
+            exit_minutes = exit_hour * 60 + exit_minute
+            if abs(exit_minutes - overnight_minutes) < 5:
+                issues.append({
+                    'type': 'OVERNIGHT_CLOSE_EXIT',
+                    'severity': 'HIGH',
+                    'icon': '🟠',
+                    'message': f'Trade closed at {exit_hour:02d}:{exit_minute:02d} by OVERNIGHT_CLOSE. Entry was too late to reach exit target.'
+                })
+
+        # Check if immediate exit (less than 2 minutes)
+        if duration_seconds < 120 and not is_winner:
+            issues.append({
+                'type': 'IMMEDIATE_EXIT',
+                'severity': 'CRITICAL',
+                'icon': '🔴',
+                'message': f'Trade exited in {duration_str} - likely closed immediately by OVERNIGHT_CLOSE or MAX_LOSS'
+            })
+
+        # === EXIT ANALYSIS ===
+        expected_exit_z = exit_std if trade['direction'] == 'Long Spread' else -exit_std
+        reached_target = False
+        if trade['direction'] == 'Long Spread':
+            reached_target = trade['exit_zscore'] >= exit_std
+        else:
+            reached_target = trade['exit_zscore'] <= -exit_std
+
+        hit_stop_loss = False
+        if trade['direction'] == 'Long Spread':
+            hit_stop_loss = trade['exit_zscore'] <= -stop_loss_std
+        else:
+            hit_stop_loss = trade['exit_zscore'] >= stop_loss_std
+
+        if not reached_target and not hit_stop_loss and not is_winner:
+            # Check close reason
+            close_reason_upper = trade['close_reason'].upper()
+            if 'MAX_LOSS' in close_reason_upper:
+                max_loss_total = max_loss_per_lot * trade['lot_size']
+                issues.append({
+                    'type': 'MAX_LOSS_EXIT',
+                    'severity': 'HIGH',
+                    'icon': '🟠',
+                    'message': f'Trade closed by MAX_LOSS (${max_loss_per_lot}/lot × {trade["lot_size"]} lots = ${max_loss_total:.0f} limit)'
+                })
+            elif 'OVERNIGHT' in close_reason_upper:
+                issues.append({
+                    'type': 'OVERNIGHT_EXIT',
+                    'severity': 'HIGH',
+                    'icon': '🟠',
+                    'message': f'Trade closed by overnight protection before reaching exit target'
+                })
+
+        # === COST ANALYSIS ===
+        total_costs = trade['spread_cost'] + trade['swap_cost'] + trade['commission']
+        if total_costs > 500:
+            issues.append({
+                'type': 'HIGH_COSTS',
+                'severity': 'MEDIUM',
+                'icon': '🟡',
+                'message': f'High transaction costs: ${total_costs:.2f}. Need ${total_costs:.0f}+ gross profit to break even.'
+            })
+
+        if trade['gross_pnl'] > 0 and trade['net_pnl'] < 0:
+            issues.append({
+                'type': 'COSTS_ATE_PROFIT',
+                'severity': 'HIGH',
+                'icon': '🟠',
+                'message': f'Trade was profitable (${trade["gross_pnl"]:.2f} gross) but costs (${total_costs:.2f}) resulted in net loss.'
+            })
+
+        # === DETERMINE ROOT CAUSE ===
+        root_cause = {
+            'cause': 'WINNING_TRADE' if is_winner else 'UNKNOWN',
+            'description': 'Trade reached profit target successfully' if is_winner else 'Analysis could not determine specific cause',
+            'severity': 'SUCCESS' if is_winner else 'MEDIUM',
+            'fix': None
+        }
+
+        if not is_winner:
+            # Priority 1: Timing issues
+            timing_issues = [i for i in issues if i['type'] in ['ENTRY_AFTER_OVERNIGHT', 'OVERNIGHT_CLOSE_EXIT', 'IMMEDIATE_EXIT']]
+            if timing_issues:
+                root_cause = {
+                    'cause': 'TIMING_ISSUE',
+                    'description': f'Trade entered too late and was closed by OVERNIGHT_CLOSE. Server is in {server_timezone}, overnight close at {overnight_close_hour:02d}:{overnight_close_minute:02d}.',
+                    'severity': 'CRITICAL',
+                    'fix': f'For 4:55 PM EST, set overnight close to 21:55 if server is UTC. Enable "No Entry After" to prevent late entries.'
+                }
+            # Priority 2: MAX_LOSS
+            elif any(i['type'] == 'MAX_LOSS_EXIT' for i in issues):
+                max_loss_total = max_loss_per_lot * trade['lot_size']
+                root_cause = {
+                    'cause': 'MAX_LOSS_TOO_TIGHT',
+                    'description': f'MAX_LOSS (${max_loss_total:.0f}) triggered before reaching exit target.',
+                    'severity': 'HIGH',
+                    'fix': f'Increase max_loss_per_lot from ${max_loss_per_lot:.0f} to ${max_loss_per_lot * 2:.0f}-${max_loss_per_lot * 3:.0f}, OR reduce lot size.'
+                }
+            # Priority 3: Costs
+            elif any(i['type'] in ['HIGH_COSTS', 'COSTS_ATE_PROFIT'] for i in issues):
+                root_cause = {
+                    'cause': 'EXCESSIVE_COSTS',
+                    'description': f'Transaction costs (${total_costs:.2f}) exceed profit potential.',
+                    'severity': 'HIGH',
+                    'fix': 'Reduce lot size or switch to LIMIT orders to reduce spread costs.'
+                }
+            else:
+                root_cause = {
+                    'cause': 'ADVERSE_MARKET_MOVEMENT',
+                    'description': 'Trade lost due to unfavorable market conditions.',
+                    'severity': 'MEDIUM',
+                    'fix': 'Review entry timing and market conditions.'
+                }
+
+        # Build recommendations
+        recommendations = []
+        if root_cause['cause'] == 'TIMING_ISSUE':
+            recommendations.append(f'Your server is in {server_timezone}. Overnight close is set to {overnight_close_hour:02d}:{overnight_close_minute:02d}.')
+            if server_timezone in ['UTC', 'Etc/UTC']:
+                recommendations.append('For 4:55 PM EST overnight close, set to 21:55 (not 16:55) since server is UTC.')
+            recommendations.append(f'Enable "No Entry After" and set to {overnight_close_hour - 1:02d}:00 to prevent late entries.')
+        elif root_cause['cause'] == 'MAX_LOSS_TOO_TIGHT':
+            recommendations.append(f'Increase max_loss_per_lot from ${max_loss_per_lot:.0f} to ${max_loss_per_lot * 2.5:.0f}')
+            recommendations.append(f'Alternative: Reduce lot size from {trade["lot_size"]} to {trade["lot_size"] / 2:.0f}')
+        elif root_cause['cause'] == 'EXCESSIVE_COSTS':
+            recommendations.append(f'Reduce lot size from {trade["lot_size"]} to {trade["lot_size"] / 2:.0f} to halve costs')
+            if config.get('order_type', 'MARKET') == 'MARKET':
+                recommendations.append('Switch to LIMIT orders to avoid paying bid-ask spread')
+
+        # Build response
+        return jsonify({
+            'trade_id': trade_id,
+            'is_winner': is_winner,
+            'trade': trade,
+            'duration': duration_str,
+            'duration_seconds': duration_seconds,
+            'settings': {
+                'entry_std': entry_std,
+                'exit_std': exit_std,
+                'stop_loss_std': stop_loss_std,
+                'max_loss_per_lot': max_loss_per_lot,
+                'lot_size': config.get('lot_size', 20),
+                'overnight_close_enabled': overnight_close_enabled,
+                'overnight_close_time': f'{overnight_close_hour:02d}:{overnight_close_minute:02d}',
+                'no_entry_after_enabled': no_entry_after_enabled,
+                'no_entry_after_time': f'{no_entry_after_hour:02d}:{no_entry_after_minute:02d}',
+                'server_timezone': server_timezone
+            },
+            'exit_analysis': {
+                'entry_zscore': trade['entry_zscore'],
+                'exit_zscore': trade['exit_zscore'],
+                'expected_exit_zscore': expected_exit_z,
+                'reached_target': reached_target,
+                'hit_stop_loss': hit_stop_loss,
+                'close_reason': trade['close_reason']
+            },
+            'cost_analysis': {
+                'spread_cost': trade['spread_cost'],
+                'swap_cost': trade['swap_cost'],
+                'commission': trade['commission'],
+                'total_costs': total_costs,
+                'breakeven_gross': total_costs
+            },
+            'issues': issues,
+            'root_cause': root_cause,
+            'recommendations': recommendations
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+
+@app.route('/api/logs')
+def get_logs():
+    """Get recent log entries and detect errors/issues for AI Agent monitoring"""
+    try:
+        import re
+        from collections import deque
+
+        lines_count = request.args.get('lines', 100, type=int)
+        lines_count = min(lines_count, 500)  # Cap at 500 lines
+
+        log_file = 'trading_portal.log'
+        log_entries = []
+        errors = []
+        warnings = []
+        critical_issues = []
+
+        # Error patterns to detect
+        error_patterns = {
+            'MT5_CONNECTION': re.compile(r'(MT5|MetaTrader|mt5).*(fail|error|disconnect|timeout)', re.I),
+            'ORDER_REJECTED': re.compile(r'(order|trade).*(reject|fail|invalid|error)', re.I),
+            'POSITION_ERROR': re.compile(r'(position|close).*(fail|error|mismatch)', re.I),
+            'DATABASE_ERROR': re.compile(r'(database|sqlite|db).*(error|fail|corrupt)', re.I),
+            'PRICE_FETCH_ERROR': re.compile(r'(price|tick|quote).*(fail|error|timeout|stale)', re.I),
+            'OVERNIGHT_CLOSE': re.compile(r'overnight.*(close|exit)', re.I),
+            'MAX_LOSS_HIT': re.compile(r'max.?loss.*(trigger|hit|exceeded)', re.I),
+            'STOP_LOSS_HIT': re.compile(r'stop.?loss.*(trigger|hit)', re.I),
+            'SPREAD_ANOMALY': re.compile(r'spread.*(anomal|unusual|extreme|spike)', re.I),
+            'ZSCORE_EXTREME': re.compile(r'z.?score.*(extreme|high|spike|>|exceed)', re.I),
+        }
+
+        # Read log file
+        if os.path.exists(log_file):
+            with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+                # Read last N lines efficiently
+                all_lines = deque(f, maxlen=lines_count)
+
+            for line in all_lines:
+                line = line.strip()
+                if not line:
+                    continue
+
+                entry = {
+                    'raw': line,
+                    'level': 'INFO',
+                    'timestamp': '',
+                    'message': line,
+                    'detected_issues': []
+                }
+
+                # Parse log format: "2026-01-13 12:30:45 - LEVEL - message"
+                parts = line.split(' - ', 2)
+                if len(parts) >= 3:
+                    entry['timestamp'] = parts[0]
+                    entry['level'] = parts[1].upper()
+                    entry['message'] = parts[2]
+                elif len(parts) == 2:
+                    entry['timestamp'] = parts[0]
+                    entry['message'] = parts[1]
+
+                # Detect issues based on patterns
+                for issue_type, pattern in error_patterns.items():
+                    if pattern.search(line):
+                        entry['detected_issues'].append(issue_type)
+
+                # Categorize by severity
+                if 'ERROR' in entry['level'] or 'CRITICAL' in entry['level']:
+                    errors.append(entry)
+                    if entry['detected_issues']:
+                        critical_issues.extend(entry['detected_issues'])
+                elif 'WARNING' in entry['level']:
+                    warnings.append(entry)
+
+                log_entries.append(entry)
+
+        # Analyze patterns in recent errors
+        issue_summary = {}
+        for issue in critical_issues:
+            issue_summary[issue] = issue_summary.get(issue, 0) + 1
+
+        # Get recent trades to correlate with errors
+        recent_trade_issues = []
+        try:
+            conn = monitor.db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT close_reason, COUNT(*) as count
+                FROM trade_journal
+                WHERE close_reason IS NOT NULL
+                AND close_reason != ''
+                GROUP BY close_reason
+                ORDER BY count DESC
+                LIMIT 5
+            ''')
+            for row in cursor.fetchall():
+                recent_trade_issues.append({
+                    'close_reason': row[0],
+                    'count': row[1]
+                })
+            conn.close()
+        except:
+            pass
+
+        # Generate AI insights based on detected patterns
+        ai_insights = []
+
+        if issue_summary.get('MT5_CONNECTION', 0) > 3:
+            ai_insights.append({
+                'severity': 'CRITICAL',
+                'title': 'MT5 Connection Issues Detected',
+                'description': f'Found {issue_summary["MT5_CONNECTION"]} MT5 connection errors. This may cause order failures and missed trades.',
+                'recommendation': 'Check MT5 terminal status, network connectivity, and broker server availability.'
+            })
+
+        if issue_summary.get('ORDER_REJECTED', 0) > 0:
+            ai_insights.append({
+                'severity': 'HIGH',
+                'title': 'Order Rejections Detected',
+                'description': f'Found {issue_summary["ORDER_REJECTED"]} order rejection errors. Orders are not executing as expected.',
+                'recommendation': 'Review order parameters, check account margin, and verify symbol trading is enabled.'
+            })
+
+        if issue_summary.get('MAX_LOSS_HIT', 0) > 5:
+            ai_insights.append({
+                'severity': 'MEDIUM',
+                'title': 'Frequent Max Loss Triggers',
+                'description': f'Max loss was triggered {issue_summary["MAX_LOSS_HIT"]} times recently.',
+                'recommendation': 'Consider increasing max_loss_per_lot or reducing lot size to allow more room for mean reversion.'
+            })
+
+        if issue_summary.get('OVERNIGHT_CLOSE', 0) > 5:
+            ai_insights.append({
+                'severity': 'MEDIUM',
+                'title': 'Many Overnight Closes',
+                'description': f'Found {issue_summary["OVERNIGHT_CLOSE"]} overnight close events. Positions are being closed early.',
+                'recommendation': 'Review overnight close time setting. Ensure it matches your intended NY market close time in UTC.'
+            })
+
+        if issue_summary.get('PRICE_FETCH_ERROR', 0) > 3:
+            ai_insights.append({
+                'severity': 'HIGH',
+                'title': 'Price Data Issues',
+                'description': f'Found {issue_summary["PRICE_FETCH_ERROR"]} price fetch errors. Strategy may be using stale data.',
+                'recommendation': 'Check MT5 connection and ensure market is open. Data may be stale during off-hours.'
+            })
+
+        # Check for no recent errors (good status)
+        if len(errors) == 0 and len(ai_insights) == 0:
+            ai_insights.append({
+                'severity': 'OK',
+                'title': 'System Running Normally',
+                'description': 'No errors or critical issues detected in recent logs.',
+                'recommendation': 'Continue monitoring. System appears to be operating correctly.'
+            })
+
+        return jsonify({
+            'log_entries': log_entries[-50:],  # Return last 50 for display
+            'total_lines': len(log_entries),
+            'error_count': len(errors),
+            'warning_count': len(warnings),
+            'recent_errors': errors[-10:] if errors else [],
+            'recent_warnings': warnings[-10:] if warnings else [],
+            'issue_summary': issue_summary,
+            'recent_trade_issues': recent_trade_issues,
+            'ai_insights': ai_insights,
+            'log_file': log_file,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        import traceback
+        logger.error(f"Error reading logs: {e}")
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
 @app.route('/api/reset_statistics', methods=['POST'])
 def reset_statistics():
     """Reset all statistics - clears spread cache, price history, and z-score history"""
@@ -5707,6 +6187,293 @@ MONITOR_HTML = '''<!DOCTYPE html>
             position: relative;
             height: 300px;
         }
+        /* AI Analysis Button & Modal Styles */
+        .analyze-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .analyze-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+        }
+        .analyze-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .analysis-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            z-index: 10000;
+            justify-content: center;
+            align-items: center;
+        }
+        .analysis-modal.active {
+            display: flex;
+        }
+        .analysis-content {
+            background: white;
+            border-radius: 12px;
+            max-width: 800px;
+            max-height: 85vh;
+            width: 90%;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .analysis-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 12px 12px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .analysis-header h2 {
+            margin: 0;
+            font-size: 1.4em;
+        }
+        .analysis-close {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .analysis-close:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .analysis-body {
+            padding: 20px;
+        }
+        .analysis-section {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .analysis-section h3 {
+            margin: 0 0 12px 0;
+            color: #333;
+            font-size: 1.1em;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 8px;
+        }
+        .analysis-section.win {
+            border-left: 4px solid #4CAF50;
+        }
+        .analysis-section.loss {
+            border-left: 4px solid #f44336;
+        }
+        .analysis-stat {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .analysis-stat:last-child {
+            border-bottom: none;
+        }
+        .analysis-label {
+            color: #666;
+        }
+        .analysis-value {
+            font-weight: 600;
+            color: #333;
+        }
+        .analysis-value.positive { color: #4CAF50; }
+        .analysis-value.negative { color: #f44336; }
+        .issue-item {
+            background: #fff3e0;
+            border-left: 3px solid #ff9800;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 0 4px 4px 0;
+        }
+        .issue-item.critical {
+            background: #ffebee;
+            border-left-color: #f44336;
+        }
+        .recommendation-item {
+            background: #e8f5e9;
+            border-left: 3px solid #4CAF50;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 0 4px 4px 0;
+        }
+        .root-cause-box {
+            background: linear-gradient(135deg, #fff5f5 0%, #ffe0e0 100%);
+            border: 2px solid #f44336;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .root-cause-box.win {
+            background: linear-gradient(135deg, #f5fff5 0%, #e0ffe0 100%);
+            border-color: #4CAF50;
+        }
+        .root-cause-title {
+            font-weight: bold;
+            color: #c62828;
+            margin-bottom: 8px;
+        }
+        .root-cause-box.win .root-cause-title {
+            color: #2e7d32;
+        }
+        .analysis-loading {
+            text-align: center;
+            padding: 60px 20px;
+        }
+        .analysis-loading .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* Log Monitor Panel Styles */
+        .log-monitor-section {
+            background: linear-gradient(135deg, #263238 0%, #37474f 100%);
+            border-radius: 12px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            color: white;
+        }
+        .log-monitor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        .log-monitor-title {
+            font-size: 1.1em;
+            font-weight: 600;
+        }
+        .log-monitor-status {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .log-status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 600;
+        }
+        .log-status-badge.ok { background: #4CAF50; }
+        .log-status-badge.warning { background: #ff9800; }
+        .log-status-badge.error { background: #f44336; }
+        .log-status-badge.critical { background: #c62828; animation: pulse 1s infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        .log-monitor-body {
+            display: none;
+            margin-top: 15px;
+        }
+        .log-monitor-body.expanded {
+            display: block;
+        }
+        .ai-insights-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+            margin-bottom: 15px;
+        }
+        .ai-insight-card {
+            background: rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 12px;
+            border-left: 4px solid #4CAF50;
+        }
+        .ai-insight-card.critical { border-left-color: #f44336; background: rgba(244,67,54,0.2); }
+        .ai-insight-card.high { border-left-color: #ff9800; background: rgba(255,152,0,0.15); }
+        .ai-insight-card.medium { border-left-color: #ffeb3b; background: rgba(255,235,59,0.1); }
+        .ai-insight-card.ok { border-left-color: #4CAF50; background: rgba(76,175,80,0.15); }
+        .ai-insight-title {
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .ai-insight-desc {
+            font-size: 0.85em;
+            opacity: 0.9;
+            margin-bottom: 6px;
+        }
+        .ai-insight-rec {
+            font-size: 0.8em;
+            opacity: 0.8;
+            font-style: italic;
+        }
+        .log-stream-container {
+            background: #1a1a2e;
+            border-radius: 8px;
+            max-height: 250px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.8em;
+        }
+        .log-entry {
+            padding: 4px 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .log-entry.error { background: rgba(244,67,54,0.2); color: #ff8a80; }
+        .log-entry.warning { background: rgba(255,152,0,0.15); color: #ffcc80; }
+        .log-entry .timestamp { color: #888; margin-right: 8px; }
+        .log-entry .level { font-weight: bold; margin-right: 8px; }
+        .log-entry .level.INFO { color: #4fc3f7; }
+        .log-entry .level.ERROR { color: #ff8a80; }
+        .log-entry .level.WARNING { color: #ffcc80; }
+        .log-entry .message { color: #e0e0e0; }
+        .log-stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 12px;
+            font-size: 0.9em;
+        }
+        .log-stat-item {
+            background: rgba(255,255,255,0.1);
+            padding: 8px 15px;
+            border-radius: 6px;
+        }
+        .log-stat-value {
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .log-stat-value.error { color: #ff8a80; }
+        .log-stat-value.warning { color: #ffcc80; }
+        .toggle-arrow {
+            transition: transform 0.3s;
+        }
+        .toggle-arrow.expanded {
+            transform: rotate(180deg);
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -5827,6 +6594,41 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <span id="ny-timer-label">Opens in:</span> <span id="ny-timer" style="font-weight: 600;">--:--</span>
                 </div>
                 <div style="font-size: 0.7em; opacity: 0.7; margin-top: 4px;">9:30 AM - 4:00 PM EST</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Agent Log Monitor -->
+    <div class="log-monitor-section">
+        <div class="log-monitor-header" onclick="toggleLogMonitor()">
+            <div class="log-monitor-title">🤖 AI Agent Monitor</div>
+            <div class="log-monitor-status">
+                <span id="log-status-badge" class="log-status-badge ok">SYSTEM OK</span>
+                <span id="log-error-count" style="font-size: 0.85em;">0 errors</span>
+                <span class="toggle-arrow" id="log-toggle-arrow">▼</span>
+            </div>
+        </div>
+        <div class="log-monitor-body" id="log-monitor-body">
+            <div class="log-stats">
+                <div class="log-stat-item">
+                    <div class="log-stat-label">Errors (Recent)</div>
+                    <div class="log-stat-value error" id="log-error-stat">0</div>
+                </div>
+                <div class="log-stat-item">
+                    <div class="log-stat-label">Warnings</div>
+                    <div class="log-stat-value warning" id="log-warning-stat">0</div>
+                </div>
+                <div class="log-stat-item">
+                    <div class="log-stat-label">Total Lines</div>
+                    <div class="log-stat-value" id="log-total-stat">0</div>
+                </div>
+            </div>
+            <div class="ai-insights-container" id="ai-insights-container">
+                <!-- AI insights loaded dynamically -->
+            </div>
+            <div style="font-size: 0.85em; opacity: 0.9; margin-bottom: 8px;">Recent Log Entries:</div>
+            <div class="log-stream-container" id="log-stream-container">
+                <div style="padding: 20px; text-align: center; opacity: 0.6;">Loading logs...</div>
             </div>
         </div>
     </div>
@@ -6419,6 +7221,9 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
                 runningPnl += t.net_pnl || 0;
 
+                // Get trade ID for analysis
+                const tradeId = t.rowid || t.id || (i + 1);
+
                 return `<tr class="${t.status === 'OPEN' ? 'status-open' : ''}">
                     <td>${i + 1}</td>
                     <td class="${dirClass}"><span class="direction-icon">${icon}</span>${t.direction}</td>
@@ -6440,6 +7245,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <td style="color: #888;">$${Math.abs(t.spread_cost || 0).toFixed(2)}</td>
                     <td class="${netPnlClass}"><strong>$${(t.net_pnl || 0).toFixed(2)}</strong></td>
                     <td class="${returnClass}">${(t.return_pct || 0).toFixed(2)}%</td>
+                    <td><button onclick="analyzeTrade(${tradeId})" class="analyze-btn" title="AI Analysis">🔍</button></td>
                 </tr>`;
             }).join('');
         }
@@ -6869,7 +7675,368 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
         updateData();
         setInterval(updateData, 300);
+
+        // AI Agent Log Monitor Functions
+        let logMonitorExpanded = false;
+
+        function toggleLogMonitor() {
+            logMonitorExpanded = !logMonitorExpanded;
+            const body = document.getElementById('log-monitor-body');
+            const arrow = document.getElementById('log-toggle-arrow');
+
+            if (logMonitorExpanded) {
+                body.classList.add('expanded');
+                arrow.classList.add('expanded');
+                updateLogMonitor();  // Fetch logs when expanded
+            } else {
+                body.classList.remove('expanded');
+                arrow.classList.remove('expanded');
+            }
+        }
+
+        function updateLogMonitor() {
+            fetch('/api/logs')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error('Log fetch error:', data.error);
+                        return;
+                    }
+
+                    // Update status badge
+                    const badge = document.getElementById('log-status-badge');
+                    const errorCount = document.getElementById('log-error-count');
+
+                    if (data.error_count > 5) {
+                        badge.className = 'log-status-badge critical';
+                        badge.textContent = 'CRITICAL';
+                    } else if (data.error_count > 0) {
+                        badge.className = 'log-status-badge error';
+                        badge.textContent = 'ERRORS';
+                    } else if (data.warning_count > 3) {
+                        badge.className = 'log-status-badge warning';
+                        badge.textContent = 'WARNINGS';
+                    } else {
+                        badge.className = 'log-status-badge ok';
+                        badge.textContent = 'SYSTEM OK';
+                    }
+
+                    errorCount.textContent = data.error_count + ' errors';
+
+                    // Update stats
+                    document.getElementById('log-error-stat').textContent = data.error_count;
+                    document.getElementById('log-warning-stat').textContent = data.warning_count;
+                    document.getElementById('log-total-stat').textContent = data.total_lines;
+
+                    // Render AI insights
+                    renderAIInsights(data.ai_insights || []);
+
+                    // Render log entries
+                    renderLogEntries(data.log_entries || []);
+                })
+                .catch(err => {
+                    console.error('Log monitor error:', err);
+                });
+        }
+
+        function renderAIInsights(insights) {
+            const container = document.getElementById('ai-insights-container');
+
+            if (!insights.length) {
+                container.innerHTML = '<div style="opacity: 0.6;">No issues detected</div>';
+                return;
+            }
+
+            container.innerHTML = insights.map(insight => {
+                const severityClass = insight.severity.toLowerCase();
+                const icon = {
+                    'CRITICAL': '🚨',
+                    'HIGH': '⚠️',
+                    'MEDIUM': '⚡',
+                    'OK': '✅'
+                }[insight.severity] || '📋';
+
+                return `
+                    <div class="ai-insight-card ${severityClass}">
+                        <div class="ai-insight-title">${icon} ${insight.title}</div>
+                        <div class="ai-insight-desc">${insight.description}</div>
+                        <div class="ai-insight-rec">💡 ${insight.recommendation}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderLogEntries(entries) {
+            const container = document.getElementById('log-stream-container');
+
+            if (!entries.length) {
+                container.innerHTML = '<div style="padding: 20px; text-align: center; opacity: 0.6;">No log entries</div>';
+                return;
+            }
+
+            // Reverse to show newest first
+            const reversed = [...entries].reverse();
+
+            container.innerHTML = reversed.map(entry => {
+                const levelClass = entry.level.includes('ERROR') ? 'error' :
+                                   entry.level.includes('WARNING') ? 'warning' : '';
+                const timestamp = entry.timestamp ? entry.timestamp.split(' ')[1] || entry.timestamp : '';
+
+                return `
+                    <div class="log-entry ${levelClass}">
+                        <span class="timestamp">${timestamp}</span>
+                        <span class="level ${entry.level}">[${entry.level}]</span>
+                        <span class="message">${escapeHtml(entry.message.substring(0, 150))}${entry.message.length > 150 ? '...' : ''}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Auto-update log monitor every 10 seconds when expanded
+        setInterval(() => {
+            if (logMonitorExpanded) {
+                updateLogMonitor();
+            }
+        }, 10000);
+
+        // Initial status check (just update badge, not full content)
+        fetch('/api/logs')
+            .then(res => res.json())
+            .then(data => {
+                const badge = document.getElementById('log-status-badge');
+                const errorCount = document.getElementById('log-error-count');
+
+                if (data.error_count > 5) {
+                    badge.className = 'log-status-badge critical';
+                    badge.textContent = 'CRITICAL';
+                } else if (data.error_count > 0) {
+                    badge.className = 'log-status-badge error';
+                    badge.textContent = 'ERRORS';
+                } else if (data.warning_count > 3) {
+                    badge.className = 'log-status-badge warning';
+                    badge.textContent = 'WARNINGS';
+                } else {
+                    badge.className = 'log-status-badge ok';
+                    badge.textContent = 'SYSTEM OK';
+                }
+                errorCount.textContent = data.error_count + ' errors';
+            })
+            .catch(() => {});
+
+        // AI Trade Analyst Functions
+        function analyzeTrade(tradeId) {
+            const modal = document.getElementById('analysis-modal');
+            const body = document.getElementById('analysis-body');
+
+            // Show modal with loading state
+            modal.classList.add('active');
+            body.innerHTML = `
+                <div class="analysis-loading">
+                    <div class="spinner"></div>
+                    <p>Analyzing trade #${tradeId}...</p>
+                    <p style="color: #666; font-size: 0.9em;">Checking settings, MT5 data, and market conditions</p>
+                </div>
+            `;
+
+            fetch(`/api/analyze_trade/${tradeId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        body.innerHTML = `
+                            <div class="analysis-section">
+                                <h3>Error</h3>
+                                <p style="color: #f44336;">${data.error}</p>
+                            </div>
+                        `;
+                        return;
+                    }
+
+                    renderAnalysis(data, tradeId);
+                })
+                .catch(err => {
+                    body.innerHTML = `
+                        <div class="analysis-section">
+                            <h3>Error</h3>
+                            <p style="color: #f44336;">Failed to analyze trade: ${err.message}</p>
+                        </div>
+                    `;
+                });
+        }
+
+        function renderAnalysis(data, tradeId) {
+            const body = document.getElementById('analysis-body');
+            const isWinner = data.net_pnl >= 0;
+            const resultClass = isWinner ? 'win' : 'loss';
+            const resultIcon = isWinner ? '✅' : '❌';
+
+            let html = `
+                <div class="root-cause-box ${resultClass}">
+                    <div class="root-cause-title">${resultIcon} ${isWinner ? 'WINNING' : 'LOSING'} TRADE - Net P&L: $${data.net_pnl.toFixed(2)}</div>
+                    <div><strong>Primary Cause:</strong> ${data.root_cause || 'Analysis complete'}</div>
+                </div>
+
+                <div class="analysis-section ${resultClass}">
+                    <h3>Trade Summary</h3>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Entry Time</span>
+                        <span class="analysis-value">${data.entry_time || '--'}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Exit Time</span>
+                        <span class="analysis-value">${data.exit_time || '--'}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Duration</span>
+                        <span class="analysis-value">${data.duration || '--'}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Direction</span>
+                        <span class="analysis-value">${data.direction || '--'}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Exit Reason</span>
+                        <span class="analysis-value">${data.exit_reason || '--'}</span>
+                    </div>
+                </div>
+
+                <div class="analysis-section">
+                    <h3>Entry Analysis</h3>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Entry Z-Score</span>
+                        <span class="analysis-value">${data.entry_zscore ? data.entry_zscore.toFixed(3) : '--'}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Entry Threshold Setting</span>
+                        <span class="analysis-value">±${data.settings?.entry_threshold || '--'}σ</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Lot Size</span>
+                        <span class="analysis-value">${data.lot_size || '--'} lots</span>
+                    </div>
+                </div>
+
+                <div class="analysis-section">
+                    <h3>Exit Analysis</h3>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Exit Z-Score</span>
+                        <span class="analysis-value">${data.exit_zscore ? data.exit_zscore.toFixed(3) : '--'}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Exit Threshold Setting</span>
+                        <span class="analysis-value">±${data.settings?.exit_threshold || '--'}σ</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Stop Loss Setting</span>
+                        <span class="analysis-value">±${data.settings?.stop_loss_threshold || '--'}σ</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Max Loss Per Lot</span>
+                        <span class="analysis-value">$${data.settings?.max_loss_per_lot || '--'}</span>
+                    </div>
+                </div>
+
+                <div class="analysis-section">
+                    <h3>P&L Breakdown</h3>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Gross P&L</span>
+                        <span class="analysis-value ${data.gross_pnl >= 0 ? 'positive' : 'negative'}">$${(data.gross_pnl || 0).toFixed(2)}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Spread Cost</span>
+                        <span class="analysis-value negative">-$${Math.abs(data.spread_cost || 0).toFixed(2)}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Commission</span>
+                        <span class="analysis-value negative">-$${Math.abs(data.commission || 0).toFixed(2)}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label">Swap Cost</span>
+                        <span class="analysis-value negative">-$${Math.abs(data.swap_cost || 0).toFixed(2)}</span>
+                    </div>
+                    <div class="analysis-stat">
+                        <span class="analysis-label"><strong>Net P&L</strong></span>
+                        <span class="analysis-value ${data.net_pnl >= 0 ? 'positive' : 'negative'}"><strong>$${(data.net_pnl || 0).toFixed(2)}</strong></span>
+                    </div>
+                </div>
+            `;
+
+            // Issues section
+            if (data.issues && data.issues.length > 0) {
+                html += `<div class="analysis-section"><h3>Issues Detected</h3>`;
+                data.issues.forEach(issue => {
+                    const critical = issue.toLowerCase().includes('critical') || issue.toLowerCase().includes('immediately');
+                    html += `<div class="issue-item ${critical ? 'critical' : ''}">${issue}</div>`;
+                });
+                html += `</div>`;
+            }
+
+            // Recommendations section
+            if (data.recommendations && data.recommendations.length > 0) {
+                html += `<div class="analysis-section"><h3>Recommendations</h3>`;
+                data.recommendations.forEach(rec => {
+                    html += `<div class="recommendation-item">${rec}</div>`;
+                });
+                html += `</div>`;
+            }
+
+            // Market context
+            if (data.market_session || data.day_of_week) {
+                html += `
+                    <div class="analysis-section">
+                        <h3>Market Context</h3>
+                        <div class="analysis-stat">
+                            <span class="analysis-label">Trading Session</span>
+                            <span class="analysis-value">${data.market_session || '--'}</span>
+                        </div>
+                        <div class="analysis-stat">
+                            <span class="analysis-label">Day of Week</span>
+                            <span class="analysis-value">${data.day_of_week || '--'}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            body.innerHTML = html;
+        }
+
+        function closeAnalysisModal() {
+            document.getElementById('analysis-modal').classList.remove('active');
+        }
+
+        // Close modal on outside click
+        document.addEventListener('click', function(e) {
+            const modal = document.getElementById('analysis-modal');
+            if (e.target === modal) {
+                closeAnalysisModal();
+            }
+        });
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeAnalysisModal();
+            }
+        });
     </script>
+
+    <!-- AI Trade Analysis Modal -->
+    <div id="analysis-modal" class="analysis-modal">
+        <div class="analysis-content">
+            <div class="analysis-header">
+                <h2>🤖 AI Trade Analysis</h2>
+                <button class="analysis-close" onclick="closeAnalysisModal()">×</button>
+            </div>
+            <div class="analysis-body" id="analysis-body">
+                <!-- Content loaded dynamically -->
+            </div>
+        </div>
+    </div>
 </body>
 </html>'''
 
