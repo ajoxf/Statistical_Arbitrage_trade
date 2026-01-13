@@ -6725,8 +6725,32 @@ MONITOR_HTML = '''<!DOCTYPE html>
         const urlParams = new URLSearchParams(window.location.search);
         const assetFilter = urlParams.get('asset'); // '1', '2', or null (show all)
 
-        // Fetch and update market times
-        function updateMarketTimes() {
+        // Market timer state (for client-side countdown)
+        let marketTimers = {
+            nyClose: 0,
+            china: { seconds: 0, isOpen: false },
+            london: { seconds: 0, isOpen: false },
+            newYork: { seconds: 0, isOpen: false }
+        };
+
+        // Format seconds to human-readable string
+        function formatTimerSeconds(totalSeconds) {
+            if (totalSeconds <= 0) return '--:--';
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = Math.floor(totalSeconds % 60);
+
+            if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            } else if (minutes > 0) {
+                return `${minutes}m ${seconds}s`;
+            } else {
+                return `${seconds}s`;
+            }
+        }
+
+        // Fetch and update market times from server
+        function fetchMarketTimes() {
             fetch('/api/market_times')
                 .then(res => res.json())
                 .then(data => {
@@ -6734,39 +6758,66 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     document.getElementById('server-timezone').textContent = data.server.timezone;
                     document.getElementById('server-time').textContent = data.server.utc_time.split(' ')[1];
 
-                    // Update NY close timer
-                    document.getElementById('time-to-close').textContent = data.time_to_market_close;
+                    // Store NY close seconds
+                    marketTimers.nyClose = data.time_to_market_close_seconds || 0;
 
-                    // Update China
+                    // Store China timer
                     const china = data.sessions.china;
+                    marketTimers.china.isOpen = china.status === 'OPEN';
+                    marketTimers.china.seconds = marketTimers.china.isOpen ?
+                        (china.time_to_close_seconds || 0) : (china.time_to_open_seconds || 0);
                     const chinaStatus = document.getElementById('china-status');
                     chinaStatus.textContent = china.status;
                     chinaStatus.style.background = china.status === 'OPEN' ? '#4caf50' : '#f44336';
                     document.getElementById('china-timer-label').textContent = china.status === 'OPEN' ? 'Closes in:' : 'Opens in:';
-                    document.getElementById('china-timer').textContent = china.status === 'OPEN' ? china.time_to_close : china.time_to_open;
 
-                    // Update London
+                    // Store London timer
                     const london = data.sessions.london;
+                    marketTimers.london.isOpen = london.status === 'OPEN';
+                    marketTimers.london.seconds = marketTimers.london.isOpen ?
+                        (london.time_to_close_seconds || 0) : (london.time_to_open_seconds || 0);
                     const londonStatus = document.getElementById('london-status');
                     londonStatus.textContent = london.status;
                     londonStatus.style.background = london.status === 'OPEN' ? '#4caf50' : '#f44336';
                     document.getElementById('london-timer-label').textContent = london.status === 'OPEN' ? 'Closes in:' : 'Opens in:';
-                    document.getElementById('london-timer').textContent = london.status === 'OPEN' ? london.time_to_close : london.time_to_open;
 
-                    // Update New York
+                    // Store New York timer
                     const ny = data.sessions.new_york;
+                    marketTimers.newYork.isOpen = ny.status === 'OPEN';
+                    marketTimers.newYork.seconds = marketTimers.newYork.isOpen ?
+                        (ny.time_to_close_seconds || 0) : (ny.time_to_open_seconds || 0);
                     const nyStatus = document.getElementById('ny-status');
                     nyStatus.textContent = ny.status;
                     nyStatus.style.background = ny.status === 'OPEN' ? '#4caf50' : '#f44336';
                     document.getElementById('ny-timer-label').textContent = ny.status === 'OPEN' ? 'Closes in:' : 'Opens in:';
-                    document.getElementById('ny-timer').textContent = ny.status === 'OPEN' ? ny.time_to_close : ny.time_to_open;
+
+                    // Update displays immediately
+                    updateTimerDisplays();
                 })
                 .catch(err => console.error('Market times error:', err));
         }
 
-        // Update market times every 10 seconds
-        updateMarketTimes();
-        setInterval(updateMarketTimes, 10000);
+        // Update timer displays (called every second)
+        function updateTimerDisplays() {
+            document.getElementById('time-to-close').textContent = formatTimerSeconds(marketTimers.nyClose);
+            document.getElementById('china-timer').textContent = formatTimerSeconds(marketTimers.china.seconds);
+            document.getElementById('london-timer').textContent = formatTimerSeconds(marketTimers.london.seconds);
+            document.getElementById('ny-timer').textContent = formatTimerSeconds(marketTimers.newYork.seconds);
+        }
+
+        // Countdown tick (every second)
+        function tickTimers() {
+            if (marketTimers.nyClose > 0) marketTimers.nyClose--;
+            if (marketTimers.china.seconds > 0) marketTimers.china.seconds--;
+            if (marketTimers.london.seconds > 0) marketTimers.london.seconds--;
+            if (marketTimers.newYork.seconds > 0) marketTimers.newYork.seconds--;
+            updateTimerDisplays();
+        }
+
+        // Initial fetch and set up intervals
+        fetchMarketTimes();
+        setInterval(fetchMarketTimes, 30000);  // Sync with server every 30 seconds
+        setInterval(tickTimers, 1000);  // Countdown every second
 
         function updateData() {
             fetch('/api/data')
