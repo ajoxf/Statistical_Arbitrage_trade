@@ -8384,7 +8384,7 @@ SETTINGS_HTML = '''<!DOCTYPE html>
 
                 <div class="form-group">
                     <label>Stop Loss Threshold (Standard Deviations)</label>
-                    <input type="number" name="stop_loss_std_dev" value="{{ config.stop_loss_std_dev }}" min="2" max="6" step="0.1">
+                    <input type="number" name="stop_loss_std_dev" value="{{ config.stop_loss_std_dev }}" min="2" max="10" step="0.1">
                     <div class="help-text">Z-score threshold for stop loss (e.g., 3.0 = ±3σ)</div>
                 </div>
 
