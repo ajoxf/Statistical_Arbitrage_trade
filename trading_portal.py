@@ -5672,6 +5672,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <th>Days</th>
                         <th>Entry Z</th>
                         <th>Exit Z</th>
+                        <th>Entry Spot</th>
+                        <th>Entry Fut</th>
+                        <th>Exit Spot</th>
+                        <th>Exit Fut</th>
                         <th>Spot P&L</th>
                         <th>Futures P&L</th>
                         <th>Gross P&L</th>
@@ -5683,7 +5687,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     </tr>
                 </thead>
                 <tbody id="trade-history-body">
-                    <tr><td colspan="16" style="text-align: center; color: #666;">No trades yet</td></tr>
+                    <tr><td colspan="20" style="text-align: center; color: #666;">No trades yet</td></tr>
                 </tbody>
             </table>
         </div>
@@ -6161,6 +6165,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <td>${t.days_held || '--'}</td>
                     <td>${t.entry_zscore ? t.entry_zscore.toFixed(2) : '--'}</td>
                     <td>${t.exit_zscore ? t.exit_zscore.toFixed(2) : '--'}</td>
+                    <td>${t.entry_spot_price ? t.entry_spot_price.toFixed(3) : '--'}</td>
+                    <td>${t.entry_futures_price ? t.entry_futures_price.toFixed(3) : '--'}</td>
+                    <td>${t.exit_spot_price ? t.exit_spot_price.toFixed(3) : '--'}</td>
+                    <td>${t.exit_futures_price ? t.exit_futures_price.toFixed(3) : '--'}</td>
                     <td class="${spotPnlClass}">$${(t.spot_pnl || 0).toFixed(2)}</td>
                     <td class="${futuresPnlClass}">$${(t.futures_pnl || 0).toFixed(2)}</td>
                     <td class="${grossPnlClass}">$${(t.gross_pnl || 0).toFixed(2)}</td>
