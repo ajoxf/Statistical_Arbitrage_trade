@@ -2632,67 +2632,25 @@ class TradingMonitor:
         position['exit_date'] = exit_date.strftime('%Y-%m-%d %H:%M')
         position['days_held'] = (exit_date - entry_date).days or 1
         position['exit_zscore'] = data['zscore']
+
+        # Store market data prices as fallback (will be overwritten with actual fill prices)
         position['exit_spot_price'] = data['spot_price']
         position['exit_futures_price'] = data['futures_price']
 
-        # Calculate P&L for each leg
+        # Get swap and commission from MT5 positions BEFORE closing
+        spot_costs = self._get_mt5_position_costs(position.get('mt5_spot_ticket'))
+        futures_costs = self._get_mt5_position_costs(position.get('mt5_futures_ticket'))
+
+        # Get lot size and contract size for P&L calculation
         lot_size = position.get('lot_size', 0.1)
         asset_config = self.assets.get(asset_key, {})
         contract_size = asset_config.get('lot_size', 100)  # oz per lot
 
-        # Price differences
-        spot_diff = position['exit_spot_price'] - position['entry_spot_price']
-        futures_diff = position['exit_futures_price'] - position['entry_futures_price']
-
-        # Calculate P&L based on direction
-        if position['direction'] == 'Short Spread':
-            # Short Spread: Sold Futures, Bought Spot
-            # Profit on futures when price drops, profit on spot when price rises
-            position['futures_pnl'] = -futures_diff * lot_size * contract_size
-            position['spot_pnl'] = spot_diff * lot_size * contract_size
-        else:
-            # Long Spread: Bought Futures, Sold Spot
-            # Profit on futures when price rises, profit on spot when price drops
-            position['futures_pnl'] = futures_diff * lot_size * contract_size
-            position['spot_pnl'] = -spot_diff * lot_size * contract_size
-
-        position['gross_pnl'] = position['spot_pnl'] + position['futures_pnl']
-
-        # Get swap and commission from MT5 positions before closing
-        spot_costs = self._get_mt5_position_costs(position.get('mt5_spot_ticket'))
-        futures_costs = self._get_mt5_position_costs(position.get('mt5_futures_ticket'))
-
-        position['swap_cost'] = spot_costs['swap'] + futures_costs['swap']
-
-        # Get commission from MT5, or use manual setting if MT5 doesn't report it
-        mt5_commission = spot_costs['commission'] + futures_costs['commission']
-        # Manual commission is entered as positive but stored as negative (it's a cost)
-        # *2 for spot + futures legs (each leg = entry + exit trades)
-        manual_commission = -abs(self.config.get('commission_per_lot', 0)) * lot_size * 2
-
-        # Use manual commission if MT5 commission is 0 (common in paper mode or with some brokers)
-        position['commission'] = mt5_commission if mt5_commission != 0 else manual_commission
-
-        logger.info(f"MT5 Costs - Swap: ${position['swap_cost']:.2f}, MT5 Comm: ${mt5_commission:.2f}, Manual Comm: ${manual_commission:.2f}, Using: ${position['commission']:.2f}")
-
-        position['net_pnl'] = position['gross_pnl'] + position['swap_cost'] + position['commission']
-
-        # Calculate return % based on actual margin used
-        # Margin = (Spot Position Value + Futures Position Value) × (1 + Buffer) / Leverage
-        account = mt5.account_info()
-        leverage = account.leverage if account else 100  # Default 1:100
-
-        spot_position_value = position['entry_spot_price'] * lot_size * contract_size
-        futures_position_value = position['entry_futures_price'] * lot_size * contract_size
-        total_notional = spot_position_value + futures_position_value
-        margin_with_buffer = (total_notional * 1.15) / leverage  # 15% buffer for price fluctuation
-
-        position['return_pct'] = (position['net_pnl'] / margin_with_buffer * 100) if margin_with_buffer > 0 else 0
-
         mode_label = 'PAPER' if self.config.get('paper_mode', True) else 'LIVE'
         order_type_setting = self.config.get('order_type', 'MARKET')
 
-        # Close MT5 positions (both paper and live mode)
+        # ==================== CLOSE MT5 POSITIONS FIRST ====================
+        # Close positions and capture actual fill prices for accurate P&L
         asset_data = self.active_assets.get(asset_key, {})
         spot_symbol = asset_data.get('spot_symbol')
         futures_symbol = asset_data.get('futures_symbol')
@@ -2701,12 +2659,13 @@ class TradingMonitor:
         futures_volume = position.get('futures_volume', lot_size)
         spot_volume = position.get('spot_volume', lot_size)
 
-        # Track if MT5 closes were successful
+        # Track if MT5 closes were successful and their actual fill prices
         futures_closed = False
         spot_closed = False
+        actual_exit_futures_price = None
+        actual_exit_spot_price = None
 
         # Determine ORIGINAL position types (not close types)
-        # _close_mt5_position will calculate the close type internally
         # Short Spread: Sold Futures (SELL), Bought Spot (BUY)
         # Long Spread: Bought Futures (BUY), Sold Spot (SELL)
         futures_original_type = mt5.ORDER_TYPE_SELL if position['direction'] == 'Short Spread' else mt5.ORDER_TYPE_BUY
@@ -2717,8 +2676,6 @@ class TradingMonitor:
 
             # Try limit orders first, with market order fallback
             if position.get('mt5_futures_ticket'):
-                # Note: For closing, we need to place opposite order, not close by ticket with pending
-                # So we use market close but with pegged limit price approach
                 result = self._close_mt5_position(
                     position['mt5_futures_ticket'],
                     futures_symbol, futures_volume,
@@ -2726,7 +2683,6 @@ class TradingMonitor:
                     use_limit=True  # Try limit first
                 )
                 if not result['success']:
-                    # Fallback to market order
                     logger.warning(f"Limit close failed for futures, using market order")
                     result = self._close_mt5_position(
                         position['mt5_futures_ticket'],
@@ -2736,7 +2692,8 @@ class TradingMonitor:
                     )
                 if result['success']:
                     futures_closed = True
-                    logger.info(f"Futures position closed: ticket {position['mt5_futures_ticket']}")
+                    actual_exit_futures_price = result.get('price')
+                    logger.info(f"Futures position closed: ticket {position['mt5_futures_ticket']} @ {actual_exit_futures_price}")
                 else:
                     logger.error(f"CRITICAL: Failed to close futures position {position['mt5_futures_ticket']}: {result.get('error')}")
             else:
@@ -2759,7 +2716,8 @@ class TradingMonitor:
                     )
                 if result['success']:
                     spot_closed = True
-                    logger.info(f"Spot position closed: ticket {position['mt5_spot_ticket']}")
+                    actual_exit_spot_price = result.get('price')
+                    logger.info(f"Spot position closed: ticket {position['mt5_spot_ticket']} @ {actual_exit_spot_price}")
                 else:
                     logger.error(f"CRITICAL: Failed to close spot position {position['mt5_spot_ticket']}: {result.get('error')}")
             else:
@@ -2775,7 +2733,8 @@ class TradingMonitor:
                 )
                 if result['success']:
                     futures_closed = True
-                    logger.info(f"Futures position closed: ticket {position['mt5_futures_ticket']}")
+                    actual_exit_futures_price = result.get('price')
+                    logger.info(f"Futures position closed: ticket {position['mt5_futures_ticket']} @ {actual_exit_futures_price}")
                 else:
                     logger.error(f"CRITICAL: Failed to close futures position {position['mt5_futures_ticket']}: {result.get('error')}")
             else:
@@ -2790,7 +2749,8 @@ class TradingMonitor:
                 )
                 if result['success']:
                     spot_closed = True
-                    logger.info(f"Spot position closed: ticket {position['mt5_spot_ticket']}")
+                    actual_exit_spot_price = result.get('price')
+                    logger.info(f"Spot position closed: ticket {position['mt5_spot_ticket']} @ {actual_exit_spot_price}")
                 else:
                     logger.error(f"CRITICAL: Failed to close spot position {position['mt5_spot_ticket']}: {result.get('error')}")
             else:
@@ -2801,6 +2761,62 @@ class TradingMonitor:
             logger.error(f"POSITION NOT FULLY CLOSED: {asset_key} - Futures: {futures_closed}, Spot: {spot_closed}")
             # Keep position in tracking so we can try again
             return
+
+        # ==================== UPDATE EXIT PRICES WITH ACTUAL FILLS ====================
+        # Use actual MT5 fill prices if available, otherwise keep market data prices as fallback
+        if actual_exit_futures_price and actual_exit_futures_price > 0:
+            logger.info(f"Using actual MT5 futures exit price: {actual_exit_futures_price} (market data was: {position['exit_futures_price']})")
+            position['exit_futures_price'] = actual_exit_futures_price
+        else:
+            logger.warning(f"Using market data futures exit price: {position['exit_futures_price']} (MT5 price not available)")
+
+        if actual_exit_spot_price and actual_exit_spot_price > 0:
+            logger.info(f"Using actual MT5 spot exit price: {actual_exit_spot_price} (market data was: {position['exit_spot_price']})")
+            position['exit_spot_price'] = actual_exit_spot_price
+        else:
+            logger.warning(f"Using market data spot exit price: {position['exit_spot_price']} (MT5 price not available)")
+
+        # ==================== CALCULATE P&L WITH ACTUAL FILL PRICES ====================
+        spot_diff = position['exit_spot_price'] - position['entry_spot_price']
+        futures_diff = position['exit_futures_price'] - position['entry_futures_price']
+
+        # Calculate P&L based on direction
+        if position['direction'] == 'Short Spread':
+            # Short Spread: Sold Futures, Bought Spot
+            # Profit on futures when price drops, profit on spot when price rises
+            position['futures_pnl'] = -futures_diff * lot_size * contract_size
+            position['spot_pnl'] = spot_diff * lot_size * contract_size
+        else:
+            # Long Spread: Bought Futures, Sold Spot
+            # Profit on futures when price rises, profit on spot when price drops
+            position['futures_pnl'] = futures_diff * lot_size * contract_size
+            position['spot_pnl'] = -spot_diff * lot_size * contract_size
+
+        position['gross_pnl'] = position['spot_pnl'] + position['futures_pnl']
+
+        position['swap_cost'] = spot_costs['swap'] + futures_costs['swap']
+
+        # Get commission from MT5, or use manual setting if MT5 doesn't report it
+        mt5_commission = spot_costs['commission'] + futures_costs['commission']
+        manual_commission = -abs(self.config.get('commission_per_lot', 0)) * lot_size * 2
+
+        # Use manual commission if MT5 commission is 0 (common in paper mode or with some brokers)
+        position['commission'] = mt5_commission if mt5_commission != 0 else manual_commission
+
+        logger.info(f"MT5 Costs - Swap: ${position['swap_cost']:.2f}, MT5 Comm: ${mt5_commission:.2f}, Manual Comm: ${manual_commission:.2f}, Using: ${position['commission']:.2f}")
+
+        position['net_pnl'] = position['gross_pnl'] + position['swap_cost'] + position['commission']
+
+        # Calculate return % based on actual margin used
+        account = mt5.account_info()
+        leverage = account.leverage if account else 100  # Default 1:100
+
+        spot_position_value = position['entry_spot_price'] * lot_size * contract_size
+        futures_position_value = position['entry_futures_price'] * lot_size * contract_size
+        total_notional = spot_position_value + futures_position_value
+        margin_with_buffer = (total_notional * 1.15) / leverage  # 15% buffer for price fluctuation
+
+        position['return_pct'] = (position['net_pnl'] / margin_with_buffer * 100) if margin_with_buffer > 0 else 0
 
         logger.info(f"{mode_label} CLOSE: {asset_key} - {close_reason} - Gross: ${position['gross_pnl']:.2f}, Swap: ${position['swap_cost']:.2f}, Comm: ${position['commission']:.2f}, Net: ${position['net_pnl']:.2f}")
 
