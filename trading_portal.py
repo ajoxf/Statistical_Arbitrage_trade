@@ -551,8 +551,9 @@ class DatabaseManager:
         cursor = conn.cursor()
         # IMPORTANT: Always use explicit column names to prevent data corruption
         # when schema changes. Never use SELECT * which depends on physical column order.
+        # Include rowid for AI Trade Analysis lookup
         columns = '''
-            trade_id, asset, direction, entry_date, exit_date, days_held,
+            rowid, trade_id, asset, direction, entry_date, exit_date, days_held,
             entry_zscore, exit_zscore, entry_spot_price, entry_futures_price,
             exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
             gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
@@ -566,17 +567,19 @@ class DatabaseManager:
         conn.close()
 
         # Column order matches the explicit SELECT above (not dependent on physical storage)
+        # rowid is now at index 0
         return [{
-            'trade_id': r[0], 'asset': r[1], 'direction': r[2],
-            'entry_date': r[3], 'exit_date': r[4], 'days_held': r[5],
-            'entry_zscore': r[6], 'exit_zscore': r[7],
-            'entry_spot_price': r[8], 'entry_futures_price': r[9],
-            'exit_spot_price': r[10], 'exit_futures_price': r[11],
-            'spot_pnl': r[12], 'futures_pnl': r[13],
-            'gross_pnl': r[14], 'swap_cost': r[15], 'commission': r[16],
-            'spread_cost': r[17], 'net_pnl': r[18], 'return_pct': r[19],
-            'lot_size': r[20], 'mt5_spot_ticket': r[21], 'mt5_futures_ticket': r[22],
-            'order_status': r[23], 'status': r[24]
+            'rowid': r[0],  # Database row ID for AI analysis
+            'trade_id': r[1], 'asset': r[2], 'direction': r[3],
+            'entry_date': r[4], 'exit_date': r[5], 'days_held': r[6],
+            'entry_zscore': r[7], 'exit_zscore': r[8],
+            'entry_spot_price': r[9], 'entry_futures_price': r[10],
+            'exit_spot_price': r[11], 'exit_futures_price': r[12],
+            'spot_pnl': r[13], 'futures_pnl': r[14],
+            'gross_pnl': r[15], 'swap_cost': r[16], 'commission': r[17],
+            'spread_cost': r[18], 'net_pnl': r[19], 'return_pct': r[20],
+            'lot_size': r[21], 'mt5_spot_ticket': r[22], 'mt5_futures_ticket': r[23],
+            'order_status': r[24], 'status': r[25]
         } for r in rows]
 
     def get_trade_summary(self):
@@ -3440,8 +3443,8 @@ def analyze_trade(trade_id):
         conn = monitor.db.get_connection()
         cursor = conn.cursor()
 
-        # Check if trade_journal table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trade_journal'")
+        # Check if trades table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
         if not cursor.fetchone():
             conn.close()
             return jsonify({
@@ -3450,12 +3453,13 @@ def analyze_trade(trade_id):
                 'suggestion': 'Wait for trades to complete, or check that algo trading is enabled.'
             }), 404
 
-        # Get column names
-        cursor.execute('PRAGMA table_info(trade_journal)')
+        # Get column names from trades table
+        cursor.execute('PRAGMA table_info(trades)')
         columns = [col[1] for col in cursor.fetchall()]
         col_map = {col: idx for idx, col in enumerate(columns)}
 
-        cursor.execute('SELECT * FROM trade_journal WHERE rowid = ?', (trade_id,))
+        # Get trade by rowid from trades table
+        cursor.execute('SELECT rowid, * FROM trades WHERE rowid = ?', (trade_id,))
         row = cursor.fetchone()
         conn.close()
 
@@ -3465,6 +3469,10 @@ def analyze_trade(trade_id):
                 'details': f'Trade #{trade_id} does not exist in the trade journal. It may have been deleted or the ID is incorrect.',
                 'suggestion': 'Check the trade journal table for valid trade IDs.'
             }), 404
+
+        # Adjust col_map since we prepended rowid
+        col_map = {col: idx + 1 for col, idx in col_map.items()}
+        col_map['rowid'] = 0
 
         # Parse trade data
         def safe_float(val, default=0):
