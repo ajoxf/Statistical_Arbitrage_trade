@@ -1777,10 +1777,11 @@ class TradingMonitor:
                     }
 
             if position['direction'] == 'Short Spread':
-                if zscore <= exit_std:
+                # Short Spread: entered at +Z, exit when Z crosses mean and goes to -exit_std
+                if zscore <= -exit_std:
                     return {
                         'type': 'CLOSE',
-                        'reason': f'Z-score {zscore:.2f} <= {exit_std} (exit)',
+                        'reason': f'Z-score {zscore:.2f} <= -{exit_std} (exit through mean)',
                         'action': 'Close Short Spread position'
                     }
                 if zscore > stop_loss_std:
@@ -1790,10 +1791,11 @@ class TradingMonitor:
                         'action': 'Stop loss - Close position'
                     }
             elif position['direction'] == 'Long Spread':
-                if zscore >= -exit_std:
+                # Long Spread: entered at -Z, exit when Z crosses mean and goes to +exit_std
+                if zscore >= exit_std:
                     return {
                         'type': 'CLOSE',
-                        'reason': f'Z-score {zscore:.2f} >= -{exit_std} (exit)',
+                        'reason': f'Z-score {zscore:.2f} >= +{exit_std} (exit through mean)',
                         'action': 'Close Long Spread position'
                     }
                 if zscore < -stop_loss_std:
