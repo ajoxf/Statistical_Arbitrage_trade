@@ -189,6 +189,14 @@ class DatabaseManager:
         except:
             pass  # Column already exists
 
+        # Add LOCKED STATISTICS columns (entry_mean, entry_std, entry_spread)
+        # These store the statistics at entry time for consistent exit calculations
+        for column in ['entry_mean REAL', 'entry_std REAL', 'entry_spread REAL']:
+            try:
+                cursor.execute(f'ALTER TABLE trades ADD COLUMN {column}')
+            except:
+                pass  # Column already exists
+
         # Insert default config if not exists
         cursor.execute('SELECT COUNT(*) FROM trading_config')
         if cursor.fetchone()[0] == 0:
@@ -422,8 +430,9 @@ class DatabaseManager:
                     entry_zscore, exit_zscore, entry_spot_price, entry_futures_price,
                     exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
                     gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
-                    lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status,
+                    entry_mean, entry_std, entry_spread
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 trade['trade_id'],
                 trade['asset'],
@@ -449,7 +458,10 @@ class DatabaseManager:
                 trade.get('mt5_spot_ticket'),
                 trade.get('mt5_futures_ticket'),
                 trade.get('order_status', 'PENDING'),
-                trade['status']
+                trade['status'],
+                trade.get('entry_mean'),      # LOCKED: Mean at time of entry
+                trade.get('entry_std'),       # LOCKED: Std dev at time of entry
+                trade.get('entry_spread')     # Entry spread (futures - spot)
             ))
             conn.commit()
             conn.close()
@@ -465,7 +477,8 @@ class DatabaseManager:
             entry_zscore, exit_zscore, entry_spot_price, entry_futures_price,
             exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
             gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
-            lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status
+            lot_size, mt5_spot_ticket, mt5_futures_ticket, order_status, status,
+            entry_mean, entry_std, entry_spread
         '''
         if status:
             cursor.execute(f'SELECT {columns} FROM trades WHERE status = ? ORDER BY entry_date DESC LIMIT ?', (status, limit))
@@ -485,7 +498,8 @@ class DatabaseManager:
             'gross_pnl': r[14], 'swap_cost': r[15], 'commission': r[16],
             'spread_cost': r[17], 'net_pnl': r[18], 'return_pct': r[19],
             'lot_size': r[20], 'mt5_spot_ticket': r[21], 'mt5_futures_ticket': r[22],
-            'order_status': r[23], 'status': r[24]
+            'order_status': r[23], 'status': r[24],
+            'entry_mean': r[25], 'entry_std': r[26], 'entry_spread': r[27]  # LOCKED STATS
         } for r in rows]
 
     def get_trade_summary(self):
@@ -654,13 +668,17 @@ class TradingMonitor:
                 'entry_zscore': trade['entry_zscore'],
                 'entry_spot_price': trade['entry_spot_price'],
                 'entry_futures_price': trade['entry_futures_price'],
+                'entry_spread': trade.get('entry_spread'),  # LOCKED: Spread at entry
+                'entry_mean': trade.get('entry_mean'),      # LOCKED: Mean at entry
+                'entry_std': trade.get('entry_std'),        # LOCKED: Std at entry
                 'lot_size': trade['lot_size'],
                 'status': trade['status'],
                 'order_status': trade['order_status'] or 'UNKNOWN',
                 'mt5_spot_ticket': trade['mt5_spot_ticket'],
                 'mt5_futures_ticket': trade['mt5_futures_ticket']
             }
-            logger.info(f"Loaded open position: {asset_key} {trade['direction']} from {trade['entry_date']}")
+            logger.info(f"Loaded open position: {asset_key} {trade['direction']} from {trade['entry_date']} "
+                       f"(Entry Mean={trade.get('entry_mean')}, Std={trade.get('entry_std')})")
 
     def _parse_expiry(self, expiry_str):
         """Parse expiry date string to datetime"""
@@ -1351,30 +1369,59 @@ class TradingMonitor:
                         'action': 'Max loss stop - Close position immediately'
                     }
 
+            # LOCKED STATISTICS EXIT LOGIC
+            # Calculate entry-relative Z-score using LOCKED stats from position entry
+            # This prevents the "shifting goalposts" problem
+            entry_mean = position.get('entry_mean')
+            entry_std_locked = position.get('entry_std')
+            entry_spread = position.get('entry_spread')
+
+            # Calculate current spread
+            current_spread = current_futures - current_spot if current_futures and current_spot else None
+
+            # Calculate entry-relative Z-score (if we have locked stats)
+            if entry_mean is not None and entry_std_locked is not None and entry_std_locked > 0 and current_spread is not None:
+                zscore_vs_entry = (current_spread - entry_mean) / entry_std_locked
+                spread_move = current_spread - entry_spread if entry_spread else 0
+
+                logger.debug(f"EXIT CHECK: Current spread={current_spread:.4f}, Entry spread={entry_spread:.4f}, "
+                            f"Spread move={spread_move:.4f}, Z(rolling)={zscore:.2f}, Z(vs entry)={zscore_vs_entry:.2f}")
+            else:
+                # Fallback to rolling Z-score if locked stats not available (legacy positions)
+                zscore_vs_entry = zscore
+                spread_move = 0
+                logger.debug(f"EXIT CHECK (legacy): Using rolling Z-score {zscore:.2f}")
+
             if position['direction'] == 'Short Spread':
-                if zscore <= exit_std:
+                # Short Spread: Entered high (z > entry_std), want spread to FALL
+                # Exit when entry-relative Z-score drops to exit level OR spread falls enough
+                if zscore_vs_entry <= exit_std:
                     return {
                         'type': 'CLOSE',
-                        'reason': f'Z-score {zscore:.2f} <= {exit_std} (exit)',
+                        'reason': f'Z(entry-rel) {zscore_vs_entry:.2f} <= {exit_std} | Spread moved {spread_move:+.4f} | Z(rolling) {zscore:.2f}',
                         'action': 'Close Short Spread position'
                     }
-                if zscore > stop_loss_std:
+                # Stop loss: spread rose against us (entry-relative Z increased further)
+                if zscore_vs_entry > stop_loss_std:
                     return {
                         'type': 'STOP_LOSS',
-                        'reason': f'Z-score {zscore:.2f} > {stop_loss_std} (stop)',
+                        'reason': f'Z(entry-rel) {zscore_vs_entry:.2f} > {stop_loss_std} | Spread moved {spread_move:+.4f} against position',
                         'action': 'Stop loss - Close position'
                     }
             elif position['direction'] == 'Long Spread':
-                if zscore >= -exit_std:
+                # Long Spread: Entered low (z < -entry_std), want spread to RISE
+                # Exit when entry-relative Z-score rises to exit level OR spread rises enough
+                if zscore_vs_entry >= -exit_std:
                     return {
                         'type': 'CLOSE',
-                        'reason': f'Z-score {zscore:.2f} >= -{exit_std} (exit)',
+                        'reason': f'Z(entry-rel) {zscore_vs_entry:.2f} >= -{exit_std} | Spread moved {spread_move:+.4f} | Z(rolling) {zscore:.2f}',
                         'action': 'Close Long Spread position'
                     }
-                if zscore < -stop_loss_std:
+                # Stop loss: spread fell against us (entry-relative Z decreased further)
+                if zscore_vs_entry < -stop_loss_std:
                     return {
                         'type': 'STOP_LOSS',
-                        'reason': f'Z-score {zscore:.2f} < -{stop_loss_std} (stop)',
+                        'reason': f'Z(entry-rel) {zscore_vs_entry:.2f} < -{stop_loss_std} | Spread moved {spread_move:+.4f} against position',
                         'action': 'Stop loss - Close position'
                     }
 
@@ -1640,6 +1687,14 @@ class TradingMonitor:
             stop_loss_spread = stats.get('upper_stop', entry_spread) if stats else entry_spread
             logger.info(f"Short Spread targets: Statistical={statistical_target:.4f}, Cost-aware={cost_aware_target:.4f}, Final={target_exit:.4f}")
 
+        # LOCKED STATISTICS: Store mean and std at entry time for consistent exit calculations
+        # This prevents the "shifting goalposts" problem where rolling stats change during the trade
+        entry_mean = stats.get('mean', entry_spread) if stats else entry_spread
+        entry_std = stats.get('std', 1.0) if stats else 1.0
+
+        logger.info(f"LOCKING ENTRY STATS: Mean={entry_mean:.4f}, Std={entry_std:.4f}, "
+                    f"Entry Spread={entry_spread:.4f}, Entry Z={data['zscore']:.2f}")
+
         position = {
             'trade_id': trade_id,
             'asset': asset_key,
@@ -1649,6 +1704,8 @@ class TradingMonitor:
             'entry_spot_price': data['spot_price'],
             'entry_futures_price': data['futures_price'],
             'entry_spread': entry_spread,
+            'entry_mean': entry_mean,  # LOCKED: Mean at time of entry
+            'entry_std': entry_std,    # LOCKED: Std dev at time of entry
             'target_exit': target_exit,
             'stop_loss_spread': stop_loss_spread,
             'lot_size': lot_size,
@@ -2003,8 +2060,25 @@ class TradingMonitor:
                     pos_copy['mt5_futures_pnl'] = mt5_futures_pnl
                     pos_copy['current_spot'] = current_spot
                     pos_copy['current_futures'] = current_futures
-                    pos_copy['current_spread'] = current_futures - current_spot
-                    pos_copy['entry_spread'] = position.get('entry_spread', entry_futures - entry_spot)
+                    current_spread = current_futures - current_spot
+                    pos_copy['current_spread'] = current_spread
+                    entry_spread = position.get('entry_spread', entry_futures - entry_spot)
+                    pos_copy['entry_spread'] = entry_spread
+
+                    # LOCKED STATISTICS: Include entry-relative Z-score for UI
+                    entry_mean = position.get('entry_mean')
+                    entry_std = position.get('entry_std')
+                    pos_copy['entry_mean'] = entry_mean
+                    pos_copy['entry_std'] = entry_std
+
+                    # Calculate entry-relative Z-score (how spread moved vs entry stats)
+                    if entry_mean is not None and entry_std is not None and entry_std > 0:
+                        zscore_vs_entry = (current_spread - entry_mean) / entry_std
+                        pos_copy['zscore_vs_entry'] = zscore_vs_entry
+                        pos_copy['spread_move'] = current_spread - entry_spread
+                    else:
+                        pos_copy['zscore_vs_entry'] = None
+                        pos_copy['spread_move'] = None
 
                     # Use stored target/stop from entry time (locked in when position opened)
                     pos_copy['target_exit'] = position.get('target_exit', pos_copy['entry_spread'])
@@ -4005,11 +4079,32 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 const spotSpread = p.spot_spread ? p.spot_spread.toFixed(1) : '--';
                 const futSpread = p.futures_spread ? p.futures_spread.toFixed(1) : '--';
 
+                // Entry-relative Z-score (vs locked entry stats) - THE KEY METRIC
+                const zscoreVsEntry = p.zscore_vs_entry !== null && p.zscore_vs_entry !== undefined
+                    ? p.zscore_vs_entry.toFixed(2) : '--';
+                const spreadMove = p.spread_move !== null && p.spread_move !== undefined
+                    ? (p.spread_move >= 0 ? '+' : '') + p.spread_move.toFixed(4) : '--';
+                const spreadMoveColor = p.spread_move !== null
+                    ? ((p.direction === 'Short Spread' && p.spread_move < 0) ||
+                       (p.direction === 'Long Spread' && p.spread_move > 0) ? '#5cb85c' : '#d9534f')
+                    : '#666';
+
                 return `
                 <div class="position-card" style="padding: 12px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 10px; background: #fafafa;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                         <div class="pos-symbol" style="font-weight: bold; font-size: 1.1em;">${p.asset}</div>
                         <span class="pos-type ${p.direction === 'Long Spread' ? 'buy' : 'sell'}" style="padding: 2px 8px; border-radius: 4px;">${p.direction}</span>
+                    </div>
+                    <!-- LOCKED STATS Z-SCORE: The reliable metric for trade health -->
+                    <div style="background: #f5f5f5; padding: 8px; border-radius: 6px; margin-bottom: 8px; border-left: 4px solid ${spreadMoveColor};">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.95em;">
+                            <span style="color: #666;">Z (vs Entry Stats):</span>
+                            <strong style="color: ${spreadMoveColor};">${zscoreVsEntry}σ</strong>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.85em; margin-top: 4px;">
+                            <span style="color: #888;">Spread Move:</span>
+                            <strong style="color: ${spreadMoveColor};">${spreadMove}</strong>
+                        </div>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 0.9em;">
                         <div>Entry Z: <strong>${p.entry_zscore ? p.entry_zscore.toFixed(2) : '--'}σ</strong></div>
