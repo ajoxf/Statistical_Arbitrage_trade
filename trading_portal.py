@@ -123,6 +123,8 @@ class DatabaseManager:
             ('selected_asset', "TEXT DEFAULT 'GOLD'"),
             ('min_profit_per_lot', 'REAL DEFAULT 50'),
             ('max_loss_per_lot', 'REAL DEFAULT 100'),
+            # Minimum STD filter - blocks entries when volatility too low to be profitable
+            ('min_std_filter_enabled', 'INTEGER DEFAULT 0'),
             # Generic asset fields (replaces gold_*/silver_* for single-asset mode)
             ('asset_name', "TEXT DEFAULT ''"),
             ('spot_symbol', "TEXT DEFAULT ''"),
@@ -264,7 +266,8 @@ class DatabaseManager:
                    paper_mode, commission_per_lot, hurst_threshold, trending_duration_minutes,
                    hurst_enabled, close_before_overnight, overnight_close_hour, overnight_close_minute,
                    selected_asset, min_profit_per_lot, max_loss_per_lot,
-                   asset_name, spot_symbol, futures_symbol, futures_expiry, contract_size, swap_charge
+                   asset_name, spot_symbol, futures_symbol, futures_expiry, contract_size, swap_charge,
+                   min_std_filter_enabled
             FROM trading_config WHERE id = 1
         ''')
         row = cursor.fetchone()
@@ -310,6 +313,7 @@ class DatabaseManager:
                 'hurst_threshold': row[24] if row[24] is not None else 0.5,
                 'trending_duration_minutes': row[25] if row[25] is not None else 15,
                 'hurst_enabled': bool(row[26]) if row[26] is not None else True,
+                'min_std_filter_enabled': bool(row[39]) if len(row) > 39 and row[39] is not None else False,
                 'close_before_overnight': bool(row[27]) if row[27] is not None else False,
                 'overnight_close_hour': row[28] if row[28] is not None else 16,
                 'overnight_close_minute': row[29] if row[29] is not None else 55,
@@ -359,6 +363,7 @@ class DatabaseManager:
                     hurst_threshold = ?,
                     trending_duration_minutes = ?,
                     hurst_enabled = ?,
+                    min_std_filter_enabled = ?,
                     close_before_overnight = ?,
                     overnight_close_hour = ?,
                     overnight_close_minute = ?,
@@ -400,6 +405,7 @@ class DatabaseManager:
                 config.get('hurst_threshold', 0.5),
                 config.get('trending_duration_minutes', 15),
                 1 if config.get('hurst_enabled', True) else 0,
+                1 if config.get('min_std_filter_enabled', False) else 0,
                 1 if config.get('close_before_overnight', False) else 0,
                 config.get('overnight_close_hour', 16),
                 config.get('overnight_close_minute', 55),
@@ -933,6 +939,135 @@ class TradingMonitor:
         zscore = (current_value - stats['mean']) / stats['std']
         return zscore, stats
 
+    def calculate_min_profitable_std(self, asset_key, current_data=None):
+        """
+        Calculate the minimum STD required for a trade to be profitable.
+
+        ═══════════════════════════════════════════════════════════════════════════
+        FORMULA:
+        ═══════════════════════════════════════════════════════════════════════════
+
+        For a trade to be profitable:
+            Profit from spread move > Round-trip costs + Minimum profit target
+
+        Expanding:
+            (Entry_Z - Exit_Z) × STD × Lot_Size × Contract_Size > Costs + Min_Profit
+
+        Solving for minimum STD:
+
+                            Costs + Min_Profit
+            Min_STD = ─────────────────────────────────────────────
+                      (Entry_Z - Exit_Z) × Lot_Size × Contract_Size
+
+        ═══════════════════════════════════════════════════════════════════════════
+        EXAMPLE CALCULATION:
+        ═══════════════════════════════════════════════════════════════════════════
+
+        Given:
+            - Entry Z-score threshold: 2.0σ
+            - Exit Z-score threshold: 0.5σ
+            - Z-score move: 2.0 - 0.5 = 1.5σ
+            - Lot size: 0.1 lots
+            - Contract size: 100 oz (Gold)
+            - Spot bid-ask spread: 30 cents
+            - Futures bid-ask spread: 31 cents
+            - Min profit per lot: $50
+
+        Step 1: Calculate round-trip costs
+            Entry cost = (0.30 + 0.31) × 0.1 lots × 100 oz = $6.10
+            Round-trip = $6.10 × 2 = $12.20
+
+        Step 2: Calculate min profit for this trade
+            Min profit = $50/lot × 0.1 lots = $5.00
+
+        Step 3: Calculate total required
+            Total = $12.20 + $5.00 = $17.20
+
+        Step 4: Calculate minimum STD
+            Min_STD = $17.20 / (1.5 × 0.1 × 100)
+            Min_STD = $17.20 / 15
+            Min_STD = $1.15
+
+        ═══════════════════════════════════════════════════════════════════════════
+        INTERPRETATION:
+        ═══════════════════════════════════════════════════════════════════════════
+
+            If current STD = $0.27 and Min STD = $1.15:
+            - STD Ratio = 0.27 / 1.15 = 23% (need 100%+)
+            - Trade is UNPROFITABLE - costs exceed any possible profit
+            - Need STD to increase 4.3× before trading makes sense
+
+            If current STD = $2.50 and Min STD = $1.15:
+            - STD Ratio = 2.50 / 1.15 = 217% (good!)
+            - Expected profit = (1.5 × $2.50 × 0.1 × 100) - $12.20 = $25.30
+            - Trade is PROFITABLE
+
+        ═══════════════════════════════════════════════════════════════════════════
+
+        Returns: dict with min_std, current_std, is_profitable, and calculation details
+        """
+        # Get config values
+        entry_z = self.config.get('entry_std_dev', 2.0)
+        exit_z = self.config.get('exit_std_dev', 0.5)
+        lot_size = self.config.get('lot_size', 0.1)
+        min_profit_per_lot = self.config.get('min_profit_per_lot', 50)
+
+        # Get contract size for this asset
+        asset_config = self.assets.get(asset_key, {})
+        contract_size = asset_config.get('lot_size', 100)  # oz per lot
+
+        # Expected Z-score move from entry to exit
+        z_move = entry_z - exit_z  # e.g., 2.0 - 0.5 = 1.5σ
+
+        # Calculate round-trip costs from current bid-ask spreads
+        if current_data:
+            spot_spread_cents = current_data.get('spot_spread', 0)
+            futures_spread_cents = current_data.get('futures_spread', 0)
+            # Convert cents to dollars, multiply by lot size and contract size
+            entry_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * contract_size
+            round_trip_cost = entry_cost * 2  # Entry + exit
+        else:
+            # Estimate based on typical spreads if no current data
+            round_trip_cost = 1.20 * lot_size * contract_size  # ~$1.20/oz round-trip typical
+
+        # Min profit for this trade
+        min_profit = min_profit_per_lot * lot_size
+
+        # Total amount the spread move must generate
+        total_required = round_trip_cost + min_profit
+
+        # Calculate minimum STD
+        # profit = z_move × STD × lot_size × contract_size
+        # STD = total_required / (z_move × lot_size × contract_size)
+        denominator = z_move * lot_size * contract_size
+        if denominator > 0:
+            min_std = total_required / denominator
+        else:
+            min_std = float('inf')
+
+        # Get current STD
+        stats = self.get_statistics(asset_key)
+        current_std = stats.get('std', 0) if stats else 0
+
+        # Determine if trading is profitable
+        is_profitable = current_std >= min_std if current_std > 0 else False
+
+        return {
+            'min_std': min_std,
+            'current_std': current_std,
+            'is_profitable': is_profitable,
+            'round_trip_cost': round_trip_cost,
+            'min_profit': min_profit,
+            'total_required': total_required,
+            'z_move': z_move,
+            'lot_size': lot_size,
+            'contract_size': contract_size,
+            # Calculated values for display
+            'profit_if_successful': (current_std * z_move * lot_size * contract_size) - round_trip_cost if current_std > 0 else 0,
+            'std_deficit': max(0, min_std - current_std),
+            'std_ratio': current_std / min_std if min_std > 0 else 0
+        }
+
     def calculate_hurst_exponent(self, asset_key, min_points=20):
         """
         Calculate Hurst Exponent using R/S (Rescaled Range) method.
@@ -1183,7 +1318,12 @@ class TradingMonitor:
                 'margin_required': margin_required,
                 'margin_with_buffer': margin_with_buffer,
                 'user_lot_size': user_lot_size,
-                'timestamp': datetime.now().strftime('%H:%M:%S')
+                'timestamp': datetime.now().strftime('%H:%M:%S'),
+                # STD profitability analysis
+                'std_analysis': self.calculate_min_profitable_std(asset_key, {
+                    'spot_spread': spot_spread,
+                    'futures_spread': futures_spread
+                })
             }
 
         except Exception as e:
@@ -1291,6 +1431,29 @@ class TradingMonitor:
             else:
                 # Reset trending tracker when mean-reverting again
                 self.trending_since[asset_key] = None
+
+            # MIN STD FILTER: Block entries when volatility too low to be profitable (if enabled)
+            min_std_filter_enabled = self.config.get('min_std_filter_enabled', False)
+            if min_std_filter_enabled:
+                # Build current_data for cost calculation
+                current_data = {
+                    'spot_spread': 0,
+                    'futures_spread': 0
+                }
+                # Try to get actual spreads from market data
+                if current_spot and current_futures:
+                    market_data = self.get_market_data(asset_key)
+                    if market_data:
+                        current_data['spot_spread'] = market_data.get('spot_spread', 0)
+                        current_data['futures_spread'] = market_data.get('futures_spread', 0)
+
+                std_analysis = self.calculate_min_profitable_std(asset_key, current_data)
+                if not std_analysis['is_profitable']:
+                    return {
+                        'type': 'STD_FILTER',
+                        'reason': f"STD ${std_analysis['current_std']:.2f} < Min ${std_analysis['min_std']:.2f} ({std_analysis['std_ratio']*100:.0f}%) | {market_session}",
+                        'action': 'Entry blocked - Volatility too low to cover costs'
+                    }
 
             if zscore > entry_std:
                 return {
@@ -2216,6 +2379,7 @@ def settings():
             monitor.config['hurst_threshold'] = float(request.form.get('hurst_threshold', 0.5))
             monitor.config['trending_duration_minutes'] = int(request.form.get('trending_duration_minutes', 15))
             monitor.config['hurst_enabled'] = request.form.get('hurst_enabled') == 'on'
+            monitor.config['min_std_filter_enabled'] = request.form.get('min_std_filter_enabled') == 'on'
             monitor.config['close_before_overnight'] = request.form.get('close_before_overnight') == 'on'
             monitor.config['overnight_close_hour'] = int(request.form.get('overnight_close_hour', 16))
             monitor.config['overnight_close_minute'] = int(request.form.get('overnight_close_minute', 55))
@@ -4017,6 +4181,38 @@ MONITOR_HTML = '''<!DOCTYPE html>
                             <div style="font-weight: 700; font-size: 18px;">${asset.actual_basis.toFixed(2)}</div>
                         </div>
                     </div>
+                    ${asset.std_analysis ? `
+                    <div style="margin-top: 10px; padding: 10px; border-radius: 6px; border-left: 4px solid ${asset.std_analysis.is_profitable ? '#5cb85c' : '#d9534f'}; background: ${asset.std_analysis.is_profitable ? '#e8f5e9' : '#ffebee'};">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-weight: 600; color: ${asset.std_analysis.is_profitable ? '#2e7d32' : '#c62828'};">
+                                ${asset.std_analysis.is_profitable ? '✓ STD Profitable' : '⚠ STD Too Low'}
+                            </span>
+                            <span style="font-size: 0.85em; color: #666;">
+                                ${(asset.std_analysis.std_ratio * 100).toFixed(0)}% of required
+                            </span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85em;">
+                            <div>
+                                <span style="color: #888;">Current STD:</span>
+                                <strong>$${asset.std_analysis.current_std.toFixed(2)}</strong>
+                            </div>
+                            <div>
+                                <span style="color: #888;">Min Required:</span>
+                                <strong>$${asset.std_analysis.min_std.toFixed(2)}</strong>
+                            </div>
+                            <div>
+                                <span style="color: #888;">Round-trip Cost:</span>
+                                <strong>$${asset.std_analysis.round_trip_cost.toFixed(2)}</strong>
+                            </div>
+                            <div>
+                                <span style="color: #888;">Expected Profit:</span>
+                                <strong style="color: ${asset.std_analysis.profit_if_successful >= 0 ? '#2e7d32' : '#c62828'};">
+                                    ${asset.std_analysis.profit_if_successful >= 0 ? '+' : ''}$${asset.std_analysis.profit_if_successful.toFixed(2)}
+                                </strong>
+                            </div>
+                        </div>
+                    </div>
+                    ` : ''}
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; font-size: 16px;">
                         <div style="background: #ffebee; padding: 10px; border-radius: 6px; border-left: 4px solid #d9534f;">
                             <div style="color: #c62828; font-weight: 600; margin-bottom: 4px;">Short Spread</div>
@@ -4832,6 +5028,30 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                     <label>Trending Duration (Minutes)</label>
                     <input type="number" name="trending_duration_minutes" value="{{ config.trending_duration_minutes or 15 }}" min="0" max="120" step="5">
                     <div class="help-text">Only block if trending for X minutes continuously (0 = immediate, 15 = recommended)</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">STD Profitability Filter</div>
+
+                <div class="form-group">
+                    <label class="toggle-label">
+                        <input type="checkbox" name="min_std_filter_enabled" {% if config.min_std_filter_enabled %}checked{% endif %}>
+                        <span>Enable Min STD Filter (Block Unprofitable Entries)</span>
+                    </label>
+                    <div class="help-text">When enabled, blocks new entries when STD is too low to cover round-trip costs + min profit</div>
+                </div>
+
+                <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; margin-top: 10px; font-size: 0.9em;">
+                    <div style="font-weight: 600; margin-bottom: 8px;">📐 Formula:</div>
+                    <div style="font-family: monospace; background: #fff; padding: 8px; border-radius: 4px; margin-bottom: 8px;">
+                        Min STD = (Round-trip Costs + Min Profit) / (Z-move × Lot Size × Contract Size)
+                    </div>
+                    <div style="color: #666; font-size: 0.85em;">
+                        <strong>Example:</strong> With 1.5σ Z-move, 0.1 lots, 100oz contract, $12 costs + $5 profit:<br>
+                        Min STD = $17 / 15 = <strong>$1.13</strong><br><br>
+                        If current STD is below this, trades cannot be profitable.
+                    </div>
                 </div>
             </div>
 
