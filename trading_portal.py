@@ -8173,10 +8173,12 @@ MONITOR_HTML = '''<!DOCTYPE html>
 
             // Issues section
             if (data.issues && data.issues.length > 0) {
-                html += `<div class="analysis-section"><h3>Issues Detected</h3>`;
+                html += `<div class="analysis-section"><h3>⚠️ Issues Detected</h3>`;
                 data.issues.forEach(issue => {
-                    const critical = issue.toLowerCase().includes('critical') || issue.toLowerCase().includes('immediately');
-                    html += `<div class="issue-item ${critical ? 'critical' : ''}">${issue}</div>`;
+                    const isCritical = issue.severity === 'CRITICAL' || issue.severity === 'HIGH';
+                    const icon = issue.icon || '⚠️';
+                    const message = issue.message || (typeof issue === 'string' ? issue : JSON.stringify(issue));
+                    html += `<div class="issue-item ${isCritical ? 'critical' : ''}">${icon} ${message}</div>`;
                 });
                 html += `</div>`;
             }
