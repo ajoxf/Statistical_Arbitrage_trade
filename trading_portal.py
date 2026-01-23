@@ -1047,25 +1047,25 @@ class TradingMonitor:
 
         # Get current STD
         stats = self.get_statistics(asset_key)
-        current_std = stats.get('std', 0) if stats else 0
+        current_std = float(stats.get('std', 0)) if stats else 0.0
 
-        # Determine if trading is profitable
-        is_profitable = current_std >= min_std if current_std > 0 else False
+        # Determine if trading is profitable (cast to Python bool for JSON serialization)
+        is_profitable = bool(current_std >= min_std) if current_std > 0 else False
 
         return {
-            'min_std': min_std,
-            'current_std': current_std,
+            'min_std': float(min_std),
+            'current_std': float(current_std),
             'is_profitable': is_profitable,
-            'round_trip_cost': round_trip_cost,
-            'min_profit': min_profit,
-            'total_required': total_required,
-            'z_move': z_move,
-            'lot_size': lot_size,
-            'contract_size': contract_size,
+            'round_trip_cost': float(round_trip_cost),
+            'min_profit': float(min_profit),
+            'total_required': float(total_required),
+            'z_move': float(z_move),
+            'lot_size': float(lot_size),
+            'contract_size': float(contract_size),
             # Calculated values for display
-            'profit_if_successful': (current_std * z_move * lot_size * contract_size) - round_trip_cost if current_std > 0 else 0,
-            'std_deficit': max(0, min_std - current_std),
-            'std_ratio': current_std / min_std if min_std > 0 else 0
+            'profit_if_successful': float((current_std * z_move * lot_size * contract_size) - round_trip_cost) if current_std > 0 else 0.0,
+            'std_deficit': float(max(0, min_std - current_std)),
+            'std_ratio': float(current_std / min_std) if min_std > 0 else 0.0
         }
 
     def calculate_hurst_exponent(self, asset_key, min_points=20):
@@ -2236,9 +2236,9 @@ class TradingMonitor:
 
                     # Calculate entry-relative Z-score (how spread moved vs entry stats)
                     if entry_mean is not None and entry_std is not None and entry_std > 0:
-                        zscore_vs_entry = (current_spread - entry_mean) / entry_std
+                        zscore_vs_entry = float((current_spread - entry_mean) / entry_std)
                         pos_copy['zscore_vs_entry'] = zscore_vs_entry
-                        pos_copy['spread_move'] = current_spread - entry_spread
+                        pos_copy['spread_move'] = float(current_spread - entry_spread)
                     else:
                         pos_copy['zscore_vs_entry'] = None
                         pos_copy['spread_move'] = None
