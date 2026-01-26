@@ -24,8 +24,17 @@ import time
 import logging
 import uuid
 import os
+import re
 from datetime import datetime, timedelta
 from collections import deque
+
+# Claude AI Integration
+try:
+    import anthropic
+    CLAUDE_AVAILABLE = True
+except ImportError:
+    CLAUDE_AVAILABLE = False
+    anthropic = None
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'change-this-in-production')
@@ -40,6 +49,254 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# CLAUDE AI ANALYZER - Trade analysis and log monitoring
+# =============================================================================
+class ClaudeAnalyzer:
+    """Claude AI integration for trade analysis and log monitoring"""
+
+    # Market session schedule (UTC times)
+    MARKET_SESSIONS = {
+        'SYDNEY': {'start': 22, 'end': 7, 'name': 'Sydney', 'color': '#4a90d9'},
+        'TOKYO': {'start': 0, 'end': 9, 'name': 'Tokyo', 'color': '#e74c3c'},
+        'LONDON': {'start': 8, 'end': 16, 'name': 'London', 'color': '#27ae60'},
+        'NEW_YORK': {'start': 13, 'end': 22, 'name': 'New York', 'color': '#9b59b6'},
+    }
+
+    # Key market events (UTC)
+    MARKET_EVENTS = {
+        'LONDON_OPEN': {'hour': 8, 'minute': 0, 'name': 'London Open'},
+        'US_OPEN': {'hour': 13, 'minute': 30, 'name': 'US Market Open'},
+        'US_CLOSE': {'hour': 21, 'minute': 0, 'name': 'US Market Close'},
+        'LONDON_CLOSE': {'hour': 16, 'minute': 30, 'name': 'London Close'},
+    }
+
+    def __init__(self, api_key=None):
+        self.api_key = api_key
+        self.client = None
+        self.last_log_position = 0
+        self.error_cache = deque(maxlen=50)  # Store last 50 analyzed errors
+
+        if api_key and CLAUDE_AVAILABLE:
+            try:
+                self.client = anthropic.Anthropic(api_key=api_key)
+                logger.info("Claude AI analyzer initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize Claude client: {e}")
+
+    def is_available(self):
+        """Check if Claude API is available and configured"""
+        return self.client is not None
+
+    def get_market_sessions_info(self):
+        """Get current market session information with countdowns"""
+        utc_now = datetime.utcnow()
+        current_hour = utc_now.hour
+        current_minute = utc_now.minute
+
+        active_sessions = []
+        upcoming_events = []
+
+        # Check which sessions are active
+        for session_id, session in self.MARKET_SESSIONS.items():
+            start = session['start']
+            end = session['end']
+
+            # Handle sessions that cross midnight
+            if start > end:
+                is_active = current_hour >= start or current_hour < end
+            else:
+                is_active = start <= current_hour < end
+
+            if is_active:
+                # Calculate time until session ends
+                if start > end:  # Crosses midnight
+                    if current_hour >= start:
+                        hours_left = (24 - current_hour) + end
+                    else:
+                        hours_left = end - current_hour
+                else:
+                    hours_left = end - current_hour
+
+                minutes_left = 60 - current_minute if current_minute > 0 else 0
+                if minutes_left == 60:
+                    minutes_left = 0
+                else:
+                    hours_left -= 1
+
+                active_sessions.append({
+                    'id': session_id,
+                    'name': session['name'],
+                    'color': session['color'],
+                    'hours_left': max(0, hours_left),
+                    'minutes_left': minutes_left
+                })
+
+        # Calculate upcoming events
+        for event_id, event in self.MARKET_EVENTS.items():
+            event_hour = event['hour']
+            event_minute = event['minute']
+
+            # Calculate minutes until event
+            if event_hour > current_hour or (event_hour == current_hour and event_minute > current_minute):
+                # Event is later today
+                minutes_until = (event_hour - current_hour) * 60 + (event_minute - current_minute)
+            else:
+                # Event is tomorrow
+                minutes_until = ((24 - current_hour + event_hour) * 60) + (event_minute - current_minute)
+
+            hours_until = minutes_until // 60
+            mins_until = minutes_until % 60
+
+            upcoming_events.append({
+                'id': event_id,
+                'name': event['name'],
+                'hours_until': hours_until,
+                'minutes_until': mins_until,
+                'total_minutes': minutes_until
+            })
+
+        # Sort by nearest event first
+        upcoming_events.sort(key=lambda x: x['total_minutes'])
+
+        return {
+            'current_time_utc': utc_now.strftime('%H:%M:%S UTC'),
+            'active_sessions': active_sessions,
+            'upcoming_events': upcoming_events[:3],  # Next 3 events
+        }
+
+    def analyze_trade(self, trade_data):
+        """Analyze a trade using Claude to explain why it was profitable or not"""
+        if not self.is_available():
+            return {'error': 'Claude API not configured. Add your API key in Settings.'}
+
+        try:
+            # Build prompt with trade details
+            prompt = f"""Analyze this trading position and explain why it was profitable or unprofitable.
+Be concise but insightful. Focus on the key factors.
+
+TRADE DETAILS:
+- Asset: {trade_data.get('asset', 'Unknown')}
+- Direction: {trade_data.get('direction', 'Unknown')}
+- Entry Date: {trade_data.get('entry_date', 'Unknown')}
+- Exit Date: {trade_data.get('exit_date', 'Unknown')}
+- Entry Z-Score: {trade_data.get('entry_zscore', 'Unknown')}
+- Exit Reason: {trade_data.get('exit_reason', 'Unknown')}
+- Entry Spot Price: ${trade_data.get('entry_spot_price', 0):.2f}
+- Exit Spot Price: ${trade_data.get('exit_spot_price', 0):.2f}
+- Entry Futures Price: ${trade_data.get('entry_futures_price', 0):.2f}
+- Exit Futures Price: ${trade_data.get('exit_futures_price', 0):.2f}
+- Lot Size: {trade_data.get('lot_size', 0)}
+- Return: {trade_data.get('return_pct', 0):.2f}%
+- P&L: ${trade_data.get('pnl', 0):.2f}
+
+STRATEGY CONTEXT:
+This is a statistical arbitrage (basis trading) strategy that:
+1. Goes "Short Spread" (buy spot, sell futures) when spread is high (positive z-score)
+2. Goes "Long Spread" (sell spot, buy futures) when spread is low (negative z-score)
+3. Exits when spread reverts to mean (z-score approaches 0)
+
+Provide analysis in this format:
+📊 RESULT: [Profitable/Unprofitable]
+💡 KEY FACTORS: [2-3 bullet points explaining why]
+⚠️ LESSONS: [1-2 actionable insights for future trades]"""
+
+            message = self.client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            return {
+                'analysis': message.content[0].text,
+                'trade_id': trade_data.get('trade_id', 'Unknown')
+            }
+
+        except Exception as e:
+            logger.error(f"Claude trade analysis error: {e}")
+            return {'error': str(e)}
+
+    def analyze_log_errors(self, log_content):
+        """Analyze log errors using Claude to identify issues and suggest fixes"""
+        if not self.is_available():
+            return {'error': 'Claude API not configured'}
+
+        try:
+            # Extract only error lines
+            error_lines = [line for line in log_content.split('\n')
+                          if 'ERROR' in line or 'CRITICAL' in line or 'Exception' in line]
+
+            if not error_lines:
+                return {'errors': [], 'summary': 'No errors found in recent logs'}
+
+            prompt = f"""Analyze these trading system log errors and provide:
+1. A brief summary of issues found
+2. For each unique error type, explain what it means and how to fix it
+
+LOG ERRORS:
+{chr(10).join(error_lines[-20:])}
+
+Format your response as:
+📋 SUMMARY: [1-2 sentence overview]
+
+🔴 ERROR 1: [Error type]
+   Cause: [Brief explanation]
+   Fix: [How to resolve]
+
+[Continue for other unique errors...]"""
+
+            message = self.client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=800,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            return {
+                'analysis': message.content[0].text,
+                'error_count': len(error_lines),
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+
+        except Exception as e:
+            logger.error(f"Claude log analysis error: {e}")
+            return {'error': str(e)}
+
+    def scan_log_file(self, log_path='trading_portal.log'):
+        """Scan log file for new errors since last check"""
+        try:
+            if not os.path.exists(log_path):
+                return {'new_errors': [], 'total_errors': 0}
+
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                f.seek(self.last_log_position)
+                new_content = f.read()
+                self.last_log_position = f.tell()
+
+            # Find error lines
+            error_pattern = re.compile(r'.*(?:ERROR|CRITICAL|Exception).*', re.IGNORECASE)
+            new_errors = error_pattern.findall(new_content)
+
+            for error in new_errors:
+                self.error_cache.append({
+                    'message': error[:200],  # Truncate long errors
+                    'timestamp': datetime.now().strftime('%H:%M:%S')
+                })
+
+            return {
+                'new_errors': new_errors[-5:],  # Last 5 new errors
+                'total_errors': len(self.error_cache),
+                'recent_errors': list(self.error_cache)[-10:]  # Last 10 cached
+            }
+
+        except Exception as e:
+            logger.error(f"Log scan error: {e}")
+            return {'error': str(e)}
+
+
+# Global Claude analyzer instance (initialized when API key is set)
+claude_analyzer = ClaudeAnalyzer()
 
 
 # =============================================================================
@@ -2289,6 +2546,11 @@ class TradingMonitor:
 # =============================================================================
 monitor = TradingMonitor()
 
+# Initialize Claude analyzer with saved API key (if available)
+if monitor.config.get('claude_api_key'):
+    claude_analyzer = ClaudeAnalyzer(api_key=monitor.config['claude_api_key'])
+    logger.info("Claude analyzer initialized from saved config")
+
 
 # =============================================================================
 # FLASK ROUTES
@@ -2692,6 +2954,144 @@ def api_force_remove_position():
 
     except Exception as e:
         logger.error(f"Error force removing position: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# =============================================================================
+# CLAUDE AI API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/market_sessions', methods=['GET'])
+def api_market_sessions():
+    """Get current market session information with countdowns"""
+    try:
+        sessions_info = claude_analyzer.get_market_sessions_info()
+        return jsonify({
+            'status': 'success',
+            'data': sessions_info
+        })
+    except Exception as e:
+        logger.error(f"Error getting market sessions: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/analyze_trade', methods=['POST'])
+def api_analyze_trade():
+    """Analyze a trade using Claude AI"""
+    try:
+        trade_id = request.json.get('trade_id')
+
+        if not trade_id:
+            return jsonify({'status': 'error', 'message': 'trade_id required'}), 400
+
+        # Get trade from database
+        trades = monitor.db.get_trades(limit=1000)
+        trade_data = None
+        for trade in trades:
+            if trade.get('trade_id') == trade_id:
+                trade_data = trade
+                break
+
+        if not trade_data:
+            return jsonify({'status': 'error', 'message': 'Trade not found'}), 404
+
+        # Analyze with Claude
+        result = claude_analyzer.analyze_trade(trade_data)
+
+        if 'error' in result:
+            return jsonify({'status': 'error', 'message': result['error']}), 400
+
+        return jsonify({
+            'status': 'success',
+            'analysis': result['analysis'],
+            'trade_id': trade_id
+        })
+
+    except Exception as e:
+        logger.error(f"Error analyzing trade: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/analyze_logs', methods=['GET'])
+def api_analyze_logs():
+    """Analyze recent log errors using Claude AI"""
+    try:
+        # Read recent log content
+        log_path = 'trading_portal.log'
+        if not os.path.exists(log_path):
+            return jsonify({'status': 'error', 'message': 'Log file not found'}), 404
+
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            # Read last 50KB of log file
+            f.seek(0, 2)  # Go to end
+            size = f.tell()
+            f.seek(max(0, size - 50000))  # Go back 50KB
+            log_content = f.read()
+
+        result = claude_analyzer.analyze_log_errors(log_content)
+
+        if 'error' in result:
+            return jsonify({'status': 'error', 'message': result['error']}), 400
+
+        return jsonify({
+            'status': 'success',
+            'data': result
+        })
+
+    except Exception as e:
+        logger.error(f"Error analyzing logs: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/log_errors', methods=['GET'])
+def api_log_errors():
+    """Get recent errors from log file (without AI analysis)"""
+    try:
+        result = claude_analyzer.scan_log_file()
+
+        if 'error' in result:
+            return jsonify({'status': 'error', 'message': result['error']}), 400
+
+        return jsonify({
+            'status': 'success',
+            'data': result
+        })
+
+    except Exception as e:
+        logger.error(f"Error scanning logs: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/set_claude_key', methods=['POST'])
+def api_set_claude_key():
+    """Set Claude API key"""
+    global claude_analyzer
+    try:
+        api_key = request.json.get('api_key', '').strip()
+
+        if not api_key:
+            return jsonify({'status': 'error', 'message': 'API key required'}), 400
+
+        # Save to config
+        monitor.config['claude_api_key'] = api_key
+        monitor.db.save_config(monitor.config)
+
+        # Reinitialize Claude analyzer
+        claude_analyzer = ClaudeAnalyzer(api_key=api_key)
+
+        if claude_analyzer.is_available():
+            return jsonify({
+                'status': 'success',
+                'message': 'Claude API key configured successfully'
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to initialize Claude client. Check your API key.'
+            }), 400
+
+    except Exception as e:
+        logger.error(f"Error setting Claude key: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
@@ -3754,6 +4154,223 @@ MONITOR_HTML = '''<!DOCTYPE html>
             position: relative;
             height: 300px;
         }
+
+        /* Market Sessions Panel - Blue Box */
+        .market-sessions-panel {
+            background: linear-gradient(135deg, #1565c0 0%, #1976d2 50%, #2196f3 100%);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            color: white;
+            box-shadow: 0 4px 15px rgba(25, 118, 210, 0.3);
+        }
+        .market-sessions-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .market-sessions-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .market-sessions-time {
+            font-size: 1.5em;
+            font-weight: 700;
+            font-family: 'Courier New', monospace;
+        }
+        .sessions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        .session-card {
+            background: rgba(255,255,255,0.15);
+            border-radius: 8px;
+            padding: 12px 15px;
+            backdrop-filter: blur(10px);
+        }
+        .session-card.active {
+            background: rgba(255,255,255,0.25);
+            border: 1px solid rgba(255,255,255,0.4);
+        }
+        .session-name {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .session-countdown {
+            font-size: 1.2em;
+            font-family: 'Courier New', monospace;
+        }
+        .session-status {
+            font-size: 0.8em;
+            opacity: 0.8;
+        }
+        .upcoming-events {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255,255,255,0.2);
+        }
+        .event-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            font-size: 0.9em;
+        }
+        .event-countdown {
+            font-family: 'Courier New', monospace;
+            font-weight: 600;
+        }
+
+        /* AI Log Monitor Panel */
+        .log-monitor-panel {
+            background: #263238;
+            border-radius: 12px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            color: #eceff1;
+        }
+        .log-monitor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .log-monitor-title {
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .error-count {
+            background: #f44336;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+        .error-count.zero {
+            background: #4caf50;
+        }
+        .log-errors-list {
+            max-height: 120px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.8em;
+        }
+        .log-error-item {
+            padding: 4px 8px;
+            background: rgba(244, 67, 54, 0.1);
+            border-left: 3px solid #f44336;
+            margin-bottom: 4px;
+            border-radius: 0 4px 4px 0;
+        }
+        .analyze-logs-btn {
+            background: #7c4dff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85em;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .analyze-logs-btn:hover {
+            background: #651fff;
+        }
+
+        /* AI Trade Analyzer Button */
+        .ai-analyze-btn {
+            background: #7c4dff;
+            color: white;
+            border: none;
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75em;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .ai-analyze-btn:hover {
+            background: #651fff;
+        }
+
+        /* AI Analysis Modal */
+        .ai-modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .ai-modal-overlay.active {
+            display: flex;
+        }
+        .ai-modal {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        .ai-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        .ai-modal-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .ai-modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5em;
+            cursor: pointer;
+            color: #666;
+        }
+        .ai-modal-content {
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .ai-loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .ai-loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #eee;
+            border-top-color: #7c4dff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -3791,6 +4408,57 @@ MONITOR_HTML = '''<!DOCTYPE html>
         <a href="/settings" class="settings-link">⚙ Settings</a>
         <button class="reset-btn" onclick="resetStatistics()">↺ Reset Stats</button>
         <button class="reset-btn" onclick="clearTrades()">🗑 Clear Trades</button>
+    </div>
+
+    <!-- Market Sessions Panel (Blue Box) -->
+    <div class="market-sessions-panel" id="market-sessions-panel">
+        <div class="market-sessions-header">
+            <div class="market-sessions-title">
+                🌍 Market Sessions
+            </div>
+            <div class="market-sessions-time" id="utc-time">--:--:-- UTC</div>
+        </div>
+        <div class="sessions-grid" id="sessions-grid">
+            <div style="color: rgba(255,255,255,0.7);">Loading market sessions...</div>
+        </div>
+        <div class="upcoming-events" id="upcoming-events">
+            <div style="font-weight: 600; margin-bottom: 8px;">📅 Upcoming Events</div>
+            <div id="events-list">Loading...</div>
+        </div>
+    </div>
+
+    <!-- AI Log Monitor Panel -->
+    <div class="log-monitor-panel" id="log-monitor-panel">
+        <div class="log-monitor-header">
+            <div class="log-monitor-title">
+                🤖 AI Log Monitor
+                <span class="error-count zero" id="error-count">0</span>
+            </div>
+            <button class="analyze-logs-btn" onclick="analyzeLogsWithAI()">
+                ✨ Analyze with Claude
+            </button>
+        </div>
+        <div class="log-errors-list" id="log-errors-list">
+            <div style="color: #4caf50;">✓ No errors detected</div>
+        </div>
+    </div>
+
+    <!-- AI Analysis Modal -->
+    <div class="ai-modal-overlay" id="ai-modal-overlay" onclick="closeAIModal(event)">
+        <div class="ai-modal" onclick="event.stopPropagation()">
+            <div class="ai-modal-header">
+                <div class="ai-modal-title">
+                    🤖 <span id="ai-modal-title-text">AI Analysis</span>
+                </div>
+                <button class="ai-modal-close" onclick="closeAIModal()">&times;</button>
+            </div>
+            <div class="ai-modal-content" id="ai-modal-content">
+                <div class="ai-loading">
+                    <div class="ai-loading-spinner"></div>
+                    <div>Analyzing with Claude AI...</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="account-section" id="account-section">
@@ -3895,10 +4563,11 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <th>Spread</th>
                         <th>Net P&L</th>
                         <th>Return</th>
+                        <th>AI</th>
                     </tr>
                 </thead>
                 <tbody id="trade-history-body">
-                    <tr><td colspan="16" style="text-align: center; color: #666;">No trades yet</td></tr>
+                    <tr><td colspan="17" style="text-align: center; color: #666;">No trades yet</td></tr>
                 </tbody>
             </table>
         </div>
@@ -3914,6 +4583,162 @@ MONITOR_HTML = '''<!DOCTYPE html>
         const urlParams = new URLSearchParams(window.location.search);
         const assetFilter = urlParams.get('asset'); // '1', '2', or null (show all)
 
+        // =================================================================
+        // MARKET SESSIONS PANEL
+        // =================================================================
+        function updateMarketSessions() {
+            fetch('/api/market_sessions')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status !== 'success') return;
+
+                    const info = data.data;
+
+                    // Update UTC time
+                    document.getElementById('utc-time').textContent = info.current_time_utc;
+
+                    // Update sessions grid
+                    const sessionsHtml = info.active_sessions.length > 0
+                        ? info.active_sessions.map(s => `
+                            <div class="session-card active">
+                                <div class="session-name">${s.name}</div>
+                                <div class="session-countdown">${s.hours_left}h ${s.minutes_left}m</div>
+                                <div class="session-status">● Active - closes in ${s.hours_left}h ${s.minutes_left}m</div>
+                            </div>
+                        `).join('')
+                        : '<div class="session-card"><div class="session-status">No major sessions active</div></div>';
+
+                    document.getElementById('sessions-grid').innerHTML = sessionsHtml;
+
+                    // Update upcoming events
+                    const eventsHtml = info.upcoming_events.map(e => `
+                        <div class="event-item">
+                            <span>${e.name}</span>
+                            <span class="event-countdown">${e.hours_until}h ${e.minutes_until}m</span>
+                        </div>
+                    `).join('');
+
+                    document.getElementById('events-list').innerHTML = eventsHtml || 'No upcoming events';
+                })
+                .catch(err => console.error('Market sessions error:', err));
+        }
+
+        // =================================================================
+        // AI LOG MONITOR
+        // =================================================================
+        function updateLogMonitor() {
+            fetch('/api/log_errors')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status !== 'success') return;
+
+                    const info = data.data;
+                    const errorCount = info.total_errors || 0;
+
+                    // Update error count badge
+                    const countEl = document.getElementById('error-count');
+                    countEl.textContent = errorCount;
+                    countEl.className = 'error-count' + (errorCount === 0 ? ' zero' : '');
+
+                    // Update error list
+                    const listEl = document.getElementById('log-errors-list');
+                    if (info.recent_errors && info.recent_errors.length > 0) {
+                        listEl.innerHTML = info.recent_errors.slice(-5).map(e => `
+                            <div class="log-error-item">
+                                <span style="color: #888;">[${e.timestamp}]</span> ${e.message.substring(0, 150)}...
+                            </div>
+                        `).join('');
+                    } else {
+                        listEl.innerHTML = '<div style="color: #4caf50;">✓ No errors detected</div>';
+                    }
+                })
+                .catch(err => console.error('Log monitor error:', err));
+        }
+
+        function analyzeLogsWithAI() {
+            openAIModal('Log Analysis', 'Analyzing log errors with Claude AI...');
+
+            fetch('/api/analyze_logs')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        document.getElementById('ai-modal-content').innerHTML =
+                            '<pre style="white-space: pre-wrap; font-family: inherit;">' +
+                            data.data.analysis + '</pre>';
+                    } else {
+                        document.getElementById('ai-modal-content').innerHTML =
+                            '<div style="color: #f44336;">Error: ' + data.message + '</div>' +
+                            '<div style="margin-top: 15px; color: #666;">Make sure your Claude API key is configured in Settings.</div>';
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('ai-modal-content').innerHTML =
+                        '<div style="color: #f44336;">Error: ' + err.message + '</div>';
+                });
+        }
+
+        // =================================================================
+        // AI TRADE ANALYZER
+        // =================================================================
+        function analyzeTradeWithAI(tradeId) {
+            openAIModal('Trade Analysis', 'Analyzing trade with Claude AI...');
+
+            fetch('/api/analyze_trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trade_id: tradeId })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        document.getElementById('ai-modal-content').innerHTML =
+                            '<pre style="white-space: pre-wrap; font-family: inherit;">' +
+                            data.analysis + '</pre>';
+                    } else {
+                        document.getElementById('ai-modal-content').innerHTML =
+                            '<div style="color: #f44336;">Error: ' + data.message + '</div>' +
+                            '<div style="margin-top: 15px; color: #666;">Make sure your Claude API key is configured in Settings.</div>';
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('ai-modal-content').innerHTML =
+                        '<div style="color: #f44336;">Error: ' + err.message + '</div>';
+                });
+        }
+
+        // =================================================================
+        // AI MODAL HELPERS
+        // =================================================================
+        function openAIModal(title, loadingText) {
+            document.getElementById('ai-modal-title-text').textContent = title;
+            document.getElementById('ai-modal-content').innerHTML = `
+                <div class="ai-loading">
+                    <div class="ai-loading-spinner"></div>
+                    <div>${loadingText}</div>
+                </div>
+            `;
+            document.getElementById('ai-modal-overlay').classList.add('active');
+        }
+
+        function closeAIModal(event) {
+            if (!event || event.target === document.getElementById('ai-modal-overlay')) {
+                document.getElementById('ai-modal-overlay').classList.remove('active');
+            }
+        }
+
+        // Update market sessions and log monitor every 30 seconds
+        setInterval(updateMarketSessions, 30000);
+        setInterval(updateLogMonitor, 30000);
+
+        // Initial load
+        setTimeout(() => {
+            updateMarketSessions();
+            updateLogMonitor();
+        }, 1000);
+
+        // =================================================================
+        // MAIN DATA UPDATE
+        // =================================================================
         function updateData() {
             fetch('/api/data')
                 .then(res => res.json())
@@ -4430,7 +5255,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             // Update table
             const tbody = document.getElementById('trade-history-body');
             if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="16" style="text-align: center; color: #666;">No trades yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="17" style="text-align: center; color: #666;">No trades yet</td></tr>';
                 return;
             }
 
@@ -4465,6 +5290,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <td style="color: #888;">$${Math.abs(t.spread_cost || 0).toFixed(2)}</td>
                     <td class="${netPnlClass}"><strong>$${(t.net_pnl || 0).toFixed(2)}</strong></td>
                     <td class="${returnClass}">${(t.return_pct || 0).toFixed(2)}%</td>
+                    <td><button class="ai-analyze-btn" onclick="analyzeTradeWithAI('${t.trade_id}')" title="Analyze with Claude AI">🤖</button></td>
                 </tr>`;
             }).join('');
         }
@@ -5120,6 +5946,30 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                 </div>
             </div>
 
+            <div class="card" style="border-left: 4px solid #7c4dff;">
+                <div class="card-title" style="color: #7c4dff;">🤖 Claude AI Integration</div>
+
+                <div class="form-group">
+                    <label>Claude API Key</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="password" id="claude_api_key" value="{{ config.claude_api_key or '' }}" placeholder="sk-ant-..." style="flex: 1;">
+                        <button type="button" onclick="saveClaudeKey()" style="background: #7c4dff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Save Key</button>
+                    </div>
+                    <div class="help-text">Get your API key from <a href="https://console.anthropic.com/" target="_blank" style="color: #7c4dff;">console.anthropic.com</a></div>
+                </div>
+
+                <div id="claude-status" style="margin-top: 10px; padding: 10px; border-radius: 6px; display: none;"></div>
+
+                <div style="background: #f3e5f5; padding: 12px; border-radius: 6px; margin-top: 15px;">
+                    <div style="font-weight: 600; margin-bottom: 8px;">✨ AI Features Enabled:</div>
+                    <ul style="margin: 0; padding-left: 20px; color: #666;">
+                        <li><strong>Trade Analyzer:</strong> Click 🤖 next to any trade in the journal for detailed AI analysis</li>
+                        <li><strong>Log Monitor:</strong> Real-time error detection with AI-powered explanations</li>
+                        <li><strong>Market Sessions:</strong> Live market timing panel with countdowns (no API needed)</li>
+                    </ul>
+                </div>
+            </div>
+
             <div class="card">
                 <div class="card-title">Position Sizing</div>
 
@@ -5204,6 +6054,49 @@ SETTINGS_HTML = '''<!DOCTYPE html>
     </div>
 
     <script>
+        // Save Claude API Key
+        async function saveClaudeKey() {
+            const apiKey = document.getElementById('claude_api_key').value.trim();
+            const statusDiv = document.getElementById('claude-status');
+
+            if (!apiKey) {
+                statusDiv.style.display = 'block';
+                statusDiv.style.background = '#ffebee';
+                statusDiv.style.color = '#c62828';
+                statusDiv.innerHTML = '⚠️ Please enter an API key';
+                return;
+            }
+
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = '#e3f2fd';
+            statusDiv.style.color = '#1565c0';
+            statusDiv.innerHTML = '⏳ Verifying API key...';
+
+            try {
+                const response = await fetch('/api/set_claude_key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey })
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    statusDiv.style.background = '#e8f5e9';
+                    statusDiv.style.color = '#2e7d32';
+                    statusDiv.innerHTML = '✓ ' + data.message;
+                } else {
+                    statusDiv.style.background = '#ffebee';
+                    statusDiv.style.color = '#c62828';
+                    statusDiv.innerHTML = '✗ ' + data.message;
+                }
+            } catch (err) {
+                statusDiv.style.background = '#ffebee';
+                statusDiv.style.color = '#c62828';
+                statusDiv.innerHTML = '✗ Error: ' + err.message;
+            }
+        }
+
         async function testOrders() {
             const btn = document.getElementById('test-orders-btn');
             const resultsDiv = document.getElementById('test-results');
