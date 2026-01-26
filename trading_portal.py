@@ -4248,7 +4248,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
                 if (data.status === 'success') {
                     alert('Position closed successfully');
                     // Refresh data immediately
-                    fetchData();
+                    updateData();
                 } else {
                     alert('Error closing position: ' + data.message);
                 }
