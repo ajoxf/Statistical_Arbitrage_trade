@@ -1233,7 +1233,7 @@ class TradingMonitor:
             hurst_value, hurst_regime = self.calculate_hurst_exponent(asset_key)
 
             # Generate signal (pass stats, hurst, and current prices for filtering)
-            signal = self._generate_signal(asset_key, zscore, stats, hurst_value, hurst_regime, spot_price, futures_price)
+            signal = self._generate_signal(asset_key, zscore, stats, hurst_value, hurst_regime, spot_price, futures_price, spot_spread, futures_spread)
 
             # Store z-score in history for charting
             entry_threshold = self.config.get('entry_std_dev', 2.0)
@@ -1372,7 +1372,7 @@ class TradingMonitor:
             return " | ".join(sessions)
         return "Between Sessions"
 
-    def _generate_signal(self, asset_key, zscore, stats=None, hurst_value=None, hurst_regime=None, current_spot=None, current_futures=None):
+    def _generate_signal(self, asset_key, zscore, stats=None, hurst_value=None, hurst_regime=None, current_spot=None, current_futures=None, spot_spread=0, futures_spread=0):
         """Generate trading signal based on z-score with Hurst exponent regime filter"""
         if zscore is None:
             # Show progress if stats available
@@ -1435,17 +1435,11 @@ class TradingMonitor:
             # MIN STD FILTER: Block entries when volatility too low to be profitable (if enabled)
             min_std_filter_enabled = self.config.get('min_std_filter_enabled', False)
             if min_std_filter_enabled:
-                # Build current_data for cost calculation
+                # Use spread values passed from get_market_data (avoid recursive call)
                 current_data = {
-                    'spot_spread': 0,
-                    'futures_spread': 0
+                    'spot_spread': spot_spread,
+                    'futures_spread': futures_spread
                 }
-                # Try to get actual spreads from market data
-                if current_spot and current_futures:
-                    market_data = self.get_market_data(asset_key)
-                    if market_data:
-                        current_data['spot_spread'] = market_data.get('spot_spread', 0)
-                        current_data['futures_spread'] = market_data.get('futures_spread', 0)
 
                 std_analysis = self.calculate_min_profitable_std(asset_key, current_data)
                 if not std_analysis['is_profitable']:
