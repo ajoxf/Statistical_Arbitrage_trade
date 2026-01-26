@@ -171,6 +171,8 @@ class ApplicationLauncher:
         self.splash = None
         self.server_thread = None
         self.server_started = False
+        self.startup_complete = False
+        self.startup_error = None
 
     def show_error(self, title: str, message: str):
         """Show error dialog"""
@@ -210,12 +212,52 @@ class ApplicationLauncher:
 
             # Run splash screen main loop
             self.splash.mainloop()
+
+            # After splash closes, wait for startup to complete then open browser
+            startup_thread.join(timeout=5)
+
+            if self.startup_error:
+                self.show_error("Startup Error", self.startup_error)
+                sys.exit(1)
+
+            # Open browser and keep server alive (this runs on main thread after splash closes)
+            if self.startup_complete:
+                print("Opening browser...")
+                webbrowser.open('http://127.0.0.1:5000')
+                print("Browser opened. Server running at http://127.0.0.1:5000")
+                print("Press Ctrl+C to stop the server.")
+                # Keep main thread alive while server runs
+                if self.server_thread:
+                    try:
+                        self.server_thread.join()
+                    except KeyboardInterrupt:
+                        print("\nShutting down...")
         else:
-            # No GUI, just start server
-            self._startup_sequence()
+            # No GUI, just start server directly
+            self._startup_no_splash()
+
+    def _startup_no_splash(self):
+        """Start without splash screen"""
+        print("Starting StatArb Pro server...")
+        self.server_error = None
+        self.server_thread = threading.Thread(target=self.start_server, daemon=True)
+        self.server_thread.start()
+        time.sleep(2)
+
+        if hasattr(self, 'server_error') and self.server_error:
+            print(f"ERROR: {self.server_error}")
+            sys.exit(1)
+
+        webbrowser.open('http://127.0.0.1:5000')
+        print("Server running at http://127.0.0.1:5000")
+        print("Press Ctrl+C to stop.")
+        try:
+            self.server_thread.join()
+        except KeyboardInterrupt:
+            print("\nShutting down...")
 
     def _startup_sequence(self):
-        """Run the startup sequence"""
+        """Run the startup sequence (runs in background thread with splash)"""
         try:
             steps = [
                 ("Loading configuration...", 10),
@@ -243,38 +285,21 @@ class ApplicationLauncher:
             if hasattr(self, 'server_error') and self.server_error:
                 if self.splash:
                     self.splash.close()
-                self.show_error("Server Error", f"Failed to start server:\n\n{self.server_error}")
-                sys.exit(1)
+                self.startup_error = f"Failed to start server:\n\n{self.server_error}"
+                return
 
             if self.splash:
                 self.splash.update_status("Launching application...", 100)
                 time.sleep(0.5)
                 self.splash.close()
 
-            # Open native window or browser
-            if HAS_WEBVIEW:
-                # Create native window
-                webview.create_window(
-                    'StatArb Pro',
-                    'http://127.0.0.1:5000',
-                    width=1400,
-                    height=900,
-                    resizable=True,
-                    min_size=(1024, 768)
-                )
-                webview.start()
-            else:
-                # Fallback to browser
-                webbrowser.open('http://127.0.0.1:5000')
-                # Keep main thread alive
-                if self.server_thread:
-                    self.server_thread.join()
+            # Mark startup as complete - browser will be opened by main thread
+            self.startup_complete = True
 
         except Exception as e:
             if self.splash:
                 self.splash.close()
-            self.show_error("Startup Error", f"Failed to start application:\n\n{str(e)}")
-            sys.exit(1)
+            self.startup_error = f"Failed to start application:\n\n{str(e)}"
 
 
 def main():
