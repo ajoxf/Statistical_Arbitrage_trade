@@ -14,13 +14,10 @@ import threading
 import time
 from pathlib import Path
 
-# Try to import webview for native window
-try:
-    import webview
-    HAS_WEBVIEW = True
-except ImportError:
-    HAS_WEBVIEW = False
-    import webbrowser
+# Use browser instead of webview for better compatibility
+# pywebview has issues with PyInstaller frozen apps
+HAS_WEBVIEW = False
+import webbrowser
 
 # Add the application directory to path
 if getattr(sys, 'frozen', False):
