@@ -12,12 +12,13 @@
 
     <style>
         :root {
-            --bs-body-bg: #1a1a2e;
-            --bs-body-color: #e0e0e0;
-            --card-bg: #16213e;
-            --card-border: #0f3460;
-            --accent-color: #e94560;
-            --success-color: #00d09c;
+            --bs-body-bg: #ffffff;
+            --bs-body-color: #212529;
+            --card-bg: #ffffff;
+            --card-border: #dee2e6;
+            --accent-color: #0d6efd;
+            --success-color: #198754;
+            --danger-color: #dc3545;
             --warning-color: #ffc107;
         }
 
@@ -28,7 +29,7 @@
         }
 
         .navbar {
-            background-color: var(--card-bg) !important;
+            background-color: #f8f9fa !important;
             border-bottom: 1px solid var(--card-border);
         }
 
@@ -49,10 +50,11 @@
             background-color: var(--card-bg);
             border: 1px solid var(--card-border);
             border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
 
         .card-header {
-            background-color: transparent;
+            background-color: #f8f9fa;
             border-bottom: 1px solid var(--card-border);
             font-weight: 600;
         }
@@ -70,13 +72,13 @@
 
         .stat-label {
             font-size: 0.875rem;
-            color: #888;
+            color: #6c757d;
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
 
         .positive { color: var(--success-color); }
-        .negative { color: var(--accent-color); }
+        .negative { color: var(--danger-color); }
         .neutral { color: var(--warning-color); }
 
         .btn-primary {
@@ -85,8 +87,8 @@
         }
 
         .btn-primary:hover {
-            background-color: #c73e54;
-            border-color: #c73e54;
+            background-color: #0b5ed7;
+            border-color: #0a58ca;
         }
 
         .btn-success {
@@ -95,30 +97,31 @@
         }
 
         .form-control, .form-select {
-            background-color: #0f3460;
+            background-color: #ffffff;
             border-color: var(--card-border);
             color: var(--bs-body-color);
         }
 
         .form-control:focus, .form-select:focus {
-            background-color: #0f3460;
+            background-color: #ffffff;
             border-color: var(--accent-color);
             color: var(--bs-body-color);
-            box-shadow: 0 0 0 0.25rem rgba(233, 69, 96, 0.25);
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
         }
 
         .table {
             color: var(--bs-body-color);
         }
 
-        .table-dark {
-            --bs-table-bg: var(--card-bg);
+        .table-striped {
+            --bs-table-bg: #ffffff;
+            --bs-table-striped-bg: #f8f9fa;
             --bs-table-border-color: var(--card-border);
         }
 
         .badge-connected { background-color: var(--success-color); }
         .badge-disconnected { background-color: #6c757d; }
-        .badge-error { background-color: var(--accent-color); }
+        .badge-error { background-color: var(--danger-color); }
 
         .zscore-display {
             font-size: 3rem;
@@ -145,7 +148,7 @@
 
         .status-running { background-color: var(--success-color); animation: pulse 2s infinite; }
         .status-stopped { background-color: #6c757d; }
-        .status-error { background-color: var(--accent-color); }
+        .status-error { background-color: var(--danger-color); }
 
         @keyframes pulse {
             0%, 100% { opacity: 1; }
@@ -154,8 +157,9 @@
 
         .chart-container {
             height: 300px;
-            background-color: #0f3460;
+            background-color: #f8f9fa;
             border-radius: 8px;
+            border: 1px solid var(--card-border);
         }
 
         /* Market Sessions Panel */
@@ -216,7 +220,7 @@
 </head>
 <body>
     <!-- Navigation -->
-    <nav class="navbar navbar-expand-lg navbar-dark">
+    <nav class="navbar navbar-expand-lg navbar-light">
         <div class="container-fluid">
             <a class="navbar-brand" href="/">
                 <i class="bi bi-graph-up-arrow me-2"></i>Multi-Broker Arb
