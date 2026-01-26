@@ -23,6 +23,16 @@ else:
     APP_DIR = Path(__file__).parent.parent
     sys.path.insert(0, str(APP_DIR))
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    env_file = APP_DIR / '.env'
+    if env_file.exists():
+        load_dotenv(env_file)
+        print(f"Loaded environment from {env_file}", flush=True)
+except ImportError:
+    pass  # python-dotenv not installed, use system env vars
+
 
 def start_server():
     """Start the Flask server"""

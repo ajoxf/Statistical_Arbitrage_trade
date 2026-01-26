@@ -25,6 +25,7 @@ numpy>=1.24.0
 
 # Configuration
 PyYAML>=6.0
+python-dotenv>=1.0.0  # Load .env files
 
 # Broker Adapters
 # MT5 - Only works on Windows
