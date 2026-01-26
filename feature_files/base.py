@@ -175,8 +175,13 @@ class BrokerConfig:
     """Configuration for a broker connection"""
     broker_id: str
     name: str
-    role: str  # 'SPOT' or 'FUTURES'
+    role: str  # 'SPOT', 'FUTURES', or 'UNIFIED' (handles both)
     backend_type: str  # 'MT5', 'FIX', 'FLEXTRADE', 'IB', 'OKX'
+
+    # Unified mode - single broker handles both spot and futures
+    unified_mode: bool = False
+    spot_symbol: Optional[str] = None      # Symbol for spot leg
+    futures_symbol: Optional[str] = None   # Symbol for futures leg
 
     # MT5 specific
     mt5_path: Optional[str] = None
