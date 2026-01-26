@@ -209,6 +209,11 @@ def api_brokers():
             fix_target_comp=data.get('fix_target_comp'),
             fix_username=data.get('fix_username'),
             fix_password=data.get('fix_password'),
+            okx_api_key=data.get('okx_api_key'),
+            okx_api_secret=data.get('okx_api_secret'),
+            okx_passphrase=data.get('okx_passphrase'),
+            okx_simulated=data.get('okx_simulated', True),
+            okx_account_type=data.get('okx_account_type', 'spot'),
             symbol=data.get('symbol', ''),
             contract_size=data.get('contract_size', 100.0),
             commission_per_lot=data.get('commission_per_lot', 0.0)
