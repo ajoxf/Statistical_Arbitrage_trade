@@ -136,7 +136,7 @@ if exist "%INSTALLER_DIR%build" rmdir /s /q "%INSTALLER_DIR%build"
 
 :: Run PyInstaller
 cd /d "%INSTALLER_DIR%"
-pyinstaller statarb.spec --noconfirm --clean
+%PY% -m PyInstaller statarb.spec --noconfirm --clean
 
 if errorlevel 1 (
     echo %RED%ERROR: PyInstaller build failed%RESET%
