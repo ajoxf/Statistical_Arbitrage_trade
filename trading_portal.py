@@ -4155,222 +4155,59 @@ MONITOR_HTML = '''<!DOCTYPE html>
             height: 300px;
         }
 
-        /* Market Sessions Panel - Blue Box */
+        /* Market Sessions Panel - Compact Blue Box */
         .market-sessions-panel {
-            background: linear-gradient(135deg, #1565c0 0%, #1976d2 50%, #2196f3 100%);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            color: white;
-            box-shadow: 0 4px 15px rgba(25, 118, 210, 0.3);
-        }
-        .market-sessions-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            background: linear-gradient(135deg, #1565c0 0%, #1976d2 100%);
+            border-radius: 8px;
+            padding: 12px 16px;
             margin-bottom: 15px;
-        }
-        .market-sessions-title {
-            font-size: 1.1em;
-            font-weight: 600;
+            color: white;
             display: flex;
             align-items: center;
-            gap: 8px;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .market-sessions-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
         }
         .market-sessions-time {
-            font-size: 1.5em;
+            font-size: 1.3em;
             font-weight: 700;
             font-family: 'Courier New', monospace;
         }
-        .sessions-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 12px;
+        .sessions-active {
+            display: flex;
+            gap: 8px;
         }
-        .session-card {
-            background: rgba(255,255,255,0.15);
-            border-radius: 8px;
-            padding: 12px 15px;
-            backdrop-filter: blur(10px);
+        .session-badge {
+            background: rgba(255,255,255,0.2);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 500;
         }
-        .session-card.active {
-            background: rgba(255,255,255,0.25);
-            border: 1px solid rgba(255,255,255,0.4);
-        }
-        .session-name {
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-        .session-countdown {
-            font-size: 1.2em;
-            font-family: 'Courier New', monospace;
-        }
-        .session-status {
-            font-size: 0.8em;
-            opacity: 0.8;
+        .session-badge.active {
+            background: rgba(255,255,255,0.35);
+            border: 1px solid rgba(255,255,255,0.5);
         }
         .upcoming-events {
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid rgba(255,255,255,0.2);
+            display: flex;
+            gap: 15px;
+            font-size: 0.85em;
         }
         .event-item {
             display: flex;
-            justify-content: space-between;
-            padding: 6px 0;
-            font-size: 0.9em;
+            gap: 6px;
+            opacity: 0.9;
         }
         .event-countdown {
             font-family: 'Courier New', monospace;
             font-weight: 600;
         }
 
-        /* AI Log Monitor Panel */
-        .log-monitor-panel {
-            background: #263238;
-            border-radius: 12px;
-            padding: 15px 20px;
-            margin-bottom: 20px;
-            color: #eceff1;
-        }
-        .log-monitor-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-        .log-monitor-title {
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .error-count {
-            background: #f44336;
-            color: white;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 0.8em;
-            font-weight: 600;
-        }
-        .error-count.zero {
-            background: #4caf50;
-        }
-        .log-errors-list {
-            max-height: 120px;
-            overflow-y: auto;
-            font-family: 'Courier New', monospace;
-            font-size: 0.8em;
-        }
-        .log-error-item {
-            padding: 4px 8px;
-            background: rgba(244, 67, 54, 0.1);
-            border-left: 3px solid #f44336;
-            margin-bottom: 4px;
-            border-radius: 0 4px 4px 0;
-        }
-        .analyze-logs-btn {
-            background: #7c4dff;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.85em;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .analyze-logs-btn:hover {
-            background: #651fff;
-        }
-
-        /* AI Trade Analyzer Button */
-        .ai-analyze-btn {
-            background: #7c4dff;
-            color: white;
-            border: none;
-            padding: 4px 10px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.75em;
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .ai-analyze-btn:hover {
-            background: #651fff;
-        }
-
-        /* AI Analysis Modal */
-        .ai-modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.6);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-        }
-        .ai-modal-overlay.active {
-            display: flex;
-        }
-        .ai-modal {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            max-width: 600px;
-            width: 90%;
-            max-height: 80vh;
-            overflow-y: auto;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-        }
-        .ai-modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 1px solid #eee;
-        }
-        .ai-modal-title {
-            font-size: 1.2em;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .ai-modal-close {
-            background: none;
-            border: none;
-            font-size: 1.5em;
-            cursor: pointer;
-            color: #666;
-        }
-        .ai-modal-content {
-            line-height: 1.6;
-            white-space: pre-wrap;
-        }
-        .ai-loading {
-            text-align: center;
-            padding: 40px;
-            color: #666;
-        }
-        .ai-loading-spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid #eee;
-            border-top-color: #7c4dff;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -4410,55 +4247,13 @@ MONITOR_HTML = '''<!DOCTYPE html>
         <button class="reset-btn" onclick="clearTrades()">🗑 Clear Trades</button>
     </div>
 
-    <!-- Market Sessions Panel (Blue Box) -->
+    <!-- Market Sessions Panel (Compact Blue Box) -->
     <div class="market-sessions-panel" id="market-sessions-panel">
-        <div class="market-sessions-header">
-            <div class="market-sessions-title">
-                🌍 Market Sessions
-            </div>
+        <div class="market-sessions-left">
             <div class="market-sessions-time" id="utc-time">--:--:-- UTC</div>
+            <div class="sessions-active" id="sessions-active">Loading...</div>
         </div>
-        <div class="sessions-grid" id="sessions-grid">
-            <div style="color: rgba(255,255,255,0.7);">Loading market sessions...</div>
-        </div>
-        <div class="upcoming-events" id="upcoming-events">
-            <div style="font-weight: 600; margin-bottom: 8px;">📅 Upcoming Events</div>
-            <div id="events-list">Loading...</div>
-        </div>
-    </div>
-
-    <!-- AI Log Monitor Panel -->
-    <div class="log-monitor-panel" id="log-monitor-panel">
-        <div class="log-monitor-header">
-            <div class="log-monitor-title">
-                🤖 AI Log Monitor
-                <span class="error-count zero" id="error-count">0</span>
-            </div>
-            <button class="analyze-logs-btn" onclick="analyzeLogsWithAI()">
-                ✨ Analyze with Claude
-            </button>
-        </div>
-        <div class="log-errors-list" id="log-errors-list">
-            <div style="color: #4caf50;">✓ No errors detected</div>
-        </div>
-    </div>
-
-    <!-- AI Analysis Modal -->
-    <div class="ai-modal-overlay" id="ai-modal-overlay" onclick="closeAIModal(event)">
-        <div class="ai-modal" onclick="event.stopPropagation()">
-            <div class="ai-modal-header">
-                <div class="ai-modal-title">
-                    🤖 <span id="ai-modal-title-text">AI Analysis</span>
-                </div>
-                <button class="ai-modal-close" onclick="closeAIModal()">&times;</button>
-            </div>
-            <div class="ai-modal-content" id="ai-modal-content">
-                <div class="ai-loading">
-                    <div class="ai-loading-spinner"></div>
-                    <div>Analyzing with Claude AI...</div>
-                </div>
-            </div>
-        </div>
+        <div class="upcoming-events" id="upcoming-events"></div>
     </div>
 
     <div class="account-section" id="account-section">
@@ -4563,11 +4358,10 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <th>Spread</th>
                         <th>Net P&L</th>
                         <th>Return</th>
-                        <th>AI</th>
                     </tr>
                 </thead>
                 <tbody id="trade-history-body">
-                    <tr><td colspan="17" style="text-align: center; color: #666;">No trades yet</td></tr>
+                    <tr><td colspan="16" style="text-align: center; color: #666;">No trades yet</td></tr>
                 </tbody>
             </table>
         </div>
@@ -4584,157 +4378,28 @@ MONITOR_HTML = '''<!DOCTYPE html>
         const assetFilter = urlParams.get('asset'); // '1', '2', or null (show all)
 
         // =================================================================
-        // MARKET SESSIONS PANEL
+        // MARKET SESSIONS PANEL (Compact)
         // =================================================================
         function updateMarketSessions() {
             fetch('/api/market_sessions')
                 .then(res => res.json())
                 .then(data => {
                     if (data.status !== 'success') return;
-
                     const info = data.data;
-
-                    // Update UTC time
                     document.getElementById('utc-time').textContent = info.current_time_utc;
-
-                    // Update sessions grid
+                    // Active sessions as badges
                     const sessionsHtml = info.active_sessions.length > 0
-                        ? info.active_sessions.map(s => `
-                            <div class="session-card active">
-                                <div class="session-name">${s.name}</div>
-                                <div class="session-countdown">${s.hours_left}h ${s.minutes_left}m</div>
-                                <div class="session-status">● Active - closes in ${s.hours_left}h ${s.minutes_left}m</div>
-                            </div>
-                        `).join('')
-                        : '<div class="session-card"><div class="session-status">No major sessions active</div></div>';
-
-                    document.getElementById('sessions-grid').innerHTML = sessionsHtml;
-
-                    // Update upcoming events
-                    const eventsHtml = info.upcoming_events.map(e => `
-                        <div class="event-item">
-                            <span>${e.name}</span>
-                            <span class="event-countdown">${e.hours_until}h ${e.minutes_until}m</span>
-                        </div>
-                    `).join('');
-
-                    document.getElementById('events-list').innerHTML = eventsHtml || 'No upcoming events';
+                        ? info.active_sessions.map(s => `<span class="session-badge active">${s.name} ${s.hours_left}h${s.minutes_left}m</span>`).join('')
+                        : '<span class="session-badge">No sessions</span>';
+                    document.getElementById('sessions-active').innerHTML = sessionsHtml;
+                    // Upcoming events inline
+                    const eventsHtml = info.upcoming_events.slice(0,2).map(e => `<div class="event-item"><span>${e.name}:</span><span class="event-countdown">${e.hours_until}h${e.minutes_until}m</span></div>`).join('');
+                    document.getElementById('upcoming-events').innerHTML = eventsHtml;
                 })
                 .catch(err => console.error('Market sessions error:', err));
         }
-
-        // =================================================================
-        // AI LOG MONITOR
-        // =================================================================
-        function updateLogMonitor() {
-            fetch('/api/log_errors')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.status !== 'success') return;
-
-                    const info = data.data;
-                    const errorCount = info.total_errors || 0;
-
-                    // Update error count badge
-                    const countEl = document.getElementById('error-count');
-                    countEl.textContent = errorCount;
-                    countEl.className = 'error-count' + (errorCount === 0 ? ' zero' : '');
-
-                    // Update error list
-                    const listEl = document.getElementById('log-errors-list');
-                    if (info.recent_errors && info.recent_errors.length > 0) {
-                        listEl.innerHTML = info.recent_errors.slice(-5).map(e => `
-                            <div class="log-error-item">
-                                <span style="color: #888;">[${e.timestamp}]</span> ${e.message.substring(0, 150)}...
-                            </div>
-                        `).join('');
-                    } else {
-                        listEl.innerHTML = '<div style="color: #4caf50;">✓ No errors detected</div>';
-                    }
-                })
-                .catch(err => console.error('Log monitor error:', err));
-        }
-
-        function analyzeLogsWithAI() {
-            openAIModal('Log Analysis', 'Analyzing log errors with Claude AI...');
-
-            fetch('/api/analyze_logs')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        document.getElementById('ai-modal-content').innerHTML =
-                            '<pre style="white-space: pre-wrap; font-family: inherit;">' +
-                            data.data.analysis + '</pre>';
-                    } else {
-                        document.getElementById('ai-modal-content').innerHTML =
-                            '<div style="color: #f44336;">Error: ' + data.message + '</div>' +
-                            '<div style="margin-top: 15px; color: #666;">Make sure your Claude API key is configured in Settings.</div>';
-                    }
-                })
-                .catch(err => {
-                    document.getElementById('ai-modal-content').innerHTML =
-                        '<div style="color: #f44336;">Error: ' + err.message + '</div>';
-                });
-        }
-
-        // =================================================================
-        // AI TRADE ANALYZER
-        // =================================================================
-        function analyzeTradeWithAI(tradeId) {
-            openAIModal('Trade Analysis', 'Analyzing trade with Claude AI...');
-
-            fetch('/api/analyze_trade', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ trade_id: tradeId })
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        document.getElementById('ai-modal-content').innerHTML =
-                            '<pre style="white-space: pre-wrap; font-family: inherit;">' +
-                            data.analysis + '</pre>';
-                    } else {
-                        document.getElementById('ai-modal-content').innerHTML =
-                            '<div style="color: #f44336;">Error: ' + data.message + '</div>' +
-                            '<div style="margin-top: 15px; color: #666;">Make sure your Claude API key is configured in Settings.</div>';
-                    }
-                })
-                .catch(err => {
-                    document.getElementById('ai-modal-content').innerHTML =
-                        '<div style="color: #f44336;">Error: ' + err.message + '</div>';
-                });
-        }
-
-        // =================================================================
-        // AI MODAL HELPERS
-        // =================================================================
-        function openAIModal(title, loadingText) {
-            document.getElementById('ai-modal-title-text').textContent = title;
-            document.getElementById('ai-modal-content').innerHTML = `
-                <div class="ai-loading">
-                    <div class="ai-loading-spinner"></div>
-                    <div>${loadingText}</div>
-                </div>
-            `;
-            document.getElementById('ai-modal-overlay').classList.add('active');
-        }
-
-        function closeAIModal(event) {
-            if (!event || event.target === document.getElementById('ai-modal-overlay')) {
-                document.getElementById('ai-modal-overlay').classList.remove('active');
-            }
-        }
-
-        // Update market sessions and log monitor every 30 seconds
         setInterval(updateMarketSessions, 30000);
-        setInterval(updateLogMonitor, 30000);
-
-        // Initial load
-        setTimeout(() => {
-            updateMarketSessions();
-            updateLogMonitor();
-        }, 1000);
+        setTimeout(updateMarketSessions, 500);
 
         // =================================================================
         // MAIN DATA UPDATE
@@ -5255,7 +4920,7 @@ MONITOR_HTML = '''<!DOCTYPE html>
             // Update table
             const tbody = document.getElementById('trade-history-body');
             if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="17" style="text-align: center; color: #666;">No trades yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="16" style="text-align: center; color: #666;">No trades yet</td></tr>';
                 return;
             }
 
@@ -5290,7 +4955,6 @@ MONITOR_HTML = '''<!DOCTYPE html>
                     <td style="color: #888;">$${Math.abs(t.spread_cost || 0).toFixed(2)}</td>
                     <td class="${netPnlClass}"><strong>$${(t.net_pnl || 0).toFixed(2)}</strong></td>
                     <td class="${returnClass}">${(t.return_pct || 0).toFixed(2)}%</td>
-                    <td><button class="ai-analyze-btn" onclick="analyzeTradeWithAI('${t.trade_id}')" title="Analyze with Claude AI">🤖</button></td>
                 </tr>`;
             }).join('');
         }
@@ -5946,30 +5610,6 @@ SETTINGS_HTML = '''<!DOCTYPE html>
                 </div>
             </div>
 
-            <div class="card" style="border-left: 4px solid #7c4dff;">
-                <div class="card-title" style="color: #7c4dff;">🤖 Claude AI Integration</div>
-
-                <div class="form-group">
-                    <label>Claude API Key</label>
-                    <div style="display: flex; gap: 10px;">
-                        <input type="password" id="claude_api_key" value="{{ config.claude_api_key or '' }}" placeholder="sk-ant-..." style="flex: 1;">
-                        <button type="button" onclick="saveClaudeKey()" style="background: #7c4dff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Save Key</button>
-                    </div>
-                    <div class="help-text">Get your API key from <a href="https://console.anthropic.com/" target="_blank" style="color: #7c4dff;">console.anthropic.com</a></div>
-                </div>
-
-                <div id="claude-status" style="margin-top: 10px; padding: 10px; border-radius: 6px; display: none;"></div>
-
-                <div style="background: #f3e5f5; padding: 12px; border-radius: 6px; margin-top: 15px;">
-                    <div style="font-weight: 600; margin-bottom: 8px;">✨ AI Features Enabled:</div>
-                    <ul style="margin: 0; padding-left: 20px; color: #666;">
-                        <li><strong>Trade Analyzer:</strong> Click 🤖 next to any trade in the journal for detailed AI analysis</li>
-                        <li><strong>Log Monitor:</strong> Real-time error detection with AI-powered explanations</li>
-                        <li><strong>Market Sessions:</strong> Live market timing panel with countdowns (no API needed)</li>
-                    </ul>
-                </div>
-            </div>
-
             <div class="card">
                 <div class="card-title">Position Sizing</div>
 
@@ -6054,49 +5694,6 @@ SETTINGS_HTML = '''<!DOCTYPE html>
     </div>
 
     <script>
-        // Save Claude API Key
-        async function saveClaudeKey() {
-            const apiKey = document.getElementById('claude_api_key').value.trim();
-            const statusDiv = document.getElementById('claude-status');
-
-            if (!apiKey) {
-                statusDiv.style.display = 'block';
-                statusDiv.style.background = '#ffebee';
-                statusDiv.style.color = '#c62828';
-                statusDiv.innerHTML = '⚠️ Please enter an API key';
-                return;
-            }
-
-            statusDiv.style.display = 'block';
-            statusDiv.style.background = '#e3f2fd';
-            statusDiv.style.color = '#1565c0';
-            statusDiv.innerHTML = '⏳ Verifying API key...';
-
-            try {
-                const response = await fetch('/api/set_claude_key', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ api_key: apiKey })
-                });
-
-                const data = await response.json();
-
-                if (data.status === 'success') {
-                    statusDiv.style.background = '#e8f5e9';
-                    statusDiv.style.color = '#2e7d32';
-                    statusDiv.innerHTML = '✓ ' + data.message;
-                } else {
-                    statusDiv.style.background = '#ffebee';
-                    statusDiv.style.color = '#c62828';
-                    statusDiv.innerHTML = '✗ ' + data.message;
-                }
-            } catch (err) {
-                statusDiv.style.background = '#ffebee';
-                statusDiv.style.color = '#c62828';
-                statusDiv.innerHTML = '✗ Error: ' + err.message;
-            }
-        }
-
         async function testOrders() {
             const btn = document.getElementById('test-orders-btn');
             const resultsDiv = document.getElementById('test-results');
