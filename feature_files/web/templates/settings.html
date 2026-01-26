@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Multi-Broker Arbitrage{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h4 class="mb-4"><i class="bi bi-gear me-2"></i>Trading Settings</h4>
+    </div>
+</div>
+
+<form id="settings-form">
+    <div class="row g-4">
+        <!-- Signal Parameters -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-graph-up me-2"></i>Signal Parameters
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Lookback Period</label>
+                            <input type="number" class="form-control" name="lookback_period"
+                                   value="{{ config.lookback_period }}" min="10" max="1000">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Lookback Unit</label>
+                            <select class="form-select" name="lookback_unit">
+                                <option value="minutes" {% if config.lookback_unit == 'minutes' %}selected{% endif %}>Minutes</option>
+                                <option value="days" {% if config.lookback_unit == 'days' %}selected{% endif %}>Days</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Entry SD (σ)</label>
+                            <input type="number" class="form-control" name="entry_std_dev"
+                                   value="{{ config.entry_std_dev }}" step="0.1" min="0.5" max="5">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Exit SD (σ)</label>
+                            <input type="number" class="form-control" name="exit_std_dev"
+                                   value="{{ config.exit_std_dev }}" step="0.1" min="0" max="3">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Stop Loss SD (σ)</label>
+                            <input type="number" class="form-control" name="stop_loss_std_dev"
+                                   value="{{ config.stop_loss_std_dev }}" step="0.1" min="1" max="6">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Exit at Opposite SD (0=disabled)</label>
+                            <input type="number" class="form-control" name="exit_at_opposite_sd"
+                                   value="{{ config.exit_at_opposite_sd }}" step="0.1" min="0" max="5">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Risk Management -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-shield-check me-2"></i>Risk Management
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Lot Size</label>
+                            <input type="number" class="form-control" name="lot_size"
+                                   value="{{ config.lot_size }}" step="0.01" min="0.01" max="100">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Max Positions</label>
+                            <input type="number" class="form-control" name="max_positions"
+                                   value="{{ config.max_positions }}" min="1" max="10">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Min Profit/Lot ($)</label>
+                            <input type="number" class="form-control" name="min_profit_per_lot"
+                                   value="{{ config.min_profit_per_lot }}" step="1" min="0">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Max Loss/Lot ($)</label>
+                            <input type="number" class="form-control" name="max_loss_per_lot"
+                                   value="{{ config.max_loss_per_lot }}" step="1" min="0">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Time Stop (days, 0=disabled)</label>
+                            <input type="number" class="form-control" name="time_stop_loss_days"
+                                   value="{{ config.time_stop_loss_days }}" step="0.1" min="0">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Commission/Lot ($)</label>
+                            <input type="number" class="form-control" name="commission_per_lot"
+                                   value="{{ config.commission_per_lot }}" step="0.1" min="0">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hurst Exponent Filter -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-funnel me-2"></i>Hurst Exponent Filter
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="hurst_enabled"
+                                       id="hurst-enabled" {% if config.hurst_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="hurst-enabled">
+                                    Enable Hurst Filter
+                                </label>
+                            </div>
+                            <small class="text-muted">Block entries when market is trending (H > threshold)</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Hurst Threshold</label>
+                            <input type="number" class="form-control" name="hurst_threshold"
+                                   value="{{ config.hurst_threshold }}" step="0.01" min="0.3" max="0.7">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Trending Duration (min)</label>
+                            <input type="number" class="form-control" name="trending_duration_minutes"
+                                   value="{{ config.trending_duration_minutes }}" min="1" max="60">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- STD Profitability Filter -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-cash-stack me-2"></i>STD Profitability Filter
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="std_filter_enabled"
+                                       id="std-filter-enabled" {% if config.std_filter_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="std-filter-enabled">
+                                    Enable STD Filter
+                                </label>
+                            </div>
+                            <small class="text-muted">Block entries when expected profit &lt; costs</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Spot Spread ($)</label>
+                            <input type="number" class="form-control" name="spot_spread_cost"
+                                   value="{{ config.spot_spread_cost }}" step="0.01" min="0">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Futures Spread ($)</label>
+                            <input type="number" class="form-control" name="futures_spread_cost"
+                                   value="{{ config.futures_spread_cost }}" step="0.01" min="0">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Margin (x)</label>
+                            <input type="number" class="form-control" name="profit_margin"
+                                   value="{{ config.profit_margin }}" step="0.1" min="1" max="5">
+                        </div>
+                        <div class="col-12">
+                            <div id="std-profitability-status" class="alert alert-secondary mt-2 mb-0 py-2 small">
+                                <span id="std-status-text">Current STD: -- | Min Required: --</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Order Execution -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-lightning me-2"></i>Order Execution
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label">Order Type</label>
+                            <select class="form-select" name="order_type">
+                                <option value="MARKET" {% if config.order_type == 'MARKET' %}selected{% endif %}>Market Order</option>
+                                <option value="LIMIT" {% if config.order_type == 'LIMIT' %}selected{% endif %}>Limit Order</option>
+                                <option value="PEGGED_LIMIT" {% if config.order_type == 'PEGGED_LIMIT' %}selected{% endif %}>Pegged Limit</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Limit Timeout (sec)</label>
+                            <input type="number" class="form-control" name="limit_order_timeout"
+                                   value="{{ config.limit_order_timeout }}" min="10" max="300">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Peg Interval (sec)</label>
+                            <input type="number" class="form-control" name="limit_peg_interval"
+                                   value="{{ config.limit_peg_interval }}" step="0.1" min="0.5" max="10">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Overnight Protection -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-moon me-2"></i>Overnight Protection
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="close_before_overnight"
+                                       id="overnight-enabled" {% if config.close_before_overnight %}checked{% endif %}>
+                                <label class="form-check-label" for="overnight-enabled">
+                                    Close Before Overnight
+                                </label>
+                            </div>
+                            <small class="text-muted">Automatically close positions before market close</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Close Hour</label>
+                            <input type="number" class="form-control" name="overnight_close_hour"
+                                   value="{{ config.overnight_close_hour }}" min="0" max="23">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Close Minute</label>
+                            <input type="number" class="form-control" name="overnight_close_minute"
+                                   value="{{ config.overnight_close_minute }}" min="0" max="59">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mode Settings -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-toggles me-2"></i>Mode Settings
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="paper_mode"
+                                       id="paper-mode" {% if config.paper_mode %}checked{% endif %}>
+                                <label class="form-check-label" for="paper-mode">
+                                    Paper Trading Mode
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mb-3">When enabled, orders are simulated without real execution</small>
+
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="algo_enabled"
+                                       id="algo-enabled" {% if config.algo_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="algo-enabled">
+                                    Algorithm Enabled
+                                </label>
+                            </div>
+                            <small class="text-muted">Enable/disable automatic trading</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Save Button -->
+        <div class="col-12">
+            <button type="submit" class="btn btn-primary btn-lg">
+                <i class="bi bi-check-lg me-2"></i>Save Settings
+            </button>
+            <button type="button" class="btn btn-outline-secondary btn-lg ms-2" onclick="location.reload()">
+                <i class="bi bi-arrow-counterclockwise me-2"></i>Reset
+            </button>
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.getElementById('settings-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const formData = new FormData(e.target);
+        const data = {};
+
+        for (const [key, value] of formData.entries()) {
+            // Handle checkboxes
+            if (e.target.elements[key].type === 'checkbox') {
+                data[key] = e.target.elements[key].checked;
+            } else if (e.target.elements[key].type === 'number') {
+                data[key] = parseFloat(value);
+            } else {
+                data[key] = value;
+            }
+        }
+
+        // Ensure unchecked checkboxes are included
+        ['hurst_enabled', 'std_filter_enabled', 'close_before_overnight', 'paper_mode', 'algo_enabled'].forEach(name => {
+            if (!(name in data)) {
+                data[name] = false;
+            }
+        });
+
+        const response = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            alert('Settings saved successfully!');
+        } else {
+            alert('Error saving settings: ' + (result.error || 'Unknown error'));
+        }
+    });
+</script>
+{% endblock %}

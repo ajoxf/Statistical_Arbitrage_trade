@@ -1,0 +1,547 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Multi-Broker Arbitrage{% endblock %}
+
+{% block content %}
+<!-- Market Sessions Panel -->
+<div class="market-sessions-panel mb-3">
+    <div class="sessions-label"><i class="bi bi-globe me-2"></i>Markets:</div>
+    <div class="sessions-list">
+        <span class="session" id="sydney-session">
+            <span class="session-dot"></span>Sydney <span class="session-time">--:--</span>
+        </span>
+        <span class="session" id="tokyo-session">
+            <span class="session-dot"></span>Tokyo <span class="session-time">--:--</span>
+        </span>
+        <span class="session" id="london-session">
+            <span class="session-dot"></span>London <span class="session-time">--:--</span>
+        </span>
+        <span class="session" id="newyork-session">
+            <span class="session-dot"></span>New York <span class="session-time">--:--</span>
+        </span>
+    </div>
+    <div class="next-session" id="next-session">Next: -- in --:--:--</div>
+</div>
+
+<div class="row g-4">
+    <!-- Top Stats Row -->
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-value" id="zscore-value">0.00</div>
+            <div class="stat-label">Z-Score</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-value" id="spread-value">$0.00</div>
+            <div class="stat-label">Current Spread</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-value {% if stats.total_pnl >= 0 %}positive{% else %}negative{% endif %}" id="pnl-value">
+                ${{ "%.2f"|format(stats.total_pnl or 0) }}
+            </div>
+            <div class="stat-label">Total P&L</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-value" id="win-rate">{{ "%.1f"|format(stats.win_rate or 0) }}%</div>
+            <div class="stat-label">Win Rate</div>
+        </div>
+    </div>
+
+    <!-- Main Content Row -->
+    <div class="col-md-8">
+        <!-- Z-Score Chart -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-graph-up me-2"></i>Z-Score Monitor</span>
+                <div>
+                    <span class="badge bg-secondary me-2">Mean: <span id="mean-value">0.00</span></span>
+                    <span class="badge bg-secondary">Std: <span id="std-value">0.00</span></span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="chart-container" id="zscore-chart">
+                    <canvas id="zscore-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Spread Price Chart -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-graph-up-arrow me-2"></i>Spread History</span>
+                <div>
+                    <span class="badge bg-info me-2">Min: <span id="spread-min">0.00</span></span>
+                    <span class="badge bg-warning">Max: <span id="spread-max">0.00</span></span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="chart-container" id="spread-chart">
+                    <canvas id="spread-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Price Display -->
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-currency-exchange me-2"></i>Live Prices
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6 class="text-muted">{{ config.spot_symbol }} (Spot)</h6>
+                        <div class="d-flex justify-content-between price-display">
+                            <span>Bid: <span class="positive" id="spot-bid">0.00</span></span>
+                            <span>Ask: <span class="negative" id="spot-ask">0.00</span></span>
+                            <span>Spread: <span id="spot-spread">0.00</span></span>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <h6 class="text-muted">{{ config.futures_symbol }} (Futures)</h6>
+                        <div class="d-flex justify-content-between price-display">
+                            <span>Bid: <span class="positive" id="futures-bid">0.00</span></span>
+                            <span>Ask: <span class="negative" id="futures-ask">0.00</span></span>
+                            <span>Spread: <span id="futures-spread">0.00</span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Sidebar -->
+    <div class="col-md-4">
+        <!-- Algorithm Control -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-robot me-2"></i>Algorithm Control
+            </div>
+            <div class="card-body text-center">
+                <div class="form-check form-switch algo-toggle d-flex justify-content-center">
+                    <input class="form-check-input me-3" type="checkbox" id="algo-toggle"
+                           {% if config.algo_enabled %}checked{% endif %}>
+                    <label class="form-check-label" for="algo-toggle">
+                        <span id="algo-status">{% if config.algo_enabled %}ENABLED{% else %}DISABLED{% endif %}</span>
+                    </label>
+                </div>
+                <small class="text-muted d-block mt-2">
+                    Mode: {% if config.paper_mode %}Paper Trading{% else %}Live Trading{% endif %}
+                </small>
+            </div>
+        </div>
+
+        <!-- Broker Status -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-hdd-network me-2"></i>Broker Status
+            </div>
+            <div class="card-body">
+                {% for broker in brokers %}
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div>
+                        <strong>{{ broker.name }}</strong>
+                        <small class="text-muted d-block">{{ broker.role }} - {{ broker.symbol }}</small>
+                    </div>
+                    <span class="badge {% if broker.status == 'CONNECTED' %}badge-connected{% elif broker.status == 'ERROR' %}badge-error{% else %}badge-disconnected{% endif %}"
+                          id="broker-status-{{ broker.broker_id }}">
+                        {{ broker.status }}
+                    </span>
+                </div>
+                {% else %}
+                <p class="text-muted mb-0">No brokers configured</p>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Current Position -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-briefcase me-2"></i>Current Position
+            </div>
+            <div class="card-body">
+                {% if open_trades %}
+                {% set trade = open_trades[0] %}
+                <div class="mb-2">
+                    <strong>{{ trade.direction }}</strong>
+                    <span class="badge bg-info">{{ trade.lot_size }} lots</span>
+                </div>
+                <div class="d-flex justify-content-between">
+                    <span class="text-muted">Entry Z:</span>
+                    <span>{{ "%.2f"|format(trade.entry_zscore or 0) }}</span>
+                </div>
+                <div class="d-flex justify-content-between">
+                    <span class="text-muted">Entry Spread:</span>
+                    <span>${{ "%.2f"|format((trade.entry_spot_price or 0) - (trade.entry_futures_price or 0)) }}</span>
+                </div>
+                <div class="d-flex justify-content-between">
+                    <span class="text-muted">Unrealized P&L:</span>
+                    <span id="unrealized-pnl" class="positive">$0.00</span>
+                </div>
+                {% else %}
+                <p class="text-muted mb-0 text-center">No open position</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Hurst Exponent -->
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-activity me-2"></i>Market Regime
+            </div>
+            <div class="card-body text-center">
+                <div class="stat-value" id="hurst-value">-</div>
+                <div class="stat-label">Hurst Exponent</div>
+                <div class="mt-2">
+                    <span class="badge bg-secondary" id="regime-badge">Unknown</span>
+                </div>
+                <small class="text-muted">H < 0.5 = Mean Reverting</small>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Trades Table -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-list-ul me-2"></i>Recent Trades</span>
+                <span class="badge bg-secondary">{{ stats.closed_trades or 0 }} trades</span>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-dark table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Direction</th>
+                                <th>Entry Z</th>
+                                <th>Exit Z</th>
+                                <th>Days Held</th>
+                                <th>Net P&L</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for trade in recent_trades %}
+                            <tr>
+                                <td>{{ trade.entry_date[:10] if trade.entry_date else '-' }}</td>
+                                <td>{{ trade.direction }}</td>
+                                <td>{{ "%.2f"|format(trade.entry_zscore or 0) }}</td>
+                                <td>{{ "%.2f"|format(trade.exit_zscore or 0) if trade.exit_zscore else '-' }}</td>
+                                <td>{{ "%.1f"|format(trade.days_held or 0) if trade.days_held else '-' }}</td>
+                                <td class="{% if (trade.net_pnl or 0) >= 0 %}positive{% else %}negative{% endif %}">
+                                    ${{ "%.2f"|format(trade.net_pnl or 0) }}
+                                </td>
+                                <td>
+                                    <span class="badge {% if trade.status == 'OPEN' %}bg-warning{% else %}bg-success{% endif %}">
+                                        {{ trade.status }}
+                                    </span>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="7" class="text-center text-muted">No trades yet</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    // Z-Score chart
+    const ctx = document.getElementById('zscore-canvas').getContext('2d');
+    const zscoreData = {
+        labels: [],
+        datasets: [{
+            label: 'Z-Score',
+            data: [],
+            borderColor: '#e94560',
+            backgroundColor: 'rgba(233, 69, 96, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.4
+        }]
+    };
+
+    // Spread Price chart
+    const spreadCtx = document.getElementById('spread-canvas').getContext('2d');
+    const spreadData = {
+        labels: [],
+        datasets: [{
+            label: 'Spread (Spot - Futures)',
+            data: [],
+            borderColor: '#00d09c',
+            backgroundColor: 'rgba(0, 208, 156, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.4
+        }]
+    };
+
+    const spreadChart = new Chart(spreadCtx, {
+        type: 'line',
+        data: spreadData,
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { display: false },
+                y: {
+                    grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                    ticks: { color: '#888', callback: (v) => '$' + v.toFixed(2) }
+                }
+            },
+            plugins: {
+                legend: { display: false }
+            }
+        }
+    });
+
+    // Track spread min/max
+    let spreadMin = Infinity;
+    let spreadMax = -Infinity;
+
+    const zscoreChart = new Chart(ctx, {
+        type: 'line',
+        data: zscoreData,
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    display: false
+                },
+                y: {
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    },
+                    ticks: {
+                        color: '#888'
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                annotation: {
+                    annotations: {
+                        entry_high: {
+                            type: 'line',
+                            yMin: {{ config.entry_std_dev }},
+                            yMax: {{ config.entry_std_dev }},
+                            borderColor: 'rgba(0, 208, 156, 0.5)',
+                            borderWidth: 1,
+                            borderDash: [5, 5]
+                        },
+                        entry_low: {
+                            type: 'line',
+                            yMin: -{{ config.entry_std_dev }},
+                            yMax: -{{ config.entry_std_dev }},
+                            borderColor: 'rgba(0, 208, 156, 0.5)',
+                            borderWidth: 1,
+                            borderDash: [5, 5]
+                        },
+                        zero: {
+                            type: 'line',
+                            yMin: 0,
+                            yMax: 0,
+                            borderColor: 'rgba(255, 255, 255, 0.3)',
+                            borderWidth: 1
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Update tick data
+    function updateTickData(data) {
+        // Update price displays
+        document.getElementById('spot-bid').textContent = data.spot_bid.toFixed(2);
+        document.getElementById('spot-ask').textContent = data.spot_ask.toFixed(2);
+        document.getElementById('spot-spread').textContent = (data.spot_ask - data.spot_bid).toFixed(2);
+
+        document.getElementById('futures-bid').textContent = data.futures_bid.toFixed(2);
+        document.getElementById('futures-ask').textContent = data.futures_ask.toFixed(2);
+        document.getElementById('futures-spread').textContent = (data.futures_ask - data.futures_bid).toFixed(2);
+
+        // Update spread
+        const spreadValue = data.spread;
+        document.getElementById('spread-value').textContent = '$' + spreadValue.toFixed(2);
+
+        // Update spread chart
+        const now = new Date().toLocaleTimeString();
+        spreadData.labels.push(now);
+        spreadData.datasets[0].data.push(spreadValue);
+
+        // Track min/max
+        if (spreadValue < spreadMin) spreadMin = spreadValue;
+        if (spreadValue > spreadMax) spreadMax = spreadValue;
+        document.getElementById('spread-min').textContent = spreadMin.toFixed(2);
+        document.getElementById('spread-max').textContent = spreadMax.toFixed(2);
+
+        // Keep last 100 points
+        if (spreadData.labels.length > 100) {
+            spreadData.labels.shift();
+            spreadData.datasets[0].data.shift();
+        }
+        spreadChart.update('none');
+
+        // Update Z-score
+        if (data.zscore !== null) {
+            const zscoreEl = document.getElementById('zscore-value');
+            zscoreEl.textContent = data.zscore.toFixed(2);
+            zscoreEl.className = 'stat-value';
+            if (Math.abs(data.zscore) >= {{ config.entry_std_dev }}) {
+                zscoreEl.classList.add('negative');
+            } else if (Math.abs(data.zscore) <= {{ config.exit_std_dev }}) {
+                zscoreEl.classList.add('positive');
+            }
+
+            // Add to chart
+            zscoreData.labels.push(now);
+            zscoreData.datasets[0].data.push(data.zscore);
+
+            // Keep last 100 points
+            if (zscoreData.labels.length > 100) {
+                zscoreData.labels.shift();
+                zscoreData.datasets[0].data.shift();
+            }
+
+            zscoreChart.update('none');
+        }
+    }
+
+    // Update signal
+    function updateSignal(data) {
+        if (data.mean !== null) {
+            document.getElementById('mean-value').textContent = data.mean.toFixed(2);
+        }
+        if (data.std !== null) {
+            document.getElementById('std-value').textContent = data.std.toFixed(2);
+        }
+        if (data.hurst !== null) {
+            document.getElementById('hurst-value').textContent = data.hurst.toFixed(3);
+            const regimeBadge = document.getElementById('regime-badge');
+            regimeBadge.textContent = data.regime || 'Unknown';
+            regimeBadge.className = 'badge';
+            if (data.regime === 'MEAN_REVERTING') {
+                regimeBadge.classList.add('bg-success');
+            } else if (data.regime === 'TRENDING') {
+                regimeBadge.classList.add('bg-danger');
+            } else {
+                regimeBadge.classList.add('bg-warning');
+            }
+        }
+    }
+
+    // Handle trade events
+    function handleTrade(data) {
+        if (data.action === 'ENTRY' || data.action === 'EXIT') {
+            // Refresh page to update trade list
+            setTimeout(() => location.reload(), 1000);
+        }
+    }
+
+    // Algo toggle
+    document.getElementById('algo-toggle').addEventListener('change', async (e) => {
+        const enabled = e.target.checked;
+        const response = await fetch('/api/engine/toggle-algo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+        });
+
+        const result = await response.json();
+        document.getElementById('algo-status').textContent = enabled ? 'ENABLED' : 'DISABLED';
+    });
+
+    // Initial status fetch
+    fetch('/api/status')
+        .then(r => r.json())
+        .then(data => {
+            updateStatus(data.state);
+            if (data.market) {
+                updateTickData(data.market);
+            }
+        });
+
+    // Market Sessions
+    const MARKET_SESSIONS = {
+        sydney: { open: 22, close: 7, name: 'Sydney', tz: 'Australia/Sydney' },
+        tokyo: { open: 0, close: 9, name: 'Tokyo', tz: 'Asia/Tokyo' },
+        london: { open: 8, close: 17, name: 'London', tz: 'Europe/London' },
+        newyork: { open: 13, close: 22, name: 'New York', tz: 'America/New_York' }
+    };
+
+    function updateMarketSessions() {
+        const now = new Date();
+        const utcHour = now.getUTCHours();
+        let nextSession = null;
+        let nextSessionTime = Infinity;
+
+        for (const [key, session] of Object.entries(MARKET_SESSIONS)) {
+            const el = document.getElementById(`${key}-session`);
+            if (!el) continue;
+
+            let isOpen = false;
+            if (session.open < session.close) {
+                isOpen = utcHour >= session.open && utcHour < session.close;
+            } else {
+                isOpen = utcHour >= session.open || utcHour < session.close;
+            }
+
+            el.classList.toggle('active', isOpen);
+
+            // Calculate local time
+            try {
+                const localTime = now.toLocaleTimeString('en-US', {
+                    timeZone: session.tz,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                });
+                el.querySelector('.session-time').textContent = localTime;
+            } catch (e) {
+                el.querySelector('.session-time').textContent = '--:--';
+            }
+
+            // Calculate next session opening
+            if (!isOpen) {
+                let hoursUntil = session.open - utcHour;
+                if (hoursUntil <= 0) hoursUntil += 24;
+                if (hoursUntil < nextSessionTime) {
+                    nextSessionTime = hoursUntil;
+                    nextSession = session.name;
+                }
+            }
+        }
+
+        // Update next session display
+        const nextEl = document.getElementById('next-session');
+        if (nextEl && nextSession) {
+            const hours = Math.floor(nextSessionTime);
+            const mins = Math.floor((nextSessionTime - hours) * 60);
+            nextEl.textContent = `Next: ${nextSession} in ${hours}h ${mins}m`;
+        } else if (nextEl) {
+            nextEl.textContent = 'All sessions active';
+        }
+    }
+
+    // Update sessions every second
+    updateMarketSessions();
+    setInterval(updateMarketSessions, 1000);
+</script>
+{% endblock %}
