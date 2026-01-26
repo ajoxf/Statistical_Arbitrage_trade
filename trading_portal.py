@@ -2658,6 +2658,49 @@ def api_close_position():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/force_remove_position', methods=['POST'])
+def api_force_remove_position():
+    """Force remove a position from tracking without closing MT5 positions.
+
+    Use this when MT5 positions are already closed but the portal still shows them.
+    This removes the position from memory and marks it as CLOSED in the database.
+    """
+    try:
+        asset_key = request.json.get('asset_key', 'ACTIVE')
+
+        if asset_key not in monitor.positions:
+            return jsonify({
+                'status': 'error',
+                'message': f'No open position found for {asset_key}'
+            }), 400
+
+        position = monitor.positions[asset_key]
+        logger.warning(f"Force removing stale position: {asset_key} {position['direction']} "
+                      f"(Spot ticket: {position.get('mt5_spot_ticket')}, "
+                      f"Futures ticket: {position.get('mt5_futures_ticket')})")
+
+        # Mark as closed in database without MT5 interaction
+        position['status'] = 'CLOSED'
+        position['exit_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        position['exit_reason'] = 'FORCE_REMOVED'
+        position['exit_spot_price'] = position.get('entry_spot_price', 0)
+        position['exit_futures_price'] = position.get('entry_futures_price', 0)
+        position['return_pct'] = 0
+        monitor.db.save_trade(position)
+
+        # Remove from active positions
+        del monitor.positions[asset_key]
+
+        return jsonify({
+            'status': 'success',
+            'message': f'Position {asset_key} force removed from tracking'
+        })
+
+    except Exception as e:
+        logger.error(f"Error force removing position: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/search_symbols', methods=['GET'])
 def api_search_symbols():
     """Search for available symbols in MT5
@@ -4257,6 +4300,31 @@ MONITOR_HTML = '''<!DOCTYPE html>
             }
         }
 
+        async function forceRemovePosition(assetKey) {
+            if (!confirm('FORCE REMOVE: This removes the position from tracking WITHOUT closing MT5 positions.\\n\\nUse this only if MT5 positions are already closed but still showing here.\\n\\nContinue?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/force_remove_position', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ asset_key: assetKey })
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('Position removed from tracking');
+                    updateData();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
         function updatePositions(positions) {
             const container = document.getElementById('positions-container');
             if (!positions || positions.length === 0) {
@@ -4322,9 +4390,12 @@ MONITOR_HTML = '''<!DOCTYPE html>
                         <div style="font-size: 0.8em; color: #888;">Unrealized P&L</div>
                         <div class="${pnlClass}" style="font-size: 1.3em; font-weight: bold;">${pnlSign}$${Math.abs(unrealizedPnl).toFixed(2)}</div>
                     </div>
-                    <div style="margin-top: 10px; text-align: center;">
+                    <div style="margin-top: 10px; text-align: center; display: flex; gap: 8px; justify-content: center;">
                         <button onclick="closePosition('${p.asset}')" style="background: #d9534f; color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-weight: 500;">
                             Close Position
+                        </button>
+                        <button onclick="forceRemovePosition('${p.asset}')" style="background: #666; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85em;" title="Remove from tracking if MT5 positions are already closed">
+                            Force Remove
                         </button>
                     </div>
                 </div>
