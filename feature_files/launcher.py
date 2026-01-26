@@ -26,11 +26,12 @@ except ImportError:
 if getattr(sys, 'frozen', False):
     # Running as compiled executable
     APP_DIR = Path(sys.executable).parent
+    # For frozen app, all modules are in the same directory
+    sys.path.insert(0, str(APP_DIR))
 else:
     # Running as script
     APP_DIR = Path(__file__).parent.parent
-
-sys.path.insert(0, str(APP_DIR))
+    sys.path.insert(0, str(APP_DIR))
 
 # Try to import tkinter for splash screen
 try:
@@ -195,7 +196,9 @@ class ApplicationLauncher:
 
         except Exception as e:
             self.server_started = False
-            print(f"Server error: {e}")
+            self.server_error = str(e)
+            import traceback
+            self.server_error = traceback.format_exc()
 
     def launch(self):
         """Launch the application"""
@@ -232,11 +235,19 @@ class ApplicationLauncher:
                 time.sleep(0.3)
 
             # Start server in background thread
+            self.server_error = None
             self.server_thread = threading.Thread(target=self.start_server, daemon=True)
             self.server_thread.start()
 
             # Wait for server to start
-            time.sleep(2)
+            time.sleep(3)
+
+            # Check if server started successfully
+            if hasattr(self, 'server_error') and self.server_error:
+                if self.splash:
+                    self.splash.close()
+                self.show_error("Server Error", f"Failed to start server:\n\n{self.server_error}")
+                sys.exit(1)
 
             if self.splash:
                 self.splash.update_status("Launching application...", 100)
