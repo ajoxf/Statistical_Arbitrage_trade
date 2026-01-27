@@ -2708,7 +2708,12 @@ def handle_connect():
 def run_server(host: str = '0.0.0.0', port: int = 5000, debug: bool = False):
     """Run the Flask server"""
     init_app()
-    socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
+    # Disable reloader when using eventlet - it doesn't work properly on Windows
+    # and causes the server to not bind to the port
+    use_reloader = False if _async_mode == 'eventlet' else debug
+    print(f" * Running on http://{host}:{port} (async_mode={_async_mode})")
+    socketio.run(app, host=host, port=port, debug=debug,
+                 use_reloader=use_reloader, allow_unsafe_werkzeug=True)
 
 
 if __name__ == '__main__':
