@@ -1558,7 +1558,11 @@ def start_price_streaming():
     def stream_prices():
         global price_streaming_active
         import time
+        import numpy as np
+        from collections import deque
+
         log_counter = 0
+        spread_history = deque(maxlen=2000)  # Store spread history for z-score calculation
 
         while price_streaming_active:
             try:
@@ -1621,13 +1625,39 @@ def start_price_streaming():
                 if spot_bid > 0 or futures_bid > 0:
                     spread = ((futures_bid + futures_ask) / 2) - ((spot_bid + spot_ask) / 2) if spot_bid > 0 and futures_bid > 0 else 0
 
+                    # Add spread to history for z-score calculation
+                    if spread != 0:
+                        spread_history.append(spread)
+
+                    # Get lookback period from config
+                    config = database.get_config()
+                    lookback_period = config.lookback_period if config else 90
+
+                    # Calculate mean, std, and z-score from spread history
+                    mean_val = 0.0
+                    std_val = 0.0
+                    zscore = 0.0
+
+                    if len(spread_history) >= min(10, lookback_period):  # Need at least 10 points or lookback
+                        # Use most recent lookback_period points
+                        history_list = list(spread_history)[-lookback_period:]
+                        mean_val = float(np.mean(history_list))
+                        std_val = float(np.std(history_list))
+
+                        if std_val > 0:
+                            zscore = (spread - mean_val) / std_val
+
                     socketio.emit('tick', {
                         'spot_bid': spot_bid,
                         'spot_ask': spot_ask,
                         'futures_bid': futures_bid,
                         'futures_ask': futures_ask,
                         'spread': spread,
-                        'zscore': 0  # Calculate if history available
+                        'zscore': zscore,
+                        'mean': mean_val,
+                        'std': std_val,
+                        'history_count': len(spread_history),
+                        'lookback_required': lookback_period
                     })
 
                 time.sleep(0.3)  # Update every 0.3 seconds

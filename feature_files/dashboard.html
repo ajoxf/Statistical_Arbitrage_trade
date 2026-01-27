@@ -665,6 +665,16 @@
             else calcZscore.classList.add('text-warning');
         }
 
+        // Update mean and std displays
+        if (data.mean !== undefined && data.mean !== null) {
+            document.getElementById('mean-value').textContent = data.mean.toFixed(2);
+            document.getElementById('calc-mean').textContent = '$' + data.mean.toFixed(2);
+        }
+        if (data.std !== undefined && data.std !== null) {
+            document.getElementById('std-value').textContent = data.std.toFixed(2);
+            document.getElementById('calc-std').textContent = '$' + data.std.toFixed(2);
+        }
+
         // Update Premium Calculator
         updatePremiumCalculator(data);
     }
