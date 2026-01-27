@@ -7,7 +7,20 @@ import asyncio
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
+
+# AsyncMock is only available in Python 3.8+
+# Provide a fallback for Python 3.7
+try:
+    from unittest.mock import AsyncMock
+except ImportError:
+    # For Python < 3.8, create a simple AsyncMock implementation
+    class AsyncMock(MagicMock):
+        async def __call__(self, *args, **kwargs):
+            return super().__call__(*args, **kwargs)
+
+        def __await__(self):
+            return self().__await__()
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))

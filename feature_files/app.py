@@ -43,6 +43,30 @@ from core.trading_engine import TradingEngine, EngineState
 # Active broker config file (workaround for database not saving new fields)
 ACTIVE_BROKER_FILE = Path(__file__).parent.parent / "active_brokers.json"
 
+# Determine the best async mode for SocketIO
+# eventlet/gevent support WebSockets, threading uses long-polling only
+def _get_async_mode():
+    """Determine the best async mode for SocketIO based on available packages."""
+    try:
+        import eventlet
+        eventlet.monkey_patch()
+        return 'eventlet'
+    except ImportError:
+        pass
+    try:
+        import gevent
+        from gevent import monkey
+        monkey.patch_all()
+        return 'gevent'
+    except ImportError:
+        pass
+    # Fallback to threading (long-polling only, no WebSocket support)
+    # This will cause "Cannot obtain socket from WSGI environment" warnings
+    # but the app will continue to work with polling transport
+    return 'threading'
+
+_async_mode = _get_async_mode()
+
 
 def save_active_brokers(spot_id, futures_id):
     """Save active broker IDs to JSON file"""
@@ -73,7 +97,9 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-broker-arb-secret-key'
 
 # SocketIO for real-time updates
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+# Uses eventlet/gevent for WebSocket support if available, otherwise falls back to threading (polling)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode=_async_mode, logger=False, engineio_logger=False)
+logger.info(f"SocketIO initialized with async_mode='{_async_mode}'")
 
 # Global instances
 db: Optional[DatabaseManager] = None
@@ -1510,6 +1536,15 @@ def api_test_order():
                     order_type = mt5.ORDER_TYPE_SELL
                     price = tick.bid
 
+                # Determine the correct filling mode based on symbol support
+                filling_mode = mt5.ORDER_FILLING_IOC  # Default
+                if symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                    filling_mode = mt5.ORDER_FILLING_FOK
+                elif symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                    filling_mode = mt5.ORDER_FILLING_IOC
+                else:
+                    filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
+
                 request_order = {
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": symbol,
@@ -1520,7 +1555,7 @@ def api_test_order():
                     "magic": 123456,
                     "comment": "Test Order",
                     "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,
+                    "type_filling": filling_mode,
                 }
 
                 # Send order
@@ -1615,6 +1650,16 @@ def api_close_position():
                     close_type = mt5.ORDER_TYPE_BUY
                     price = tick.ask
 
+                # Determine the correct filling mode based on symbol support
+                symbol_info = mt5.symbol_info(symbol)
+                filling_mode = mt5.ORDER_FILLING_IOC  # Default
+                if symbol_info and symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                    filling_mode = mt5.ORDER_FILLING_FOK
+                elif symbol_info and symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                    filling_mode = mt5.ORDER_FILLING_IOC
+                else:
+                    filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
+
                 close_request = {
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": symbol,
@@ -1626,7 +1671,7 @@ def api_close_position():
                     "magic": 123456,
                     "comment": "Close by Ticket",
                     "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,
+                    "type_filling": filling_mode,
                 }
 
                 result = mt5.order_send(close_request)
@@ -1704,6 +1749,15 @@ def api_test_order_cycle():
 
         min_volume = symbol_info.volume_min
 
+        # Determine the correct filling mode based on symbol support
+        filling_mode = mt5.ORDER_FILLING_IOC  # Default
+        if symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+            filling_mode = mt5.ORDER_FILLING_IOC
+        else:
+            filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
+
         # Step 1: Open position
         open_request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -1715,7 +1769,7 @@ def api_test_order_cycle():
             "magic": 987654,
             "comment": "Order Cycle Test",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,
         }
 
         open_result = mt5.order_send(open_request)
@@ -1769,7 +1823,7 @@ def api_test_order_cycle():
             "magic": 987654,
             "comment": "Order Cycle Close",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,  # Use same filling mode as open
         }
 
         close_result = mt5.order_send(close_request)
