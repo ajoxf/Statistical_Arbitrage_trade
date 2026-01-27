@@ -1377,10 +1377,10 @@ def api_basis_premium():
         futures_mid = (futures_bid + futures_ask) / 2
         actual_basis = futures_mid - spot_mid
 
-        # Get configuration values
-        swap_charge = config.swap_charge if config else 0.0
-        lot_size = config.contract_size if config else 100.0
-        futures_expiry_str = config.futures_expiry if config else None
+        # Get configuration values (prefer broker values, fallback to config)
+        swap_charge = getattr(spot_broker, 'swap_charge', 0.0) or (config.swap_charge if config else 0.0)
+        lot_size = getattr(spot_broker, 'contract_size', None) or (config.contract_size if config else 100.0)
+        futures_expiry_str = getattr(futures_broker, 'futures_expiry', None) or (config.futures_expiry if config else None)
         user_lot_size = config.lot_size if config else 0.1
 
         # Parse expiry and calculate days to expiry
@@ -2610,9 +2610,11 @@ def start_price_streaming():
                             zscore = (spread - mean_val) / std_val
 
                     # === Basis Premium Calculation ===
-                    swap_charge = config.swap_charge if config else 0.0
-                    lot_size = config.contract_size if config else 100.0
-                    futures_expiry_str = config.futures_expiry if config else None
+                    # Read swap from spot broker (CFDs charge swap on spot position)
+                    # Read expiry from futures broker
+                    swap_charge = getattr(spot_broker, 'swap_charge', 0.0) or config.swap_charge if config else 0.0
+                    lot_size = getattr(spot_broker, 'contract_size', None) or (config.contract_size if config else 100.0)
+                    futures_expiry_str = getattr(futures_broker, 'futures_expiry', None) or (config.futures_expiry if config else None)
 
                     # Parse expiry and calculate days to expiry
                     _, days_to_expiry = parse_futures_expiry(futures_expiry_str)
