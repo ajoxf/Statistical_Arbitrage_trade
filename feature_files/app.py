@@ -253,6 +253,7 @@ def calculate_min_profitable_std(config, current_std: float,
     # Get config values
     entry_z = config.entry_std_dev if config else 2.0
     exit_z = config.exit_std_dev if config else 0.5
+    exit_opposite_z = config.exit_at_opposite_sd if config else 0.0
     lot_size = config.lot_size if config else 0.1
     contract_size = config.contract_size if config else 100.0
     min_profit_per_lot = config.min_profit_per_lot if config else 50.0
@@ -264,7 +265,12 @@ def calculate_min_profitable_std(config, current_std: float,
         futures_spread_cents = (config.futures_spread_cost if config else 0.10) * 100
 
     # Expected Z-score move from entry to exit
-    z_move = entry_z - exit_z  # e.g., 2.0 - 0.5 = 1.5σ
+    # If exit_at_opposite_sd is set, we exit on the OTHER side of mean (full mean reversion)
+    # e.g., Entry at +3.5σ, exit at -2.0σ = 5.5σ total move
+    if exit_opposite_z > 0:
+        z_move = entry_z + exit_opposite_z  # Full cross-mean move
+    else:
+        z_move = entry_z - exit_z  # Normal exit near mean (e.g., 2.0 - 0.5 = 1.5σ)
 
     # Calculate round-trip costs from bid-ask spreads
     # Entry cost = (spot_spread + futures_spread) × lot_size × contract_size
