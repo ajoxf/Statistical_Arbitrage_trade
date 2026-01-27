@@ -813,8 +813,8 @@
             daysToExpiry = 365; // Use 365 for perpetuals
         }
 
-        // Swap Cost from active futures broker
-        const swapCost = {{ active_futures.swap_charge if active_futures else 0 }};
+        // Swap Cost from active spot broker (CFDs charge swap on spot position)
+        const swapCost = {{ active_spot.swap_charge if active_spot else 0 }};
         document.getElementById('swap-cost').textContent = '$' + swapCost.toFixed(2);
 
         // Annualized Basis % = Basis % * 365 / Days to Expiry
@@ -1210,8 +1210,9 @@
 
     // ==================== Swap/Expiry Edit Functions ====================
 
-    // Store the active spot broker ID for swap updates
+    // Store broker IDs for updates
     const activeSpotBrokerId = '{{ active_spot.broker_id if active_spot else "" }}';
+    const activeFuturesBrokerId = '{{ active_futures.broker_id if active_futures else "" }}';
 
     function showEditSwapModal() {
         const modal = new bootstrap.Modal(document.getElementById('editSwapModal'));
@@ -1219,27 +1220,44 @@
     }
 
     async function saveSwapSettings() {
-        if (!activeSpotBrokerId) {
-            alert('No active spot broker selected. Go to Settings to select one.');
-            return;
-        }
-
         const swapCharge = document.getElementById('edit-swap-charge').value;
         const futuresExpiry = document.getElementById('edit-futures-expiry').value;
 
         try {
-            const response = await fetch(`/api/brokers/${activeSpotBrokerId}/update`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    swap_charge: parseFloat(swapCharge) || 0,
-                    futures_expiry: futuresExpiry || null
-                })
-            });
+            let success = true;
+            let errors = [];
 
-            const result = await response.json();
+            // Save swap_charge to SPOT broker (CFDs charge swap on spot position)
+            if (activeSpotBrokerId) {
+                const spotResponse = await fetch(`/api/brokers/${activeSpotBrokerId}/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ swap_charge: parseFloat(swapCharge) || 0 })
+                });
+                const spotResult = await spotResponse.json();
+                if (!spotResult.success) {
+                    success = false;
+                    errors.push('Swap: ' + (spotResult.error || 'Unknown error'));
+                }
+            } else {
+                errors.push('No spot broker selected');
+            }
 
-            if (result.success) {
+            // Save futures_expiry to FUTURES broker
+            if (activeFuturesBrokerId && futuresExpiry) {
+                const futuresResponse = await fetch(`/api/brokers/${activeFuturesBrokerId}/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ futures_expiry: futuresExpiry })
+                });
+                const futuresResult = await futuresResponse.json();
+                if (!futuresResult.success) {
+                    success = false;
+                    errors.push('Expiry: ' + (futuresResult.error || 'Unknown error'));
+                }
+            }
+
+            if (success || errors.length === 0) {
                 // Close modal
                 const modal = bootstrap.Modal.getInstance(document.getElementById('editSwapModal'));
                 modal.hide();
@@ -1248,12 +1266,12 @@
                 document.getElementById('swap-cost').textContent = '$' + (parseFloat(swapCharge) || 0).toFixed(2);
 
                 // Show success message
-                alert('Swap settings saved successfully!');
+                alert('Settings saved successfully!');
 
                 // Reload page to update calculations
                 location.reload();
             } else {
-                alert('Error saving settings: ' + (result.error || 'Unknown error'));
+                alert('Error saving settings:\n' + errors.join('\n'));
             }
         } catch (err) {
             alert('Error: ' + err.message);

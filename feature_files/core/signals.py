@@ -201,6 +201,52 @@ class SignalGenerator:
         # Trim old data
         self._trim_history()
 
+    def load_spreads(self, spreads: List[float], timestamps: List[datetime] = None) -> int:
+        """
+        Load historical spreads (e.g., from database on reconnect).
+
+        This allows the signal generator to resume without waiting for
+        the full lookback period after a disconnection.
+
+        Args:
+            spreads: List of historical spread values
+            timestamps: List of corresponding timestamps (optional, will use
+                       evenly spaced times within lookback window if not provided)
+
+        Returns:
+            Number of data points loaded (after trimming to lookback window)
+        """
+        if not spreads:
+            return 0
+
+        if timestamps is None:
+            # Generate evenly spaced timestamps within lookback window
+            now = datetime.now()
+            if self.lookback_unit == "minutes":
+                interval = timedelta(minutes=self.lookback_period / max(len(spreads), 1))
+            else:
+                interval = timedelta(days=self.lookback_period / max(len(spreads), 1))
+
+            timestamps = [now - interval * (len(spreads) - i - 1) for i in range(len(spreads))]
+
+        self._spreads = list(spreads)
+        self._timestamps = list(timestamps)
+
+        # Trim to keep only data within lookback window
+        self._trim_history()
+
+        logger.info(f"Loaded {len(self._spreads)} historical spreads for lookback recovery")
+        return len(self._spreads)
+
+    def get_spreads(self) -> Tuple[List[float], List[datetime]]:
+        """
+        Get current spread history (for persistence).
+
+        Returns:
+            Tuple of (spreads list, timestamps list)
+        """
+        return self._spreads.copy(), self._timestamps.copy()
+
     def _trim_history(self) -> None:
         """Remove data outside lookback window"""
         if not self._timestamps:

@@ -718,6 +718,55 @@ class DatabaseManager:
             'average_fill_time': avg_time
         }
 
+    def save_price_data(self, asset: str, spot_price: float, futures_price: float,
+                        spread: float, swap_diff: float = 0.0):
+        """Save price data point for persistent mean calculation"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO price_history (timestamp, asset, spot_price, futures_price, spread, swap_diff)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (datetime.now().isoformat(), asset, spot_price, futures_price, spread, swap_diff))
+        conn.commit()
+
+    def get_price_history(self, asset: str = 'ACTIVE', limit: int = 500,
+                          max_age_hours: Optional[int] = None) -> List[tuple]:
+        """
+        Get price history for mean calculation (handles reconnection recovery).
+
+        Args:
+            asset: Asset key (default 'ACTIVE')
+            limit: Max number of records to return
+            max_age_hours: Only get data within this many hours (for lookback window)
+
+        Returns:
+            List of tuples (spread, timestamp, spot_price, futures_price)
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        if max_age_hours:
+            # Only get data within the lookback window
+            from datetime import timedelta
+            cutoff = (datetime.now() - timedelta(hours=max_age_hours)).isoformat()
+            cursor.execute('''
+                SELECT spread, timestamp, spot_price, futures_price
+                FROM price_history
+                WHERE asset = ? AND timestamp > ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (asset, cutoff, limit))
+        else:
+            cursor.execute('''
+                SELECT spread, timestamp, spot_price, futures_price
+                FROM price_history
+                WHERE asset = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (asset, limit))
+
+        return cursor.fetchall()
+
     def clear_price_history(self):
         """Clear price history table"""
         conn = self._get_connection()

@@ -2000,6 +2000,32 @@ def start_price_streaming():
 
         log_counter = 0
         spread_history = deque(maxlen=2000)  # Store spread history for z-score calculation
+        last_save_time = time.time()
+        history_loaded = False
+
+        # Load spread history from database on startup (handles reconnection)
+        try:
+            database = get_db()
+            config = database.get_config()
+            lookback_period = config.lookback_period if config else 90
+            lookback_unit = config.lookback_unit if config else 'minutes'
+
+            # Calculate max age based on lookback
+            if lookback_unit == 'days':
+                max_age_hours = int(lookback_period * 24 * 1.1)  # +10% buffer
+            else:
+                max_age_hours = max(2, int(lookback_period / 60 * 1.1) + 1)
+
+            # Load historical spreads from database
+            history = database.get_price_history('ACTIVE', limit=lookback_period, max_age_hours=max_age_hours)
+            if history:
+                # history is ordered DESC, reverse to get chronological order
+                for row in reversed(history):
+                    spread_history.append(row[0])  # spread column
+                logger.info(f"[PRICES] Loaded {len(history)} historical spreads from database (no 90min wait needed)")
+                history_loaded = True
+        except Exception as e:
+            logger.error(f"[PRICES] Failed to load spread history: {e}")
 
         while price_streaming_active:
             try:
@@ -2065,6 +2091,17 @@ def start_price_streaming():
                     # Add spread to history for z-score calculation
                     if spread != 0:
                         spread_history.append(spread)
+
+                        # Save to database every 60 seconds for persistence (handles reconnection)
+                        current_time = time.time()
+                        if current_time - last_save_time >= 60:
+                            try:
+                                spot_mid = (spot_bid + spot_ask) / 2
+                                futures_mid = (futures_bid + futures_ask) / 2
+                                database.save_price_data('ACTIVE', spot_mid, futures_mid, spread)
+                                last_save_time = current_time
+                            except Exception as e:
+                                logger.error(f"[PRICES] Failed to save price data: {e}")
 
                     # Get lookback period from config
                     config = database.get_config()
