@@ -436,6 +436,489 @@ db: Optional[DatabaseManager] = None
 engine: Optional[TradingEngine] = None
 engine_loop: Optional[asyncio.AbstractEventLoop] = None
 multi_broker: Optional[MultiBrokerCoordinator] = None
+auto_trader: Optional['AutoTrader'] = None
+
+
+class AutoTrader:
+    """
+    Automatic trade execution handler.
+
+    Receives signals from the trading engine and executes trades
+    when all conditions are met (filters pass, algo enabled, etc.)
+    """
+
+    def __init__(self, db_path: str = "trading.db"):
+        self.db_path = db_path
+        self._position_open = False
+        self._position_direction: Optional[str] = None  # 'LONG' or 'SHORT'
+        self._entry_trade_id: Optional[str] = None
+        self._entry_spot_price: Optional[float] = None
+        self._entry_futures_price: Optional[float] = None
+        self._entry_zscore: Optional[float] = None
+        self._entry_time: Optional[datetime] = None
+        self._logger = logging.getLogger(__name__)
+
+        # Load any existing open position from database
+        self._load_open_position()
+
+    def _load_open_position(self):
+        """Load open position from database on startup"""
+        try:
+            database = DatabaseManager(self.db_path)
+            # Check for open trades
+            conn = database._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trades WHERE status = 'OPEN' ORDER BY entry_date DESC LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                self._position_open = True
+                self._position_direction = 'LONG' if row['direction'] == 'Long Spread' else 'SHORT'
+                self._entry_trade_id = row['trade_id']
+                self._entry_spot_price = row['entry_spot_price']
+                self._entry_futures_price = row['entry_futures_price']
+                self._entry_zscore = row['entry_zscore']
+                self._entry_time = datetime.fromisoformat(row['entry_date']) if row['entry_date'] else None
+                self._logger.info(f"[AUTO] Loaded open position: {self._position_direction} (ID: {self._entry_trade_id})")
+        except Exception as e:
+            self._logger.error(f"[AUTO] Error loading open position: {e}")
+
+    def handle_signal(self, signal):
+        """
+        Handle trading signal from the engine.
+
+        This is called for every signal generated. It checks all conditions
+        and executes trades when appropriate.
+        """
+        try:
+            database = DatabaseManager(self.db_path)
+            config = database.get_config()
+
+            if not config:
+                self._logger.warning("[AUTO] No config found")
+                return
+
+            # Check if algo trading is enabled
+            if not config.algo_enabled:
+                self._logger.debug("[AUTO] Algo trading disabled, ignoring signal")
+                return
+
+            signal_type = signal.signal_type
+            zscore = signal.zscore
+
+            self._logger.info(f"[AUTO] Processing signal: {signal_type} (z={zscore:.2f})")
+
+            # Get current market prices for execution
+            spot_broker_id, futures_broker_id = load_active_brokers()
+            if not spot_broker_id or not futures_broker_id:
+                self._logger.warning("[AUTO] No active brokers configured")
+                return
+
+            spot_broker = database.get_broker(spot_broker_id)
+            futures_broker = database.get_broker(futures_broker_id)
+
+            if not spot_broker or not futures_broker:
+                self._logger.warning("[AUTO] Broker config not found")
+                return
+
+            # Get current prices
+            spot_price, futures_price = self._get_current_prices(spot_broker, futures_broker)
+            if spot_price <= 0 or futures_price <= 0:
+                self._logger.warning("[AUTO] Could not get valid prices")
+                return
+
+            # Handle entry signals
+            if signal_type in ['ENTRY_LONG', 'ENTRY_SHORT']:
+                self._handle_entry_signal(signal, config, database,
+                                         spot_broker, futures_broker,
+                                         spot_price, futures_price)
+
+            # Handle exit signals
+            elif signal_type in ['EXIT', 'STOP_LOSS']:
+                self._handle_exit_signal(signal, config, database,
+                                        spot_broker, futures_broker,
+                                        spot_price, futures_price)
+
+        except Exception as e:
+            self._logger.error(f"[AUTO] Error handling signal: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _get_current_prices(self, spot_broker, futures_broker) -> Tuple[float, float]:
+        """Get current spot and futures prices from MT5"""
+        spot_price = 0.0
+        futures_price = 0.0
+
+        try:
+            import MetaTrader5 as mt5
+
+            if not mt5.initialize():
+                self._logger.error("[AUTO] MT5 initialization failed")
+                return 0.0, 0.0
+
+            # Get spot price
+            if spot_broker.broker_type == 'MT5':
+                tick = mt5.symbol_info_tick(spot_broker.symbol)
+                if tick:
+                    spot_price = (tick.bid + tick.ask) / 2
+
+            # Get futures price
+            if futures_broker.broker_type == 'MT5':
+                tick = mt5.symbol_info_tick(futures_broker.symbol)
+                if tick:
+                    futures_price = (tick.bid + tick.ask) / 2
+
+            mt5.shutdown()
+
+        except ImportError:
+            self._logger.error("[AUTO] MetaTrader5 not installed")
+        except Exception as e:
+            self._logger.error(f"[AUTO] Error getting prices: {e}")
+
+        return spot_price, futures_price
+
+    def _check_filters(self, config, zscore: float, spread_history: list = None) -> Tuple[bool, str]:
+        """
+        Check if all trading filters pass.
+
+        Returns:
+            Tuple of (passes, reason)
+        """
+        # STD Filter check
+        if config.std_filter_enabled:
+            # Get current STD from price streaming (simplified check)
+            # In production, this should use the actual STD filter calculation
+            pass  # STD filter is checked during signal generation
+
+        # Hurst Filter check
+        if config.hurst_enabled and spread_history:
+            hurst_value, hurst_regime = calculate_hurst_exponent(spread_history)
+            if hurst_value is not None and hurst_value > config.hurst_threshold:
+                return False, f"Hurst filter: {hurst_value:.2f} > {config.hurst_threshold} (trending market)"
+
+        # Max positions check
+        if self._position_open:
+            return False, "Position already open"
+
+        return True, "All filters passed"
+
+    def _handle_entry_signal(self, signal, config, database,
+                            spot_broker, futures_broker,
+                            spot_price: float, futures_price: float):
+        """Handle entry signal (ENTRY_LONG or ENTRY_SHORT)"""
+
+        if self._position_open:
+            self._logger.info("[AUTO] Position already open, skipping entry signal")
+            return
+
+        # Check filters
+        passes, reason = self._check_filters(config, signal.zscore)
+        if not passes:
+            self._logger.info(f"[AUTO] Entry blocked: {reason}")
+            return
+
+        signal_type = signal.signal_type
+        direction = 'LONG' if signal_type == 'ENTRY_LONG' else 'SHORT'
+
+        self._logger.info(f"[AUTO] Executing {direction} entry trade")
+
+        # Determine trade direction
+        # ENTRY_LONG (z-score low): Buy futures, Sell spot (expecting spread to widen)
+        # ENTRY_SHORT (z-score high): Sell futures, Buy spot (expecting spread to narrow)
+
+        try:
+            import MetaTrader5 as mt5
+
+            if not mt5.initialize():
+                self._logger.error("[AUTO] MT5 initialization failed for trade")
+                return
+
+            lot_size = config.lot_size
+
+            # Execute spot leg
+            if direction == 'SHORT':
+                # Short spread: Buy spot
+                spot_order_type = mt5.ORDER_TYPE_BUY
+                futures_order_type = mt5.ORDER_TYPE_SELL
+            else:
+                # Long spread: Sell spot
+                spot_order_type = mt5.ORDER_TYPE_SELL
+                futures_order_type = mt5.ORDER_TYPE_BUY
+
+            # Place spot order
+            spot_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": spot_broker.symbol,
+                "volume": lot_size,
+                "type": spot_order_type,
+                "price": mt5.symbol_info_tick(spot_broker.symbol).ask if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
+                "deviation": 20,
+                "magic": 123456,
+                "comment": f"AutoTrader {direction} Entry - Spot",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            spot_result = mt5.order_send(spot_request)
+
+            if spot_result.retcode != mt5.TRADE_RETCODE_DONE:
+                self._logger.error(f"[AUTO] Spot order failed: {spot_result.comment}")
+                mt5.shutdown()
+                return
+
+            self._logger.info(f"[AUTO] Spot order filled: ticket={spot_result.order}, price={spot_result.price}")
+
+            # Place futures order
+            futures_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": futures_broker.symbol,
+                "volume": lot_size,
+                "type": futures_order_type,
+                "price": mt5.symbol_info_tick(futures_broker.symbol).ask if futures_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(futures_broker.symbol).bid,
+                "deviation": 20,
+                "magic": 123456,
+                "comment": f"AutoTrader {direction} Entry - Futures",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            futures_result = mt5.order_send(futures_request)
+
+            if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
+                self._logger.error(f"[AUTO] Futures order failed: {futures_result.comment}")
+                # Reverse spot trade
+                self._logger.warning("[AUTO] Reversing spot trade due to futures failure")
+                reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                reverse_request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": spot_broker.symbol,
+                    "volume": lot_size,
+                    "type": reverse_type,
+                    "price": mt5.symbol_info_tick(spot_broker.symbol).ask if reverse_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
+                    "deviation": 20,
+                    "magic": 123456,
+                    "comment": "AutoTrader Reversal",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+                mt5.order_send(reverse_request)
+                mt5.shutdown()
+                return
+
+            self._logger.info(f"[AUTO] Futures order filled: ticket={futures_result.order}, price={futures_result.price}")
+
+            mt5.shutdown()
+
+            # Record trade in database
+            trade_id = f"AUTO_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            trade = Trade(
+                trade_id=trade_id,
+                asset=config.asset_name,
+                direction='Long Spread' if direction == 'LONG' else 'Short Spread',
+                entry_date=datetime.now().isoformat(),
+                entry_zscore=signal.zscore,
+                entry_spot_price=spot_result.price,
+                entry_futures_price=futures_result.price,
+                lot_size=lot_size,
+                spot_broker_id=spot_broker.broker_id,
+                mt5_spot_ticket=spot_result.order,
+                futures_broker_id=futures_broker.broker_id,
+                mt5_futures_ticket=futures_result.order,
+                status='OPEN'
+            )
+
+            database.add_trade(trade)
+
+            # Update position tracking
+            self._position_open = True
+            self._position_direction = direction
+            self._entry_trade_id = trade_id
+            self._entry_spot_price = spot_result.price
+            self._entry_futures_price = futures_result.price
+            self._entry_zscore = signal.zscore
+            self._entry_time = datetime.now()
+
+            self._logger.info(f"[AUTO] Trade opened: {trade_id} ({direction})")
+
+            # Emit to frontend
+            socketio.emit('auto_trade', {
+                'action': 'ENTRY',
+                'direction': direction,
+                'trade_id': trade_id,
+                'spot_price': spot_result.price,
+                'futures_price': futures_result.price,
+                'zscore': signal.zscore
+            })
+
+        except ImportError:
+            self._logger.error("[AUTO] MetaTrader5 not installed")
+        except Exception as e:
+            self._logger.error(f"[AUTO] Trade execution error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _handle_exit_signal(self, signal, config, database,
+                           spot_broker, futures_broker,
+                           spot_price: float, futures_price: float):
+        """Handle exit signal (EXIT or STOP_LOSS)"""
+
+        if not self._position_open:
+            self._logger.info("[AUTO] No position open, skipping exit signal")
+            return
+
+        signal_type = signal.signal_type
+        self._logger.info(f"[AUTO] Executing exit trade ({signal_type})")
+
+        try:
+            import MetaTrader5 as mt5
+
+            if not mt5.initialize():
+                self._logger.error("[AUTO] MT5 initialization failed for exit")
+                return
+
+            lot_size = config.lot_size
+
+            # Close in opposite direction of entry
+            if self._position_direction == 'SHORT':
+                # Was short spread (bought spot, sold futures) - now sell spot, buy futures
+                spot_order_type = mt5.ORDER_TYPE_SELL
+                futures_order_type = mt5.ORDER_TYPE_BUY
+            else:
+                # Was long spread (sold spot, bought futures) - now buy spot, sell futures
+                spot_order_type = mt5.ORDER_TYPE_BUY
+                futures_order_type = mt5.ORDER_TYPE_SELL
+
+            # Close spot position
+            spot_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": spot_broker.symbol,
+                "volume": lot_size,
+                "type": spot_order_type,
+                "price": mt5.symbol_info_tick(spot_broker.symbol).ask if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
+                "deviation": 20,
+                "magic": 123456,
+                "comment": f"AutoTrader Exit - Spot ({signal_type})",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            spot_result = mt5.order_send(spot_request)
+
+            if spot_result.retcode != mt5.TRADE_RETCODE_DONE:
+                self._logger.error(f"[AUTO] Spot close failed: {spot_result.comment}")
+                mt5.shutdown()
+                return
+
+            # Close futures position
+            futures_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": futures_broker.symbol,
+                "volume": lot_size,
+                "type": futures_order_type,
+                "price": mt5.symbol_info_tick(futures_broker.symbol).ask if futures_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(futures_broker.symbol).bid,
+                "deviation": 20,
+                "magic": 123456,
+                "comment": f"AutoTrader Exit - Futures ({signal_type})",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            futures_result = mt5.order_send(futures_request)
+
+            if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
+                self._logger.error(f"[AUTO] Futures close failed: {futures_result.comment}")
+                # Don't reverse - we're partially closed, log for manual intervention
+                mt5.shutdown()
+                return
+
+            mt5.shutdown()
+
+            # Calculate P&L
+            if self._position_direction == 'SHORT':
+                # Short spread: Bought spot at entry, sold at exit
+                spot_pnl = (spot_result.price - self._entry_spot_price) * lot_size * config.contract_size
+                # Sold futures at entry, bought at exit
+                futures_pnl = (self._entry_futures_price - futures_result.price) * lot_size * config.contract_size
+            else:
+                # Long spread: Sold spot at entry, bought at exit
+                spot_pnl = (self._entry_spot_price - spot_result.price) * lot_size * config.contract_size
+                # Bought futures at entry, sold at exit
+                futures_pnl = (futures_result.price - self._entry_futures_price) * lot_size * config.contract_size
+
+            gross_pnl = spot_pnl + futures_pnl
+            commission = config.commission_per_lot * lot_size * 2  # Both legs, entry and exit
+            net_pnl = gross_pnl - commission
+
+            # Update trade in database
+            days_held = (datetime.now() - self._entry_time).total_seconds() / 86400 if self._entry_time else 0
+
+            # Load existing trade and update
+            conn = database._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE trades SET
+                    exit_date = ?,
+                    days_held = ?,
+                    exit_zscore = ?,
+                    exit_spot_price = ?,
+                    exit_futures_price = ?,
+                    spot_pnl = ?,
+                    futures_pnl = ?,
+                    gross_pnl = ?,
+                    commission = ?,
+                    net_pnl = ?,
+                    status = 'CLOSED'
+                WHERE trade_id = ?
+            ''', (
+                datetime.now().isoformat(),
+                days_held,
+                signal.zscore,
+                spot_result.price,
+                futures_result.price,
+                spot_pnl,
+                futures_pnl,
+                gross_pnl,
+                commission,
+                net_pnl,
+                self._entry_trade_id
+            ))
+            conn.commit()
+
+            self._logger.info(f"[AUTO] Trade closed: {self._entry_trade_id}, Net P&L: ${net_pnl:.2f}")
+
+            # Emit to frontend
+            socketio.emit('auto_trade', {
+                'action': 'EXIT',
+                'signal_type': signal_type,
+                'trade_id': self._entry_trade_id,
+                'spot_price': spot_result.price,
+                'futures_price': futures_result.price,
+                'zscore': signal.zscore,
+                'net_pnl': net_pnl
+            })
+
+            # Reset position tracking
+            self._position_open = False
+            self._position_direction = None
+            self._entry_trade_id = None
+            self._entry_spot_price = None
+            self._entry_futures_price = None
+            self._entry_zscore = None
+            self._entry_time = None
+
+        except ImportError:
+            self._logger.error("[AUTO] MetaTrader5 not installed")
+        except Exception as e:
+            self._logger.error(f"[AUTO] Exit execution error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    @property
+    def has_position(self) -> bool:
+        return self._position_open
+
+    @property
+    def position_direction(self) -> Optional[str]:
+        return self._position_direction
 
 
 def init_app(db_path: str = "trading.db"):
@@ -1493,11 +1976,15 @@ def api_engine_start():
     try:
         # Create event loop in background thread
         def run_engine():
-            global engine, engine_loop
+            global engine, engine_loop, auto_trader
             engine_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(engine_loop)
 
             engine = TradingEngine(db_path="trading.db")
+
+            # Initialize AutoTrader for automatic trade execution
+            auto_trader = AutoTrader(db_path="trading.db")
+            logger.info("[ENGINE] AutoTrader initialized")
 
             # Register callbacks for SocketIO updates
             engine.on_tick(lambda m: socketio.emit('tick', {
@@ -1509,7 +1996,15 @@ def api_engine_start():
                 'futures_ask': m.futures_ask
             }))
 
-            engine.on_signal(lambda s: socketio.emit('signal', s.to_dict()))
+            # Signal handler: emit to frontend AND execute auto trades
+            def handle_signal(signal):
+                # Emit to frontend for display
+                socketio.emit('signal', signal.to_dict())
+                # Execute trade if algo is enabled
+                if auto_trader:
+                    auto_trader.handle_signal(signal)
+
+            engine.on_signal(handle_signal)
 
             engine.on_trade(lambda action, t: socketio.emit('trade', {
                 'action': action,
@@ -1561,6 +2056,31 @@ def api_toggle_algo():
         engine.reload_config()
 
     return jsonify({'success': True, 'algo_enabled': enabled})
+
+
+@app.route('/api/auto-trader/status')
+def api_auto_trader_status():
+    """Get auto trader status including open position"""
+    global auto_trader
+
+    if auto_trader is None:
+        return jsonify({
+            'initialized': False,
+            'has_position': False,
+            'position_direction': None,
+            'message': 'AutoTrader not initialized (start engine first)'
+        })
+
+    return jsonify({
+        'initialized': True,
+        'has_position': auto_trader.has_position,
+        'position_direction': auto_trader.position_direction,
+        'entry_trade_id': auto_trader._entry_trade_id,
+        'entry_zscore': auto_trader._entry_zscore,
+        'entry_spot_price': auto_trader._entry_spot_price,
+        'entry_futures_price': auto_trader._entry_futures_price,
+        'entry_time': auto_trader._entry_time.isoformat() if auto_trader._entry_time else None
+    })
 
 
 @app.route('/api/clear-data', methods=['POST'])
