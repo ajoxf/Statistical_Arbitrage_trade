@@ -86,15 +86,34 @@
             </div>
         </div>
 
+        <!-- Active Broker Alert -->
+        {% if not active_spot or not active_futures %}
+        <div class="alert alert-warning mb-3">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            <strong>No Active Trading Pair Selected!</strong>
+            Go to <a href="/settings">Settings</a> to select your active Spot and Futures brokers.
+        </div>
+        {% endif %}
+
         <!-- Price Display -->
         <div class="card">
-            <div class="card-header">
-                <i class="bi bi-currency-exchange me-2"></i>Live Prices
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-currency-exchange me-2"></i>Live Prices</span>
+                {% if active_spot and active_futures %}
+                <small class="text-muted">
+                    Active: {{ active_spot.name }} ↔ {{ active_futures.name }}
+                </small>
+                {% endif %}
             </div>
             <div class="card-body" style="font-size: 24px;">
                 <div class="row">
                     <div class="col-md-6">
-                        <h5 class="text-muted">{{ config.asset_name }} (Spot)</h5>
+                        <h5 class="text-muted">
+                            {{ config.asset_name }} (Spot)
+                            {% if active_spot %}
+                            <small class="badge bg-secondary">{{ active_spot.symbol }}</small>
+                            {% endif %}
+                        </h5>
                         <div class="d-flex justify-content-between price-display" style="font-size: 24px;">
                             <span>Bid: <span class="positive fw-bold" id="spot-bid" style="font-size: 24px;">0.00</span></span>
                             <span>Ask: <span class="negative fw-bold" id="spot-ask" style="font-size: 24px;">0.00</span></span>
@@ -102,7 +121,12 @@
                         </div>
                     </div>
                     <div class="col-md-6">
-                        <h5 class="text-muted">{{ config.asset_name }} (Futures)</h5>
+                        <h5 class="text-muted">
+                            {{ config.asset_name }} (Futures)
+                            {% if active_futures %}
+                            <small class="badge bg-secondary">{{ active_futures.symbol }}</small>
+                            {% endif %}
+                        </h5>
                         <div class="d-flex justify-content-between price-display" style="font-size: 24px;">
                             <span>Bid: <span class="positive fw-bold" id="futures-bid" style="font-size: 24px;">0.00</span></span>
                             <span>Ask: <span class="negative fw-bold" id="futures-ask" style="font-size: 24px;">0.00</span></span>
@@ -578,8 +602,8 @@
         const basisPct = futuresMid !== 0 ? (premium / futuresMid) * 100 : 0;
         document.getElementById('basis-pct').textContent = basisPct.toFixed(4) + '%';
 
-        // Days to Expiry - calculate from futures_expiry config
-        const expiryDate = '{{ config.futures_expiry or "" }}';
+        // Days to Expiry - from active futures broker
+        const expiryDate = '{{ active_futures.futures_expiry if active_futures and active_futures.futures_expiry else "" }}';
         let daysToExpiry = 0;
         if (expiryDate) {
             const expiry = new Date(expiryDate);
@@ -591,8 +615,8 @@
             daysToExpiry = 365; // Use 365 for perpetuals
         }
 
-        // Swap Cost from config
-        const swapCost = {{ config.swap_charge or 0 }};
+        // Swap Cost from active futures broker
+        const swapCost = {{ active_futures.swap_charge if active_futures else 0 }};
         document.getElementById('swap-cost').textContent = '$' + swapCost.toFixed(2);
 
         // Annualized Basis % = Basis % * 365 / Days to Expiry

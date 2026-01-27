@@ -81,10 +81,21 @@ def dashboard():
     recent_trades = database.get_trades(limit=10)
     stats = database.get_trade_statistics()
 
+    # Get active brokers
+    active_spot = None
+    active_futures = None
+    for b in brokers:
+        if config.active_spot_broker and b.broker_id == config.active_spot_broker:
+            active_spot = b
+        if config.active_futures_broker and b.broker_id == config.active_futures_broker:
+            active_futures = b
+
     return render_template(
         'dashboard.html',
         config=config,
         brokers=brokers,
+        active_spot=active_spot,
+        active_futures=active_futures,
         open_trades=open_trades,
         recent_trades=recent_trades,
         stats=stats,
@@ -97,8 +108,15 @@ def settings():
     """Settings page - trading parameters"""
     database = get_db()
     config = database.get_config()
+    brokers = database.get_brokers()
 
-    return render_template('settings.html', config=config)
+    # Separate brokers by role
+    spot_brokers = [b for b in brokers if b.role == 'SPOT']
+    futures_brokers = [b for b in brokers if b.role == 'FUTURES']
+
+    return render_template('settings.html', config=config,
+                           spot_brokers=spot_brokers,
+                           futures_brokers=futures_brokers)
 
 
 @app.route('/setup')
