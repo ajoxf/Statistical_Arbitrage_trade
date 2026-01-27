@@ -12,20 +12,32 @@ Pages:
 
 # IMPORTANT: eventlet/gevent monkey_patch MUST be called before ANY other imports
 # to avoid "Working outside of application context" errors with Flask/Werkzeug
+import sys
+import os
+
 def _setup_async_mode():
     """Setup async mode by monkey patching BEFORE other imports."""
+    # Skip eventlet on Windows - it has compatibility issues with Python 3.10+
+    # and causes the server to not bind properly
+    if sys.platform == 'win32':
+        return 'threading'
+
+    # Also allow forcing threading mode via environment variable
+    if os.environ.get('FLASK_ASYNC_MODE') == 'threading':
+        return 'threading'
+
     try:
         import eventlet
         eventlet.monkey_patch()
         return 'eventlet'
-    except ImportError:
+    except (ImportError, Exception):
         pass
     try:
         import gevent
         from gevent import monkey
         monkey.patch_all()
         return 'gevent'
-    except ImportError:
+    except (ImportError, Exception):
         pass
     return 'threading'
 
