@@ -229,6 +229,9 @@
                                     <button class="btn btn-sm btn-outline-primary me-1" onclick="testBroker('{{ broker.broker_id }}')" title="Test Connection">
                                         <i class="bi bi-wifi"></i>
                                     </button>
+                                    <button class="btn btn-sm btn-outline-warning me-1" onclick="diagnoseBroker('{{ broker.broker_id }}')" title="Diagnose Issues">
+                                        <i class="bi bi-activity"></i>
+                                    </button>
                                     <button class="btn btn-sm btn-outline-danger" onclick="deleteBroker('{{ broker.broker_id }}')" title="Delete">
                                         <i class="bi bi-trash"></i>
                                     </button>
@@ -268,6 +271,34 @@
                         <i class="bi bi-trash me-1"></i>Clear All
                     </button>
                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Diagnostic Modal -->
+<div class="modal fade" id="diagnosticModal" tabindex="-1" aria-labelledby="diagnosticModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="diagnosticModalLabel">
+                    <i class="bi bi-activity me-2"></i>Broker Diagnostics
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="diagnosticContent">
+                <div class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Running diagnostics...</span>
+                    </div>
+                    <p class="mt-2">Running diagnostics...</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="rerunDiagnostics" style="display:none;">
+                    <i class="bi bi-arrow-repeat me-1"></i>Run Again
+                </button>
             </div>
         </div>
     </div>
@@ -435,5 +466,144 @@
             testBtn.innerHTML = '<i class="bi bi-wifi"></i>';
         }
     }
+
+    // Diagnose broker connectivity issues
+    let currentDiagnoseBrokerId = null;
+
+    async function diagnoseBroker(brokerId) {
+        currentDiagnoseBrokerId = brokerId;
+
+        // Show modal with loading state
+        const modal = new bootstrap.Modal(document.getElementById('diagnosticModal'));
+        document.getElementById('diagnosticContent').innerHTML = `
+            <div class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Running diagnostics...</span>
+                </div>
+                <p class="mt-2">Running comprehensive diagnostics...</p>
+            </div>
+        `;
+        document.getElementById('rerunDiagnostics').style.display = 'none';
+        modal.show();
+
+        try {
+            const response = await fetch(`/api/brokers/${brokerId}/diagnose`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            const result = await response.json();
+            displayDiagnostics(result);
+            document.getElementById('rerunDiagnostics').style.display = 'block';
+
+        } catch (err) {
+            document.getElementById('diagnosticContent').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    Failed to run diagnostics: ${err.message}
+                </div>
+            `;
+        }
+    }
+
+    function displayDiagnostics(result) {
+        const statusColors = {
+            'HEALTHY': 'success',
+            'ERROR': 'danger',
+            'WARNING': 'warning',
+            'INCOMPLETE': 'secondary',
+            'UNKNOWN': 'secondary'
+        };
+
+        const checkIcons = {
+            'PASS': '<i class="bi bi-check-circle-fill text-success"></i>',
+            'FAIL': '<i class="bi bi-x-circle-fill text-danger"></i>',
+            'WARN': '<i class="bi bi-exclamation-triangle-fill text-warning"></i>',
+            'INFO': '<i class="bi bi-info-circle-fill text-info"></i>'
+        };
+
+        let html = `
+            <div class="mb-3">
+                <h6>Broker: ${result.broker_name} (${result.broker_type})</h6>
+                <span class="badge bg-${statusColors[result.overall_status] || 'secondary'} fs-6">
+                    ${result.overall_status}
+                </span>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header">
+                    <i class="bi bi-list-check me-2"></i>Diagnostic Checks
+                </div>
+                <ul class="list-group list-group-flush">
+        `;
+
+        for (const check of result.checks) {
+            html += `
+                <li class="list-group-item d-flex align-items-start">
+                    <span class="me-2 mt-1">${checkIcons[check.status] || checkIcons['INFO']}</span>
+                    <div>
+                        <strong>${check.name}</strong>
+                        <div class="text-muted small">${check.message}</div>
+                        ${check.details ? `<pre class="mt-1 mb-0 small bg-light p-2 rounded">${JSON.stringify(check.details, null, 2)}</pre>` : ''}
+                    </div>
+                </li>
+            `;
+        }
+
+        html += '</ul></div>';
+
+        // Add suggestions if any
+        if (result.suggestions && result.suggestions.length > 0) {
+            html += `
+                <div class="card border-warning">
+                    <div class="card-header bg-warning text-dark">
+                        <i class="bi bi-lightbulb me-2"></i>Suggested Fixes
+                    </div>
+                    <div class="accordion" id="suggestionsAccordion">
+            `;
+
+            result.suggestions.forEach((suggestion, idx) => {
+                html += `
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="suggestion-heading-${idx}">
+                            <button class="accordion-button ${idx > 0 ? 'collapsed' : ''}" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#suggestion-${idx}"
+                                    aria-expanded="${idx === 0}" aria-controls="suggestion-${idx}">
+                                <i class="bi bi-wrench me-2"></i>${suggestion.issue}
+                            </button>
+                        </h2>
+                        <div id="suggestion-${idx}" class="accordion-collapse collapse ${idx === 0 ? 'show' : ''}"
+                             aria-labelledby="suggestion-heading-${idx}" data-bs-parent="#suggestionsAccordion">
+                            <div class="accordion-body">
+                                <p><strong>Solution:</strong> ${suggestion.fix}</p>
+                                <p class="mb-2"><strong>Steps:</strong></p>
+                                <ol class="mb-0">
+                                    ${suggestion.steps.map(step => `<li>${step}</li>`).join('')}
+                                </ol>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div></div>';
+        } else if (result.overall_status === 'HEALTHY') {
+            html += `
+                <div class="alert alert-success mb-0">
+                    <i class="bi bi-check-circle me-2"></i>
+                    All checks passed! The broker is configured correctly and ready to trade.
+                </div>
+            `;
+        }
+
+        document.getElementById('diagnosticContent').innerHTML = html;
+    }
+
+    // Rerun diagnostics button handler
+    document.getElementById('rerunDiagnostics').addEventListener('click', function() {
+        if (currentDiagnoseBrokerId) {
+            diagnoseBroker(currentDiagnoseBrokerId);
+        }
+    });
 </script>
 {% endblock %}

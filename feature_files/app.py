@@ -374,6 +374,335 @@ def api_broker_test(broker_id):
         })
 
 
+@app.route('/api/brokers/<broker_id>/diagnose', methods=['POST'])
+def api_broker_diagnose(broker_id):
+    """Comprehensive diagnostic for broker connectivity issues"""
+    database = get_db()
+    broker = database.get_broker(broker_id)
+
+    if not broker:
+        return jsonify({'success': False, 'error': 'Broker not found'}), 404
+
+    diagnostics = {
+        'broker_id': broker_id,
+        'broker_type': broker.broker_type,
+        'broker_name': broker.name,
+        'checks': [],
+        'suggestions': [],
+        'overall_status': 'UNKNOWN'
+    }
+
+    def add_check(name, status, message, details=None):
+        check = {'name': name, 'status': status, 'message': message}
+        if details:
+            check['details'] = details
+        diagnostics['checks'].append(check)
+        return status == 'PASS'
+
+    try:
+        if broker.broker_type == 'OKX':
+            from adapters.okx_adapter import OKXAdapter
+            from adapters.base import BrokerConfig
+            import os
+            import aiohttp
+
+            # Check 1: Configuration
+            api_key = broker.okx_api_key or os.environ.get('OKX_API_KEY', '')
+            api_secret = broker.okx_api_secret or os.environ.get('OKX_API_SECRET', '')
+            passphrase = broker.okx_passphrase or os.environ.get('OKX_PASSPHRASE', '')
+
+            if not api_key:
+                add_check('API Key', 'FAIL', 'API Key is missing')
+                diagnostics['suggestions'].append({
+                    'issue': 'Missing API Key',
+                    'fix': 'Add your OKX API Key in the broker configuration or set OKX_API_KEY environment variable',
+                    'steps': [
+                        '1. Log in to OKX',
+                        '2. Go to Account > API',
+                        '3. Create a new API key with trading permissions',
+                        '4. Copy the API Key and paste it in the broker config'
+                    ]
+                })
+            else:
+                add_check('API Key', 'PASS', f'API Key configured (ends with ...{api_key[-4:]})')
+
+            if not api_secret:
+                add_check('API Secret', 'FAIL', 'API Secret is missing')
+                diagnostics['suggestions'].append({
+                    'issue': 'Missing API Secret',
+                    'fix': 'Add your OKX API Secret Key',
+                    'steps': ['The secret is shown only once when creating the API key']
+                })
+            else:
+                add_check('API Secret', 'PASS', 'API Secret configured')
+
+            if not passphrase:
+                add_check('Passphrase', 'FAIL', 'API Passphrase is missing')
+                diagnostics['suggestions'].append({
+                    'issue': 'Missing Passphrase',
+                    'fix': 'Add your OKX API Passphrase (set during API key creation)',
+                    'steps': ['This is the passphrase you created with your API key']
+                })
+            else:
+                add_check('Passphrase', 'PASS', 'Passphrase configured')
+
+            # Check 2: Symbol format
+            symbol = broker.symbol or ''
+            if not symbol:
+                add_check('Symbol', 'FAIL', 'No trading symbol configured')
+                diagnostics['suggestions'].append({
+                    'issue': 'Missing Symbol',
+                    'fix': 'Configure the trading symbol',
+                    'steps': [
+                        'For Spot: Use format like BTC-USDT, ETH-USDT',
+                        'For Futures: Use format like BTC-USDT-SWAP or BTC-USDT-240329'
+                    ]
+                })
+            elif '-' not in symbol:
+                add_check('Symbol Format', 'WARN', f'Symbol "{symbol}" may not be in OKX format')
+                diagnostics['suggestions'].append({
+                    'issue': 'Incorrect Symbol Format',
+                    'fix': 'OKX uses dash-separated symbols',
+                    'steps': [
+                        f'Current: {symbol}',
+                        'Expected format: BTC-USDT (spot) or BTC-USDT-SWAP (perpetual)',
+                        'Check OKX trading page for exact symbol names'
+                    ]
+                })
+            else:
+                add_check('Symbol Format', 'PASS', f'Symbol "{symbol}" appears valid')
+
+            # Check 3: Network connectivity
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            async def test_network():
+                try:
+                    is_simulated = broker.okx_simulated if hasattr(broker, 'okx_simulated') else True
+                    base_url = 'https://www.okx.com' if not is_simulated else 'https://www.okx.com'
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(f'{base_url}/api/v5/public/time', timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                server_time = data.get('data', [{}])[0].get('ts', 'unknown')
+                                return True, f'Connected to OKX (server time: {server_time})'
+                            return False, f'HTTP {resp.status}'
+                except asyncio.TimeoutError:
+                    return False, 'Connection timeout - check your internet connection'
+                except aiohttp.ClientError as e:
+                    return False, f'Network error: {str(e)}'
+                except Exception as e:
+                    return False, f'Error: {str(e)}'
+
+            network_ok, network_msg = loop.run_until_complete(test_network())
+            if network_ok:
+                add_check('Network', 'PASS', network_msg)
+            else:
+                add_check('Network', 'FAIL', network_msg)
+                diagnostics['suggestions'].append({
+                    'issue': 'Network Connection Failed',
+                    'fix': 'Check your internet connection and firewall settings',
+                    'steps': [
+                        'Verify internet connectivity',
+                        'Check if OKX is accessible from your location',
+                        'Ensure firewall allows HTTPS connections to okx.com'
+                    ]
+                })
+
+            # Check 4: Authentication test (only if credentials exist)
+            if api_key and api_secret and passphrase and network_ok:
+                async def test_auth():
+                    try:
+                        config = BrokerConfig(
+                            broker_id=broker.broker_id,
+                            name=broker.name,
+                            role=broker.role,
+                            backend_type='OKX',
+                            okx_api_key=api_key,
+                            okx_api_secret=api_secret,
+                            okx_passphrase=passphrase,
+                            okx_simulated=broker.okx_simulated if hasattr(broker, 'okx_simulated') else True,
+                            okx_account_type=broker.okx_account_type if hasattr(broker, 'okx_account_type') else 'spot',
+                            symbol=symbol
+                        )
+                        adapter = OKXAdapter(config)
+                        connected = await adapter.connect()
+
+                        if connected:
+                            account = await adapter.get_account_info()
+                            await adapter.disconnect()
+                            if account:
+                                return True, f'Authenticated successfully (Balance: {account.balance:.2f} USDT)', account
+                            return True, 'Authenticated but could not fetch account info', None
+                        return False, 'Authentication failed - check API credentials', None
+                    except Exception as e:
+                        error_msg = str(e)
+                        if 'Invalid API-key' in error_msg or '50111' in error_msg:
+                            return False, 'Invalid API Key', None
+                        elif 'Invalid Sign' in error_msg or '50113' in error_msg:
+                            return False, 'Invalid signature - check API Secret', None
+                        elif 'Invalid Passphrase' in error_msg or '50114' in error_msg:
+                            return False, 'Invalid Passphrase', None
+                        elif 'permission' in error_msg.lower() or '50110' in error_msg:
+                            return False, 'API key lacks required permissions', None
+                        return False, f'Auth error: {error_msg}', None
+
+                auth_ok, auth_msg, account = loop.run_until_complete(test_auth())
+                if auth_ok:
+                    add_check('Authentication', 'PASS', auth_msg)
+
+                    # Check 5: Symbol validity (fetch price)
+                    async def test_symbol():
+                        try:
+                            config = BrokerConfig(
+                                broker_id=broker.broker_id,
+                                name=broker.name,
+                                role=broker.role,
+                                backend_type='OKX',
+                                okx_api_key=api_key,
+                                okx_api_secret=api_secret,
+                                okx_passphrase=passphrase,
+                                okx_simulated=broker.okx_simulated if hasattr(broker, 'okx_simulated') else True,
+                                okx_account_type=broker.okx_account_type if hasattr(broker, 'okx_account_type') else 'spot',
+                                symbol=symbol
+                            )
+                            adapter = OKXAdapter(config)
+                            await adapter.connect()
+                            tick = await adapter.get_tick(symbol)
+                            await adapter.disconnect()
+
+                            if tick and tick.bid > 0:
+                                return True, f'Symbol valid - Bid: {tick.bid}, Ask: {tick.ask}', tick
+                            return False, f'Symbol "{symbol}" returned no price data', None
+                        except Exception as e:
+                            return False, f'Symbol error: {str(e)}', None
+
+                    if symbol:
+                        symbol_ok, symbol_msg, tick = loop.run_until_complete(test_symbol())
+                        if symbol_ok:
+                            add_check('Symbol Validation', 'PASS', symbol_msg)
+                        else:
+                            add_check('Symbol Validation', 'FAIL', symbol_msg)
+                            diagnostics['suggestions'].append({
+                                'issue': 'Invalid Trading Symbol',
+                                'fix': f'The symbol "{symbol}" is not valid or not available',
+                                'steps': [
+                                    'Check OKX for the correct symbol name',
+                                    'Spot symbols: BTC-USDT, ETH-USDT, etc.',
+                                    'Perpetual swaps: BTC-USDT-SWAP',
+                                    'Futures: BTC-USDT-240329 (with expiry date)'
+                                ]
+                            })
+                else:
+                    add_check('Authentication', 'FAIL', auth_msg)
+                    if 'Invalid API Key' in auth_msg:
+                        diagnostics['suggestions'].append({
+                            'issue': 'Invalid API Key',
+                            'fix': 'The API key is not recognized by OKX',
+                            'steps': [
+                                'Verify the API key is copied correctly (no extra spaces)',
+                                'Check if the API key has been deleted on OKX',
+                                'Create a new API key if needed'
+                            ]
+                        })
+                    elif 'Secret' in auth_msg:
+                        diagnostics['suggestions'].append({
+                            'issue': 'Invalid API Secret',
+                            'fix': 'The API secret does not match the key',
+                            'steps': [
+                                'The secret is only shown once during creation',
+                                'If lost, delete and recreate the API key'
+                            ]
+                        })
+                    elif 'Passphrase' in auth_msg:
+                        diagnostics['suggestions'].append({
+                            'issue': 'Invalid Passphrase',
+                            'fix': 'The passphrase is incorrect',
+                            'steps': [
+                                'This is the passphrase YOU created with the API key',
+                                'It is NOT the same as your account password',
+                                'If forgotten, delete and recreate the API key'
+                            ]
+                        })
+                    elif 'permission' in auth_msg.lower():
+                        diagnostics['suggestions'].append({
+                            'issue': 'Insufficient API Permissions',
+                            'fix': 'Enable required permissions for the API key',
+                            'steps': [
+                                'Go to OKX > Account > API',
+                                'Edit the API key permissions',
+                                'Enable: Read, Trade (and Withdraw if needed)',
+                                'For futures: Enable futures trading permission'
+                            ]
+                        })
+
+            loop.close()
+
+        elif broker.broker_type == 'MT5':
+            add_check('MT5 Terminal', 'INFO', 'MT5 requires the terminal to be running')
+            diagnostics['suggestions'].append({
+                'issue': 'MT5 Connection Setup',
+                'fix': 'Ensure MetaTrader 5 terminal is properly configured',
+                'steps': [
+                    '1. Open MetaTrader 5 terminal',
+                    '2. Log in to your trading account',
+                    '3. Enable algo trading (Tools > Options > Expert Advisors)',
+                    '4. Allow DLL imports if required',
+                    '5. Ensure the symbol exists in Market Watch'
+                ]
+            })
+
+        elif broker.broker_type in ['FIX', 'FLEXTRADE']:
+            add_check('FIX Connection', 'INFO', 'FIX protocol requires gateway configuration')
+            diagnostics['suggestions'].append({
+                'issue': 'FIX Connection Setup',
+                'fix': 'Configure FIX gateway settings',
+                'steps': [
+                    '1. Verify FIX gateway host and port',
+                    '2. Check SenderCompID and TargetCompID',
+                    '3. Ensure firewall allows the connection',
+                    '4. Verify SSL/TLS certificates if required'
+                ]
+            })
+
+        elif broker.broker_type == 'IB':
+            add_check('IB Gateway', 'INFO', 'Interactive Brokers requires TWS or IB Gateway')
+            diagnostics['suggestions'].append({
+                'issue': 'IB Connection Setup',
+                'fix': 'Ensure TWS or IB Gateway is running',
+                'steps': [
+                    '1. Start TWS or IB Gateway',
+                    '2. Enable API connections in settings',
+                    '3. Add your IP to trusted IPs',
+                    '4. Note the socket port (default: 7497 for TWS, 4001 for Gateway)'
+                ]
+            })
+
+        # Calculate overall status
+        statuses = [c['status'] for c in diagnostics['checks']]
+        if all(s == 'PASS' for s in statuses):
+            diagnostics['overall_status'] = 'HEALTHY'
+        elif 'FAIL' in statuses:
+            diagnostics['overall_status'] = 'ERROR'
+        elif 'WARN' in statuses:
+            diagnostics['overall_status'] = 'WARNING'
+        else:
+            diagnostics['overall_status'] = 'INCOMPLETE'
+
+        return jsonify(diagnostics)
+
+    except Exception as e:
+        logger.error(f"Diagnostic error: {e}")
+        diagnostics['checks'].append({
+            'name': 'System Error',
+            'status': 'FAIL',
+            'message': str(e)
+        })
+        diagnostics['overall_status'] = 'ERROR'
+        return jsonify(diagnostics)
+
+
 @app.route('/api/trades')
 def api_trades():
     """Get trade history"""
