@@ -87,6 +87,23 @@
                 </div>
             </div>
             <div class="card-body">
+                <!-- Data Collection Progress Bar -->
+                <div id="data-collection-progress" class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <small class="text-muted">
+                            <i class="bi bi-hourglass-split me-1"></i>Data Collection
+                        </small>
+                        <small id="data-progress-text" class="text-muted">0 / {{ config.lookback_period }} samples</small>
+                    </div>
+                    <div class="progress" style="height: 8px;">
+                        <div id="data-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                             role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                        </div>
+                    </div>
+                    <small id="data-progress-status" class="text-warning">
+                        <i class="bi bi-exclamation-triangle me-1"></i>Collecting data... Z-score unavailable until complete
+                    </small>
+                </div>
                 <div class="chart-container" id="zscore-chart">
                     <canvas id="zscore-canvas"></canvas>
                 </div>
@@ -686,6 +703,41 @@
             spreadData.datasets[0].data.shift();
         }
         spreadChart.update('none');
+
+        // Update Data Collection Progress Bar
+        if (data.history_count !== undefined && data.lookback_required !== undefined) {
+            const progressBar = document.getElementById('data-progress-bar');
+            const progressText = document.getElementById('data-progress-text');
+            const progressStatus = document.getElementById('data-progress-status');
+            const progressContainer = document.getElementById('data-collection-progress');
+
+            const current = data.history_count;
+            const required = data.lookback_required;
+            const percentage = Math.min(100, (current / required) * 100);
+
+            progressBar.style.width = percentage + '%';
+            progressBar.setAttribute('aria-valuenow', percentage);
+            progressText.textContent = current + ' / ' + required + ' samples';
+
+            if (data.lookback_complete) {
+                // Data collection complete
+                progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+                progressBar.classList.add('bg-success');
+                progressStatus.innerHTML = '<i class="bi bi-check-circle me-1"></i>Data collection complete - Z-score active';
+                progressStatus.className = 'text-success small';
+                // Hide after a few seconds once complete
+                setTimeout(() => {
+                    progressContainer.style.display = 'none';
+                }, 5000);
+            } else {
+                // Still collecting
+                progressBar.classList.add('progress-bar-animated', 'progress-bar-striped');
+                progressBar.classList.remove('bg-success');
+                progressStatus.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Collecting data... Z-score unavailable until complete (' + Math.round(percentage) + '%)';
+                progressStatus.className = 'text-warning small';
+                progressContainer.style.display = 'block';
+            }
+        }
 
         // Update Z-score
         if (data.zscore !== null) {
