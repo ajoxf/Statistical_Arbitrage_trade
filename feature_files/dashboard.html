@@ -23,8 +23,59 @@
     <div class="next-session" id="next-session">Next: -- in --:--:--</div>
 </div>
 
+<!-- Active Broker Alert -->
+{% if not active_spot or not active_futures %}
+<div class="alert alert-warning mb-3">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    <strong>No Active Trading Pair Selected!</strong>
+    Go to <a href="/settings">Settings</a> to select your active Spot and Futures brokers.
+</div>
+{% endif %}
+
+<!-- Live Prices - TOP -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-currency-exchange me-2"></i>Live Prices</span>
+        {% if active_spot and active_futures %}
+        <small class="text-muted">
+            Active: {{ active_spot.name }} ↔ {{ active_futures.name }}
+        </small>
+        {% endif %}
+    </div>
+    <div class="card-body" style="font-size: 24px;">
+        <div class="row">
+            <div class="col-md-6">
+                <h5 class="text-muted">
+                    {{ config.asset_name }} (Spot)
+                    {% if active_spot %}
+                    <small class="badge bg-secondary">{{ active_spot.symbol }}</small>
+                    {% endif %}
+                </h5>
+                <div class="d-flex justify-content-between price-display" style="font-size: 24px;">
+                    <span>Bid: <span class="positive fw-bold" id="spot-bid" style="font-size: 24px;">0.00</span></span>
+                    <span>Ask: <span class="negative fw-bold" id="spot-ask" style="font-size: 24px;">0.00</span></span>
+                    <span>Spread: <span class="fw-bold" id="spot-spread" style="font-size: 24px;">0.00</span></span>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <h5 class="text-muted">
+                    {{ config.asset_name }} (Futures)
+                    {% if active_futures %}
+                    <small class="badge bg-secondary">{{ active_futures.symbol }}</small>
+                    {% endif %}
+                </h5>
+                <div class="d-flex justify-content-between price-display" style="font-size: 24px;">
+                    <span>Bid: <span class="positive fw-bold" id="futures-bid" style="font-size: 24px;">0.00</span></span>
+                    <span>Ask: <span class="negative fw-bold" id="futures-ask" style="font-size: 24px;">0.00</span></span>
+                    <span>Spread: <span class="fw-bold" id="futures-spread" style="font-size: 24px;">0.00</span></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="row g-4">
-    <!-- Top Stats Row -->
+    <!-- Stats Row (moved down) -->
     <div class="col-md-3">
         <div class="card stat-card">
             <div class="stat-value" id="zscore-value">0.00</div>
@@ -82,57 +133,6 @@
             <div class="card-body">
                 <div class="chart-container" id="spread-chart">
                     <canvas id="spread-canvas"></canvas>
-                </div>
-            </div>
-        </div>
-
-        <!-- Active Broker Alert -->
-        {% if not active_spot or not active_futures %}
-        <div class="alert alert-warning mb-3">
-            <i class="bi bi-exclamation-triangle me-2"></i>
-            <strong>No Active Trading Pair Selected!</strong>
-            Go to <a href="/settings">Settings</a> to select your active Spot and Futures brokers.
-        </div>
-        {% endif %}
-
-        <!-- Price Display -->
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-currency-exchange me-2"></i>Live Prices</span>
-                {% if active_spot and active_futures %}
-                <small class="text-muted">
-                    Active: {{ active_spot.name }} ↔ {{ active_futures.name }}
-                </small>
-                {% endif %}
-            </div>
-            <div class="card-body" style="font-size: 24px;">
-                <div class="row">
-                    <div class="col-md-6">
-                        <h5 class="text-muted">
-                            {{ config.asset_name }} (Spot)
-                            {% if active_spot %}
-                            <small class="badge bg-secondary">{{ active_spot.symbol }}</small>
-                            {% endif %}
-                        </h5>
-                        <div class="d-flex justify-content-between price-display" style="font-size: 24px;">
-                            <span>Bid: <span class="positive fw-bold" id="spot-bid" style="font-size: 24px;">0.00</span></span>
-                            <span>Ask: <span class="negative fw-bold" id="spot-ask" style="font-size: 24px;">0.00</span></span>
-                            <span>Spread: <span class="fw-bold" id="spot-spread" style="font-size: 24px;">0.00</span></span>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <h5 class="text-muted">
-                            {{ config.asset_name }} (Futures)
-                            {% if active_futures %}
-                            <small class="badge bg-secondary">{{ active_futures.symbol }}</small>
-                            {% endif %}
-                        </h5>
-                        <div class="d-flex justify-content-between price-display" style="font-size: 24px;">
-                            <span>Bid: <span class="positive fw-bold" id="futures-bid" style="font-size: 24px;">0.00</span></span>
-                            <span>Ask: <span class="negative fw-bold" id="futures-ask" style="font-size: 24px;">0.00</span></span>
-                            <span>Spread: <span class="fw-bold" id="futures-spread" style="font-size: 24px;">0.00</span></span>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>
