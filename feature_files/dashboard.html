@@ -410,7 +410,7 @@
                 <div>
                     <span class="badge bg-secondary me-2">{{ stats.closed_trades or 0 }} trades</span>
                     <button class="btn btn-sm btn-outline-primary" onclick="refreshMT5History()">
-                        <i class="bi bi-arrow-clockwise"></i> Refresh MT5
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
                     </button>
                 </div>
             </div>
@@ -419,7 +419,7 @@
                 <ul class="nav nav-tabs mb-3" id="tradesTabs" role="tablist">
                     <li class="nav-item" role="presentation">
                         <button class="nav-link active" id="mt5-tab" data-bs-toggle="tab" data-bs-target="#mt5-trades" type="button">
-                            MT5 History
+                            Broker History
                         </button>
                     </li>
                     <li class="nav-item" role="presentation">
@@ -1143,14 +1143,14 @@
         }
     }
 
-    // ==================== MT5 History Functions ====================
+    // ==================== Broker History Functions ====================
 
     async function refreshMT5History() {
         const tbody = document.getElementById('mt5-history-body');
         tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted"><i class="bi bi-hourglass-split"></i> Loading...</td></tr>';
 
         try {
-            const response = await fetch('/api/mt5/history?days=30');
+            const response = await fetch('/api/broker/history?days=30');
             const result = await response.json();
 
             if (!result.success) {
@@ -1158,8 +1158,17 @@
                 return;
             }
 
+            // Update tab label with broker types
+            const tabLabel = document.getElementById('mt5-tab');
+            if (result.brokers && result.brokers.length > 0) {
+                tabLabel.textContent = result.brokers.join(' + ') + ' History';
+            } else {
+                tabLabel.textContent = 'Broker History';
+            }
+
             if (result.deals.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No MT5 trades in last 30 days</td></tr>';
+                const brokerNames = result.brokers ? result.brokers.join('/') : 'broker';
+                tbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted">No ${brokerNames} trades in last 30 days</td></tr>`;
                 return;
             }
 
@@ -1168,10 +1177,11 @@
                 const date = new Date(deal.time * 1000);
                 const timeStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
                 const profitClass = deal.profit >= 0 ? 'positive' : 'negative';
+                const brokerBadge = deal.broker ? `<small class="badge bg-secondary">${deal.broker}</small> ` : '';
 
                 html += `<tr>
                     <td>${timeStr}</td>
-                    <td>${deal.symbol}</td>
+                    <td>${brokerBadge}${deal.symbol}</td>
                     <td><span class="badge ${deal.type === 'BUY' ? 'bg-success' : 'bg-danger'}">${deal.type}</span></td>
                     <td>${deal.volume.toFixed(2)}</td>
                     <td>$${deal.price.toFixed(2)}</td>
@@ -1187,7 +1197,7 @@
         }
     }
 
-    // Load MT5 history on page load
+    // Load broker history on page load
     document.addEventListener('DOMContentLoaded', function() {
         refreshMT5History();
     });
