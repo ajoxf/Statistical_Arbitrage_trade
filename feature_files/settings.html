@@ -356,6 +356,12 @@
             }
         });
 
+        // DEBUG: Log what we're sending
+        console.log('=== SAVING SETTINGS ===');
+        console.log('Active Spot Broker:', data.active_spot_broker);
+        console.log('Active Futures Broker:', data.active_futures_broker);
+        console.log('Full data being sent:', JSON.stringify(data, null, 2));
+
         const response = await fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -363,6 +369,11 @@
         });
 
         const result = await response.json();
+
+        // DEBUG: Log response
+        console.log('=== SERVER RESPONSE ===');
+        console.log('Success:', result.success);
+        console.log('Full response:', JSON.stringify(result, null, 2));
 
         if (result.success) {
             alert('Settings saved successfully!');

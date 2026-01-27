@@ -239,6 +239,10 @@ def api_config():
         # Save active brokers to JSON file (workaround for database not persisting new fields)
         save_active_brokers(config.active_spot_broker, config.active_futures_broker)
 
+        # Verify the save worked
+        saved_spot, saved_futures = load_active_brokers()
+        logger.info(f"[CONFIG] Verified saved - Spot: {saved_spot}, Futures: {saved_futures}")
+
         database.update_config(config)
 
         # Reload config in engine if running
