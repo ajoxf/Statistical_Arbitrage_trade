@@ -311,7 +311,11 @@ def calculate_min_profitable_std(config, current_std: float,
         'contract_size': float(contract_size),
         'profit_if_successful': float(profit_if_successful),
         'std_deficit': float(max(0, min_std - current_std)),
-        'std_ratio': float(current_std / min_std) if min_std > 0 else 0.0
+        'std_ratio': float(current_std / min_std) if min_std > 0 else 0.0,
+        # Debug values to verify config is being read correctly
+        'entry_z': float(entry_z),
+        'exit_z': float(exit_z),
+        'exit_opposite_z': float(exit_opposite_z)
     }
 
 
