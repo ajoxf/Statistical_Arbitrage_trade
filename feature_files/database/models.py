@@ -89,6 +89,10 @@ class TradingConfig:
     paper_mode: bool = True
     selected_asset: str = "GOLD"
 
+    # Active Broker Selection
+    active_spot_broker: Optional[str] = None
+    active_futures_broker: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'id': self.id,
@@ -125,7 +129,9 @@ class TradingConfig:
             'limit_peg_interval': self.limit_peg_interval,
             'algo_enabled': self.algo_enabled,
             'paper_mode': self.paper_mode,
-            'selected_asset': self.selected_asset
+            'selected_asset': self.selected_asset,
+            'active_spot_broker': self.active_spot_broker,
+            'active_futures_broker': self.active_futures_broker
         }
 
 
