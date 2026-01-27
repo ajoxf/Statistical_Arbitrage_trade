@@ -254,6 +254,124 @@ def api_broker(broker_id):
         return jsonify({'error': 'Broker not found'}), 404
 
 
+@app.route('/api/brokers/<broker_id>/test', methods=['POST'])
+def api_broker_test(broker_id):
+    """Test connectivity for a specific broker"""
+    database = get_db()
+    broker = database.get_broker(broker_id)
+
+    if not broker:
+        return jsonify({'success': False, 'error': 'Broker not found'}), 404
+
+    try:
+        import time
+        start_time = time.time()
+
+        # Create adapter based on broker type
+        if broker.broker_type == 'OKX':
+            from adapters.okx_adapter import OKXAdapter
+            from adapters.base import BrokerConfig
+            import os
+
+            config = BrokerConfig(
+                broker_id=broker.broker_id,
+                name=broker.name,
+                role=broker.role,
+                backend_type='OKX',
+                okx_api_key=broker.okx_api_key or os.environ.get('OKX_API_KEY', ''),
+                okx_api_secret=broker.okx_api_secret or os.environ.get('OKX_API_SECRET', ''),
+                okx_passphrase=broker.okx_passphrase or os.environ.get('OKX_PASSPHRASE', ''),
+                okx_simulated=broker.okx_simulated if hasattr(broker, 'okx_simulated') else True,
+                okx_account_type=broker.okx_account_type if hasattr(broker, 'okx_account_type') else 'spot',
+                symbol=broker.symbol
+            )
+
+            adapter = OKXAdapter(config)
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                connected = loop.run_until_complete(adapter.connect())
+                if not connected:
+                    return jsonify({'success': False, 'error': 'Failed to connect to OKX'})
+
+                # Get account info and price
+                account = loop.run_until_complete(adapter.get_account_info())
+                tick = loop.run_until_complete(adapter.get_tick(broker.symbol))
+                loop.run_until_complete(adapter.disconnect())
+
+                latency_ms = int((time.time() - start_time) * 1000)
+
+                # Update broker status in database
+                broker.status = 'CONNECTED'
+                broker.latency_ms = latency_ms
+                database.add_broker(broker)
+
+                result = {
+                    'success': True,
+                    'latency_ms': latency_ms,
+                    'broker_type': 'OKX'
+                }
+
+                if account:
+                    result['account_info'] = {
+                        'balance': account.balance,
+                        'equity': account.equity,
+                        'currency': 'USDT'
+                    }
+
+                if tick:
+                    result['price_info'] = {
+                        'symbol': broker.symbol,
+                        'bid': tick.bid,
+                        'ask': tick.ask
+                    }
+
+                return jsonify(result)
+
+            finally:
+                loop.close()
+
+        elif broker.broker_type == 'MT5':
+            # MT5 test - placeholder for now
+            return jsonify({
+                'success': False,
+                'error': 'MT5 connection test not implemented yet. Please ensure MT5 terminal is running.'
+            })
+
+        elif broker.broker_type in ['FIX', 'FLEXTRADE']:
+            # FIX test - placeholder
+            return jsonify({
+                'success': False,
+                'error': 'FIX connection test not implemented yet.'
+            })
+
+        elif broker.broker_type == 'IB':
+            # IB test - placeholder
+            return jsonify({
+                'success': False,
+                'error': 'Interactive Brokers connection test not implemented yet.'
+            })
+
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'Unknown broker type: {broker.broker_type}'
+            })
+
+    except Exception as e:
+        # Update broker status to error
+        broker.status = 'ERROR'
+        database.add_broker(broker)
+
+        logger.error(f"Broker test error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
 @app.route('/api/trades')
 def api_trades():
     """Get trade history"""

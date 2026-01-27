@@ -228,7 +228,10 @@
                                 </td>
                                 <td>{{ broker.latency_ms or '-' }} ms</td>
                                 <td>
-                                    <button class="btn btn-sm btn-outline-danger" onclick="deleteBroker('{{ broker.broker_id }}')">
+                                    <button class="btn btn-sm btn-outline-primary me-1" onclick="testBroker('{{ broker.broker_id }}')" title="Test Connection">
+                                        <i class="bi bi-wifi"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger" onclick="deleteBroker('{{ broker.broker_id }}')" title="Delete">
                                         <i class="bi bi-trash"></i>
                                     </button>
                                 </td>
@@ -370,6 +373,57 @@
 
         const result = await response.json();
         alert(result.success ? 'Data cleared!' : 'Error: ' + result.error);
+    }
+
+    // Test broker connectivity
+    async function testBroker(brokerId) {
+        const row = document.querySelector(`tr[data-broker-id="${brokerId}"]`);
+        const statusCell = row.querySelector('td:nth-child(6) span');
+        const latencyCell = row.querySelector('td:nth-child(7)');
+        const testBtn = row.querySelector('.btn-outline-primary');
+
+        // Show testing state
+        const originalStatus = statusCell.textContent;
+        const originalClass = statusCell.className;
+        statusCell.textContent = 'TESTING...';
+        statusCell.className = 'badge bg-info';
+        testBtn.disabled = true;
+        testBtn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+
+        try {
+            const response = await fetch(`/api/brokers/${brokerId}/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                statusCell.textContent = 'CONNECTED';
+                statusCell.className = 'badge badge-connected';
+                latencyCell.textContent = result.latency_ms ? `${result.latency_ms} ms` : '- ms';
+
+                let msg = `✓ Connection successful!\n`;
+                if (result.account_info) {
+                    msg += `Balance: ${result.account_info.balance} ${result.account_info.currency || ''}`;
+                }
+                if (result.price_info) {
+                    msg += `\nPrice: ${result.price_info.bid} / ${result.price_info.ask}`;
+                }
+                alert(msg);
+            } else {
+                statusCell.textContent = 'ERROR';
+                statusCell.className = 'badge badge-error';
+                alert(`✗ Connection failed:\n${result.error}`);
+            }
+        } catch (err) {
+            statusCell.textContent = 'ERROR';
+            statusCell.className = 'badge badge-error';
+            alert(`✗ Connection error:\n${err.message}`);
+        } finally {
+            testBtn.disabled = false;
+            testBtn.innerHTML = '<i class="bi bi-wifi"></i>';
+        }
     }
 </script>
 {% endblock %}

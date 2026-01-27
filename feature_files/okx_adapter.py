@@ -754,6 +754,48 @@ class OKXAdapter(BrokerAdapter):
             logger.error(f"[{self.name}] Error cancelling order: {e}")
             return False
 
+    async def modify_order(
+        self,
+        order_id: str,
+        price: Optional[float] = None,
+        volume: Optional[float] = None
+    ) -> bool:
+        """
+        Modify an existing order.
+
+        Args:
+            order_id: Order ID to modify
+            price: New price (optional)
+            volume: New volume (optional)
+
+        Returns:
+            True if modification successful
+        """
+        try:
+            # OKX amend-order requires instId - for now use stored symbol
+            body = {
+                'instId': self._symbol,
+                'ordId': order_id
+            }
+
+            if price is not None:
+                body['newPx'] = str(price)
+            if volume is not None:
+                body['newSz'] = str(volume)
+
+            result = await self._request(
+                'POST',
+                '/api/v5/trade/amend-order',
+                body=body,
+                authenticated=True
+            )
+
+            return result.get('code') == '0'
+
+        except Exception as e:
+            logger.error(f"[{self.name}] Error modifying order: {e}")
+            return False
+
     async def get_order_status(self, symbol: str, order_id: str) -> Optional[Dict]:
         """
         Get order status.
