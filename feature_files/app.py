@@ -1284,14 +1284,6 @@ def api_manual_get_price():
 
 # ==================== SocketIO Events ====================
 
-@socketio.on('connect')
-def handle_connect():
-    """Handle client connection"""
-    logger.info("Client connected")
-    if engine:
-        emit('status', engine.get_status())
-
-
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
@@ -1301,6 +1293,109 @@ def handle_disconnect():
 @socketio.on('request_status')
 def handle_request_status():
     """Send current status to client"""
+    if engine:
+        emit('status', engine.get_status())
+
+
+# ==================== Background Price Streaming ====================
+
+price_streaming_active = False
+
+def start_price_streaming():
+    """Start background price streaming from active brokers"""
+    global price_streaming_active
+
+    if price_streaming_active:
+        return
+
+    price_streaming_active = True
+
+    def stream_prices():
+        global price_streaming_active
+        import time
+
+        while price_streaming_active:
+            try:
+                database = get_db()
+                config = database.get_config()
+
+                # Get active brokers
+                spot_broker_id = getattr(config, 'active_spot_broker', None)
+                futures_broker_id = getattr(config, 'active_futures_broker', None)
+
+                if not spot_broker_id or not futures_broker_id:
+                    time.sleep(2)
+                    continue
+
+                spot_broker = database.get_broker(spot_broker_id)
+                futures_broker = database.get_broker(futures_broker_id)
+
+                if not spot_broker or not futures_broker:
+                    time.sleep(2)
+                    continue
+
+                spot_bid, spot_ask = 0, 0
+                futures_bid, futures_ask = 0, 0
+
+                # Fetch MT5 prices
+                if spot_broker.broker_type == 'MT5' or futures_broker.broker_type == 'MT5':
+                    try:
+                        import MetaTrader5 as mt5
+
+                        if not mt5.initialize():
+                            time.sleep(2)
+                            continue
+
+                        # Get spot price
+                        if spot_broker.broker_type == 'MT5':
+                            tick = mt5.symbol_info_tick(spot_broker.symbol)
+                            if tick:
+                                spot_bid = tick.bid
+                                spot_ask = tick.ask
+
+                        # Get futures price
+                        if futures_broker.broker_type == 'MT5':
+                            tick = mt5.symbol_info_tick(futures_broker.symbol)
+                            if tick:
+                                futures_bid = tick.bid
+                                futures_ask = tick.ask
+
+                        mt5.shutdown()
+
+                    except ImportError:
+                        pass
+                    except Exception as e:
+                        logger.error(f"MT5 price fetch error: {e}")
+
+                # Emit price update
+                if spot_bid > 0 or futures_bid > 0:
+                    spread = ((spot_bid + spot_ask) / 2) - ((futures_bid + futures_ask) / 2) if spot_bid > 0 and futures_bid > 0 else 0
+
+                    socketio.emit('tick', {
+                        'spot_bid': spot_bid,
+                        'spot_ask': spot_ask,
+                        'futures_bid': futures_bid,
+                        'futures_ask': futures_ask,
+                        'spread': spread,
+                        'zscore': 0  # Calculate if history available
+                    })
+
+                time.sleep(1)  # Update every second
+
+            except Exception as e:
+                logger.error(f"Price streaming error: {e}")
+                time.sleep(2)
+
+    thread = threading.Thread(target=stream_prices, daemon=True)
+    thread.start()
+    logger.info("Price streaming started")
+
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection and start price streaming"""
+    logger.info("Client connected")
+    start_price_streaming()
     if engine:
         emit('status', engine.get_status())
 
