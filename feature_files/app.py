@@ -288,7 +288,12 @@ def api_brokers():
             symbol=data.get('symbol', ''),
             contract_size=float(data.get('contract_size', 100.0)),
             commission_per_lot=float(data.get('commission_per_lot', 0.0)),
-            min_volume=float(data.get('min_volume', 0.01))
+            min_volume=float(data.get('min_volume', 0.01)),
+            okx_api_key=data.get('okx_api_key'),
+            okx_api_secret=data.get('okx_api_secret'),
+            okx_passphrase=data.get('okx_passphrase'),
+            okx_simulated=data.get('okx_simulated', True),
+            okx_account_type=data.get('okx_account_type', 'spot')
         )
 
         database.add_broker(broker)

@@ -332,6 +332,13 @@ class Broker:
     ib_port: Optional[int] = None
     ib_client_id: Optional[int] = None
 
+    # OKX specific
+    okx_api_key: Optional[str] = None
+    okx_api_secret: Optional[str] = None
+    okx_passphrase: Optional[str] = None
+    okx_simulated: bool = True
+    okx_account_type: str = "spot"  # 'spot' or 'swap'
+
     # Common
     symbol: str = ""
     contract_size: float = 100.0
@@ -365,6 +372,11 @@ class Broker:
             'ib_host': self.ib_host,
             'ib_port': self.ib_port,
             'ib_client_id': self.ib_client_id,
+            'okx_api_key': self.okx_api_key,
+            'okx_api_secret': self.okx_api_secret,
+            'okx_passphrase': self.okx_passphrase,
+            'okx_simulated': self.okx_simulated,
+            'okx_account_type': self.okx_account_type,
             'symbol': self.symbol,
             'contract_size': self.contract_size,
             'commission_per_lot': self.commission_per_lot,
