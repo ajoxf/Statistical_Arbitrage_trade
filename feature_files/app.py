@@ -1525,6 +1525,100 @@ def api_test_order():
         return jsonify({'success': False, 'error': str(e)})
 
 
+@app.route('/api/mt5/positions')
+def api_mt5_positions():
+    """Get current open positions from MT5"""
+    try:
+        import MetaTrader5 as mt5
+
+        if not mt5.initialize():
+            return jsonify({'success': False, 'error': 'Failed to initialize MT5', 'positions': []})
+
+        positions = mt5.positions_get()
+        mt5.shutdown()
+
+        if positions is None or len(positions) == 0:
+            return jsonify({'success': True, 'positions': []})
+
+        result = []
+        for pos in positions:
+            result.append({
+                'ticket': pos.ticket,
+                'symbol': pos.symbol,
+                'type': 'BUY' if pos.type == 0 else 'SELL',
+                'volume': pos.volume,
+                'price_open': pos.price_open,
+                'price_current': pos.price_current,
+                'profit': pos.profit,
+                'swap': pos.swap,
+                'time': pos.time,
+                'comment': pos.comment,
+                'magic': pos.magic
+            })
+
+        return jsonify({'success': True, 'positions': result})
+
+    except ImportError:
+        return jsonify({'success': False, 'error': 'MetaTrader5 library not installed', 'positions': []})
+    except Exception as e:
+        logger.error(f"MT5 positions error: {e}")
+        return jsonify({'success': False, 'error': str(e), 'positions': []})
+
+
+@app.route('/api/mt5/history')
+def api_mt5_history():
+    """Get trade history from MT5"""
+    try:
+        import MetaTrader5 as mt5
+        from datetime import datetime, timedelta
+
+        if not mt5.initialize():
+            return jsonify({'success': False, 'error': 'Failed to initialize MT5', 'deals': []})
+
+        # Get deals from last 30 days by default
+        days = int(request.args.get('days', 30))
+        from_date = datetime.now() - timedelta(days=days)
+        to_date = datetime.now()
+
+        deals = mt5.history_deals_get(from_date, to_date)
+        mt5.shutdown()
+
+        if deals is None or len(deals) == 0:
+            return jsonify({'success': True, 'deals': []})
+
+        result = []
+        for deal in deals:
+            # Only include actual trades (not balance operations)
+            if deal.entry != 0:  # 0 = DEAL_ENTRY_IN, 1 = DEAL_ENTRY_OUT
+                result.append({
+                    'ticket': deal.ticket,
+                    'order': deal.order,
+                    'time': deal.time,
+                    'type': 'BUY' if deal.type == 0 else 'SELL',
+                    'entry': 'IN' if deal.entry == 0 else 'OUT',
+                    'symbol': deal.symbol,
+                    'volume': deal.volume,
+                    'price': deal.price,
+                    'profit': deal.profit,
+                    'swap': deal.swap,
+                    'commission': deal.commission,
+                    'comment': deal.comment,
+                    'magic': deal.magic,
+                    'position_id': deal.position_id
+                })
+
+        # Sort by time descending (most recent first)
+        result.sort(key=lambda x: x['time'], reverse=True)
+
+        return jsonify({'success': True, 'deals': result})
+
+    except ImportError:
+        return jsonify({'success': False, 'error': 'MetaTrader5 library not installed', 'deals': []})
+    except Exception as e:
+        logger.error(f"MT5 history error: {e}")
+        return jsonify({'success': False, 'error': str(e), 'deals': []})
+
+
 # ==================== SocketIO Events ====================
 
 @socketio.on('disconnect')

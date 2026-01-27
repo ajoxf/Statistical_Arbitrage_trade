@@ -407,46 +407,94 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-list-ul me-2"></i>Recent Trades</span>
-                <span class="badge bg-secondary">{{ stats.closed_trades or 0 }} trades</span>
+                <div>
+                    <span class="badge bg-secondary me-2">{{ stats.closed_trades or 0 }} trades</span>
+                    <button class="btn btn-sm btn-outline-primary" onclick="refreshMT5History()">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh MT5
+                    </button>
+                </div>
             </div>
             <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-striped table-hover mb-0">
-                        <thead>
-                            <tr>
-                                <th>Date</th>
-                                <th>Direction</th>
-                                <th>Entry Z</th>
-                                <th>Exit Z</th>
-                                <th>Days Held</th>
-                                <th>Net P&L</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for trade in recent_trades %}
-                            <tr>
-                                <td>{{ trade.entry_date[:10] if trade.entry_date else '-' }}</td>
-                                <td>{{ trade.direction }}</td>
-                                <td>{{ "%.2f"|format(trade.entry_zscore or 0) }}</td>
-                                <td>{{ "%.2f"|format(trade.exit_zscore or 0) if trade.exit_zscore else '-' }}</td>
-                                <td>{{ "%.1f"|format(trade.days_held or 0) if trade.days_held else '-' }}</td>
-                                <td class="{% if (trade.net_pnl or 0) >= 0 %}positive{% else %}negative{% endif %}">
-                                    ${{ "%.2f"|format(trade.net_pnl or 0) }}
-                                </td>
-                                <td>
-                                    <span class="badge {% if trade.status == 'OPEN' %}bg-warning{% else %}bg-success{% endif %}">
-                                        {{ trade.status }}
-                                    </span>
-                                </td>
-                            </tr>
-                            {% else %}
-                            <tr>
-                                <td colspan="7" class="text-center text-muted">No trades yet</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+                <!-- Tabs for App Trades vs MT5 History -->
+                <ul class="nav nav-tabs mb-3" id="tradesTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="mt5-tab" data-bs-toggle="tab" data-bs-target="#mt5-trades" type="button">
+                            MT5 History
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="app-tab" data-bs-toggle="tab" data-bs-target="#app-trades" type="button">
+                            App Trades
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content" id="tradesTabContent">
+                    <!-- MT5 History Tab -->
+                    <div class="tab-pane fade show active" id="mt5-trades" role="tabpanel">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Symbol</th>
+                                        <th>Type</th>
+                                        <th>Volume</th>
+                                        <th>Price</th>
+                                        <th>Profit</th>
+                                        <th>Comment</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="mt5-history-body">
+                                    <tr>
+                                        <td colspan="7" class="text-center text-muted">Loading MT5 history...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- App Trades Tab -->
+                    <div class="tab-pane fade" id="app-trades" role="tabpanel">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Direction</th>
+                                        <th>Entry Z</th>
+                                        <th>Exit Z</th>
+                                        <th>Days Held</th>
+                                        <th>Net P&L</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for trade in recent_trades %}
+                                    <tr>
+                                        <td>{{ trade.entry_date[:10] if trade.entry_date else '-' }}</td>
+                                        <td>{{ trade.direction }}</td>
+                                        <td>{{ "%.2f"|format(trade.entry_zscore or 0) }}</td>
+                                        <td>{{ "%.2f"|format(trade.exit_zscore or 0) if trade.exit_zscore else '-' }}</td>
+                                        <td>{{ "%.1f"|format(trade.days_held or 0) if trade.days_held else '-' }}</td>
+                                        <td class="{% if (trade.net_pnl or 0) >= 0 %}positive{% else %}negative{% endif %}">
+                                            ${{ "%.2f"|format(trade.net_pnl or 0) }}
+                                        </td>
+                                        <td>
+                                            <span class="badge {% if trade.status == 'OPEN' %}bg-warning{% else %}bg-success{% endif %}">
+                                                {{ trade.status }}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr>
+                                        <td colspan="7" class="text-center text-muted">No trades yet</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1094,5 +1142,54 @@
             alert('Error: ' + err.message);
         }
     }
+
+    // ==================== MT5 History Functions ====================
+
+    async function refreshMT5History() {
+        const tbody = document.getElementById('mt5-history-body');
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted"><i class="bi bi-hourglass-split"></i> Loading...</td></tr>';
+
+        try {
+            const response = await fetch('/api/mt5/history?days=30');
+            const result = await response.json();
+
+            if (!result.success) {
+                tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">${result.error}</td></tr>`;
+                return;
+            }
+
+            if (result.deals.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No MT5 trades in last 30 days</td></tr>';
+                return;
+            }
+
+            let html = '';
+            for (const deal of result.deals.slice(0, 20)) {  // Show last 20 deals
+                const date = new Date(deal.time * 1000);
+                const timeStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                const profitClass = deal.profit >= 0 ? 'positive' : 'negative';
+
+                html += `<tr>
+                    <td>${timeStr}</td>
+                    <td>${deal.symbol}</td>
+                    <td><span class="badge ${deal.type === 'BUY' ? 'bg-success' : 'bg-danger'}">${deal.type}</span></td>
+                    <td>${deal.volume.toFixed(2)}</td>
+                    <td>$${deal.price.toFixed(2)}</td>
+                    <td class="${profitClass}">$${deal.profit.toFixed(2)}</td>
+                    <td><small class="text-muted">${deal.comment || '-'}</small></td>
+                </tr>`;
+            }
+
+            tbody.innerHTML = html;
+
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">Error: ${err.message}</td></tr>`;
+        }
+    }
+
+    // Load MT5 history on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        refreshMT5History();
+    });
 </script>
 {% endblock %}
