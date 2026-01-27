@@ -1367,6 +1367,56 @@ def api_broker_update(broker_id):
 
 # ==================== Test Order API ====================
 
+@app.route('/api/run-tests', methods=['POST'])
+def api_run_tests():
+    """Run the test suite and return results"""
+    import subprocess
+
+    try:
+        # Get the project root directory (parent of feature_files)
+        project_root = Path(__file__).parent.parent
+
+        # Run pytest with verbose output
+        result = subprocess.run(
+            ['python', '-m', 'pytest', 'tests/test_trading_system.py', '-v', '--tb=short'],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+
+        # Parse the output to get summary
+        output = result.stdout + result.stderr
+
+        # Determine if tests passed
+        passed = result.returncode == 0
+
+        return jsonify({
+            'success': True,
+            'passed': passed,
+            'return_code': result.returncode,
+            'output': output,
+            'summary': 'All tests passed!' if passed else 'Some tests failed.'
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            'success': False,
+            'error': 'Test execution timed out (5 minute limit)'
+        })
+    except FileNotFoundError:
+        return jsonify({
+            'success': False,
+            'error': 'Python or pytest not found. Make sure pytest is installed: pip install pytest'
+        })
+    except Exception as e:
+        logger.error(f"Test execution error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
 @app.route('/api/test-order', methods=['POST'])
 def api_test_order():
     """Execute a test order on active broker"""
