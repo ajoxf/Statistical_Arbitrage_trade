@@ -182,6 +182,47 @@
                 </div>
             </div>
         </div>
+
+        <!-- Test Orders Section -->
+        <div class="card mt-3">
+            <div class="card-header bg-warning text-dark">
+                <i class="bi bi-tools me-2"></i>Test Orders (Connectivity Check)
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6 text-center">
+                        <p class="mb-2"><strong>Spot Test</strong></p>
+                        <button class="btn btn-success btn-sm me-1" onclick="testOrder('spot', 'buy')" id="test-spot-buy">
+                            <i class="bi bi-arrow-up"></i> Buy
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="testOrder('spot', 'sell')" id="test-spot-sell">
+                            <i class="bi bi-arrow-down"></i> Sell
+                        </button>
+                        <div id="spot-test-status" class="mt-2 small"></div>
+                    </div>
+                    <div class="col-md-6 text-center">
+                        <p class="mb-2"><strong>Futures Test</strong></p>
+                        <button class="btn btn-success btn-sm me-1" onclick="testOrder('futures', 'buy')" id="test-futures-buy">
+                            <i class="bi bi-arrow-up"></i> Buy
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="testOrder('futures', 'sell')" id="test-futures-sell">
+                            <i class="bi bi-arrow-down"></i> Sell
+                        </button>
+                        <div id="futures-test-status" class="mt-2 small"></div>
+                    </div>
+                </div>
+                <hr>
+                <div class="text-center">
+                    <button class="btn btn-outline-primary" onclick="testRoundTrip()" id="test-roundtrip">
+                        <i class="bi bi-arrow-repeat me-1"></i>Test Round Trip (Buy & Close Both)
+                    </button>
+                    <div id="roundtrip-status" class="mt-2 small"></div>
+                </div>
+                <small class="text-muted d-block mt-2 text-center">
+                    Uses minimum lot size. Opens and closes positions to verify order execution.
+                </small>
+            </div>
+        </div>
     </div>
 
     <!-- Right Sidebar -->
@@ -858,6 +899,97 @@
         .catch(err => {
             resultDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}`;
         });
+    }
+
+    // Test Order Functions
+    async function testOrder(leg, direction) {
+        const statusDiv = document.getElementById(`${leg}-test-status`);
+        const btn = document.getElementById(`test-${leg}-${direction}`);
+
+        btn.disabled = true;
+        statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Placing order...</span>';
+
+        try {
+            const response = await fetch('/api/test-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leg: leg, direction: direction })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                statusDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message}</span>`;
+            } else {
+                statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${result.error}</span>`;
+            }
+        } catch (err) {
+            statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}</span>`;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function testRoundTrip() {
+        const statusDiv = document.getElementById('roundtrip-status');
+        const btn = document.getElementById('test-roundtrip');
+
+        btn.disabled = true;
+        statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 1: Opening Spot position...</span>';
+
+        try {
+            // Step 1: Buy Spot
+            let response = await fetch('/api/test-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leg: 'spot', direction: 'buy' })
+            });
+            let result = await response.json();
+            if (!result.success) throw new Error('Spot buy failed: ' + result.error);
+
+            statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 2: Opening Futures position...</span>';
+
+            // Step 2: Buy Futures
+            response = await fetch('/api/test-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leg: 'futures', direction: 'buy' })
+            });
+            result = await response.json();
+            if (!result.success) throw new Error('Futures buy failed: ' + result.error);
+
+            // Wait a moment
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 3: Closing Spot position...</span>';
+
+            // Step 3: Sell Spot (close)
+            response = await fetch('/api/test-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leg: 'spot', direction: 'sell' })
+            });
+            result = await response.json();
+            if (!result.success) throw new Error('Spot close failed: ' + result.error);
+
+            statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 4: Closing Futures position...</span>';
+
+            // Step 4: Sell Futures (close)
+            response = await fetch('/api/test-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leg: 'futures', direction: 'sell' })
+            });
+            result = await response.json();
+            if (!result.success) throw new Error('Futures close failed: ' + result.error);
+
+            statusDiv.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Round trip successful! All orders executed.</span>';
+
+        } catch (err) {
+            statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${err.message}</span>`;
+        } finally {
+            btn.disabled = false;
+        }
     }
 </script>
 {% endblock %}

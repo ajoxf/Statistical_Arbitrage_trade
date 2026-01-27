@@ -1282,6 +1282,114 @@ def api_manual_get_price():
         })
 
 
+# ==================== Test Order API ====================
+
+@app.route('/api/test-order', methods=['POST'])
+def api_test_order():
+    """Execute a test order on active broker"""
+    try:
+        data = request.get_json()
+        leg = data.get('leg')  # 'spot' or 'futures'
+        direction = data.get('direction')  # 'buy' or 'sell'
+
+        database = get_db()
+        config = database.get_config()
+
+        # Get active broker based on leg
+        if leg == 'spot':
+            broker_id = getattr(config, 'active_spot_broker', None)
+        else:
+            broker_id = getattr(config, 'active_futures_broker', None)
+
+        if not broker_id:
+            return jsonify({'success': False, 'error': f'No active {leg} broker selected'})
+
+        broker = database.get_broker(broker_id)
+        if not broker:
+            return jsonify({'success': False, 'error': f'Broker {broker_id} not found'})
+
+        # Execute based on broker type
+        if broker.broker_type == 'MT5':
+            try:
+                import MetaTrader5 as mt5
+
+                if not mt5.initialize():
+                    return jsonify({'success': False, 'error': 'Failed to initialize MT5'})
+
+                symbol = broker.symbol
+                symbol_info = mt5.symbol_info(symbol)
+
+                if symbol_info is None:
+                    mt5.shutdown()
+                    return jsonify({'success': False, 'error': f'Symbol {symbol} not found'})
+
+                if not symbol_info.visible:
+                    mt5.symbol_select(symbol, True)
+
+                # Get minimum volume
+                min_volume = symbol_info.volume_min
+                tick = mt5.symbol_info_tick(symbol)
+
+                if not tick:
+                    mt5.shutdown()
+                    return jsonify({'success': False, 'error': 'Could not get price'})
+
+                # Prepare order
+                if direction == 'buy':
+                    order_type = mt5.ORDER_TYPE_BUY
+                    price = tick.ask
+                else:
+                    order_type = mt5.ORDER_TYPE_SELL
+                    price = tick.bid
+
+                request_order = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": min_volume,
+                    "type": order_type,
+                    "price": price,
+                    "deviation": 20,
+                    "magic": 123456,
+                    "comment": "Test Order",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+
+                # Send order
+                result = mt5.order_send(request_order)
+                mt5.shutdown()
+
+                if result.retcode != mt5.TRADE_RETCODE_DONE:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Order failed: {result.comment} (code: {result.retcode})'
+                    })
+
+                return jsonify({
+                    'success': True,
+                    'message': f'{direction.upper()} {min_volume} {symbol} @ {price:.2f}',
+                    'ticket': result.order,
+                    'volume': min_volume,
+                    'price': price
+                })
+
+            except ImportError:
+                return jsonify({'success': False, 'error': 'MetaTrader5 library not installed'})
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)})
+
+        elif broker.broker_type == 'OKX':
+            # OKX order execution
+            return jsonify({'success': False, 'error': 'OKX test orders not implemented yet'})
+
+        else:
+            return jsonify({'success': False, 'error': f'Test orders not supported for {broker.broker_type}'})
+
+    except Exception as e:
+        logger.error(f"Test order error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
 # ==================== SocketIO Events ====================
 
 @socketio.on('disconnect')
