@@ -344,6 +344,8 @@ class Broker:
     contract_size: float = 100.0
     commission_per_lot: float = 0.0
     min_volume: float = 0.01
+    swap_charge: float = 0.0  # Daily swap cost in dollars
+    futures_expiry: Optional[str] = None  # Futures expiry date (YYYY-MM-DD)
 
     # Status
     status: str = "DISCONNECTED"
@@ -381,6 +383,8 @@ class Broker:
             'contract_size': self.contract_size,
             'commission_per_lot': self.commission_per_lot,
             'min_volume': self.min_volume,
+            'swap_charge': self.swap_charge,
+            'futures_expiry': self.futures_expiry,
             'status': self.status,
             'last_heartbeat': self.last_heartbeat,
             'latency_ms': self.latency_ms
