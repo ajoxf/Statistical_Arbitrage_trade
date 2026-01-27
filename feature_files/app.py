@@ -1653,7 +1653,7 @@ def handle_connect():
 def run_server(host: str = '0.0.0.0', port: int = 5000, debug: bool = False):
     """Run the Flask server"""
     init_app()
-    socketio.run(app, host=host, port=port, debug=debug)
+    socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
 
 
 if __name__ == '__main__':
