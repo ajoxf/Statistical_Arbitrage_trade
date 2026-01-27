@@ -2672,6 +2672,8 @@ def start_price_streaming():
         spread_history = deque(maxlen=2000)  # Store spread history for z-score calculation
         last_save_time = time.time()
         history_loaded = False
+        mt5_initialized = False  # Track MT5 connection state
+        cached_leverage = 100  # Cache leverage to avoid repeated MT5 calls
 
         # Load spread history from database on startup (handles reconnection)
         try:
@@ -2724,14 +2726,25 @@ def start_price_streaming():
                 spot_bid, spot_ask = 0, 0
                 futures_bid, futures_ask = 0, 0
 
-                # Fetch MT5 prices
+                # Fetch MT5 prices - maintain persistent connection
                 if spot_broker.broker_type == 'MT5' or futures_broker.broker_type == 'MT5':
                     try:
                         import MetaTrader5 as mt5
 
-                        if not mt5.initialize():
-                            time.sleep(2)
-                            continue
+                        # Initialize MT5 once and keep connection open
+                        if not mt5_initialized:
+                            if mt5.initialize():
+                                mt5_initialized = True
+                                logger.info("[PRICES] MT5 connection established (persistent)")
+                                # Get leverage once at startup
+                                account = mt5.account_info()
+                                if account:
+                                    cached_leverage = account.leverage
+                                    logger.info(f"[PRICES] Cached leverage: {cached_leverage}")
+                            else:
+                                logger.warning("[PRICES] MT5 initialization failed, will retry")
+                                time.sleep(2)
+                                continue
 
                         # Get spot price
                         if spot_broker.broker_type == 'MT5':
@@ -2739,6 +2752,10 @@ def start_price_streaming():
                             if tick:
                                 spot_bid = tick.bid
                                 spot_ask = tick.ask
+                            else:
+                                # Connection might be lost, try to reinitialize
+                                mt5_initialized = False
+                                continue
 
                         # Get futures price
                         if futures_broker.broker_type == 'MT5':
@@ -2746,13 +2763,18 @@ def start_price_streaming():
                             if tick:
                                 futures_bid = tick.bid
                                 futures_ask = tick.ask
+                            else:
+                                # Connection might be lost, try to reinitialize
+                                mt5_initialized = False
+                                continue
 
-                        mt5.shutdown()
+                        # DO NOT shutdown MT5 here - keep connection persistent
 
                     except ImportError:
                         pass
                     except Exception as e:
                         logger.error(f"MT5 price fetch error: {e}")
+                        mt5_initialized = False  # Will reinitialize on next loop
 
                 # Emit price update
                 if spot_bid > 0 or futures_bid > 0:
@@ -2814,18 +2836,8 @@ def start_price_streaming():
 
                     # === Margin Requirements ===
                     user_lot_size = config.lot_size if config else 0.1
-                    leverage = 100  # Default leverage; could be fetched from MT5 if connected
-
-                    # Try to get actual leverage from MT5
-                    try:
-                        import MetaTrader5 as mt5
-                        if mt5.initialize():
-                            account = mt5.account_info()
-                            if account:
-                                leverage = account.leverage
-                            mt5.shutdown()
-                    except:
-                        pass
+                    # Use cached leverage from persistent MT5 connection
+                    leverage = cached_leverage
 
                     margin_data = calculate_margin_requirements(
                         spot_mid, futures_mid, lot_size, leverage, user_lot_size
@@ -2893,7 +2905,17 @@ def start_price_streaming():
 
             except Exception as e:
                 logger.error(f"Price streaming error: {e}")
+                mt5_initialized = False  # Reset on error to trigger reconnection
                 time.sleep(1)
+
+        # Cleanup MT5 connection when streaming stops
+        if mt5_initialized:
+            try:
+                import MetaTrader5 as mt5
+                mt5.shutdown()
+                logger.info("[PRICES] MT5 connection closed on streaming stop")
+            except:
+                pass
 
     thread = threading.Thread(target=stream_prices, daemon=True)
     thread.start()
