@@ -150,7 +150,7 @@
             <div class="card-body" style="font-size: 18px;">
                 <div class="row text-center">
                     <div class="col-md-3">
-                        <small class="text-muted d-block">Premium (Spot - Futures)</small>
+                        <small class="text-muted d-block">Premium (Futures - Spot)</small>
                         <span id="premium-value" class="fw-bold">$0.00</span>
                     </div>
                     <div class="col-md-2">
@@ -513,7 +513,7 @@
     const spreadData = {
         labels: [],
         datasets: [{
-            label: 'Spread (Spot - Futures)',
+            label: 'Spread (Futures - Spot)',
             data: [],
             borderColor: '#198754',
             backgroundColor: 'rgba(25, 135, 84, 0.1)',
@@ -674,8 +674,8 @@
         const spotMid = (data.spot_bid + data.spot_ask) / 2;
         const futuresMid = (data.futures_bid + data.futures_ask) / 2;
 
-        // Premium = Spot - Futures (for contango: futures > spot, premium is negative)
-        const premium = spotMid - futuresMid;
+        // Premium = Futures - Spot (positive in contango when futures > spot)
+        const premium = futuresMid - spotMid;
         document.getElementById('premium-value').textContent = '$' + premium.toFixed(2);
         const premiumEl = document.getElementById('premium-value');
         premiumEl.className = 'fw-bold ' + (premium >= 0 ? 'text-success' : 'text-danger');

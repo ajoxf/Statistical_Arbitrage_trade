@@ -1556,7 +1556,7 @@ def start_price_streaming():
 
                 # Emit price update
                 if spot_bid > 0 or futures_bid > 0:
-                    spread = ((spot_bid + spot_ask) / 2) - ((futures_bid + futures_ask) / 2) if spot_bid > 0 and futures_bid > 0 else 0
+                    spread = ((futures_bid + futures_ask) / 2) - ((spot_bid + spot_ask) / 2) if spot_bid > 0 and futures_bid > 0 else 0
 
                     socketio.emit('tick', {
                         'spot_bid': spot_bid,
