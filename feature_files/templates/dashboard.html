@@ -200,8 +200,11 @@
                         <button class="btn btn-success btn-sm me-1" onclick="testOrder('spot', 'buy')" id="test-spot-buy">
                             <i class="bi bi-arrow-up"></i> Buy
                         </button>
-                        <button class="btn btn-danger btn-sm" onclick="testOrder('spot', 'sell')" id="test-spot-sell">
+                        <button class="btn btn-danger btn-sm me-1" onclick="testOrder('spot', 'sell')" id="test-spot-sell">
                             <i class="bi bi-arrow-down"></i> Sell
+                        </button>
+                        <button class="btn btn-secondary btn-sm" onclick="closeByTicket('spot')" id="close-spot-btn" disabled>
+                            <i class="bi bi-x-circle"></i> Close
                         </button>
                         <div id="spot-test-status" class="mt-2 small"></div>
                     </div>
@@ -210,8 +213,11 @@
                         <button class="btn btn-success btn-sm me-1" onclick="testOrder('futures', 'buy')" id="test-futures-buy">
                             <i class="bi bi-arrow-up"></i> Buy
                         </button>
-                        <button class="btn btn-danger btn-sm" onclick="testOrder('futures', 'sell')" id="test-futures-sell">
+                        <button class="btn btn-danger btn-sm me-1" onclick="testOrder('futures', 'sell')" id="test-futures-sell">
                             <i class="bi bi-arrow-down"></i> Sell
+                        </button>
+                        <button class="btn btn-secondary btn-sm" onclick="closeByTicket('futures')" id="close-futures-btn" disabled>
+                            <i class="bi bi-x-circle"></i> Close
                         </button>
                         <div id="futures-test-status" class="mt-2 small"></div>
                     </div>
@@ -1000,10 +1006,14 @@
         });
     }
 
+    // Track open tickets for close functionality
+    let openTickets = { spot: null, futures: null };
+
     // Test Order Functions
     async function testOrder(leg, direction) {
         const statusDiv = document.getElementById(`${leg}-test-status`);
         const btn = document.getElementById(`test-${leg}-${direction}`);
+        const closeBtn = document.getElementById(`close-${leg}-btn`);
 
         btn.disabled = true;
         statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Placing order...</span>';
@@ -1018,7 +1028,13 @@
             const result = await response.json();
 
             if (result.success) {
-                statusDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message}</span>`;
+                statusDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message} (Ticket: ${result.ticket})</span>`;
+                // Store ticket and enable close button
+                openTickets[leg] = result.ticket;
+                if (closeBtn) {
+                    closeBtn.disabled = false;
+                    closeBtn.innerHTML = `<i class="bi bi-x-circle"></i> Close #${result.ticket}`;
+                }
             } else {
                 statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${result.error}</span>`;
             }
@@ -1026,6 +1042,44 @@
             statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}</span>`;
         } finally {
             btn.disabled = false;
+        }
+    }
+
+    // Close position by ticket
+    async function closeByTicket(leg) {
+        const ticket = openTickets[leg];
+        if (!ticket) {
+            alert(`No open ${leg} ticket to close`);
+            return;
+        }
+
+        const statusDiv = document.getElementById(`${leg}-test-status`);
+        const closeBtn = document.getElementById(`close-${leg}-btn`);
+
+        closeBtn.disabled = true;
+        statusDiv.innerHTML = `<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Closing ticket ${ticket}...</span>`;
+
+        try {
+            const response = await fetch('/api/close-position', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ticket: ticket, leg: leg })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                statusDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message}</span>`;
+                openTickets[leg] = null;
+                closeBtn.disabled = true;
+                closeBtn.innerHTML = `<i class="bi bi-x-circle"></i> Close`;
+            } else {
+                statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${result.error}</span>`;
+                closeBtn.disabled = false;
+            }
+        } catch (err) {
+            statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}</span>`;
+            closeBtn.disabled = false;
         }
     }
 

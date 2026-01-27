@@ -1525,6 +1525,108 @@ def api_test_order():
         return jsonify({'success': False, 'error': str(e)})
 
 
+@app.route('/api/close-position', methods=['POST'])
+def api_close_position():
+    """Close a position by ticket number"""
+    try:
+        data = request.get_json()
+        ticket = data.get('ticket')
+        leg = data.get('leg', 'spot')  # 'spot' or 'futures'
+
+        if not ticket:
+            return jsonify({'success': False, 'error': 'No ticket provided'})
+
+        database = get_db()
+        spot_broker_id, futures_broker_id = load_active_brokers()
+
+        # Get broker based on leg
+        broker_id = spot_broker_id if leg == 'spot' else futures_broker_id
+
+        if not broker_id:
+            return jsonify({'success': False, 'error': f'No active {leg} broker selected'})
+
+        broker = database.get_broker(broker_id)
+        if not broker:
+            return jsonify({'success': False, 'error': f'Broker {broker_id} not found'})
+
+        if broker.broker_type == 'MT5':
+            try:
+                import MetaTrader5 as mt5
+
+                if not mt5.initialize():
+                    return jsonify({'success': False, 'error': 'Failed to initialize MT5'})
+
+                # Find the position by ticket
+                positions = mt5.positions_get(ticket=int(ticket))
+
+                if not positions or len(positions) == 0:
+                    mt5.shutdown()
+                    return jsonify({'success': False, 'error': f'Position with ticket {ticket} not found'})
+
+                position = positions[0]
+                symbol = position.symbol
+                volume = position.volume
+                pos_type = position.type  # 0=BUY, 1=SELL
+
+                # Get current price
+                tick = mt5.symbol_info_tick(symbol)
+                if not tick:
+                    mt5.shutdown()
+                    return jsonify({'success': False, 'error': 'Could not get price'})
+
+                # Close in opposite direction
+                if pos_type == mt5.POSITION_TYPE_BUY:
+                    close_type = mt5.ORDER_TYPE_SELL
+                    price = tick.bid
+                else:
+                    close_type = mt5.ORDER_TYPE_BUY
+                    price = tick.ask
+
+                close_request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": volume,
+                    "type": close_type,
+                    "position": int(ticket),
+                    "price": price,
+                    "deviation": 20,
+                    "magic": 123456,
+                    "comment": "Close by Ticket",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+
+                result = mt5.order_send(close_request)
+                mt5.shutdown()
+
+                if result.retcode != mt5.TRADE_RETCODE_DONE:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Close failed: {result.comment} (code: {result.retcode})'
+                    })
+
+                return jsonify({
+                    'success': True,
+                    'message': f'Closed ticket {ticket}: {volume} {symbol} @ {price:.2f}',
+                    'closed_ticket': ticket,
+                    'close_order': result.order,
+                    'volume': volume,
+                    'price': price
+                })
+
+            except ImportError:
+                return jsonify({'success': False, 'error': 'MetaTrader5 library not installed'})
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)})
+
+        else:
+            return jsonify({'success': False, 'error': f'Close by ticket not supported for {broker.broker_type}'})
+
+    except Exception as e:
+        logger.error(f"Close position error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/api/test-order-cycle', methods=['POST'])
 def api_test_order_cycle():
     """Test full order cycle: open position, find by ticket, close by ticket, verify closure"""
