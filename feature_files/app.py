@@ -175,22 +175,31 @@ def api_config():
 
     if request.method == 'POST':
         data = request.get_json()
+        logger.info(f"[CONFIG] Saving config: {data}")
 
         config = database.get_config()
 
         # Update fields from request
         for key, value in data.items():
             if hasattr(config, key):
-                # Type conversion
-                field_type = type(getattr(config, key))
-                if field_type == bool:
-                    value = bool(value)
-                elif field_type == int:
-                    value = int(value)
-                elif field_type == float:
-                    value = float(value)
-                setattr(config, key, value)
+                current_val = getattr(config, key)
+                # Handle string fields (may be None initially)
+                if key in ['active_spot_broker', 'active_futures_broker', 'asset_name',
+                           'spot_symbol', 'futures_symbol', 'futures_expiry',
+                           'lookback_unit', 'order_type', 'selected_asset']:
+                    # String fields - keep as string or None
+                    setattr(config, key, value if value else None)
+                elif isinstance(current_val, bool) or key in ['hurst_enabled', 'std_filter_enabled',
+                                                               'close_before_overnight', 'paper_mode', 'algo_enabled']:
+                    setattr(config, key, bool(value))
+                elif isinstance(current_val, int):
+                    setattr(config, key, int(value) if value else 0)
+                elif isinstance(current_val, float):
+                    setattr(config, key, float(value) if value else 0.0)
+                else:
+                    setattr(config, key, value)
 
+        logger.info(f"[CONFIG] Active brokers - Spot: {config.active_spot_broker}, Futures: {config.active_futures_broker}")
         database.update_config(config)
 
         # Reload config in engine if running
@@ -1414,13 +1423,16 @@ def start_price_streaming():
     global price_streaming_active
 
     if price_streaming_active:
+        logger.info("[PRICES] Price streaming already active")
         return
 
     price_streaming_active = True
+    logger.info("[PRICES] Starting price streaming thread")
 
     def stream_prices():
         global price_streaming_active
         import time
+        log_counter = 0
 
         while price_streaming_active:
             try:
@@ -1431,14 +1443,20 @@ def start_price_streaming():
                 spot_broker_id = getattr(config, 'active_spot_broker', None)
                 futures_broker_id = getattr(config, 'active_futures_broker', None)
 
+                # Log every 10 seconds
+                log_counter += 1
+                if log_counter % 10 == 1:
+                    logger.info(f"[PRICES] Active brokers - Spot: {spot_broker_id}, Futures: {futures_broker_id}")
+
                 if not spot_broker_id or not futures_broker_id:
-                    time.sleep(2)
+                    time.sleep(1)
                     continue
 
                 spot_broker = database.get_broker(spot_broker_id)
                 futures_broker = database.get_broker(futures_broker_id)
 
                 if not spot_broker or not futures_broker:
+                    logger.warning(f"[PRICES] Broker not found - Spot: {spot_broker}, Futures: {futures_broker}")
                     time.sleep(2)
                     continue
 
