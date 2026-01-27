@@ -139,8 +139,11 @@
 
         <!-- Premium/Basis Calculator -->
         <div class="card mt-3">
-            <div class="card-header">
-                <i class="bi bi-calculator me-2"></i>Basis Premium Calculator
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-calculator me-2"></i>Basis Premium Calculator</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="showEditSwapModal()">
+                    <i class="bi bi-pencil me-1"></i>Edit Swap/Expiry
+                </button>
             </div>
             <div class="card-body" style="font-size: 18px;">
                 <div class="row text-center">
@@ -443,6 +446,42 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Swap/Expiry Modal -->
+<div class="modal fade" id="editSwapModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-pencil me-2"></i>Edit Swap & Expiry</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Futures Broker</label>
+                    <input type="text" class="form-control" id="edit-futures-broker" readonly
+                           value="{{ active_futures.name if active_futures else 'Not selected' }}">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Swap Cost/Day ($)</label>
+                    <input type="number" class="form-control" id="edit-swap-charge" step="0.01"
+                           value="{{ active_futures.swap_charge if active_futures else 0 }}">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Futures Expiry Date</label>
+                    <input type="date" class="form-control" id="edit-futures-expiry"
+                           value="{{ active_futures.futures_expiry if active_futures and active_futures.futures_expiry else '' }}">
+                    <small class="text-muted">Leave empty for perpetual swaps</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveSwapSettings()">
+                    <i class="bi bi-check-lg me-1"></i>Save Changes
+                </button>
             </div>
         </div>
     </div>
@@ -989,6 +1028,58 @@
             statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${err.message}</span>`;
         } finally {
             btn.disabled = false;
+        }
+    }
+
+    // ==================== Swap/Expiry Edit Functions ====================
+
+    // Store the active futures broker ID for updates
+    const activeFuturesBrokerId = '{{ active_futures.broker_id if active_futures else "" }}';
+
+    function showEditSwapModal() {
+        const modal = new bootstrap.Modal(document.getElementById('editSwapModal'));
+        modal.show();
+    }
+
+    async function saveSwapSettings() {
+        if (!activeFuturesBrokerId) {
+            alert('No active futures broker selected. Go to Settings to select one.');
+            return;
+        }
+
+        const swapCharge = document.getElementById('edit-swap-charge').value;
+        const futuresExpiry = document.getElementById('edit-futures-expiry').value;
+
+        try {
+            const response = await fetch(`/api/brokers/${activeFuturesBrokerId}/update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    swap_charge: parseFloat(swapCharge) || 0,
+                    futures_expiry: futuresExpiry || null
+                })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                // Close modal
+                const modal = bootstrap.Modal.getInstance(document.getElementById('editSwapModal'));
+                modal.hide();
+
+                // Update the displayed swap cost
+                document.getElementById('swap-cost').textContent = '$' + (parseFloat(swapCharge) || 0).toFixed(2);
+
+                // Show success message
+                alert('Swap settings saved successfully!');
+
+                // Reload page to update calculations
+                location.reload();
+            } else {
+                alert('Error saving settings: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            alert('Error: ' + err.message);
         }
     }
 </script>

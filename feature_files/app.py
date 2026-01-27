@@ -1323,6 +1323,37 @@ def api_manual_get_price():
         })
 
 
+# ==================== Broker Update API ====================
+
+@app.route('/api/brokers/<broker_id>/update', methods=['POST'])
+def api_broker_update(broker_id):
+    """Update broker settings (swap charge, expiry, etc.)"""
+    try:
+        data = request.get_json()
+        database = get_db()
+        broker = database.get_broker(broker_id)
+
+        if not broker:
+            return jsonify({'success': False, 'error': 'Broker not found'})
+
+        # Update allowed fields
+        if 'swap_charge' in data:
+            broker.swap_charge = float(data['swap_charge'])
+        if 'futures_expiry' in data:
+            broker.futures_expiry = data['futures_expiry']
+        if 'contract_size' in data:
+            broker.contract_size = float(data['contract_size'])
+
+        database.add_broker(broker)
+        logger.info(f"[BROKER] Updated {broker_id}: swap={broker.swap_charge}, expiry={broker.futures_expiry}")
+
+        return jsonify({'success': True, 'broker': broker.to_dict()})
+
+    except Exception as e:
+        logger.error(f"Broker update error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
 # ==================== Test Order API ====================
 
 @app.route('/api/test-order', methods=['POST'])
@@ -1536,11 +1567,11 @@ def start_price_streaming():
                         'zscore': 0  # Calculate if history available
                     })
 
-                time.sleep(1)  # Update every second
+                time.sleep(0.3)  # Update every 0.3 seconds
 
             except Exception as e:
                 logger.error(f"Price streaming error: {e}")
-                time.sleep(2)
+                time.sleep(1)
 
     thread = threading.Thread(target=stream_prices, daemon=True)
     thread.start()
