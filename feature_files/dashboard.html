@@ -909,9 +909,20 @@
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                resultDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${data.message}</span>`;
-                if (data.account) {
-                    resultDiv.innerHTML += `<br><small>Balance: ${data.account.balance} ${data.account.currency}</small>`;
+                if (data.mock_mode) {
+                    // Show warning for mock mode
+                    resultDiv.innerHTML = `<span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>${data.message}</span>`;
+                    if (data.account) {
+                        resultDiv.innerHTML += `<br><small class="text-warning">Balance: ${data.account.balance} ${data.account.currency}</small>`;
+                    }
+                    if (data.warning) {
+                        resultDiv.innerHTML += `<br><small class="text-muted">${data.warning}</small>`;
+                    }
+                } else {
+                    resultDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${data.message}</span>`;
+                    if (data.account) {
+                        resultDiv.innerHTML += `<br><small>Balance: ${data.account.balance} ${data.account.currency}</small>`;
+                    }
                 }
             } else {
                 resultDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${data.error || 'Connection failed'}</span>`;

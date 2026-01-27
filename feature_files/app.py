@@ -18,12 +18,22 @@ from datetime import datetime
 from functools import wraps
 from typing import Optional
 import logging
+from pathlib import Path
+
+# Load .env file for environment variables
+try:
+    from dotenv import load_dotenv
+    env_file = Path(__file__).parent / '.env'
+    if env_file.exists():
+        load_dotenv(env_file)
+        logging.getLogger(__name__).info(f"Loaded environment from {env_file}")
+except ImportError:
+    pass  # python-dotenv not installed
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for
 from flask_socketio import SocketIO, emit
 
 import sys
-from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database.manager import DatabaseManager
@@ -1136,6 +1146,9 @@ def api_manual_test_connection():
     try:
         adapter = get_okx_adapter()
 
+        # Check if running in mock mode (no API credentials)
+        is_mock_mode = getattr(adapter, '_mock_mode', False)
+
         # Run async connect in sync context
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -1146,9 +1159,23 @@ def api_manual_test_connection():
                 account = loop.run_until_complete(adapter.get_account_info())
                 loop.run_until_complete(adapter.disconnect())
 
-                if account:
+                if is_mock_mode:
+                    # Clearly indicate mock mode with warning
                     return jsonify({
                         'success': True,
+                        'mock_mode': True,
+                        'message': '⚠️ MOCK MODE - No API credentials configured. Data shown is simulated.',
+                        'warning': 'Add OKX_API_KEY, OKX_API_SECRET, and OKX_PASSPHRASE to your .env file for real trading.',
+                        'account': {
+                            'balance': account.balance if account else 100000,
+                            'equity': account.equity if account else 100000,
+                            'currency': 'USDT (SIMULATED)'
+                        }
+                    })
+                elif account:
+                    return jsonify({
+                        'success': True,
+                        'mock_mode': False,
                         'message': 'Connected successfully',
                         'account': {
                             'balance': account.balance,
@@ -1159,7 +1186,8 @@ def api_manual_test_connection():
                 else:
                     return jsonify({
                         'success': True,
-                        'message': 'Connected (mock mode or no account info)'
+                        'mock_mode': False,
+                        'message': 'Connected but no account info available'
                     })
             else:
                 return jsonify({
