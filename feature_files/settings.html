@@ -253,7 +253,7 @@
                                 <option value="">-- Select Spot Broker --</option>
                                 {% for broker in spot_brokers %}
                                 <option value="{{ broker.broker_id }}"
-                                        {% if config.active_spot_broker == broker.broker_id %}selected{% endif %}>
+                                        {% if active_spot_id == broker.broker_id %}selected{% endif %}>
                                     {{ broker.name }} ({{ broker.symbol }})
                                 </option>
                                 {% endfor %}
@@ -266,7 +266,7 @@
                                 <option value="">-- Select Futures Broker --</option>
                                 {% for broker in futures_brokers %}
                                 <option value="{{ broker.broker_id }}"
-                                        {% if config.active_futures_broker == broker.broker_id %}selected{% endif %}>
+                                        {% if active_futures_id == broker.broker_id %}selected{% endif %}>
                                     {{ broker.name }} ({{ broker.symbol }})
                                 </option>
                                 {% endfor %}

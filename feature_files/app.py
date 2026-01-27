@@ -109,13 +109,15 @@ def dashboard():
     recent_trades = database.get_trades(limit=10)
     stats = database.get_trade_statistics()
 
-    # Get active brokers
+    # Get active brokers from JSON file (workaround for database not persisting)
+    spot_broker_id, futures_broker_id = load_active_brokers()
+
     active_spot = None
     active_futures = None
     for b in brokers:
-        if config.active_spot_broker and b.broker_id == config.active_spot_broker:
+        if spot_broker_id and b.broker_id == spot_broker_id:
             active_spot = b
-        if config.active_futures_broker and b.broker_id == config.active_futures_broker:
+        if futures_broker_id and b.broker_id == futures_broker_id:
             active_futures = b
 
     return render_template(
@@ -142,9 +144,14 @@ def settings():
     spot_brokers = [b for b in brokers if b.role == 'SPOT']
     futures_brokers = [b for b in brokers if b.role == 'FUTURES']
 
+    # Load active broker IDs from JSON file
+    spot_broker_id, futures_broker_id = load_active_brokers()
+
     return render_template('settings.html', config=config,
                            spot_brokers=spot_brokers,
-                           futures_brokers=futures_brokers)
+                           futures_brokers=futures_brokers,
+                           active_spot_id=spot_broker_id,
+                           active_futures_id=futures_broker_id)
 
 
 @app.route('/setup')
