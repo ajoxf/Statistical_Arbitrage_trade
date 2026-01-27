@@ -1,0 +1,609 @@
+{% extends "base.html" %}
+
+{% block title %}Setup - Multi-Broker Arbitrage{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h4 class="mb-4"><i class="bi bi-hdd-network me-2"></i>Broker Setup</h4>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Asset Configuration -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-coin me-2"></i>Asset Configuration
+            </div>
+            <div class="card-body">
+                <form id="asset-form">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label">Asset Name</label>
+                            <input type="text" class="form-control" name="asset_name"
+                                   value="{{ config.asset_name }}" placeholder="e.g., GOLD, BTC">
+                            <small class="text-muted">Reference name for the asset being traded</small>
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-check-lg me-2"></i>Save Asset Config
+                            </button>
+                        </div>
+                    </div>
+                </form>
+                <hr>
+                <small class="text-muted">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Contract size, swap charges, and expiry are configured per broker below.
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Broker Form -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-plus-circle me-2"></i>Add Broker
+            </div>
+            <div class="card-body">
+                <form id="broker-form">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Broker ID</label>
+                            <input type="text" class="form-control" name="broker_id" required
+                                   placeholder="e.g., spot_broker">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Name</label>
+                            <input type="text" class="form-control" name="name" required
+                                   placeholder="e.g., IC Markets">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Backend Type</label>
+                            <select class="form-select" name="broker_type" id="broker-type">
+                                <option value="MT5">MetaTrader 5</option>
+                                <option value="FIX">FIX Protocol</option>
+                                <option value="FLEXTRADE">FlexTrade</option>
+                                <option value="IB">Interactive Brokers</option>
+                                <option value="OKX">OKX Exchange</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Role</label>
+                            <select class="form-select" name="role" required>
+                                <option value="SPOT">Spot</option>
+                                <option value="FUTURES">Futures</option>
+                            </select>
+                        </div>
+                        <div class="col-md-12">
+                            <label class="form-label">Symbol</label>
+                            <input type="text" class="form-control" name="symbol" required
+                                   placeholder="e.g., XAUUSD, BTC-USDT">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Contract Size</label>
+                            <input type="number" class="form-control" name="contract_size"
+                                   value="100" step="0.01" placeholder="e.g., 100">
+                            <small class="text-muted">Units per contract</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Swap/Day ($)</label>
+                            <input type="number" class="form-control" name="swap_charge"
+                                   value="0" step="0.01" placeholder="0.00">
+                            <small class="text-muted">Daily financing cost</small>
+                        </div>
+                        <div class="col-md-4 futures-fields">
+                            <label class="form-label">Futures Expiry</label>
+                            <input type="date" class="form-control" name="futures_expiry">
+                            <small class="text-muted">Leave empty for perpetuals</small>
+                        </div>
+
+                        <!-- MT5 Fields -->
+                        <div class="col-12 mt5-fields">
+                            <hr>
+                            <h6 class="text-muted">MT5 Settings</h6>
+                        </div>
+                        <div class="col-md-12 mt5-fields">
+                            <label class="form-label">MT5 Path</label>
+                            <input type="text" class="form-control" name="mt5_path"
+                                   placeholder="C:\Program Files\MetaTrader 5\terminal64.exe">
+                        </div>
+                        <div class="col-md-4 mt5-fields">
+                            <label class="form-label">Account</label>
+                            <input type="number" class="form-control" name="mt5_account">
+                        </div>
+                        <div class="col-md-4 mt5-fields">
+                            <label class="form-label">Server</label>
+                            <input type="text" class="form-control" name="mt5_server">
+                        </div>
+                        <div class="col-md-4 mt5-fields">
+                            <label class="form-label">Password</label>
+                            <input type="password" class="form-control" name="mt5_password">
+                        </div>
+
+                        <!-- FIX Fields -->
+                        <div class="col-12 fix-fields d-none">
+                            <hr>
+                            <h6 class="text-muted">FIX Settings</h6>
+                        </div>
+                        <div class="col-md-6 fix-fields d-none">
+                            <label class="form-label">FIX Host</label>
+                            <input type="text" class="form-control" name="fix_host">
+                        </div>
+                        <div class="col-md-6 fix-fields d-none">
+                            <label class="form-label">FIX Port</label>
+                            <input type="number" class="form-control" name="fix_port">
+                        </div>
+                        <div class="col-md-6 fix-fields d-none">
+                            <label class="form-label">Sender Comp ID</label>
+                            <input type="text" class="form-control" name="fix_sender_comp">
+                        </div>
+                        <div class="col-md-6 fix-fields d-none">
+                            <label class="form-label">Target Comp ID</label>
+                            <input type="text" class="form-control" name="fix_target_comp">
+                        </div>
+
+                        <!-- OKX Fields -->
+                        <div class="col-12 okx-fields d-none">
+                            <hr>
+                            <h6 class="text-muted">OKX Settings</h6>
+                            <small class="text-info">Credentials can also be set via environment variables (OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)</small>
+                        </div>
+                        <div class="col-md-12 okx-fields d-none">
+                            <label class="form-label">API Key</label>
+                            <input type="text" class="form-control" name="okx_api_key" placeholder="Leave empty to use .env">
+                        </div>
+                        <div class="col-md-6 okx-fields d-none">
+                            <label class="form-label">API Secret</label>
+                            <input type="password" class="form-control" name="okx_api_secret" placeholder="Leave empty to use .env">
+                        </div>
+                        <div class="col-md-6 okx-fields d-none">
+                            <label class="form-label">Passphrase</label>
+                            <input type="password" class="form-control" name="okx_passphrase" placeholder="Leave empty to use .env">
+                        </div>
+                        <div class="col-md-6 okx-fields d-none">
+                            <label class="form-label">Account Type</label>
+                            <select class="form-select" name="okx_account_type">
+                                <option value="spot">Spot</option>
+                                <option value="swap">Perpetual Swap</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 okx-fields d-none">
+                            <div class="form-check mt-4">
+                                <input class="form-check-input" type="checkbox" name="okx_simulated" id="okx-simulated" checked>
+                                <label class="form-check-label" for="okx-simulated">
+                                    Demo/Simulated Trading
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-success">
+                                <i class="bi bi-plus-lg me-2"></i>Add Broker
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Configured Brokers -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-list-ul me-2"></i>Configured Brokers
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-dark table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Role</th>
+                                <th>Symbol</th>
+                                <th>Status</th>
+                                <th>Latency</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="brokers-table">
+                            {% for broker in brokers %}
+                            <tr data-broker-id="{{ broker.broker_id }}">
+                                <td><code>{{ broker.broker_id }}</code></td>
+                                <td>{{ broker.name }}</td>
+                                <td><span class="badge bg-info">{{ broker.broker_type }}</span></td>
+                                <td><span class="badge {% if broker.role == 'SPOT' %}bg-primary{% else %}bg-warning{% endif %}">{{ broker.role }}</span></td>
+                                <td>{{ broker.symbol }}</td>
+                                <td>
+                                    <span class="badge {% if broker.status == 'CONNECTED' %}badge-connected{% elif broker.status == 'ERROR' %}badge-error{% else %}badge-disconnected{% endif %}">
+                                        {{ broker.status }}
+                                    </span>
+                                </td>
+                                <td>{{ broker.latency_ms or '-' }} ms</td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary me-1" onclick="testBroker('{{ broker.broker_id }}')" title="Test Connection">
+                                        <i class="bi bi-wifi"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-warning me-1" onclick="diagnoseBroker('{{ broker.broker_id }}')" title="Diagnose Issues">
+                                        <i class="bi bi-activity"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger" onclick="deleteBroker('{{ broker.broker_id }}')" title="Delete">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="8" class="text-center text-muted">No brokers configured</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Data Management -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-database me-2"></i>Data Management
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Clear historical data from the database.</p>
+                <div class="d-flex gap-2 flex-wrap">
+                    <button class="btn btn-outline-warning" onclick="clearData('prices')">
+                        <i class="bi bi-graph-down me-1"></i>Clear Prices
+                    </button>
+                    <button class="btn btn-outline-warning" onclick="clearData('trades')">
+                        <i class="bi bi-journal-x me-1"></i>Clear Trades
+                    </button>
+                    <button class="btn btn-outline-warning" onclick="clearData('sd_touches')">
+                        <i class="bi bi-bar-chart me-1"></i>Clear SD Touches
+                    </button>
+                    <button class="btn btn-outline-danger" onclick="clearData('all')">
+                        <i class="bi bi-trash me-1"></i>Clear All
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Diagnostic Modal -->
+<div class="modal fade" id="diagnosticModal" tabindex="-1" aria-labelledby="diagnosticModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="diagnosticModalLabel">
+                    <i class="bi bi-activity me-2"></i>Broker Diagnostics
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="diagnosticContent">
+                <div class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Running diagnostics...</span>
+                    </div>
+                    <p class="mt-2">Running diagnostics...</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="rerunDiagnostics" style="display:none;">
+                    <i class="bi bi-arrow-repeat me-1"></i>Run Again
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Toggle broker type fields
+    document.getElementById('broker-type').addEventListener('change', (e) => {
+        const type = e.target.value;
+
+        // Hide all
+        document.querySelectorAll('.mt5-fields, .fix-fields, .okx-fields').forEach(el => {
+            el.classList.add('d-none');
+        });
+
+        // Show relevant
+        if (type === 'MT5') {
+            document.querySelectorAll('.mt5-fields').forEach(el => el.classList.remove('d-none'));
+        } else if (type === 'FIX' || type === 'FLEXTRADE') {
+            document.querySelectorAll('.fix-fields').forEach(el => el.classList.remove('d-none'));
+        } else if (type === 'OKX') {
+            document.querySelectorAll('.okx-fields').forEach(el => el.classList.remove('d-none'));
+        }
+    });
+
+    // Toggle futures expiry field based on role
+    document.querySelector('select[name="role"]').addEventListener('change', (e) => {
+        const role = e.target.value;
+        document.querySelectorAll('.futures-fields').forEach(el => {
+            if (role === 'FUTURES') {
+                el.classList.remove('d-none');
+            } else {
+                el.classList.add('d-none');
+            }
+        });
+    });
+
+    // Asset form
+    document.getElementById('asset-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const data = Object.fromEntries(formData.entries());
+
+        // Convert numbers
+        data.contract_size = parseFloat(data.contract_size);
+        data.swap_charge = parseFloat(data.swap_charge);
+
+        const response = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        const result = await response.json();
+        alert(result.success ? 'Asset configuration saved!' : 'Error: ' + result.error);
+    });
+
+    // Broker form
+    document.getElementById('broker-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const data = Object.fromEntries(formData.entries());
+
+        // Convert numbers
+        if (data.mt5_account) data.mt5_account = parseInt(data.mt5_account);
+        if (data.fix_port) data.fix_port = parseInt(data.fix_port);
+
+        // Handle OKX checkbox (checkbox not in FormData if unchecked)
+        data.okx_simulated = document.getElementById('okx-simulated')?.checked ?? true;
+
+        const response = await fetch('/api/brokers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        const result = await response.json();
+        if (result.success) {
+            alert('Broker added successfully!');
+            location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    });
+
+    // Delete broker
+    async function deleteBroker(brokerId) {
+        if (!confirm(`Delete broker ${brokerId}?`)) return;
+
+        const response = await fetch(`/api/brokers/${brokerId}`, {
+            method: 'DELETE'
+        });
+
+        const result = await response.json();
+        if (result.success) {
+            location.reload();
+        } else {
+            alert('Error: ' + result.error);
+        }
+    }
+
+    // Clear data
+    async function clearData(type) {
+        if (!confirm(`Clear ${type} data? This cannot be undone.`)) return;
+
+        const response = await fetch('/api/clear-data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type })
+        });
+
+        const result = await response.json();
+        alert(result.success ? 'Data cleared!' : 'Error: ' + result.error);
+    }
+
+    // Test broker connectivity
+    async function testBroker(brokerId) {
+        const row = document.querySelector(`tr[data-broker-id="${brokerId}"]`);
+        const statusCell = row.querySelector('td:nth-child(6) span');
+        const latencyCell = row.querySelector('td:nth-child(7)');
+        const testBtn = row.querySelector('.btn-outline-primary');
+
+        // Show testing state
+        const originalStatus = statusCell.textContent;
+        const originalClass = statusCell.className;
+        statusCell.textContent = 'TESTING...';
+        statusCell.className = 'badge bg-info';
+        testBtn.disabled = true;
+        testBtn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+
+        try {
+            const response = await fetch(`/api/brokers/${brokerId}/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                statusCell.textContent = 'CONNECTED';
+                statusCell.className = 'badge badge-connected';
+                latencyCell.textContent = result.latency_ms ? `${result.latency_ms} ms` : '- ms';
+
+                let msg = `✓ Connection successful!\n`;
+                if (result.account_info) {
+                    msg += `Balance: ${result.account_info.balance} ${result.account_info.currency || ''}`;
+                }
+                if (result.price_info) {
+                    msg += `\nPrice: ${result.price_info.bid} / ${result.price_info.ask}`;
+                }
+                alert(msg);
+            } else {
+                statusCell.textContent = 'ERROR';
+                statusCell.className = 'badge badge-error';
+                alert(`✗ Connection failed:\n${result.error}`);
+            }
+        } catch (err) {
+            statusCell.textContent = 'ERROR';
+            statusCell.className = 'badge badge-error';
+            alert(`✗ Connection error:\n${err.message}`);
+        } finally {
+            testBtn.disabled = false;
+            testBtn.innerHTML = '<i class="bi bi-wifi"></i>';
+        }
+    }
+
+    // Diagnose broker connectivity issues
+    let currentDiagnoseBrokerId = null;
+
+    async function diagnoseBroker(brokerId) {
+        currentDiagnoseBrokerId = brokerId;
+
+        // Show modal with loading state
+        const modal = new bootstrap.Modal(document.getElementById('diagnosticModal'));
+        document.getElementById('diagnosticContent').innerHTML = `
+            <div class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Running diagnostics...</span>
+                </div>
+                <p class="mt-2">Running comprehensive diagnostics...</p>
+            </div>
+        `;
+        document.getElementById('rerunDiagnostics').style.display = 'none';
+        modal.show();
+
+        try {
+            const response = await fetch(`/api/brokers/${brokerId}/diagnose`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            const result = await response.json();
+            displayDiagnostics(result);
+            document.getElementById('rerunDiagnostics').style.display = 'block';
+
+        } catch (err) {
+            document.getElementById('diagnosticContent').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    Failed to run diagnostics: ${err.message}
+                </div>
+            `;
+        }
+    }
+
+    function displayDiagnostics(result) {
+        const statusColors = {
+            'HEALTHY': 'success',
+            'ERROR': 'danger',
+            'WARNING': 'warning',
+            'INCOMPLETE': 'secondary',
+            'UNKNOWN': 'secondary'
+        };
+
+        const checkIcons = {
+            'PASS': '<i class="bi bi-check-circle-fill text-success"></i>',
+            'FAIL': '<i class="bi bi-x-circle-fill text-danger"></i>',
+            'WARN': '<i class="bi bi-exclamation-triangle-fill text-warning"></i>',
+            'INFO': '<i class="bi bi-info-circle-fill text-info"></i>'
+        };
+
+        let html = `
+            <div class="mb-3">
+                <h6>Broker: ${result.broker_name} (${result.broker_type})</h6>
+                <span class="badge bg-${statusColors[result.overall_status] || 'secondary'} fs-6">
+                    ${result.overall_status}
+                </span>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header">
+                    <i class="bi bi-list-check me-2"></i>Diagnostic Checks
+                </div>
+                <ul class="list-group list-group-flush">
+        `;
+
+        for (const check of result.checks) {
+            html += `
+                <li class="list-group-item d-flex align-items-start">
+                    <span class="me-2 mt-1">${checkIcons[check.status] || checkIcons['INFO']}</span>
+                    <div>
+                        <strong>${check.name}</strong>
+                        <div class="text-muted small">${check.message}</div>
+                        ${check.details ? `<pre class="mt-1 mb-0 small bg-light p-2 rounded">${JSON.stringify(check.details, null, 2)}</pre>` : ''}
+                    </div>
+                </li>
+            `;
+        }
+
+        html += '</ul></div>';
+
+        // Add suggestions if any
+        if (result.suggestions && result.suggestions.length > 0) {
+            html += `
+                <div class="card border-warning">
+                    <div class="card-header bg-warning text-dark">
+                        <i class="bi bi-lightbulb me-2"></i>Suggested Fixes
+                    </div>
+                    <div class="accordion" id="suggestionsAccordion">
+            `;
+
+            result.suggestions.forEach((suggestion, idx) => {
+                html += `
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="suggestion-heading-${idx}">
+                            <button class="accordion-button ${idx > 0 ? 'collapsed' : ''}" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#suggestion-${idx}"
+                                    aria-expanded="${idx === 0}" aria-controls="suggestion-${idx}">
+                                <i class="bi bi-wrench me-2"></i>${suggestion.issue}
+                            </button>
+                        </h2>
+                        <div id="suggestion-${idx}" class="accordion-collapse collapse ${idx === 0 ? 'show' : ''}"
+                             aria-labelledby="suggestion-heading-${idx}" data-bs-parent="#suggestionsAccordion">
+                            <div class="accordion-body">
+                                <p><strong>Solution:</strong> ${suggestion.fix}</p>
+                                <p class="mb-2"><strong>Steps:</strong></p>
+                                <ol class="mb-0">
+                                    ${suggestion.steps.map(step => `<li>${step}</li>`).join('')}
+                                </ol>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div></div>';
+        } else if (result.overall_status === 'HEALTHY') {
+            html += `
+                <div class="alert alert-success mb-0">
+                    <i class="bi bi-check-circle me-2"></i>
+                    All checks passed! The broker is configured correctly and ready to trade.
+                </div>
+            `;
+        }
+
+        document.getElementById('diagnosticContent').innerHTML = html;
+    }
+
+    // Rerun diagnostics button handler
+    document.getElementById('rerunDiagnostics').addEventListener('click', function() {
+        if (currentDiagnoseBrokerId) {
+            diagnoseBroker(currentDiagnoseBrokerId);
+        }
+    });
+</script>
+{% endblock %}

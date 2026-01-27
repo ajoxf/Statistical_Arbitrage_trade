@@ -1,0 +1,98 @@
+# OKX Basis Trading Configuration Example
+#
+# This configuration sets up basis arbitrage trading between
+# OKX Spot and OKX Perpetual Swap (Futures) on the same account.
+#
+# Basis Trading Strategy:
+# - When futures premium is high → SELL basis (short futures, long spot)
+# - When futures discount is high → BUY basis (long futures, short spot)
+
+# Trading pair configuration
+trading:
+  asset: BTC
+  spot_symbol: BTC-USDT        # OKX spot pair
+  futures_symbol: BTC-USDT-SWAP  # OKX perpetual swap
+
+  # Signal parameters
+  z_score_entry: 2.0      # Enter when z-score exceeds this
+  z_score_exit: 0.5       # Exit when z-score falls below this
+  lookback_period: 100    # Number of ticks for z-score calculation
+
+  # Position sizing
+  max_position_size: 0.1  # Max BTC per leg
+  min_position_size: 0.001
+
+  # Risk management
+  max_spread_cost_pct: 0.1  # Max bid-ask spread to accept (%)
+  max_positions: 5
+
+# Broker configurations
+brokers:
+  # OKX Spot Account
+  - broker_id: okx_spot
+    name: "OKX Spot"
+    type: OKX
+    role: SPOT
+
+    # OKX API Credentials
+    # Get these from: OKX > Settings > API > Create API Key
+    okx_api_key: "YOUR_API_KEY"
+    okx_api_secret: "YOUR_API_SECRET"
+    okx_passphrase: "YOUR_PASSPHRASE"
+
+    # Trading mode
+    okx_simulated: true     # true = demo trading, false = live
+    okx_account_type: spot
+
+    # Symbol configuration
+    symbol: BTC-USDT
+    contract_size: 1.0
+    commission_per_lot: 0.001  # 0.1% maker fee
+
+  # OKX Perpetual Swap Account (same credentials, different symbol)
+  - broker_id: okx_swap
+    name: "OKX Perpetual Swap"
+    type: OKX
+    role: FUTURES
+
+    # Same API credentials as spot (unified account)
+    okx_api_key: "YOUR_API_KEY"
+    okx_api_secret: "YOUR_API_SECRET"
+    okx_passphrase: "YOUR_PASSPHRASE"
+
+    okx_simulated: true
+    okx_account_type: swap
+
+    symbol: BTC-USDT-SWAP
+    contract_size: 0.01    # Per contract size
+    commission_per_lot: 0.0002  # 0.02% maker fee
+
+# Database settings
+database:
+  path: "trading.db"
+
+# Logging
+logging:
+  level: INFO
+  file: "logs/okx_basis.log"
+
+# Notes:
+#
+# 1. API Key Permissions Required:
+#    - Read: For market data and account info
+#    - Trade: For placing orders
+#    - Withdrawal: NOT needed
+#
+# 2. OKX Unified Account:
+#    - Both spot and swap use the same account balance
+#    - Margin is shared across instruments
+#    - API credentials are the same for both brokers
+#
+# 3. Demo Trading:
+#    - Set okx_simulated: true for paper trading
+#    - Use demo.okx.com to get demo credentials
+#
+# 4. Symbol Formats:
+#    - Spot: {BASE}-{QUOTE} e.g., BTC-USDT
+#    - Swap: {BASE}-{QUOTE}-SWAP e.g., BTC-USDT-SWAP
+#    - Futures: {BASE}-{QUOTE}-{EXPIRY} e.g., BTC-USDT-250328
