@@ -895,7 +895,8 @@ class TradingMonitor:
         self.error_message = None
 
         # Mean calculation cache - keyed by internal asset key
-        self.spread_cache = {'ACTIVE': deque(maxlen=1000)}
+        # maxlen=2000 supports up to ~83 days lookback (24 points/day) or 2000 minutes
+        self.spread_cache = {'ACTIVE': deque(maxlen=2000)}
         self.last_price_save = {}
 
         # Z-score history for charting (store last 200 points per asset)
@@ -1073,9 +1074,7 @@ class TradingMonitor:
                                 'spread': data['actual_basis'],
                                 'actual_basis': data['actual_basis']
                             })
-                            # Keep cache at reasonable size
-                            if len(self.spread_cache[asset_key]) > 2000:
-                                self.spread_cache[asset_key] = list(self.spread_cache[asset_key])[-1000:]
+                            # Note: deque maxlen=2000 automatically maintains size
 
                         # Process algo trading if enabled
                         if self.config.get('algo_enabled'):
@@ -1461,7 +1460,9 @@ class TradingMonitor:
                 if abs(swap_basis) > 0.001:
                     swap_premium_pct = ((actual_basis - swap_basis) / abs(swap_basis)) * 100
                 else:
-                    swap_premium_pct = (actual_basis / spot_price) * 100
+                    # When swap basis is negligible (no swap charge or at expiry),
+                    # premium comparison is not meaningful - set to 0
+                    swap_premium_pct = 0
 
                 swap_diff = actual_basis - swap_basis
             else:
