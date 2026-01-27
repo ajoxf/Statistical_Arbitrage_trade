@@ -1,0 +1,94 @@
+============================================================
+           STATARB PRO - QUICK START GUIDE
+============================================================
+
+Welcome! Follow these simple steps to run the application.
+
+
+WHAT YOU NEED:
+--------------
+1. Windows computer with MetaTrader 5 installed
+2. Python 3.9 or higher (download from python.org)
+3. Your MT5 login credentials
+
+
+STEP 1: INSTALL PYTHON (if not already installed)
+-------------------------------------------------
+1. Go to: https://www.python.org/downloads/
+2. Download the latest Python 3.x version
+3. Run the installer
+4. IMPORTANT: Check the box "Add Python to PATH" during install
+5. Click "Install Now"
+
+
+STEP 2: CONFIGURE YOUR MT5 SETTINGS
+-----------------------------------
+1. In this folder, find the file called ".env.example"
+2. Make a copy of it
+3. Rename the copy to just ".env" (remove the .example part)
+4. Open .env with Notepad
+5. Fill in your MT5 details:
+
+   MT5_PATH     = Path where MT5 is installed
+                  (usually C:\Program Files\MetaTrader 5\terminal64.exe)
+
+   MT5_ACCOUNT  = Your account number (e.g., 12345678)
+
+   MT5_SERVER   = Your broker's server name
+                  (shown on MT5 login screen, e.g., "ICMarkets-Demo")
+
+   MT5_PASSWORD = Your trading password
+                  (the one you use to login, NOT the investor password)
+
+6. Save the file
+
+
+STEP 3: RUN THE APPLICATION
+---------------------------
+1. Double-click "run.bat"
+2. Wait for it to install dependencies (first time only)
+3. The application will open in your browser automatically
+4. Keep the black command window open while using the app
+
+
+USING THE APPLICATION:
+---------------------
+1. Go to the "Setup" page to add your MT5 broker
+2. Click "Add Broker"
+3. Fill in your MT5 details:
+   - Broker ID: mt5_spot (or any name you like)
+   - Name: Your broker name
+   - Backend Type: MetaTrader 5
+   - Role: SPOT (for spot trading)
+   - Fill in MT5 path, account, server, password
+4. Click "Save"
+5. Click "Test" to verify connection
+
+
+TROUBLESHOOTING:
+---------------
+Problem: "Python is not installed" error
+Fix: Install Python from python.org (make sure to check "Add to PATH")
+
+Problem: "No .env file found" error
+Fix: Copy .env.example to .env and fill in your details
+
+Problem: MT5 connection fails
+Fix: Make sure:
+   - MT5 is installed
+   - You're using the correct account number
+   - You're using the trading password (not investor password)
+   - MT5 terminal is NOT running (close it before testing)
+
+Problem: Browser doesn't open
+Fix: Open your browser and go to: http://127.0.0.1:5000
+
+
+STOPPING THE APPLICATION:
+------------------------
+Press 'q' in the black command window, or just close it.
+
+
+Need more help? Check the USER_GUIDE.md file for detailed instructions.
+
+============================================================
