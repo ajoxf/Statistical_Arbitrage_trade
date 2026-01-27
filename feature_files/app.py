@@ -12,6 +12,8 @@ Pages:
 
 import asyncio
 import threading
+import json
+import os
 from datetime import datetime
 from functools import wraps
 from typing import Optional
@@ -27,6 +29,32 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from database.manager import DatabaseManager
 from database.models import TradingConfig, Broker, Trade
 from core.trading_engine import TradingEngine, EngineState
+
+# Active broker config file (workaround for database not saving new fields)
+ACTIVE_BROKER_FILE = Path(__file__).parent.parent / "active_brokers.json"
+
+
+def save_active_brokers(spot_id, futures_id):
+    """Save active broker IDs to JSON file"""
+    data = {
+        'active_spot_broker': spot_id,
+        'active_futures_broker': futures_id
+    }
+    with open(ACTIVE_BROKER_FILE, 'w') as f:
+        json.dump(data, f)
+    logging.getLogger(__name__).info(f"[BROKERS] Saved active brokers to file: {data}")
+
+
+def load_active_brokers():
+    """Load active broker IDs from JSON file"""
+    if ACTIVE_BROKER_FILE.exists():
+        try:
+            with open(ACTIVE_BROKER_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get('active_spot_broker'), data.get('active_futures_broker')
+        except Exception as e:
+            logging.getLogger(__name__).error(f"[BROKERS] Error loading active brokers: {e}")
+    return None, None
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +228,10 @@ def api_config():
                     setattr(config, key, value)
 
         logger.info(f"[CONFIG] Active brokers - Spot: {config.active_spot_broker}, Futures: {config.active_futures_broker}")
+
+        # Save active brokers to JSON file (workaround for database not persisting new fields)
+        save_active_brokers(config.active_spot_broker, config.active_futures_broker)
+
         database.update_config(config)
 
         # Reload config in engine if running
@@ -1437,16 +1469,14 @@ def start_price_streaming():
         while price_streaming_active:
             try:
                 database = get_db()
-                config = database.get_config()
 
-                # Get active brokers
-                spot_broker_id = getattr(config, 'active_spot_broker', None)
-                futures_broker_id = getattr(config, 'active_futures_broker', None)
+                # Load active brokers from JSON file (more reliable than database)
+                spot_broker_id, futures_broker_id = load_active_brokers()
 
                 # Log every 10 seconds
                 log_counter += 1
                 if log_counter % 10 == 1:
-                    logger.info(f"[PRICES] Active brokers - Spot: {spot_broker_id}, Futures: {futures_broker_id}")
+                    logger.info(f"[PRICES] Active brokers from file - Spot: {spot_broker_id}, Futures: {futures_broker_id}")
 
                 if not spot_broker_id or not futures_broker_id:
                     time.sleep(1)
