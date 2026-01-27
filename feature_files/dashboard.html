@@ -75,34 +75,6 @@
 </div>
 
 <div class="row g-4">
-    <!-- Stats Row (moved down) -->
-    <div class="col-md-3">
-        <div class="card stat-card">
-            <div class="stat-value" id="zscore-value">0.00</div>
-            <div class="stat-label">Z-Score</div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card stat-card">
-            <div class="stat-value" id="spread-value">$0.00</div>
-            <div class="stat-label">Current Spread</div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card stat-card">
-            <div class="stat-value {% if stats.total_pnl >= 0 %}positive{% else %}negative{% endif %}" id="pnl-value">
-                ${{ "%.2f"|format(stats.total_pnl or 0) }}
-            </div>
-            <div class="stat-label">Total P&L</div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card stat-card">
-            <div class="stat-value" id="win-rate">{{ "%.1f"|format(stats.win_rate or 0) }}%</div>
-            <div class="stat-label">Win Rate</div>
-        </div>
-    </div>
-
     <!-- Main Content Row -->
     <div class="col-md-8">
         <!-- Z-Score Chart -->
@@ -133,6 +105,36 @@
             <div class="card-body">
                 <div class="chart-container" id="spread-chart">
                     <canvas id="spread-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stats Row (below graphs) -->
+        <div class="row g-3 mt-3 mb-3">
+            <div class="col-md-3">
+                <div class="card stat-card">
+                    <div class="stat-value" id="zscore-value">0.00</div>
+                    <div class="stat-label">Z-Score</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stat-card">
+                    <div class="stat-value" id="spread-value">$0.00</div>
+                    <div class="stat-label">Current Spread</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stat-card">
+                    <div class="stat-value {% if stats.total_pnl >= 0 %}positive{% else %}negative{% endif %}" id="pnl-value">
+                        ${{ "%.2f"|format(stats.total_pnl or 0) }}
+                    </div>
+                    <div class="stat-label">Total P&L</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stat-card">
+                    <div class="stat-value" id="win-rate">{{ "%.1f"|format(stats.win_rate or 0) }}%</div>
+                    <div class="stat-label">Win Rate</div>
                 </div>
             </div>
         </div>
