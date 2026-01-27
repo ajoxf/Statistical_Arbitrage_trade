@@ -215,8 +215,10 @@ def api_brokers():
             okx_simulated=data.get('okx_simulated', True),
             okx_account_type=data.get('okx_account_type', 'spot'),
             symbol=data.get('symbol', ''),
-            contract_size=data.get('contract_size', 100.0),
-            commission_per_lot=data.get('commission_per_lot', 0.0)
+            contract_size=float(data.get('contract_size', 100.0)),
+            commission_per_lot=float(data.get('commission_per_lot', 0.0)),
+            swap_charge=float(data.get('swap_charge', 0.0)),
+            futures_expiry=data.get('futures_expiry') or None
         )
 
         database.add_broker(broker)

@@ -19,27 +19,11 @@
             <div class="card-body">
                 <form id="asset-form">
                     <div class="row g-3">
-                        <div class="col-md-6">
+                        <div class="col-md-12">
                             <label class="form-label">Asset Name</label>
                             <input type="text" class="form-control" name="asset_name"
                                    value="{{ config.asset_name }}" placeholder="e.g., GOLD, BTC">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Contract Size</label>
-                            <input type="number" class="form-control" name="contract_size"
-                                   value="{{ config.contract_size }}" step="1">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Futures Expiry</label>
-                            <input type="date" class="form-control" name="futures_expiry"
-                                   value="{{ config.futures_expiry or '' }}">
-                            <small class="text-muted">Leave empty for perpetual swaps</small>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Swap Charge/Day ($)</label>
-                            <input type="number" class="form-control" name="swap_charge"
-                                   value="{{ config.swap_charge }}" step="0.01">
-                            <small class="text-muted">Used in premium calculation</small>
+                            <small class="text-muted">Reference name for the asset being traded</small>
                         </div>
                         <div class="col-12">
                             <button type="submit" class="btn btn-primary">
@@ -48,6 +32,11 @@
                         </div>
                     </div>
                 </form>
+                <hr>
+                <small class="text-muted">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Contract size, swap charges, and expiry are configured per broker below.
+                </small>
             </div>
         </div>
     </div>
@@ -91,7 +80,24 @@
                         <div class="col-md-12">
                             <label class="form-label">Symbol</label>
                             <input type="text" class="form-control" name="symbol" required
-                                   placeholder="e.g., XAUUSD">
+                                   placeholder="e.g., XAUUSD, BTC-USDT">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Contract Size</label>
+                            <input type="number" class="form-control" name="contract_size"
+                                   value="100" step="0.01" placeholder="e.g., 100">
+                            <small class="text-muted">Units per contract</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Swap/Day ($)</label>
+                            <input type="number" class="form-control" name="swap_charge"
+                                   value="0" step="0.01" placeholder="0.00">
+                            <small class="text-muted">Daily financing cost</small>
+                        </div>
+                        <div class="col-md-4 futures-fields">
+                            <label class="form-label">Futures Expiry</label>
+                            <input type="date" class="form-control" name="futures_expiry">
+                            <small class="text-muted">Leave empty for perpetuals</small>
                         </div>
 
                         <!-- MT5 Fields -->
@@ -287,6 +293,18 @@
         } else if (type === 'OKX') {
             document.querySelectorAll('.okx-fields').forEach(el => el.classList.remove('d-none'));
         }
+    });
+
+    // Toggle futures expiry field based on role
+    document.querySelector('select[name="role"]').addEventListener('change', (e) => {
+        const role = e.target.value;
+        document.querySelectorAll('.futures-fields').forEach(el => {
+            if (role === 'FUTURES') {
+                el.classList.remove('d-none');
+            } else {
+                el.classList.add('d-none');
+            }
+        });
     });
 
     // Asset form
