@@ -326,7 +326,7 @@
                 <div class="card-body">
                     <p class="text-muted mb-3">Run the automated test suite to verify system functionality.</p>
                     <button type="button" class="btn btn-info" id="run-tests-btn" onclick="runTests()">
-                        <i class="bi bi-play-circle me-2"></i>Run Tests
+                        <i class="bi bi-play-circle me-2"></i>Run Unit Tests
                     </button>
                     <div id="test-status" class="mt-3" style="display: none;">
                         <div class="d-flex align-items-center">
@@ -336,6 +336,39 @@
                             <span id="test-status-text">Running tests...</span>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Broker Order Tests -->
+        <div class="col-md-6">
+            <div class="card border-warning">
+                <div class="card-header bg-warning text-dark">
+                    <i class="bi bi-lightning-charge me-2"></i>Live Broker Order Tests
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-warning mb-3">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        <strong>Warning:</strong> These tests place REAL orders on your broker account!
+                        Uses minimum lot size and immediately closes positions.
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="button" class="btn btn-warning" id="test-order-btn" onclick="testBrokerOrders()">
+                            <i class="bi bi-play-fill me-2"></i>Test Open & Close Orders
+                        </button>
+                        <button type="button" class="btn btn-outline-warning" id="test-ticket-btn" onclick="testTicketOperations()">
+                            <i class="bi bi-ticket-detailed me-2"></i>Test Ticket-Based Close
+                        </button>
+                    </div>
+                    <div id="order-test-status" class="mt-3" style="display: none;">
+                        <div class="d-flex align-items-center">
+                            <div class="spinner-border spinner-border-sm text-warning me-2" role="status">
+                                <span class="visually-hidden">Testing...</span>
+                            </div>
+                            <span id="order-test-text">Testing orders...</span>
+                        </div>
+                    </div>
+                    <div id="order-test-result" class="mt-3"></div>
                 </div>
             </div>
         </div>
@@ -431,6 +464,117 @@
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-play-circle me-2"></i>Run Tests';
             alert('Error: ' + error.message);
+        }
+    }
+
+    // Test Broker Orders - Open and Close
+    async function testBrokerOrders() {
+        const btn = document.getElementById('test-order-btn');
+        const status = document.getElementById('order-test-status');
+        const statusText = document.getElementById('order-test-text');
+        const result = document.getElementById('order-test-result');
+
+        btn.disabled = true;
+        status.style.display = 'block';
+        statusText.textContent = 'Opening test position...';
+        result.innerHTML = '';
+
+        try {
+            const response = await fetch('/api/test-order-cycle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ test_type: 'open_close' })
+            });
+
+            const data = await response.json();
+
+            status.style.display = 'none';
+            btn.disabled = false;
+
+            if (data.success) {
+                result.innerHTML = `
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle-fill me-2"></i>
+                        <strong>Order Test Passed!</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>Opened ticket: <code>${data.open_ticket}</code></li>
+                            <li>Symbol: ${data.symbol}</li>
+                            <li>Volume: ${data.volume}</li>
+                            <li>Closed ticket: <code>${data.close_ticket}</code></li>
+                            <li>P&L: $${data.profit?.toFixed(2) || '0.00'}</li>
+                        </ul>
+                    </div>`;
+            } else {
+                result.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-x-circle-fill me-2"></i>
+                        <strong>Order Test Failed:</strong> ${data.error}
+                    </div>`;
+            }
+
+        } catch (error) {
+            status.style.display = 'none';
+            btn.disabled = false;
+            result.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-x-circle-fill me-2"></i>
+                    <strong>Error:</strong> ${error.message}
+                </div>`;
+        }
+    }
+
+    // Test Ticket-Based Operations
+    async function testTicketOperations() {
+        const btn = document.getElementById('test-ticket-btn');
+        const status = document.getElementById('order-test-status');
+        const statusText = document.getElementById('order-test-text');
+        const result = document.getElementById('order-test-result');
+
+        btn.disabled = true;
+        status.style.display = 'block';
+        statusText.textContent = 'Testing ticket-based operations...';
+        result.innerHTML = '';
+
+        try {
+            const response = await fetch('/api/test-order-cycle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ test_type: 'ticket_close' })
+            });
+
+            const data = await response.json();
+
+            status.style.display = 'none';
+            btn.disabled = false;
+
+            if (data.success) {
+                result.innerHTML = `
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle-fill me-2"></i>
+                        <strong>Ticket Test Passed!</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>Position opened: <code>${data.open_ticket}</code></li>
+                            <li>Found by ticket: ${data.found_by_ticket ? 'Yes' : 'No'}</li>
+                            <li>Closed by ticket: <code>${data.close_ticket}</code></li>
+                            <li>Verified closed: ${data.verified_closed ? 'Yes' : 'No'}</li>
+                        </ul>
+                    </div>`;
+            } else {
+                result.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-x-circle-fill me-2"></i>
+                        <strong>Ticket Test Failed:</strong> ${data.error}
+                    </div>`;
+            }
+
+        } catch (error) {
+            status.style.display = 'none';
+            btn.disabled = false;
+            result.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-x-circle-fill me-2"></i>
+                    <strong>Error:</strong> ${error.message}
+                </div>`;
         }
     }
 

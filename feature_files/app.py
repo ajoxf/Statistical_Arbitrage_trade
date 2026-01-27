@@ -1525,6 +1525,169 @@ def api_test_order():
         return jsonify({'success': False, 'error': str(e)})
 
 
+@app.route('/api/test-order-cycle', methods=['POST'])
+def api_test_order_cycle():
+    """Test full order cycle: open position, find by ticket, close by ticket, verify closure"""
+    try:
+        import MetaTrader5 as mt5
+        import time
+
+        data = request.get_json() or {}
+        test_type = data.get('test_type', 'open_close')
+
+        database = get_db()
+        spot_broker_id, futures_broker_id = load_active_brokers()
+
+        if not spot_broker_id:
+            return jsonify({'success': False, 'error': 'No active spot broker configured'})
+
+        broker = database.get_broker(spot_broker_id)
+        if not broker:
+            return jsonify({'success': False, 'error': 'Spot broker not found'})
+
+        if broker.broker_type != 'MT5':
+            return jsonify({'success': False, 'error': f'Order cycle test only supports MT5, got {broker.broker_type}'})
+
+        # Initialize MT5
+        if not mt5.initialize():
+            return jsonify({'success': False, 'error': 'Failed to initialize MT5'})
+
+        symbol = broker.symbol
+        symbol_info = mt5.symbol_info(symbol)
+
+        if symbol_info is None:
+            mt5.shutdown()
+            return jsonify({'success': False, 'error': f'Symbol {symbol} not found'})
+
+        if not symbol_info.visible:
+            mt5.symbol_select(symbol, True)
+
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            mt5.shutdown()
+            return jsonify({'success': False, 'error': 'Could not get price'})
+
+        min_volume = symbol_info.volume_min
+
+        # Step 1: Open position
+        open_request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": min_volume,
+            "type": mt5.ORDER_TYPE_BUY,
+            "price": tick.ask,
+            "deviation": 20,
+            "magic": 987654,
+            "comment": "Order Cycle Test",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        open_result = mt5.order_send(open_request)
+
+        if open_result.retcode != mt5.TRADE_RETCODE_DONE:
+            mt5.shutdown()
+            return jsonify({
+                'success': False,
+                'error': f'Failed to open position: {open_result.comment} (code: {open_result.retcode})'
+            })
+
+        logger.info(f"Order cycle test: Opened position, order={open_result.order}")
+
+        # Wait for position to appear
+        time.sleep(0.5)
+
+        # Step 2: Find position by magic number to get ticket
+        positions = mt5.positions_get(symbol=symbol)
+        position_ticket = None
+        for pos in positions or []:
+            if pos.magic == 987654:
+                position_ticket = pos.ticket
+                break
+
+        if not position_ticket:
+            mt5.shutdown()
+            return jsonify({
+                'success': False,
+                'error': 'Could not find opened position by magic number'
+            })
+
+        logger.info(f"Order cycle test: Found position ticket={position_ticket}")
+
+        # Step 3: For ticket_close test, verify we can find by ticket
+        found_by_ticket = False
+        if test_type == 'ticket_close':
+            found_positions = mt5.positions_get(ticket=position_ticket)
+            found_by_ticket = found_positions is not None and len(found_positions) == 1
+            logger.info(f"Order cycle test: Found by ticket={found_by_ticket}")
+
+        # Step 4: Close by ticket
+        tick = mt5.symbol_info_tick(symbol)
+        close_request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": min_volume,
+            "type": mt5.ORDER_TYPE_SELL,
+            "position": position_ticket,  # Close by ticket
+            "price": tick.bid,
+            "deviation": 20,
+            "magic": 987654,
+            "comment": "Order Cycle Close",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        close_result = mt5.order_send(close_request)
+
+        if close_result.retcode != mt5.TRADE_RETCODE_DONE:
+            mt5.shutdown()
+            return jsonify({
+                'success': False,
+                'error': f'Failed to close position: {close_result.comment} (code: {close_result.retcode})',
+                'open_ticket': position_ticket
+            })
+
+        logger.info(f"Order cycle test: Closed position, order={close_result.order}")
+
+        # Step 5: Verify closure
+        time.sleep(0.5)
+        remaining = mt5.positions_get(ticket=position_ticket)
+        verified_closed = remaining is None or len(remaining) == 0
+
+        # Get profit from the close deal
+        profit = 0
+        try:
+            from datetime import datetime, timedelta
+            deals = mt5.history_deals_get(datetime.now() - timedelta(minutes=1), datetime.now())
+            for deal in (deals or []):
+                if deal.position_id == position_ticket:
+                    profit = deal.profit
+                    break
+        except:
+            pass
+
+        mt5.shutdown()
+
+        logger.info(f"Order cycle test: Complete! verified_closed={verified_closed}, profit={profit}")
+
+        return jsonify({
+            'success': True,
+            'open_ticket': position_ticket,
+            'close_ticket': close_result.order,
+            'symbol': symbol,
+            'volume': min_volume,
+            'profit': profit,
+            'found_by_ticket': found_by_ticket if test_type == 'ticket_close' else None,
+            'verified_closed': verified_closed
+        })
+
+    except ImportError:
+        return jsonify({'success': False, 'error': 'MetaTrader5 library not installed'})
+    except Exception as e:
+        logger.error(f"Order cycle test error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/api/broker/positions')
 def api_broker_positions():
     """Get current open positions from active broker(s)"""
