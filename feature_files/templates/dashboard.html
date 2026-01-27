@@ -410,7 +410,7 @@
         </div>
 
         <!-- Hurst Exponent -->
-        <div class="card">
+        <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-activity me-2"></i>Market Regime
             </div>
@@ -420,7 +420,112 @@
                 <div class="mt-2">
                     <span class="badge bg-secondary" id="regime-badge">Unknown</span>
                 </div>
-                <small class="text-muted">H < 0.5 = Mean Reverting</small>
+                <small class="text-muted">H &lt; 0.5 = Mean Reverting</small>
+            </div>
+        </div>
+
+        <!-- STD Profitability Filter -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-funnel me-2"></i>STD Profitability Filter
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Status:</span>
+                    <span class="badge" id="std-filter-status">-</span>
+                </div>
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="text-muted">Current STD:</span>
+                    <span class="fw-bold" id="std-current">$0.00</span>
+                </div>
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="text-muted">Min Required:</span>
+                    <span class="fw-bold" id="std-min-required">$0.00</span>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">STD Ratio:</span>
+                    <span class="fw-bold" id="std-ratio">0%</span>
+                </div>
+                <!-- Progress bar for STD ratio -->
+                <div class="progress" style="height: 8px;">
+                    <div id="std-ratio-bar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                </div>
+                <div class="mt-2 small">
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted">Round-trip Cost:</span>
+                        <span id="std-round-trip">$0.00</span>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted">Expected Profit:</span>
+                        <span id="std-expected-profit">$0.00</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Entry/Exit Bands -->
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-arrows-expand me-2"></i>Entry/Exit Bands
+            </div>
+            <div class="card-body">
+                <div class="row text-center mb-2">
+                    <div class="col-6">
+                        <small class="text-danger d-block">SHORT SPREAD</small>
+                        <small class="text-muted">(Spread High → Low)</small>
+                    </div>
+                    <div class="col-6">
+                        <small class="text-success d-block">LONG SPREAD</small>
+                        <small class="text-muted">(Spread Low → High)</small>
+                    </div>
+                </div>
+                <div class="row mb-1">
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Entry:</span>
+                            <span class="text-danger fw-bold" id="band-short-entry">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Entry:</span>
+                            <span class="text-success fw-bold" id="band-long-entry">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mb-1">
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Exit:</span>
+                            <span id="band-short-exit">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Exit:</span>
+                            <span id="band-long-exit">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Stop:</span>
+                            <span class="text-warning" id="band-short-stop">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Stop:</span>
+                            <span class="text-warning" id="band-long-stop">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                <hr class="my-2">
+                <div class="d-flex justify-content-between small">
+                    <span class="text-muted">Current Spread:</span>
+                    <span class="fw-bold" id="band-current-spread">$0.00</span>
+                </div>
             </div>
         </div>
     </div>
@@ -783,6 +888,112 @@
 
         // Update Premium Calculator
         updatePremiumCalculator(data);
+
+        // Update STD Filter display
+        updateSTDFilter(data);
+
+        // Update Entry/Exit Bands display
+        updateBands(data);
+
+        // Update Hurst from tick data (in addition to signal)
+        updateHurst(data);
+    }
+
+    // STD Filter display
+    function updateSTDFilter(data) {
+        if (!data.std_filter) return;
+
+        const sf = data.std_filter;
+        const statusEl = document.getElementById('std-filter-status');
+        const currentEl = document.getElementById('std-current');
+        const minReqEl = document.getElementById('std-min-required');
+        const ratioEl = document.getElementById('std-ratio');
+        const ratioBar = document.getElementById('std-ratio-bar');
+        const roundTripEl = document.getElementById('std-round-trip');
+        const expectedProfitEl = document.getElementById('std-expected-profit');
+
+        // Update values
+        currentEl.textContent = '$' + sf.current_std.toFixed(2);
+        minReqEl.textContent = '$' + sf.min_std.toFixed(2);
+
+        const ratioPercent = (sf.std_ratio * 100).toFixed(0);
+        ratioEl.textContent = ratioPercent + '%';
+
+        // Update progress bar
+        const barWidth = Math.min(100, sf.std_ratio * 100);
+        ratioBar.style.width = barWidth + '%';
+
+        // Color coding based on profitability
+        if (sf.is_profitable) {
+            statusEl.textContent = 'PROFITABLE';
+            statusEl.className = 'badge bg-success';
+            ratioBar.className = 'progress-bar bg-success';
+            ratioEl.className = 'fw-bold text-success';
+        } else {
+            statusEl.textContent = 'UNPROFITABLE';
+            statusEl.className = 'badge bg-danger';
+            ratioBar.className = 'progress-bar bg-danger';
+            ratioEl.className = 'fw-bold text-danger';
+        }
+
+        // Update cost/profit
+        roundTripEl.textContent = '$' + sf.round_trip_cost.toFixed(2);
+        expectedProfitEl.textContent = '$' + sf.profit_if_successful.toFixed(2);
+        expectedProfitEl.className = sf.profit_if_successful >= 0 ? 'text-success' : 'text-danger';
+    }
+
+    // Entry/Exit Bands display
+    function updateBands(data) {
+        if (!data.bands) return;
+
+        const b = data.bands;
+        document.getElementById('band-short-entry').textContent = '$' + b.short_entry.toFixed(2);
+        document.getElementById('band-short-exit').textContent = '$' + b.short_exit.toFixed(2);
+        document.getElementById('band-short-stop').textContent = '$' + b.short_stop.toFixed(2);
+        document.getElementById('band-long-entry').textContent = '$' + b.long_entry.toFixed(2);
+        document.getElementById('band-long-exit').textContent = '$' + b.long_exit.toFixed(2);
+        document.getElementById('band-long-stop').textContent = '$' + b.long_stop.toFixed(2);
+
+        // Update current spread indicator
+        if (data.spread !== undefined) {
+            const spreadEl = document.getElementById('band-current-spread');
+            spreadEl.textContent = '$' + data.spread.toFixed(2);
+
+            // Color based on position relative to bands
+            if (data.spread >= b.short_entry) {
+                spreadEl.className = 'fw-bold text-danger';  // Above short entry
+            } else if (data.spread <= b.long_entry) {
+                spreadEl.className = 'fw-bold text-success'; // Below long entry
+            } else {
+                spreadEl.className = 'fw-bold text-warning'; // In the middle
+            }
+        }
+    }
+
+    // Hurst display (from tick data)
+    function updateHurst(data) {
+        if (!data.hurst) return;
+
+        const h = data.hurst;
+        const hurstValue = typeof h === 'object' ? h.value : h;
+        const hurstRegime = typeof h === 'object' ? h.regime : null;
+
+        if (hurstValue !== null && hurstValue !== undefined) {
+            document.getElementById('hurst-value').textContent = hurstValue.toFixed(3);
+        }
+
+        if (hurstRegime) {
+            const regimeBadge = document.getElementById('regime-badge');
+            regimeBadge.textContent = hurstRegime.replace('_', ' ');
+            regimeBadge.className = 'badge';
+            if (hurstRegime === 'MEAN_REVERTING') {
+                regimeBadge.classList.add('bg-success');
+            } else if (hurstRegime === 'TRENDING') {
+                regimeBadge.classList.add('bg-danger');
+            } else {
+                regimeBadge.classList.add('bg-warning');
+            }
+        }
     }
 
     // Premium Calculator
@@ -836,14 +1047,20 @@
             document.getElementById('std-value').textContent = data.std.toFixed(2);
             document.getElementById('calc-std').textContent = '$' + data.std.toFixed(2);
         }
-        if (data.hurst !== null) {
-            document.getElementById('hurst-value').textContent = data.hurst.toFixed(3);
+        // Handle hurst as object with value and regime
+        if (data.hurst !== null && data.hurst !== undefined) {
+            const hurstValue = typeof data.hurst === 'object' ? data.hurst.value : data.hurst;
+            const hurstRegime = typeof data.hurst === 'object' ? data.hurst.regime : data.regime;
+
+            if (hurstValue !== null && hurstValue !== undefined) {
+                document.getElementById('hurst-value').textContent = hurstValue.toFixed(3);
+            }
             const regimeBadge = document.getElementById('regime-badge');
-            regimeBadge.textContent = data.regime || 'Unknown';
+            regimeBadge.textContent = hurstRegime || 'Unknown';
             regimeBadge.className = 'badge';
-            if (data.regime === 'MEAN_REVERTING') {
+            if (hurstRegime === 'MEAN_REVERTING') {
                 regimeBadge.classList.add('bg-success');
-            } else if (data.regime === 'TRENDING') {
+            } else if (hurstRegime === 'TRENDING') {
                 regimeBadge.classList.add('bg-danger');
             } else {
                 regimeBadge.classList.add('bg-warning');
