@@ -1426,13 +1426,15 @@ def api_test_order():
         direction = data.get('direction')  # 'buy' or 'sell'
 
         database = get_db()
-        config = database.get_config()
+
+        # Load active brokers from JSON file (consistent with rest of app)
+        spot_broker_id, futures_broker_id = load_active_brokers()
 
         # Get active broker based on leg
         if leg == 'spot':
-            broker_id = getattr(config, 'active_spot_broker', None)
+            broker_id = spot_broker_id
         else:
-            broker_id = getattr(config, 'active_futures_broker', None)
+            broker_id = futures_broker_id
 
         if not broker_id:
             return jsonify({'success': False, 'error': f'No active {leg} broker selected'})
