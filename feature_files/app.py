@@ -14,9 +14,10 @@ import asyncio
 import threading
 import json
 import os
+import math
 from datetime import datetime
 from functools import wraps
-from typing import Optional
+from typing import Optional, Tuple
 import logging
 from pathlib import Path
 
@@ -89,6 +90,105 @@ def load_active_brokers():
         except Exception as e:
             logging.getLogger(__name__).error(f"[BROKERS] Error loading active brokers: {e}")
     return None, None
+
+
+def calculate_swap_basis(spot_price: float, swap_charge: float, lot_size: float,
+                         time_to_expiry: float) -> Tuple[float, float, float]:
+    """
+    Calculate swap-based fair value basis.
+
+    Args:
+        spot_price: Current spot price
+        swap_charge: Daily swap cost in dollars per lot
+        lot_size: Contract size (units per lot)
+        time_to_expiry: Time to expiry in years (fractional)
+
+    Returns:
+        Tuple of (swap_futures_price, swap_basis, annual_swap_rate)
+    """
+    if swap_charge <= 0 or time_to_expiry <= 0:
+        return spot_price, 0.0, 0.0
+
+    position_value = spot_price * lot_size
+    if position_value <= 0:
+        return spot_price, 0.0, 0.0
+
+    daily_swap_rate = swap_charge / position_value
+    annual_swap_rate = daily_swap_rate * 365
+
+    swap_futures_price = spot_price * math.exp(annual_swap_rate * time_to_expiry)
+    swap_basis = swap_futures_price - spot_price
+
+    return swap_futures_price, swap_basis, annual_swap_rate
+
+
+def calculate_margin_requirements(spot_price: float, futures_price: float,
+                                  contract_size: float, leverage: int,
+                                  user_lot_size: float) -> dict:
+    """
+    Calculate margin requirements for spread trade.
+
+    Args:
+        spot_price: Current spot price
+        futures_price: Current futures price
+        contract_size: Units per lot
+        leverage: Account leverage (e.g., 100 for 1:100)
+        user_lot_size: User's configured lot size
+
+    Returns:
+        Dictionary with margin calculations
+    """
+    if leverage <= 0:
+        leverage = 100  # Default
+
+    # Margin per lot (Spot) = (Price × Contract Size) / Leverage
+    margin_per_lot_spot = (spot_price * contract_size) / leverage
+
+    # Margin per lot (Futures) - similar calculation
+    margin_per_lot_futures = (futures_price * contract_size) / leverage
+
+    # Total margin per lot (both legs of spread trade)
+    margin_per_lot_total = margin_per_lot_spot + margin_per_lot_futures
+
+    # Margin required for current position size
+    margin_required = margin_per_lot_total * user_lot_size
+
+    # Margin with 15% buffer for price fluctuation
+    margin_with_buffer = margin_required * 1.15
+
+    return {
+        'leverage': leverage,
+        'margin_per_lot_spot': round(margin_per_lot_spot, 2),
+        'margin_per_lot_futures': round(margin_per_lot_futures, 2),
+        'margin_per_lot_total': round(margin_per_lot_total, 2),
+        'margin_required': round(margin_required, 2),
+        'margin_with_buffer': round(margin_with_buffer, 2),
+        'user_lot_size': user_lot_size
+    }
+
+
+def parse_futures_expiry(expiry_str: Optional[str]) -> Tuple[Optional[datetime], float]:
+    """
+    Parse futures expiry date string and calculate days to expiry.
+
+    Args:
+        expiry_str: Expiry date as string (YYYY-MM-DD format)
+
+    Returns:
+        Tuple of (expiry_datetime, days_to_expiry)
+    """
+    if not expiry_str:
+        return None, 0.0
+
+    try:
+        expiry_date = datetime.strptime(expiry_str, '%Y-%m-%d')
+        current_time = datetime.now()
+        time_delta = expiry_date - current_time
+        days_to_expiry = max(0, time_delta.total_seconds() / (24 * 3600))
+        return expiry_date, days_to_expiry
+    except (ValueError, TypeError):
+        return None, 0.0
+
 
 logger = logging.getLogger(__name__)
 
@@ -994,6 +1094,115 @@ def api_broker_diagnose(broker_id):
         })
         diagnostics['overall_status'] = 'ERROR'
         return jsonify(diagnostics)
+
+
+@app.route('/api/basis-premium')
+def api_basis_premium():
+    """
+    Get current basis premium analysis data.
+
+    Returns basis (F-S), days to expiry, fair value basis, premium %, and margin requirements.
+    """
+    try:
+        database = get_db()
+        config = database.get_config()
+        spot_broker_id, futures_broker_id = load_active_brokers()
+
+        if not spot_broker_id or not futures_broker_id:
+            return jsonify({'success': False, 'error': 'No active brokers configured'})
+
+        spot_broker = database.get_broker(spot_broker_id)
+        futures_broker = database.get_broker(futures_broker_id)
+
+        if not spot_broker or not futures_broker:
+            return jsonify({'success': False, 'error': 'Broker not found'})
+
+        spot_bid, spot_ask = 0, 0
+        futures_bid, futures_ask = 0, 0
+        leverage = 100
+
+        # Get prices from MT5
+        if spot_broker.broker_type == 'MT5' or futures_broker.broker_type == 'MT5':
+            try:
+                import MetaTrader5 as mt5
+
+                if not mt5.initialize():
+                    return jsonify({'success': False, 'error': 'Failed to initialize MT5'})
+
+                # Get account leverage
+                account = mt5.account_info()
+                if account:
+                    leverage = account.leverage
+
+                # Get spot price
+                if spot_broker.broker_type == 'MT5':
+                    tick = mt5.symbol_info_tick(spot_broker.symbol)
+                    if tick:
+                        spot_bid = tick.bid
+                        spot_ask = tick.ask
+
+                # Get futures price
+                if futures_broker.broker_type == 'MT5':
+                    tick = mt5.symbol_info_tick(futures_broker.symbol)
+                    if tick:
+                        futures_bid = tick.bid
+                        futures_ask = tick.ask
+
+                mt5.shutdown()
+
+            except ImportError:
+                return jsonify({'success': False, 'error': 'MetaTrader5 not installed'})
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'MT5 error: {str(e)}'})
+
+        if spot_bid <= 0 or futures_bid <= 0:
+            return jsonify({'success': False, 'error': 'Could not get prices'})
+
+        spot_mid = (spot_bid + spot_ask) / 2
+        futures_mid = (futures_bid + futures_ask) / 2
+        actual_basis = futures_mid - spot_mid
+
+        # Get configuration values
+        swap_charge = config.swap_charge if config else 0.0
+        lot_size = config.contract_size if config else 100.0
+        futures_expiry_str = config.futures_expiry if config else None
+        user_lot_size = config.lot_size if config else 0.1
+
+        # Parse expiry and calculate days to expiry
+        _, days_to_expiry = parse_futures_expiry(futures_expiry_str)
+        time_to_expiry = days_to_expiry / 365.25 if days_to_expiry > 0 else 0
+
+        # Calculate fair value basis from swap cost
+        swap_futures_price, swap_basis, annual_swap_rate = calculate_swap_basis(
+            spot_mid, swap_charge, lot_size, time_to_expiry
+        )
+
+        # Calculate premium (difference between actual and fair value)
+        swap_diff = actual_basis - swap_basis
+        swap_premium_pct = ((actual_basis - swap_basis) / abs(swap_basis)) * 100 if abs(swap_basis) > 0.001 else 0
+
+        # Calculate margin requirements
+        margin_data = calculate_margin_requirements(
+            spot_mid, futures_mid, lot_size, leverage, user_lot_size
+        )
+
+        return jsonify({
+            'success': True,
+            'spot_price': round(spot_mid, 2),
+            'futures_price': round(futures_mid, 2),
+            'actual_basis': round(actual_basis, 2),
+            'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else 0,
+            'swap_charge': swap_charge,
+            'swap_basis': round(swap_basis, 2),
+            'swap_diff': round(swap_diff, 2),
+            'swap_premium_pct': round(swap_premium_pct, 1),
+            'margin': margin_data,
+            'timestamp': datetime.now().strftime('%H:%M:%S')
+        })
+
+    except Exception as e:
+        logger.error(f"Basis premium API error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/api/trades')
@@ -2140,7 +2349,9 @@ def start_price_streaming():
 
                 # Emit price update
                 if spot_bid > 0 or futures_bid > 0:
-                    spread = ((futures_bid + futures_ask) / 2) - ((spot_bid + spot_ask) / 2) if spot_bid > 0 and futures_bid > 0 else 0
+                    spot_mid = (spot_bid + spot_ask) / 2 if spot_bid > 0 else 0
+                    futures_mid = (futures_bid + futures_ask) / 2 if futures_bid > 0 else 0
+                    spread = futures_mid - spot_mid if spot_mid > 0 and futures_mid > 0 else 0
 
                     # Add spread to history for z-score calculation
                     if spread != 0:
@@ -2150,14 +2361,12 @@ def start_price_streaming():
                         current_time = time.time()
                         if current_time - last_save_time >= 60:
                             try:
-                                spot_mid = (spot_bid + spot_ask) / 2
-                                futures_mid = (futures_bid + futures_ask) / 2
                                 database.save_price_data('ACTIVE', spot_mid, futures_mid, spread)
                                 last_save_time = current_time
                             except Exception as e:
                                 logger.error(f"[PRICES] Failed to save price data: {e}")
 
-                    # Get lookback period from config
+                    # Get config for calculations
                     config = database.get_config()
                     lookback_period = config.lookback_period if config else 90
 
@@ -2176,6 +2385,43 @@ def start_price_streaming():
                         if std_val > 0:
                             zscore = (spread - mean_val) / std_val
 
+                    # === Basis Premium Calculation ===
+                    swap_charge = config.swap_charge if config else 0.0
+                    lot_size = config.contract_size if config else 100.0
+                    futures_expiry_str = config.futures_expiry if config else None
+
+                    # Parse expiry and calculate days to expiry
+                    _, days_to_expiry = parse_futures_expiry(futures_expiry_str)
+                    time_to_expiry = days_to_expiry / 365.25 if days_to_expiry > 0 else 0
+
+                    # Calculate fair value basis from swap cost
+                    swap_futures_price, swap_basis, annual_swap_rate = calculate_swap_basis(
+                        spot_mid, swap_charge, lot_size, time_to_expiry
+                    )
+
+                    # Calculate premium (difference between actual and fair value)
+                    swap_diff = spread - swap_basis if swap_basis != 0 else 0
+                    swap_premium_pct = ((spread - swap_basis) / abs(swap_basis)) * 100 if abs(swap_basis) > 0.001 else 0
+
+                    # === Margin Requirements ===
+                    user_lot_size = config.lot_size if config else 0.1
+                    leverage = 100  # Default leverage; could be fetched from MT5 if connected
+
+                    # Try to get actual leverage from MT5
+                    try:
+                        import MetaTrader5 as mt5
+                        if mt5.initialize():
+                            account = mt5.account_info()
+                            if account:
+                                leverage = account.leverage
+                            mt5.shutdown()
+                    except:
+                        pass
+
+                    margin_data = calculate_margin_requirements(
+                        spot_mid, futures_mid, lot_size, leverage, user_lot_size
+                    )
+
                     socketio.emit('tick', {
                         'spot_bid': spot_bid,
                         'spot_ask': spot_ask,
@@ -2187,7 +2433,15 @@ def start_price_streaming():
                         'std': std_val if lookback_complete else None,
                         'history_count': len(spread_history),
                         'lookback_required': lookback_period,
-                        'lookback_complete': lookback_complete
+                        'lookback_complete': lookback_complete,
+                        # Basis Premium Data
+                        'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else None,
+                        'swap_charge': swap_charge,
+                        'swap_basis': round(swap_basis, 2) if swap_basis != 0 else None,
+                        'swap_diff': round(swap_diff, 2) if swap_diff != 0 else None,
+                        'swap_premium_pct': round(swap_premium_pct, 1) if swap_premium_pct != 0 else None,
+                        # Margin Data
+                        'margin': margin_data
                     })
 
                 time.sleep(0.3)  # Update every 0.3 seconds
