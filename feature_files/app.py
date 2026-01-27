@@ -14,9 +14,10 @@ import asyncio
 import threading
 import json
 import os
+import math
 from datetime import datetime
 from functools import wraps
-from typing import Optional
+from typing import Optional, Tuple
 import logging
 from pathlib import Path
 
@@ -43,6 +44,30 @@ from core.trading_engine import TradingEngine, EngineState
 # Active broker config file (workaround for database not saving new fields)
 ACTIVE_BROKER_FILE = Path(__file__).parent.parent / "active_brokers.json"
 
+# Determine the best async mode for SocketIO
+# eventlet/gevent support WebSockets, threading uses long-polling only
+def _get_async_mode():
+    """Determine the best async mode for SocketIO based on available packages."""
+    try:
+        import eventlet
+        eventlet.monkey_patch()
+        return 'eventlet'
+    except ImportError:
+        pass
+    try:
+        import gevent
+        from gevent import monkey
+        monkey.patch_all()
+        return 'gevent'
+    except ImportError:
+        pass
+    # Fallback to threading (long-polling only, no WebSocket support)
+    # This will cause "Cannot obtain socket from WSGI environment" warnings
+    # but the app will continue to work with polling transport
+    return 'threading'
+
+_async_mode = _get_async_mode()
+
 
 def save_active_brokers(spot_id, futures_id):
     """Save active broker IDs to JSON file"""
@@ -66,6 +91,311 @@ def load_active_brokers():
             logging.getLogger(__name__).error(f"[BROKERS] Error loading active brokers: {e}")
     return None, None
 
+
+def calculate_swap_basis(spot_price: float, swap_charge: float, lot_size: float,
+                         time_to_expiry: float) -> Tuple[float, float, float]:
+    """
+    Calculate swap-based fair value basis.
+
+    Args:
+        spot_price: Current spot price
+        swap_charge: Daily swap cost in dollars per lot
+        lot_size: Contract size (units per lot)
+        time_to_expiry: Time to expiry in years (fractional)
+
+    Returns:
+        Tuple of (swap_futures_price, swap_basis, annual_swap_rate)
+    """
+    if swap_charge <= 0 or time_to_expiry <= 0:
+        return spot_price, 0.0, 0.0
+
+    position_value = spot_price * lot_size
+    if position_value <= 0:
+        return spot_price, 0.0, 0.0
+
+    daily_swap_rate = swap_charge / position_value
+    annual_swap_rate = daily_swap_rate * 365
+
+    swap_futures_price = spot_price * math.exp(annual_swap_rate * time_to_expiry)
+    swap_basis = swap_futures_price - spot_price
+
+    return swap_futures_price, swap_basis, annual_swap_rate
+
+
+def calculate_hurst_exponent(spread_history: list, min_points: int = 20) -> tuple:
+    """
+    Calculate Hurst Exponent using R/S (Rescaled Range) method.
+
+    H < 0.4: Mean-reverting (anti-persistent) - GOOD for mean reversion strategy
+    H = 0.5: Random walk (Brownian motion) - No edge
+    H > 0.6: Trending (persistent) - BAD for mean reversion, good for momentum
+
+    Args:
+        spread_history: List of spread values
+        min_points: Minimum data points required
+
+    Returns: (hurst_value, regime_label)
+    """
+    import numpy as np
+
+    if len(spread_history) < min_points:
+        return None, 'INSUFFICIENT_DATA'
+
+    # Use last N points (more recent data is more relevant)
+    max_points = min(100, len(spread_history))
+    ts = np.array(spread_history[-max_points:])
+
+    n = len(ts)
+    if n < min_points:
+        return None, 'INSUFFICIENT_DATA'
+
+    # Calculate returns/differences
+    diffs = np.diff(ts)
+    if len(diffs) == 0:
+        return None, 'INSUFFICIENT_DATA'
+
+    # Range of chunk sizes to test (must be at least 10)
+    max_k = n // 2
+    min_k = max(10, n // 10)
+
+    if max_k <= min_k:
+        return None, 'INSUFFICIENT_DATA'
+
+    # Calculate R/S for different chunk sizes
+    rs_values = []
+    chunk_sizes = []
+
+    for k in range(min_k, max_k + 1, max(1, (max_k - min_k) // 10)):
+        num_chunks = n // k
+        if num_chunks < 1:
+            continue
+
+        rs_list = []
+        for i in range(num_chunks):
+            chunk = ts[i*k:(i+1)*k]
+            if len(chunk) < 2:
+                continue
+
+            # Mean-adjusted cumulative deviations
+            mean_chunk = np.mean(chunk)
+            deviations = chunk - mean_chunk
+            cumsum = np.cumsum(deviations)
+
+            # Range
+            R = np.max(cumsum) - np.min(cumsum)
+
+            # Standard deviation
+            S = np.std(chunk, ddof=1)
+
+            if S > 0:
+                rs_list.append(R / S)
+
+        if rs_list:
+            rs_values.append(np.mean(rs_list))
+            chunk_sizes.append(k)
+
+    if len(rs_values) < 3:
+        return None, 'INSUFFICIENT_DATA'
+
+    # Linear regression on log-log scale to get Hurst exponent
+    log_n = np.log(chunk_sizes)
+    log_rs = np.log(rs_values)
+
+    # Simple linear regression: H = slope
+    slope, _ = np.polyfit(log_n, log_rs, 1)
+    hurst = slope
+
+    # Clamp to reasonable range [0, 1]
+    hurst = max(0.0, min(1.0, hurst))
+
+    # Determine regime
+    if hurst < 0.4:
+        regime = 'MEAN_REVERTING'
+    elif hurst < 0.6:
+        regime = 'RANDOM_WALK'
+    else:
+        regime = 'TRENDING'
+
+    return round(hurst, 3), regime
+
+
+def calculate_min_profitable_std(config, current_std: float,
+                                  spot_spread_cents: float = None,
+                                  futures_spread_cents: float = None) -> dict:
+    """
+    Calculate the minimum STD required for a trade to be profitable.
+
+    Formula:
+        Min_STD = (Round-trip Costs + Min_Profit) / (Entry_Z - Exit_Z) × Lot_Size × Contract_Size
+
+    Args:
+        config: TradingConfig object
+        current_std: Current standard deviation of spread
+        spot_spread_cents: Current spot bid-ask spread in cents (optional)
+        futures_spread_cents: Current futures bid-ask spread in cents (optional)
+
+    Returns: dict with min_std, is_profitable, round_trip_cost, expected_profit, etc.
+    """
+    # Get config values
+    entry_z = config.entry_std_dev if config else 2.0
+    exit_z = config.exit_std_dev if config else 0.5
+    lot_size = config.lot_size if config else 0.1
+    contract_size = config.contract_size if config else 100.0
+    min_profit_per_lot = config.min_profit_per_lot if config else 50.0
+
+    # Use configured spread costs if real-time not available
+    if spot_spread_cents is None:
+        spot_spread_cents = (config.spot_spread_cost if config else 0.40) * 100
+    if futures_spread_cents is None:
+        futures_spread_cents = (config.futures_spread_cost if config else 0.10) * 100
+
+    # Expected Z-score move from entry to exit
+    z_move = entry_z - exit_z  # e.g., 2.0 - 0.5 = 1.5σ
+
+    # Calculate round-trip costs from bid-ask spreads
+    # Entry cost = (spot_spread + futures_spread) × lot_size × contract_size
+    entry_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * contract_size
+    round_trip_cost = entry_cost * 2  # Entry + exit
+
+    # Min profit for this trade
+    min_profit = min_profit_per_lot * lot_size
+
+    # Total amount the spread move must generate
+    total_required = round_trip_cost + min_profit
+
+    # Calculate minimum STD
+    denominator = z_move * lot_size * contract_size
+    if denominator > 0:
+        min_std = total_required / denominator
+    else:
+        min_std = float('inf')
+
+    # Determine if trading is profitable
+    is_profitable = bool(current_std >= min_std) if current_std > 0 else False
+
+    # Calculate expected profit if trade is successful
+    if current_std > 0:
+        profit_if_successful = (current_std * z_move * lot_size * contract_size) - round_trip_cost
+    else:
+        profit_if_successful = 0.0
+
+    return {
+        'min_std': float(min_std),
+        'current_std': float(current_std),
+        'is_profitable': is_profitable,
+        'round_trip_cost': float(round_trip_cost),
+        'min_profit': float(min_profit),
+        'total_required': float(total_required),
+        'z_move': float(z_move),
+        'lot_size': float(lot_size),
+        'contract_size': float(contract_size),
+        'profit_if_successful': float(profit_if_successful),
+        'std_deficit': float(max(0, min_std - current_std)),
+        'std_ratio': float(current_std / min_std) if min_std > 0 else 0.0
+    }
+
+
+def calculate_entry_exit_bands(mean: float, std: float, config) -> dict:
+    """
+    Calculate entry and exit price bands based on Z-score thresholds.
+
+    Args:
+        mean: Mean of spread over lookback period
+        std: Standard deviation of spread
+        config: TradingConfig object
+
+    Returns: dict with entry/exit levels for short and long spreads
+    """
+    entry_std = config.entry_std_dev if config else 2.0
+    exit_std = config.exit_std_dev if config else 0.5
+    stop_std = config.stop_loss_std_dev if config else 3.0
+
+    return {
+        # Short Spread: Enter when spread is HIGH, exit when it falls
+        'short_entry': round(mean + (entry_std * std), 2),   # Entry ↑
+        'short_exit': round(mean + (exit_std * std), 2),     # Exit (profit target)
+        'short_stop': round(mean + (stop_std * std), 2),     # Stop loss
+
+        # Long Spread: Enter when spread is LOW, exit when it rises
+        'long_entry': round(mean - (entry_std * std), 2),    # Entry ↓
+        'long_exit': round(mean - (exit_std * std), 2),      # Exit (profit target)
+        'long_stop': round(mean - (stop_std * std), 2),      # Stop loss
+
+        # Band values for display
+        'entry_std': entry_std,
+        'exit_std': exit_std,
+        'stop_std': stop_std
+    }
+
+
+def calculate_margin_requirements(spot_price: float, futures_price: float,
+                                  contract_size: float, leverage: int,
+                                  user_lot_size: float) -> dict:
+    """
+    Calculate margin requirements for spread trade.
+
+    Args:
+        spot_price: Current spot price
+        futures_price: Current futures price
+        contract_size: Units per lot
+        leverage: Account leverage (e.g., 100 for 1:100)
+        user_lot_size: User's configured lot size
+
+    Returns:
+        Dictionary with margin calculations
+    """
+    if leverage <= 0:
+        leverage = 100  # Default
+
+    # Margin per lot (Spot) = (Price × Contract Size) / Leverage
+    margin_per_lot_spot = (spot_price * contract_size) / leverage
+
+    # Margin per lot (Futures) - similar calculation
+    margin_per_lot_futures = (futures_price * contract_size) / leverage
+
+    # Total margin per lot (both legs of spread trade)
+    margin_per_lot_total = margin_per_lot_spot + margin_per_lot_futures
+
+    # Margin required for current position size
+    margin_required = margin_per_lot_total * user_lot_size
+
+    # Margin with 15% buffer for price fluctuation
+    margin_with_buffer = margin_required * 1.15
+
+    return {
+        'leverage': leverage,
+        'margin_per_lot_spot': round(margin_per_lot_spot, 2),
+        'margin_per_lot_futures': round(margin_per_lot_futures, 2),
+        'margin_per_lot_total': round(margin_per_lot_total, 2),
+        'margin_required': round(margin_required, 2),
+        'margin_with_buffer': round(margin_with_buffer, 2),
+        'user_lot_size': user_lot_size
+    }
+
+
+def parse_futures_expiry(expiry_str: Optional[str]) -> Tuple[Optional[datetime], float]:
+    """
+    Parse futures expiry date string and calculate days to expiry.
+
+    Args:
+        expiry_str: Expiry date as string (YYYY-MM-DD format)
+
+    Returns:
+        Tuple of (expiry_datetime, days_to_expiry)
+    """
+    if not expiry_str:
+        return None, 0.0
+
+    try:
+        expiry_date = datetime.strptime(expiry_str, '%Y-%m-%d')
+        current_time = datetime.now()
+        time_delta = expiry_date - current_time
+        days_to_expiry = max(0, time_delta.total_seconds() / (24 * 3600))
+        return expiry_date, days_to_expiry
+    except (ValueError, TypeError):
+        return None, 0.0
+
+
 logger = logging.getLogger(__name__)
 
 # Flask app
@@ -73,7 +403,9 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-broker-arb-secret-key'
 
 # SocketIO for real-time updates
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+# Uses eventlet/gevent for WebSocket support if available, otherwise falls back to threading (polling)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode=_async_mode, logger=False, engineio_logger=False)
+logger.info(f"SocketIO initialized with async_mode='{_async_mode}'")
 
 # Global instances
 db: Optional[DatabaseManager] = None
@@ -970,6 +1302,115 @@ def api_broker_diagnose(broker_id):
         return jsonify(diagnostics)
 
 
+@app.route('/api/basis-premium')
+def api_basis_premium():
+    """
+    Get current basis premium analysis data.
+
+    Returns basis (F-S), days to expiry, fair value basis, premium %, and margin requirements.
+    """
+    try:
+        database = get_db()
+        config = database.get_config()
+        spot_broker_id, futures_broker_id = load_active_brokers()
+
+        if not spot_broker_id or not futures_broker_id:
+            return jsonify({'success': False, 'error': 'No active brokers configured'})
+
+        spot_broker = database.get_broker(spot_broker_id)
+        futures_broker = database.get_broker(futures_broker_id)
+
+        if not spot_broker or not futures_broker:
+            return jsonify({'success': False, 'error': 'Broker not found'})
+
+        spot_bid, spot_ask = 0, 0
+        futures_bid, futures_ask = 0, 0
+        leverage = 100
+
+        # Get prices from MT5
+        if spot_broker.broker_type == 'MT5' or futures_broker.broker_type == 'MT5':
+            try:
+                import MetaTrader5 as mt5
+
+                if not mt5.initialize():
+                    return jsonify({'success': False, 'error': 'Failed to initialize MT5'})
+
+                # Get account leverage
+                account = mt5.account_info()
+                if account:
+                    leverage = account.leverage
+
+                # Get spot price
+                if spot_broker.broker_type == 'MT5':
+                    tick = mt5.symbol_info_tick(spot_broker.symbol)
+                    if tick:
+                        spot_bid = tick.bid
+                        spot_ask = tick.ask
+
+                # Get futures price
+                if futures_broker.broker_type == 'MT5':
+                    tick = mt5.symbol_info_tick(futures_broker.symbol)
+                    if tick:
+                        futures_bid = tick.bid
+                        futures_ask = tick.ask
+
+                mt5.shutdown()
+
+            except ImportError:
+                return jsonify({'success': False, 'error': 'MetaTrader5 not installed'})
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'MT5 error: {str(e)}'})
+
+        if spot_bid <= 0 or futures_bid <= 0:
+            return jsonify({'success': False, 'error': 'Could not get prices'})
+
+        spot_mid = (spot_bid + spot_ask) / 2
+        futures_mid = (futures_bid + futures_ask) / 2
+        actual_basis = futures_mid - spot_mid
+
+        # Get configuration values
+        swap_charge = config.swap_charge if config else 0.0
+        lot_size = config.contract_size if config else 100.0
+        futures_expiry_str = config.futures_expiry if config else None
+        user_lot_size = config.lot_size if config else 0.1
+
+        # Parse expiry and calculate days to expiry
+        _, days_to_expiry = parse_futures_expiry(futures_expiry_str)
+        time_to_expiry = days_to_expiry / 365.25 if days_to_expiry > 0 else 0
+
+        # Calculate fair value basis from swap cost
+        swap_futures_price, swap_basis, annual_swap_rate = calculate_swap_basis(
+            spot_mid, swap_charge, lot_size, time_to_expiry
+        )
+
+        # Calculate premium (difference between actual and fair value)
+        swap_diff = actual_basis - swap_basis
+        swap_premium_pct = ((actual_basis - swap_basis) / abs(swap_basis)) * 100 if abs(swap_basis) > 0.001 else 0
+
+        # Calculate margin requirements
+        margin_data = calculate_margin_requirements(
+            spot_mid, futures_mid, lot_size, leverage, user_lot_size
+        )
+
+        return jsonify({
+            'success': True,
+            'spot_price': round(spot_mid, 2),
+            'futures_price': round(futures_mid, 2),
+            'actual_basis': round(actual_basis, 2),
+            'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else 0,
+            'swap_charge': swap_charge,
+            'swap_basis': round(swap_basis, 2),
+            'swap_diff': round(swap_diff, 2),
+            'swap_premium_pct': round(swap_premium_pct, 1),
+            'margin': margin_data,
+            'timestamp': datetime.now().strftime('%H:%M:%S')
+        })
+
+    except Exception as e:
+        logger.error(f"Basis premium API error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/api/trades')
 def api_trades():
     """Get trade history"""
@@ -1510,6 +1951,15 @@ def api_test_order():
                     order_type = mt5.ORDER_TYPE_SELL
                     price = tick.bid
 
+                # Determine the correct filling mode based on symbol support
+                filling_mode = mt5.ORDER_FILLING_IOC  # Default
+                if symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                    filling_mode = mt5.ORDER_FILLING_FOK
+                elif symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                    filling_mode = mt5.ORDER_FILLING_IOC
+                else:
+                    filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
+
                 request_order = {
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": symbol,
@@ -1520,7 +1970,7 @@ def api_test_order():
                     "magic": 123456,
                     "comment": "Test Order",
                     "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,
+                    "type_filling": filling_mode,
                 }
 
                 # Send order
@@ -1615,6 +2065,16 @@ def api_close_position():
                     close_type = mt5.ORDER_TYPE_BUY
                     price = tick.ask
 
+                # Determine the correct filling mode based on symbol support
+                symbol_info = mt5.symbol_info(symbol)
+                filling_mode = mt5.ORDER_FILLING_IOC  # Default
+                if symbol_info and symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                    filling_mode = mt5.ORDER_FILLING_FOK
+                elif symbol_info and symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                    filling_mode = mt5.ORDER_FILLING_IOC
+                else:
+                    filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
+
                 close_request = {
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": symbol,
@@ -1626,7 +2086,7 @@ def api_close_position():
                     "magic": 123456,
                     "comment": "Close by Ticket",
                     "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,
+                    "type_filling": filling_mode,
                 }
 
                 result = mt5.order_send(close_request)
@@ -1704,6 +2164,15 @@ def api_test_order_cycle():
 
         min_volume = symbol_info.volume_min
 
+        # Determine the correct filling mode based on symbol support
+        filling_mode = mt5.ORDER_FILLING_IOC  # Default
+        if symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+            filling_mode = mt5.ORDER_FILLING_IOC
+        else:
+            filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
+
         # Step 1: Open position
         open_request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -1715,7 +2184,7 @@ def api_test_order_cycle():
             "magic": 987654,
             "comment": "Order Cycle Test",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,
         }
 
         open_result = mt5.order_send(open_request)
@@ -1769,7 +2238,7 @@ def api_test_order_cycle():
             "magic": 987654,
             "comment": "Order Cycle Close",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,  # Use same filling mode as open
         }
 
         close_result = mt5.order_send(close_request)
@@ -2086,7 +2555,9 @@ def start_price_streaming():
 
                 # Emit price update
                 if spot_bid > 0 or futures_bid > 0:
-                    spread = ((futures_bid + futures_ask) / 2) - ((spot_bid + spot_ask) / 2) if spot_bid > 0 and futures_bid > 0 else 0
+                    spot_mid = (spot_bid + spot_ask) / 2 if spot_bid > 0 else 0
+                    futures_mid = (futures_bid + futures_ask) / 2 if futures_bid > 0 else 0
+                    spread = futures_mid - spot_mid if spot_mid > 0 and futures_mid > 0 else 0
 
                     # Add spread to history for z-score calculation
                     if spread != 0:
@@ -2096,14 +2567,12 @@ def start_price_streaming():
                         current_time = time.time()
                         if current_time - last_save_time >= 60:
                             try:
-                                spot_mid = (spot_bid + spot_ask) / 2
-                                futures_mid = (futures_bid + futures_ask) / 2
                                 database.save_price_data('ACTIVE', spot_mid, futures_mid, spread)
                                 last_save_time = current_time
                             except Exception as e:
                                 logger.error(f"[PRICES] Failed to save price data: {e}")
 
-                    # Get lookback period from config
+                    # Get config for calculations
                     config = database.get_config()
                     lookback_period = config.lookback_period if config else 90
 
@@ -2122,6 +2591,73 @@ def start_price_streaming():
                         if std_val > 0:
                             zscore = (spread - mean_val) / std_val
 
+                    # === Basis Premium Calculation ===
+                    swap_charge = config.swap_charge if config else 0.0
+                    lot_size = config.contract_size if config else 100.0
+                    futures_expiry_str = config.futures_expiry if config else None
+
+                    # Parse expiry and calculate days to expiry
+                    _, days_to_expiry = parse_futures_expiry(futures_expiry_str)
+                    time_to_expiry = days_to_expiry / 365.25 if days_to_expiry > 0 else 0
+
+                    # Calculate fair value basis from swap cost
+                    swap_futures_price, swap_basis, annual_swap_rate = calculate_swap_basis(
+                        spot_mid, swap_charge, lot_size, time_to_expiry
+                    )
+
+                    # Calculate premium (difference between actual and fair value)
+                    swap_diff = spread - swap_basis if swap_basis != 0 else 0
+                    swap_premium_pct = ((spread - swap_basis) / abs(swap_basis)) * 100 if abs(swap_basis) > 0.001 else 0
+
+                    # === Margin Requirements ===
+                    user_lot_size = config.lot_size if config else 0.1
+                    leverage = 100  # Default leverage; could be fetched from MT5 if connected
+
+                    # Try to get actual leverage from MT5
+                    try:
+                        import MetaTrader5 as mt5
+                        if mt5.initialize():
+                            account = mt5.account_info()
+                            if account:
+                                leverage = account.leverage
+                            mt5.shutdown()
+                    except:
+                        pass
+
+                    margin_data = calculate_margin_requirements(
+                        spot_mid, futures_mid, lot_size, leverage, user_lot_size
+                    )
+
+                    # === STD Filter Calculations ===
+                    std_filter_data = None
+                    entry_exit_bands = None
+                    hurst_data = None
+
+                    if lookback_complete and std_val > 0:
+                        # Get bid-ask spreads in cents for cost calculation
+                        spot_spread_cents = (spot_ask - spot_bid) * 100 if spot_bid > 0 else None
+                        futures_spread_cents = (futures_ask - futures_bid) * 100 if futures_bid > 0 else None
+
+                        # Calculate STD filter (min profitable std)
+                        std_filter_data = calculate_min_profitable_std(
+                            config, std_val,
+                            spot_spread_cents, futures_spread_cents
+                        )
+
+                        # Calculate entry/exit bands
+                        entry_exit_bands = calculate_entry_exit_bands(mean_val, std_val, config)
+
+                        # Calculate Hurst exponent for regime detection
+                        if config and config.hurst_enabled:
+                            hurst_value, hurst_regime = calculate_hurst_exponent(
+                                list(spread_history), min_points=20
+                            )
+                            hurst_data = {
+                                'value': hurst_value,
+                                'regime': hurst_regime,
+                                'threshold': config.hurst_threshold if config else 0.5
+                            }
+
                     socketio.emit('tick', {
                         'spot_bid': spot_bid,
                         'spot_ask': spot_ask,
@@ -2133,7 +2669,21 @@ def start_price_streaming():
                         'std': std_val if lookback_complete else None,
                         'history_count': len(spread_history),
                         'lookback_required': lookback_period,
-                        'lookback_complete': lookback_complete
+                        'lookback_complete': lookback_complete,
+                        # Basis Premium Data
+                        'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else None,
+                        'swap_charge': swap_charge,
+                        'swap_basis': round(swap_basis, 2) if swap_basis != 0 else None,
+                        'swap_diff': round(swap_diff, 2) if swap_diff != 0 else None,
+                        'swap_premium_pct': round(swap_premium_pct, 1) if swap_premium_pct != 0 else None,
+                        # Margin Data
+                        'margin': margin_data,
+                        # STD Filter Data (from trading_portal.py logic)
+                        'std_filter': std_filter_data,
+                        # Entry/Exit Bands
+                        'bands': entry_exit_bands,
+                        # Hurst Exponent (regime detection)
+                        'hurst': hurst_data
                     })
 
                 time.sleep(0.3)  # Update every 0.3 seconds

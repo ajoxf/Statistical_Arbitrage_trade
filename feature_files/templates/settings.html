@@ -22,7 +22,7 @@
                         <div class="col-md-6">
                             <label class="form-label">Lookback Period</label>
                             <input type="number" class="form-control" name="lookback_period"
-                                   value="{{ config.lookback_period }}" min="10" max="1000">
+                                   value="{{ config.lookback_period }}" min="1" max="10000">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Lookback Unit</label>
@@ -39,12 +39,12 @@
                         <div class="col-md-4">
                             <label class="form-label">Exit SD (σ)</label>
                             <input type="number" class="form-control" name="exit_std_dev"
-                                   value="{{ config.exit_std_dev }}" step="0.1" min="0" max="3">
+                                   value="{{ config.exit_std_dev }}" step="0.1" min="0" max="2">
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Stop Loss SD (σ)</label>
                             <input type="number" class="form-control" name="stop_loss_std_dev"
-                                   value="{{ config.stop_loss_std_dev }}" step="0.1" min="1" max="6">
+                                   value="{{ config.stop_loss_std_dev }}" step="0.1" min="2" max="6">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Exit at Opposite SD (0=disabled)</label>
