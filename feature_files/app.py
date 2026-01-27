@@ -336,11 +336,74 @@ def api_broker_test(broker_id):
                 loop.close()
 
         elif broker.broker_type == 'MT5':
-            # MT5 test - placeholder for now
-            return jsonify({
-                'success': False,
-                'error': 'MT5 connection test not implemented yet. Please ensure MT5 terminal is running.'
-            })
+            # MT5 test using MetaTrader5 library
+            try:
+                import MetaTrader5 as mt5
+
+                # Initialize MT5 connection
+                if not mt5.initialize():
+                    error_code = mt5.last_error()
+                    return jsonify({
+                        'success': False,
+                        'error': f'Failed to initialize MT5. Error: {error_code}. Ensure MT5 terminal is running and algo trading is enabled.'
+                    })
+
+                # Get account info
+                account_info = mt5.account_info()
+                if account_info is None:
+                    mt5.shutdown()
+                    return jsonify({
+                        'success': False,
+                        'error': 'Could not get account info. Please log in to MT5.'
+                    })
+
+                # Get symbol info and price
+                symbol = broker.symbol
+                symbol_info = mt5.symbol_info(symbol)
+                tick = mt5.symbol_info_tick(symbol)
+
+                latency_ms = int((time.time() - start_time) * 1000)
+
+                # Update broker status
+                broker.status = 'CONNECTED'
+                broker.latency_ms = latency_ms
+                database.add_broker(broker)
+
+                result = {
+                    'success': True,
+                    'latency_ms': latency_ms,
+                    'broker_type': 'MT5',
+                    'account_info': {
+                        'login': account_info.login,
+                        'server': account_info.server,
+                        'balance': account_info.balance,
+                        'equity': account_info.equity,
+                        'currency': account_info.currency
+                    }
+                }
+
+                if tick:
+                    result['price_info'] = {
+                        'symbol': symbol,
+                        'bid': tick.bid,
+                        'ask': tick.ask
+                    }
+                elif symbol_info is None:
+                    result['warning'] = f'Symbol "{symbol}" not found in Market Watch. Add it to see prices.'
+
+                mt5.shutdown()
+                return jsonify(result)
+
+            except ImportError:
+                return jsonify({
+                    'success': False,
+                    'error': 'MetaTrader5 Python library not installed. Run: pip install MetaTrader5'
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': f'MT5 error: {str(e)}'
+                })
 
         elif broker.broker_type in ['FIX', 'FLEXTRADE']:
             # FIX test - placeholder
@@ -640,18 +703,137 @@ def api_broker_diagnose(broker_id):
             loop.close()
 
         elif broker.broker_type == 'MT5':
-            add_check('MT5 Terminal', 'INFO', 'MT5 requires the terminal to be running')
-            diagnostics['suggestions'].append({
-                'issue': 'MT5 Connection Setup',
-                'fix': 'Ensure MetaTrader 5 terminal is properly configured',
-                'steps': [
-                    '1. Open MetaTrader 5 terminal',
-                    '2. Log in to your trading account',
-                    '3. Enable algo trading (Tools > Options > Expert Advisors)',
-                    '4. Allow DLL imports if required',
-                    '5. Ensure the symbol exists in Market Watch'
-                ]
-            })
+            # MT5 comprehensive diagnostics
+            try:
+                import MetaTrader5 as mt5
+                add_check('MT5 Library', 'PASS', 'MetaTrader5 Python library is installed')
+
+                # Check 1: Initialize MT5
+                if mt5.initialize():
+                    add_check('MT5 Terminal', 'PASS', 'Connected to MT5 terminal')
+
+                    # Check 2: Account info
+                    account_info = mt5.account_info()
+                    if account_info:
+                        add_check('Account Login', 'PASS',
+                                  f'Logged in as {account_info.login} on {account_info.server}')
+                        add_check('Account Balance', 'PASS',
+                                  f'Balance: {account_info.balance:.2f} {account_info.currency}')
+
+                        # Check trading permissions
+                        if account_info.trade_allowed:
+                            add_check('Trading Permission', 'PASS', 'Trading is allowed on this account')
+                        else:
+                            add_check('Trading Permission', 'FAIL', 'Trading is NOT allowed')
+                            diagnostics['suggestions'].append({
+                                'issue': 'Trading Not Allowed',
+                                'fix': 'Enable trading on your MT5 account',
+                                'steps': [
+                                    'Check if your account has trading privileges',
+                                    'Contact your broker if trading is disabled',
+                                    'Ensure you are not on a read-only/investor account'
+                                ]
+                            })
+                    else:
+                        add_check('Account Login', 'FAIL', 'Not logged in to any account')
+                        diagnostics['suggestions'].append({
+                            'issue': 'Not Logged In',
+                            'fix': 'Log in to your MT5 trading account',
+                            'steps': [
+                                '1. Open MT5 terminal',
+                                '2. File > Login to Trade Account',
+                                '3. Enter your credentials'
+                            ]
+                        })
+
+                    # Check 3: Symbol validation
+                    symbol = broker.symbol
+                    if symbol:
+                        symbol_info = mt5.symbol_info(symbol)
+                        if symbol_info:
+                            add_check('Symbol', 'PASS', f'Symbol "{symbol}" found')
+
+                            # Check if symbol is visible in Market Watch
+                            if symbol_info.visible:
+                                add_check('Market Watch', 'PASS', f'Symbol is visible in Market Watch')
+                            else:
+                                add_check('Market Watch', 'WARN', f'Symbol not in Market Watch')
+                                # Try to add it
+                                mt5.symbol_select(symbol, True)
+                                diagnostics['suggestions'].append({
+                                    'issue': 'Symbol Not in Market Watch',
+                                    'fix': f'Add {symbol} to Market Watch',
+                                    'steps': [
+                                        f'Right-click Market Watch > Symbols',
+                                        f'Search for {symbol} and click Show'
+                                    ]
+                                })
+
+                            # Get price
+                            tick = mt5.symbol_info_tick(symbol)
+                            if tick and tick.bid > 0:
+                                add_check('Price Data', 'PASS', f'Bid: {tick.bid}, Ask: {tick.ask}')
+                            else:
+                                add_check('Price Data', 'WARN', 'No price data available')
+                        else:
+                            add_check('Symbol', 'FAIL', f'Symbol "{symbol}" not found')
+                            diagnostics['suggestions'].append({
+                                'issue': 'Symbol Not Found',
+                                'fix': f'The symbol "{symbol}" does not exist on this broker',
+                                'steps': [
+                                    'Check the exact symbol name in MT5 Market Watch',
+                                    'Symbols vary by broker (e.g., XAUUSD, GOLD, GOLD_CASH)',
+                                    'Update the broker config with the correct symbol'
+                                ]
+                            })
+                    else:
+                        add_check('Symbol', 'FAIL', 'No symbol configured')
+
+                    # Check 4: Algo trading
+                    terminal_info = mt5.terminal_info()
+                    if terminal_info:
+                        if terminal_info.trade_allowed:
+                            add_check('Algo Trading', 'PASS', 'Algo trading is enabled')
+                        else:
+                            add_check('Algo Trading', 'FAIL', 'Algo trading is DISABLED')
+                            diagnostics['suggestions'].append({
+                                'issue': 'Algo Trading Disabled',
+                                'fix': 'Enable algorithmic trading in MT5',
+                                'steps': [
+                                    '1. Tools > Options > Expert Advisors',
+                                    '2. Check "Allow algorithmic trading"',
+                                    '3. Check "Allow DLL imports" if needed',
+                                    '4. Click OK and restart MT5'
+                                ]
+                            })
+
+                    mt5.shutdown()
+                else:
+                    error = mt5.last_error()
+                    add_check('MT5 Terminal', 'FAIL', f'Cannot connect to MT5: {error}')
+                    diagnostics['suggestions'].append({
+                        'issue': 'MT5 Not Running',
+                        'fix': 'Start MetaTrader 5 terminal',
+                        'steps': [
+                            '1. Open MetaTrader 5 application',
+                            '2. Log in to your trading account',
+                            '3. Wait for connection to establish',
+                            '4. Try the test again'
+                        ]
+                    })
+
+            except ImportError:
+                add_check('MT5 Library', 'FAIL', 'MetaTrader5 library not installed')
+                diagnostics['suggestions'].append({
+                    'issue': 'Missing MT5 Library',
+                    'fix': 'Install the MetaTrader5 Python package',
+                    'steps': [
+                        'Run: pip install MetaTrader5',
+                        'Restart the application after installation'
+                    ]
+                })
+            except Exception as e:
+                add_check('MT5 Error', 'FAIL', f'Unexpected error: {str(e)}')
 
         elif broker.broker_type in ['FIX', 'FLEXTRADE']:
             add_check('FIX Connection', 'INFO', 'FIX protocol requires gateway configuration')
