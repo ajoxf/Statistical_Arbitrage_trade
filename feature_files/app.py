@@ -279,16 +279,16 @@ def api_brokers():
             fix_target_comp=data.get('fix_target_comp'),
             fix_username=data.get('fix_username'),
             fix_password=data.get('fix_password'),
-            okx_api_key=data.get('okx_api_key'),
-            okx_api_secret=data.get('okx_api_secret'),
-            okx_passphrase=data.get('okx_passphrase'),
-            okx_simulated=data.get('okx_simulated', True),
-            okx_account_type=data.get('okx_account_type', 'spot'),
+            flex_host=data.get('flex_host'),
+            flex_port=data.get('flex_port'),
+            flex_api_key=data.get('flex_api_key'),
+            ib_host=data.get('ib_host'),
+            ib_port=data.get('ib_port'),
+            ib_client_id=data.get('ib_client_id'),
             symbol=data.get('symbol', ''),
             contract_size=float(data.get('contract_size', 100.0)),
             commission_per_lot=float(data.get('commission_per_lot', 0.0)),
-            swap_charge=float(data.get('swap_charge', 0.0)),
-            futures_expiry=data.get('futures_expiry') or None
+            min_volume=float(data.get('min_volume', 0.01))
         )
 
         database.add_broker(broker)
