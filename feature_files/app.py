@@ -1961,10 +1961,13 @@ def api_test_order():
                     price = tick.bid
 
                 # Determine the correct filling mode based on symbol support
+                # SYMBOL_FILLING_FOK=1, SYMBOL_FILLING_IOC=2 (not always in mt5 module)
+                FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
+                FILLING_IOC = getattr(mt5, 'SYMBOL_FILLING_IOC', 2)
                 filling_mode = mt5.ORDER_FILLING_IOC  # Default
-                if symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                if symbol_info.filling_mode & FILLING_FOK:
                     filling_mode = mt5.ORDER_FILLING_FOK
-                elif symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                elif symbol_info.filling_mode & FILLING_IOC:
                     filling_mode = mt5.ORDER_FILLING_IOC
                 else:
                     filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
@@ -2075,11 +2078,14 @@ def api_close_position():
                     price = tick.ask
 
                 # Determine the correct filling mode based on symbol support
+                # SYMBOL_FILLING_FOK=1, SYMBOL_FILLING_IOC=2 (not always in mt5 module)
+                FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
+                FILLING_IOC = getattr(mt5, 'SYMBOL_FILLING_IOC', 2)
                 symbol_info = mt5.symbol_info(symbol)
                 filling_mode = mt5.ORDER_FILLING_IOC  # Default
-                if symbol_info and symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                if symbol_info and symbol_info.filling_mode & FILLING_FOK:
                     filling_mode = mt5.ORDER_FILLING_FOK
-                elif symbol_info and symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                elif symbol_info and symbol_info.filling_mode & FILLING_IOC:
                     filling_mode = mt5.ORDER_FILLING_IOC
                 else:
                     filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
@@ -2174,10 +2180,13 @@ def api_test_order_cycle():
         min_volume = symbol_info.volume_min
 
         # Determine the correct filling mode based on symbol support
+        # SYMBOL_FILLING_FOK=1, SYMBOL_FILLING_IOC=2 (not always in mt5 module)
+        FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
+        FILLING_IOC = getattr(mt5, 'SYMBOL_FILLING_IOC', 2)
         filling_mode = mt5.ORDER_FILLING_IOC  # Default
-        if symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+        if symbol_info.filling_mode & FILLING_FOK:
             filling_mode = mt5.ORDER_FILLING_FOK
-        elif symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+        elif symbol_info.filling_mode & FILLING_IOC:
             filling_mode = mt5.ORDER_FILLING_IOC
         else:
             filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
