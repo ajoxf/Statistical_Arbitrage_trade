@@ -22,7 +22,7 @@
                         <div class="col-md-6">
                             <label class="form-label">Asset Name</label>
                             <input type="text" class="form-control" name="asset_name"
-                                   value="{{ config.asset_name }}">
+                                   value="{{ config.asset_name }}" placeholder="e.g., GOLD, BTC">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Contract Size</label>
@@ -30,24 +30,16 @@
                                    value="{{ config.contract_size }}" step="1">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Spot Symbol</label>
-                            <input type="text" class="form-control" name="spot_symbol"
-                                   value="{{ config.spot_symbol }}">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Futures Symbol</label>
-                            <input type="text" class="form-control" name="futures_symbol"
-                                   value="{{ config.futures_symbol }}">
-                        </div>
-                        <div class="col-md-6">
                             <label class="form-label">Futures Expiry</label>
                             <input type="date" class="form-control" name="futures_expiry"
                                    value="{{ config.futures_expiry or '' }}">
+                            <small class="text-muted">Leave empty for perpetual swaps</small>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Swap Charge/Day</label>
+                            <label class="form-label">Swap Charge/Day ($)</label>
                             <input type="number" class="form-control" name="swap_charge"
                                    value="{{ config.swap_charge }}" step="0.01">
+                            <small class="text-muted">Used in premium calculation</small>
                         </div>
                         <div class="col-12">
                             <button type="submit" class="btn btn-primary">
