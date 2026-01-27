@@ -10,6 +10,27 @@ Pages:
 - SD Analysis: Standard deviation touch analysis
 """
 
+# IMPORTANT: eventlet/gevent monkey_patch MUST be called before ANY other imports
+# to avoid "Working outside of application context" errors with Flask/Werkzeug
+def _setup_async_mode():
+    """Setup async mode by monkey patching BEFORE other imports."""
+    try:
+        import eventlet
+        eventlet.monkey_patch()
+        return 'eventlet'
+    except ImportError:
+        pass
+    try:
+        import gevent
+        from gevent import monkey
+        monkey.patch_all()
+        return 'gevent'
+    except ImportError:
+        pass
+    return 'threading'
+
+_async_mode = _setup_async_mode()
+
 import asyncio
 import threading
 import json
@@ -43,30 +64,6 @@ from core.trading_engine import TradingEngine, EngineState
 
 # Active broker config file (workaround for database not saving new fields)
 ACTIVE_BROKER_FILE = Path(__file__).parent.parent / "active_brokers.json"
-
-# Determine the best async mode for SocketIO
-# eventlet/gevent support WebSockets, threading uses long-polling only
-def _get_async_mode():
-    """Determine the best async mode for SocketIO based on available packages."""
-    try:
-        import eventlet
-        eventlet.monkey_patch()
-        return 'eventlet'
-    except ImportError:
-        pass
-    try:
-        import gevent
-        from gevent import monkey
-        monkey.patch_all()
-        return 'gevent'
-    except ImportError:
-        pass
-    # Fallback to threading (long-polling only, no WebSocket support)
-    # This will cause "Cannot obtain socket from WSGI environment" warnings
-    # but the app will continue to work with polling transport
-    return 'threading'
-
-_async_mode = _get_async_mode()
 
 
 def save_active_brokers(spot_id, futures_id):
