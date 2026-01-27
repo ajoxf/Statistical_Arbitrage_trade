@@ -463,14 +463,14 @@
             </div>
             <div class="modal-body">
                 <div class="mb-3">
-                    <label class="form-label">Futures Broker</label>
-                    <input type="text" class="form-control" id="edit-futures-broker" readonly
-                           value="{{ active_futures.name if active_futures else 'Not selected' }}">
+                    <label class="form-label">Spot Broker</label>
+                    <input type="text" class="form-control" id="edit-spot-broker" readonly
+                           value="{{ active_spot.name if active_spot else 'Not selected' }}">
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Swap Cost/Day ($)</label>
                     <input type="number" class="form-control" id="edit-swap-charge" step="0.01"
-                           value="{{ active_futures.swap_charge if active_futures else 0 }}">
+                           value="{{ active_spot.swap_charge if active_spot else 0 }}">
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Futures Expiry Date</label>
@@ -1035,8 +1035,8 @@
 
     // ==================== Swap/Expiry Edit Functions ====================
 
-    // Store the active futures broker ID for updates
-    const activeFuturesBrokerId = '{{ active_futures.broker_id if active_futures else "" }}';
+    // Store the active spot broker ID for swap updates
+    const activeSpotBrokerId = '{{ active_spot.broker_id if active_spot else "" }}';
 
     function showEditSwapModal() {
         const modal = new bootstrap.Modal(document.getElementById('editSwapModal'));
@@ -1044,8 +1044,8 @@
     }
 
     async function saveSwapSettings() {
-        if (!activeFuturesBrokerId) {
-            alert('No active futures broker selected. Go to Settings to select one.');
+        if (!activeSpotBrokerId) {
+            alert('No active spot broker selected. Go to Settings to select one.');
             return;
         }
 
@@ -1053,7 +1053,7 @@
         const futuresExpiry = document.getElementById('edit-futures-expiry').value;
 
         try {
-            const response = await fetch(`/api/brokers/${activeFuturesBrokerId}/update`, {
+            const response = await fetch(`/api/brokers/${activeSpotBrokerId}/update`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
