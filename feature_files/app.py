@@ -576,24 +576,42 @@ class AutoTrader:
 
         return spot_price, futures_price
 
-    def _check_filters(self, config, zscore: float, spread_history: list = None) -> Tuple[bool, str]:
+    def _check_filters(self, config, zscore: float, spread_history: list = None,
+                       current_std: float = None, spot_spread_cents: float = None,
+                       futures_spread_cents: float = None) -> Tuple[bool, str]:
         """
         Check if all trading filters pass.
+
+        Args:
+            config: TradingConfig object
+            zscore: Current z-score
+            spread_history: List of historical spread values (for Hurst)
+            current_std: Current standard deviation of spread (for STD filter)
+            spot_spread_cents: Spot bid-ask spread in cents
+            futures_spread_cents: Futures bid-ask spread in cents
 
         Returns:
             Tuple of (passes, reason)
         """
-        # STD Filter check
-        if config.std_filter_enabled:
-            # Get current STD from price streaming (simplified check)
-            # In production, this should use the actual STD filter calculation
-            pass  # STD filter is checked during signal generation
+        # STD Filter check - only at entry, ensures trade is profitable
+        if config.std_filter_enabled and current_std is not None:
+            std_filter_result = calculate_min_profitable_std(
+                config, current_std, spot_spread_cents, futures_spread_cents
+            )
+            if not std_filter_result['is_profitable']:
+                min_std = std_filter_result['min_std']
+                std_ratio = std_filter_result['std_ratio']
+                return False, f"STD filter: current {current_std:.4f} < min required {min_std:.4f} (ratio: {std_ratio:.1%})"
+            else:
+                self._logger.info(f"[AUTO] STD filter passed: {current_std:.4f} >= {std_filter_result['min_std']:.4f}")
 
-        # Hurst Filter check
+        # Hurst Filter check - only trade in mean-reverting markets
         if config.hurst_enabled and spread_history:
             hurst_value, hurst_regime = calculate_hurst_exponent(spread_history)
             if hurst_value is not None and hurst_value > config.hurst_threshold:
                 return False, f"Hurst filter: {hurst_value:.2f} > {config.hurst_threshold} (trending market)"
+            elif hurst_value is not None:
+                self._logger.info(f"[AUTO] Hurst filter passed: {hurst_value:.2f} <= {config.hurst_threshold} ({hurst_regime})")
 
         # Max positions check
         if self._position_open:
@@ -610,10 +628,54 @@ class AutoTrader:
             self._logger.info("[AUTO] Position already open, skipping entry signal")
             return
 
-        # Check filters
-        passes, reason = self._check_filters(config, signal.zscore)
+        # Get current market data for filter checks
+        current_std = None
+        spot_spread_cents = None
+        futures_spread_cents = None
+        spread_history = None
+
+        try:
+            import MetaTrader5 as mt5
+            import numpy as np
+
+            if mt5.initialize():
+                # Get bid-ask spreads for STD filter cost calculation
+                spot_tick = mt5.symbol_info_tick(spot_broker.symbol)
+                futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
+
+                if spot_tick:
+                    spot_spread_cents = (spot_tick.ask - spot_tick.bid) * 100
+                if futures_tick:
+                    futures_spread_cents = (futures_tick.ask - futures_tick.bid) * 100
+
+                mt5.shutdown()
+
+            # Get spread history from database to calculate current STD
+            lookback = config.lookback_period if config else 90
+            history = database.get_price_history('ACTIVE', limit=lookback, max_age_hours=24)
+            if history and len(history) >= 20:
+                spreads = [row[0] for row in reversed(history)]  # spread column
+                spread_history = spreads
+                current_std = float(np.std(spreads))
+                self._logger.info(f"[AUTO] Current STD: {current_std:.4f} (from {len(spreads)} samples)")
+
+        except Exception as e:
+            self._logger.warning(f"[AUTO] Could not get market data for filters: {e}")
+
+        # Check filters with STD data
+        passes, reason = self._check_filters(
+            config, signal.zscore, spread_history,
+            current_std, spot_spread_cents, futures_spread_cents
+        )
         if not passes:
             self._logger.info(f"[AUTO] Entry blocked: {reason}")
+            # Emit blocked signal to frontend
+            socketio.emit('auto_trade', {
+                'action': 'BLOCKED',
+                'reason': reason,
+                'zscore': signal.zscore,
+                'signal_type': signal.signal_type
+            })
             return
 
         signal_type = signal.signal_type
