@@ -165,31 +165,35 @@
                 </button>
             </div>
             <div class="card-body">
-                <table class="table table-sm table-borderless mb-0">
+                <table class="table table-sm table-borderless mb-0" style="table-layout: fixed;">
+                    <colgroup>
+                        <col style="width: 70%;">
+                        <col style="width: 30%;">
+                    </colgroup>
                     <tbody>
                         <tr>
                             <td class="text-muted"><strong>Basis (F-S)</strong></td>
-                            <td class="text-end"><strong id="basis-value">0.00</strong></td>
+                            <td class="text-end" style="text-align: right;"><strong id="basis-value">0.00</strong></td>
                         </tr>
                         <tr>
                             <td class="text-muted">Days to Expiry</td>
-                            <td class="text-end" id="days-to-expiry">-</td>
+                            <td class="text-end" style="text-align: right;" id="days-to-expiry">-</td>
                         </tr>
                         <tr style="color: #888; font-size: 0.9em;">
                             <td>Swap Info (Reference)</td>
-                            <td class="text-end" id="swap-cost">$0.00/day/lot</td>
+                            <td class="text-end" style="text-align: right;" id="swap-cost">$0.00/day/lot</td>
                         </tr>
                         <tr style="color: #888; font-size: 0.9em;">
                             <td>Fair Value Basis</td>
-                            <td class="text-end" id="fair-value-basis">0.00</td>
+                            <td class="text-end" style="text-align: right;" id="fair-value-basis">0.00</td>
                         </tr>
                         <tr>
                             <td class="text-muted">Diff (Actual - Fair)</td>
-                            <td class="text-end" id="basis-diff">0.00</td>
+                            <td class="text-end" style="text-align: right;" id="basis-diff">0.00</td>
                         </tr>
                         <tr>
                             <td class="text-muted">Premium %</td>
-                            <td class="text-end" id="premium-pct">0.0%</td>
+                            <td class="text-end" style="text-align: right;" id="premium-pct">0.0%</td>
                         </tr>
                     </tbody>
                 </table>
