@@ -165,65 +165,34 @@
                 </button>
             </div>
             <div class="card-body">
-                <div class="row">
-                    <div class="col-md-6">
-                        <table class="table table-sm table-borderless mb-0">
-                            <tbody>
-                                <tr>
-                                    <td class="text-muted"><strong>Basis (F-S)</strong></td>
-                                    <td class="text-end"><strong id="basis-value">0.00</strong></td>
-                                </tr>
-                                <tr>
-                                    <td class="text-muted">Days to Expiry</td>
-                                    <td class="text-end" id="days-to-expiry">-</td>
-                                </tr>
-                                <tr style="color: #888; font-size: 0.9em;">
-                                    <td>Swap Info (Reference)</td>
-                                    <td class="text-end" id="swap-cost">$0.00/day/lot</td>
-                                </tr>
-                                <tr style="color: #888; font-size: 0.9em;">
-                                    <td>Fair Value Basis</td>
-                                    <td class="text-end" id="fair-value-basis">0.00</td>
-                                </tr>
-                                <tr>
-                                    <td class="text-muted">Diff (Actual - Fair)</td>
-                                    <td class="text-end" id="basis-diff">0.00</td>
-                                </tr>
-                                <tr>
-                                    <td class="text-muted">Premium %</td>
-                                    <td class="text-end" id="premium-pct">0.0%</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="row text-center">
-                            <div class="col-4">
-                                <small class="text-muted d-block">Z-Score</small>
-                                <span id="calc-zscore" class="fw-bold" style="font-size: 18px;">0.00</span>
-                            </div>
-                            <div class="col-4">
-                                <small class="text-muted d-block">Mean</small>
-                                <span id="calc-mean" class="fw-bold">$0.00</span>
-                            </div>
-                            <div class="col-4">
-                                <small class="text-muted d-block">Std Dev</small>
-                                <span id="calc-std" class="fw-bold">$0.00</span>
-                            </div>
-                        </div>
-                        <hr>
-                        <div class="row text-center">
-                            <div class="col-6">
-                                <small class="text-muted d-block">Basis %</small>
-                                <span id="basis-pct" class="fw-bold">0.00%</span>
-                            </div>
-                            <div class="col-6">
-                                <small class="text-muted d-block">Annualized %</small>
-                                <span id="annualized-basis" class="fw-bold text-primary">0.00%</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <table class="table table-sm table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <td class="text-muted"><strong>Basis (F-S)</strong></td>
+                            <td class="text-end"><strong id="basis-value">0.00</strong></td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">Days to Expiry</td>
+                            <td class="text-end" id="days-to-expiry">-</td>
+                        </tr>
+                        <tr style="color: #888; font-size: 0.9em;">
+                            <td>Swap Info (Reference)</td>
+                            <td class="text-end" id="swap-cost">$0.00/day/lot</td>
+                        </tr>
+                        <tr style="color: #888; font-size: 0.9em;">
+                            <td>Fair Value Basis</td>
+                            <td class="text-end" id="fair-value-basis">0.00</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">Diff (Actual - Fair)</td>
+                            <td class="text-end" id="basis-diff">0.00</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">Premium %</td>
+                            <td class="text-end" id="premium-pct">0.0%</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 
@@ -839,24 +808,14 @@
             }
 
             zscoreChart.update('none');
-
-            // Update calc panel zscore
-            const calcZscore = document.getElementById('calc-zscore');
-            calcZscore.textContent = data.zscore.toFixed(2);
-            calcZscore.className = 'fw-bold';
-            if (data.zscore >= 2) calcZscore.classList.add('text-danger');
-            else if (data.zscore <= -2) calcZscore.classList.add('text-success');
-            else calcZscore.classList.add('text-warning');
         }
 
         // Update mean and std displays
         if (data.mean !== undefined && data.mean !== null) {
             document.getElementById('mean-value').textContent = data.mean.toFixed(2);
-            document.getElementById('calc-mean').textContent = '$' + data.mean.toFixed(2);
         }
         if (data.std !== undefined && data.std !== null) {
             document.getElementById('std-value').textContent = data.std.toFixed(2);
-            document.getElementById('calc-std').textContent = '$' + data.std.toFixed(2);
         }
 
         // Update Premium Calculator
@@ -978,10 +937,6 @@
         const actualBasis = data.spread || (futuresMid - spotMid);
         document.getElementById('basis-value').textContent = actualBasis.toFixed(2);
 
-        // Basis % = Premium / Spot * 100
-        const basisPct = spotMid !== 0 ? (actualBasis / spotMid) * 100 : 0;
-        document.getElementById('basis-pct').textContent = basisPct.toFixed(4) + '%';
-
         // Days to Expiry - from tick data or config
         let daysToExpiry = data.days_to_expiry;
         if (daysToExpiry !== null && daysToExpiry !== undefined && daysToExpiry > 0) {
@@ -1019,14 +974,6 @@
         premiumEl.textContent = premiumPct.toFixed(1) + '%';
         premiumEl.className = premiumPct >= 0 ? 'text-danger' : 'text-success';
 
-        // Annualized Basis % = Basis % * 365 / Days to Expiry
-        const annualizedBasis = daysToExpiry > 0 ? (basisPct * 365 / daysToExpiry) : basisPct;
-        const annualEl = document.getElementById('annualized-basis');
-        annualEl.textContent = annualizedBasis.toFixed(2) + '%';
-        annualEl.className = 'fw-bold text-primary';
-        if (Math.abs(annualizedBasis) > 10) annualEl.classList.add('text-warning');
-        if (Math.abs(annualizedBasis) > 20) annualEl.classList.replace('text-warning', 'text-danger');
-
         // Update Margin Requirements if data available
         updateMarginRequirements(data);
     }
@@ -1049,11 +996,9 @@
     function updateSignal(data) {
         if (data.mean !== null) {
             document.getElementById('mean-value').textContent = data.mean.toFixed(2);
-            document.getElementById('calc-mean').textContent = '$' + data.mean.toFixed(2);
         }
         if (data.std !== null) {
             document.getElementById('std-value').textContent = data.std.toFixed(2);
-            document.getElementById('calc-std').textContent = '$' + data.std.toFixed(2);
         }
         // Handle hurst as object with value and regime
         if (data.hurst !== null && data.hurst !== undefined) {
