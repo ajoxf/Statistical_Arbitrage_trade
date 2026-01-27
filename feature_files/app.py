@@ -1636,9 +1636,10 @@ def start_price_streaming():
                     # Calculate mean, std, and z-score from spread history
                     mean_val = 0.0
                     std_val = 0.0
-                    zscore = 0.0
+                    zscore = None  # None until lookback is complete
+                    lookback_complete = len(spread_history) >= lookback_period
 
-                    if len(spread_history) >= min(10, lookback_period):  # Need at least 10 points or lookback
+                    if lookback_complete:
                         # Use most recent lookback_period points
                         history_list = list(spread_history)[-lookback_period:]
                         mean_val = float(np.mean(history_list))
@@ -1654,10 +1655,11 @@ def start_price_streaming():
                         'futures_ask': futures_ask,
                         'spread': spread,
                         'zscore': zscore,
-                        'mean': mean_val,
-                        'std': std_val,
+                        'mean': mean_val if lookback_complete else None,
+                        'std': std_val if lookback_complete else None,
                         'history_count': len(spread_history),
-                        'lookback_required': lookback_period
+                        'lookback_required': lookback_period,
+                        'lookback_complete': lookback_complete
                     })
 
                 time.sleep(0.3)  # Update every 0.3 seconds
