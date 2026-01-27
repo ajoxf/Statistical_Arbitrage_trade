@@ -14,3 +14,9 @@ __pycache__/
 # Environment
 .env
 venv/
+
+# Encryption keys (NEVER commit these)
+.encryption_key
+.encryption_salt
+feature_files/.encryption_key
+feature_files/.encryption_salt

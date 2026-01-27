@@ -16,6 +16,7 @@ from database.models import (
     TradingConfig, Broker, Trade, PriceHistory,
     SDTouchLog, LimitOrderLog
 )
+from database.crypto import encrypt_credential, decrypt_credential
 
 logger = logging.getLogger(__name__)
 
@@ -397,11 +398,11 @@ class DatabaseManager:
                 latency_ms=row['latency_ms'],
                 config_json=row['config_json']
             )
-            # Add OKX fields if present
+            # Add OKX fields if present (decrypt sensitive fields)
             if 'okx_api_key' in row.keys():
-                broker.okx_api_key = row['okx_api_key']
-                broker.okx_api_secret = row['okx_api_secret']
-                broker.okx_passphrase = row['okx_passphrase']
+                broker.okx_api_key = decrypt_credential(row['okx_api_key'] or '')
+                broker.okx_api_secret = decrypt_credential(row['okx_api_secret'] or '')
+                broker.okx_passphrase = decrypt_credential(row['okx_passphrase'] or '')
                 broker.okx_simulated = bool(row['okx_simulated']) if row['okx_simulated'] is not None else True
                 broker.okx_account_type = row['okx_account_type'] or 'spot'
             if 'swap_charge' in row.keys():
@@ -444,11 +445,11 @@ class DatabaseManager:
                 latency_ms=row['latency_ms'],
                 config_json=row['config_json']
             )
-            # Add OKX fields if present
+            # Add OKX fields if present (decrypt sensitive fields)
             if 'okx_api_key' in row.keys():
-                broker.okx_api_key = row['okx_api_key']
-                broker.okx_api_secret = row['okx_api_secret']
-                broker.okx_passphrase = row['okx_passphrase']
+                broker.okx_api_key = decrypt_credential(row['okx_api_key'] or '')
+                broker.okx_api_secret = decrypt_credential(row['okx_api_secret'] or '')
+                broker.okx_passphrase = decrypt_credential(row['okx_passphrase'] or '')
                 broker.okx_simulated = bool(row['okx_simulated']) if row['okx_simulated'] is not None else True
                 broker.okx_account_type = row['okx_account_type'] or 'spot'
             if 'swap_charge' in row.keys():
@@ -489,9 +490,9 @@ class DatabaseManager:
             broker.fix_target_comp,
             broker.fix_username,
             broker.fix_password,
-            getattr(broker, 'okx_api_key', None),
-            getattr(broker, 'okx_api_secret', None),
-            getattr(broker, 'okx_passphrase', None),
+            encrypt_credential(getattr(broker, 'okx_api_key', None) or ''),
+            encrypt_credential(getattr(broker, 'okx_api_secret', None) or ''),
+            encrypt_credential(getattr(broker, 'okx_passphrase', None) or ''),
             int(getattr(broker, 'okx_simulated', True)),
             getattr(broker, 'okx_account_type', 'spot'),
             broker.symbol,

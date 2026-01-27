@@ -17,6 +17,9 @@ aiohttp>=3.8.0
 # Database
 # SQLite built-in, no extra dependencies needed
 
+# Security - Credential Encryption
+cryptography>=41.0.0
+
 # IPC - Redis (optional, falls back to in-memory)
 redis[hiredis]>=4.5.0
 
