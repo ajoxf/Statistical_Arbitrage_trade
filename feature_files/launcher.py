@@ -45,6 +45,27 @@ def start_server():
     socketio.run(app, host='127.0.0.1', port=5000, debug=False, use_reloader=False, log_output=False)
 
 
+def start_engine():
+    """Start the trading engine via API"""
+    import urllib.request
+    import json
+
+    try:
+        req = urllib.request.Request(
+            'http://127.0.0.1:5000/api/engine/start',
+            method='POST',
+            headers={'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode())
+            if result.get('success'):
+                print("Trading engine started successfully!", flush=True)
+            else:
+                print(f"Engine start warning: {result.get('error', 'Unknown')}", flush=True)
+    except Exception as e:
+        print(f"Could not auto-start engine: {e}", flush=True)
+
+
 def main():
     """Main entry point"""
     print("=" * 50, flush=True)
@@ -59,6 +80,10 @@ def main():
 
     # Wait for server to start
     time.sleep(3)
+
+    # Auto-start the trading engine
+    print("Starting trading engine...", flush=True)
+    start_engine()
 
     # Open browser
     url = 'http://127.0.0.1:5000'
