@@ -156,52 +156,107 @@
             </div>
         </div>
 
-        <!-- Premium/Basis Calculator -->
+        <!-- Basis Analysis Section (matching trading_portal.py) -->
         <div class="card mt-3">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-calculator me-2"></i>Basis Premium Calculator</span>
+                <span><i class="bi bi-calculator me-2"></i>Basis Analysis</span>
                 <button class="btn btn-sm btn-outline-secondary" onclick="showEditSwapModal()">
                     <i class="bi bi-pencil me-1"></i>Edit Swap/Expiry
                 </button>
             </div>
-            <div class="card-body" style="font-size: 18px;">
-                <div class="row text-center">
-                    <div class="col-md-3">
-                        <small class="text-muted d-block">Premium (Futures - Spot)</small>
-                        <span id="premium-value" class="fw-bold">$0.00</span>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <table class="table table-sm table-borderless mb-0">
+                            <tbody>
+                                <tr>
+                                    <td class="text-muted"><strong>Basis (F-S)</strong></td>
+                                    <td class="text-end"><strong id="basis-value">0.00</strong></td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Days to Expiry</td>
+                                    <td class="text-end" id="days-to-expiry">-</td>
+                                </tr>
+                                <tr style="color: #888; font-size: 0.9em;">
+                                    <td>Swap Info (Reference)</td>
+                                    <td class="text-end" id="swap-cost">$0.00/day/lot</td>
+                                </tr>
+                                <tr style="color: #888; font-size: 0.9em;">
+                                    <td>Fair Value Basis</td>
+                                    <td class="text-end" id="fair-value-basis">0.00</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Diff (Actual - Fair)</td>
+                                    <td class="text-end" id="basis-diff">0.00</td>
+                                </tr>
+                                <tr>
+                                    <td class="text-muted">Premium %</td>
+                                    <td class="text-end" id="premium-pct">0.0%</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
-                    <div class="col-md-2">
-                        <small class="text-muted d-block">Basis %</small>
-                        <span id="basis-pct" class="fw-bold">0.00%</span>
-                    </div>
-                    <div class="col-md-2">
-                        <small class="text-muted d-block">Days to Expiry</small>
-                        <span id="days-to-expiry" class="fw-bold">-</span>
-                    </div>
-                    <div class="col-md-2">
-                        <small class="text-muted d-block">Swap Cost/Day</small>
-                        <span id="swap-cost" class="fw-bold">$0.00</span>
-                    </div>
-                    <div class="col-md-3">
-                        <small class="text-muted d-block">Annualized Basis %</small>
-                        <span id="annualized-basis" class="fw-bold text-primary">0.00%</span>
+                    <div class="col-md-6">
+                        <div class="row text-center">
+                            <div class="col-4">
+                                <small class="text-muted d-block">Z-Score</small>
+                                <span id="calc-zscore" class="fw-bold" style="font-size: 18px;">0.00</span>
+                            </div>
+                            <div class="col-4">
+                                <small class="text-muted d-block">Mean</small>
+                                <span id="calc-mean" class="fw-bold">$0.00</span>
+                            </div>
+                            <div class="col-4">
+                                <small class="text-muted d-block">Std Dev</small>
+                                <span id="calc-std" class="fw-bold">$0.00</span>
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="row text-center">
+                            <div class="col-6">
+                                <small class="text-muted d-block">Basis %</small>
+                                <span id="basis-pct" class="fw-bold">0.00%</span>
+                            </div>
+                            <div class="col-6">
+                                <small class="text-muted d-block">Annualized %</small>
+                                <span id="annualized-basis" class="fw-bold text-primary">0.00%</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <hr>
-                <div class="row text-center">
-                    <div class="col-md-4">
-                        <small class="text-muted d-block">Z-Score</small>
-                        <span id="calc-zscore" class="fw-bold" style="font-size: 18px;">0.00</span>
-                    </div>
-                    <div class="col-md-4">
-                        <small class="text-muted d-block">Mean</small>
-                        <span id="calc-mean" class="fw-bold">$0.00</span>
-                    </div>
-                    <div class="col-md-4">
-                        <small class="text-muted d-block">Std Dev</small>
-                        <span id="calc-std" class="fw-bold">$0.00</span>
-                    </div>
-                </div>
+            </div>
+        </div>
+
+        <!-- Margin Requirements Section (matching trading_portal.py) -->
+        <div class="card mt-3">
+            <div class="card-header">
+                <i class="bi bi-bank me-2"></i>Margin Requirements (<span id="margin-leverage">1:100</span>)
+            </div>
+            <div class="card-body">
+                <table class="table table-sm table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <td class="text-muted">Spot Leg (Buy/Sell)</td>
+                            <td class="text-end"><strong id="margin-spot">$0.00</strong>/lot</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">Futures Leg (Buy/Sell)</td>
+                            <td class="text-end"><strong id="margin-futures">$0.00</strong>/lot</td>
+                        </tr>
+                        <tr class="table-secondary">
+                            <td><strong>Total (Spread Trade)</strong></td>
+                            <td class="text-end"><strong id="margin-total">$0.00</strong>/lot</td>
+                        </tr>
+                        <tr style="color: #007bff;">
+                            <td>For <span id="margin-lots">0.01</span> lots</td>
+                            <td class="text-end"><strong id="margin-required">$0.00</strong></td>
+                        </tr>
+                        <tr style="color: #dc3545;">
+                            <td>If Price ±15%</td>
+                            <td class="text-end"><strong id="margin-buffer">$0.00</strong></td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 
@@ -410,7 +465,7 @@
         </div>
 
         <!-- Hurst Exponent -->
-        <div class="card">
+        <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-activity me-2"></i>Market Regime
             </div>
@@ -420,7 +475,112 @@
                 <div class="mt-2">
                     <span class="badge bg-secondary" id="regime-badge">Unknown</span>
                 </div>
-                <small class="text-muted">H < 0.5 = Mean Reverting</small>
+                <small class="text-muted">H &lt; 0.5 = Mean Reverting</small>
+            </div>
+        </div>
+
+        <!-- STD Profitability Filter -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-funnel me-2"></i>STD Profitability Filter
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted">Status:</span>
+                    <span class="badge" id="std-filter-status">-</span>
+                </div>
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="text-muted">Current STD:</span>
+                    <span class="fw-bold" id="std-current">$0.00</span>
+                </div>
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="text-muted">Min Required:</span>
+                    <span class="fw-bold" id="std-min-required">$0.00</span>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-muted">STD Ratio:</span>
+                    <span class="fw-bold" id="std-ratio">0%</span>
+                </div>
+                <!-- Progress bar for STD ratio -->
+                <div class="progress" style="height: 8px;">
+                    <div id="std-ratio-bar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                </div>
+                <div class="mt-2 small">
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted">Round-trip Cost:</span>
+                        <span id="std-round-trip">$0.00</span>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <span class="text-muted">Expected Profit:</span>
+                        <span id="std-expected-profit">$0.00</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Entry/Exit Bands -->
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-arrows-expand me-2"></i>Entry/Exit Bands
+            </div>
+            <div class="card-body">
+                <div class="row text-center mb-2">
+                    <div class="col-6">
+                        <small class="text-danger d-block">SHORT SPREAD</small>
+                        <small class="text-muted">(Spread High → Low)</small>
+                    </div>
+                    <div class="col-6">
+                        <small class="text-success d-block">LONG SPREAD</small>
+                        <small class="text-muted">(Spread Low → High)</small>
+                    </div>
+                </div>
+                <div class="row mb-1">
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Entry:</span>
+                            <span class="text-danger fw-bold" id="band-short-entry">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Entry:</span>
+                            <span class="text-success fw-bold" id="band-long-entry">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mb-1">
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Exit:</span>
+                            <span id="band-short-exit">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Exit:</span>
+                            <span id="band-long-exit">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Stop:</span>
+                            <span class="text-warning" id="band-short-stop">$0.00</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-muted">Stop:</span>
+                            <span class="text-warning" id="band-long-stop">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                <hr class="my-2">
+                <div class="d-flex justify-content-between small">
+                    <span class="text-muted">Current Spread:</span>
+                    <span class="fw-bold" id="band-current-spread">$0.00</span>
+                </div>
             </div>
         </div>
     </div>
@@ -783,6 +943,112 @@
 
         // Update Premium Calculator
         updatePremiumCalculator(data);
+
+        // Update STD Filter display
+        updateSTDFilter(data);
+
+        // Update Entry/Exit Bands display
+        updateBands(data);
+
+        // Update Hurst from tick data (in addition to signal)
+        updateHurst(data);
+    }
+
+    // STD Filter display
+    function updateSTDFilter(data) {
+        if (!data.std_filter) return;
+
+        const sf = data.std_filter;
+        const statusEl = document.getElementById('std-filter-status');
+        const currentEl = document.getElementById('std-current');
+        const minReqEl = document.getElementById('std-min-required');
+        const ratioEl = document.getElementById('std-ratio');
+        const ratioBar = document.getElementById('std-ratio-bar');
+        const roundTripEl = document.getElementById('std-round-trip');
+        const expectedProfitEl = document.getElementById('std-expected-profit');
+
+        // Update values
+        currentEl.textContent = '$' + sf.current_std.toFixed(2);
+        minReqEl.textContent = '$' + sf.min_std.toFixed(2);
+
+        const ratioPercent = (sf.std_ratio * 100).toFixed(0);
+        ratioEl.textContent = ratioPercent + '%';
+
+        // Update progress bar
+        const barWidth = Math.min(100, sf.std_ratio * 100);
+        ratioBar.style.width = barWidth + '%';
+
+        // Color coding based on profitability
+        if (sf.is_profitable) {
+            statusEl.textContent = 'PROFITABLE';
+            statusEl.className = 'badge bg-success';
+            ratioBar.className = 'progress-bar bg-success';
+            ratioEl.className = 'fw-bold text-success';
+        } else {
+            statusEl.textContent = 'UNPROFITABLE';
+            statusEl.className = 'badge bg-danger';
+            ratioBar.className = 'progress-bar bg-danger';
+            ratioEl.className = 'fw-bold text-danger';
+        }
+
+        // Update cost/profit
+        roundTripEl.textContent = '$' + sf.round_trip_cost.toFixed(2);
+        expectedProfitEl.textContent = '$' + sf.profit_if_successful.toFixed(2);
+        expectedProfitEl.className = sf.profit_if_successful >= 0 ? 'text-success' : 'text-danger';
+    }
+
+    // Entry/Exit Bands display
+    function updateBands(data) {
+        if (!data.bands) return;
+
+        const b = data.bands;
+        document.getElementById('band-short-entry').textContent = '$' + b.short_entry.toFixed(2);
+        document.getElementById('band-short-exit').textContent = '$' + b.short_exit.toFixed(2);
+        document.getElementById('band-short-stop').textContent = '$' + b.short_stop.toFixed(2);
+        document.getElementById('band-long-entry').textContent = '$' + b.long_entry.toFixed(2);
+        document.getElementById('band-long-exit').textContent = '$' + b.long_exit.toFixed(2);
+        document.getElementById('band-long-stop').textContent = '$' + b.long_stop.toFixed(2);
+
+        // Update current spread indicator
+        if (data.spread !== undefined) {
+            const spreadEl = document.getElementById('band-current-spread');
+            spreadEl.textContent = '$' + data.spread.toFixed(2);
+
+            // Color based on position relative to bands
+            if (data.spread >= b.short_entry) {
+                spreadEl.className = 'fw-bold text-danger';  // Above short entry
+            } else if (data.spread <= b.long_entry) {
+                spreadEl.className = 'fw-bold text-success'; // Below long entry
+            } else {
+                spreadEl.className = 'fw-bold text-warning'; // In the middle
+            }
+        }
+    }
+
+    // Hurst display (from tick data)
+    function updateHurst(data) {
+        if (!data.hurst) return;
+
+        const h = data.hurst;
+        const hurstValue = typeof h === 'object' ? h.value : h;
+        const hurstRegime = typeof h === 'object' ? h.regime : null;
+
+        if (hurstValue !== null && hurstValue !== undefined) {
+            document.getElementById('hurst-value').textContent = hurstValue.toFixed(3);
+        }
+
+        if (hurstRegime) {
+            const regimeBadge = document.getElementById('regime-badge');
+            regimeBadge.textContent = hurstRegime.replace('_', ' ');
+            regimeBadge.className = 'badge';
+            if (hurstRegime === 'MEAN_REVERTING') {
+                regimeBadge.classList.add('bg-success');
+            } else if (hurstRegime === 'TRENDING') {
+                regimeBadge.classList.add('bg-danger');
+            } else {
+                regimeBadge.classList.add('bg-warning');
+            }
+        }
     }
 
     // Premium Calculator
@@ -790,32 +1056,50 @@
         const spotMid = (data.spot_bid + data.spot_ask) / 2;
         const futuresMid = (data.futures_bid + data.futures_ask) / 2;
 
-        // Premium = Futures - Spot (positive in contango when futures > spot)
-        const premium = futuresMid - spotMid;
-        document.getElementById('premium-value').textContent = '$' + premium.toFixed(2);
-        const premiumEl = document.getElementById('premium-value');
-        premiumEl.className = 'fw-bold ' + (premium >= 0 ? 'text-success' : 'text-danger');
+        // Basis (F-S) = Futures - Spot
+        const actualBasis = data.spread || (futuresMid - spotMid);
+        document.getElementById('basis-value').textContent = actualBasis.toFixed(2);
 
-        // Basis % = Premium / Futures * 100
-        const basisPct = futuresMid !== 0 ? (premium / futuresMid) * 100 : 0;
+        // Basis % = Premium / Spot * 100
+        const basisPct = spotMid !== 0 ? (actualBasis / spotMid) * 100 : 0;
         document.getElementById('basis-pct').textContent = basisPct.toFixed(4) + '%';
 
-        // Days to Expiry - from active futures broker
-        const expiryDate = '{{ active_futures.futures_expiry if active_futures and active_futures.futures_expiry else "" }}';
-        let daysToExpiry = 0;
-        if (expiryDate) {
-            const expiry = new Date(expiryDate);
-            const today = new Date();
-            daysToExpiry = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
-            document.getElementById('days-to-expiry').textContent = daysToExpiry > 0 ? daysToExpiry : 'Expired';
+        // Days to Expiry - from tick data or config
+        let daysToExpiry = data.days_to_expiry;
+        if (daysToExpiry !== null && daysToExpiry !== undefined && daysToExpiry > 0) {
+            document.getElementById('days-to-expiry').textContent = Math.round(daysToExpiry);
         } else {
-            document.getElementById('days-to-expiry').textContent = '∞ (Perpetual)';
-            daysToExpiry = 365; // Use 365 for perpetuals
+            const expiryDate = '{{ active_futures.futures_expiry if active_futures and active_futures.futures_expiry else "" }}';
+            if (expiryDate) {
+                const expiry = new Date(expiryDate);
+                const today = new Date();
+                daysToExpiry = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
+                document.getElementById('days-to-expiry').textContent = daysToExpiry > 0 ? daysToExpiry : 'Expired';
+            } else {
+                document.getElementById('days-to-expiry').textContent = '∞ (Perpetual)';
+                daysToExpiry = 365;
+            }
         }
 
-        // Swap Cost from active spot broker (CFDs charge swap on spot position)
-        const swapCost = {{ active_spot.swap_charge if active_spot else 0 }};
-        document.getElementById('swap-cost').textContent = '$' + swapCost.toFixed(2);
+        // Swap Cost from tick data or config
+        const swapCost = data.swap_charge || {{ active_spot.swap_charge if active_spot else 0 }};
+        document.getElementById('swap-cost').textContent = '$' + swapCost.toFixed(2) + '/day/lot';
+
+        // Fair Value Basis (from swap calculation)
+        const fairValueBasis = data.swap_basis || 0;
+        document.getElementById('fair-value-basis').textContent = fairValueBasis.toFixed(2);
+
+        // Diff (Actual - Fair)
+        const basisDiff = data.swap_diff || (actualBasis - fairValueBasis);
+        const diffEl = document.getElementById('basis-diff');
+        diffEl.textContent = basisDiff.toFixed(2);
+        diffEl.className = basisDiff >= 0 ? 'text-danger' : 'text-success';
+
+        // Premium % (from tick data)
+        const premiumPct = data.swap_premium_pct || 0;
+        const premiumEl = document.getElementById('premium-pct');
+        premiumEl.textContent = premiumPct.toFixed(1) + '%';
+        premiumEl.className = premiumPct >= 0 ? 'text-danger' : 'text-success';
 
         // Annualized Basis % = Basis % * 365 / Days to Expiry
         const annualizedBasis = daysToExpiry > 0 ? (basisPct * 365 / daysToExpiry) : basisPct;
@@ -824,6 +1108,23 @@
         annualEl.className = 'fw-bold text-primary';
         if (Math.abs(annualizedBasis) > 10) annualEl.classList.add('text-warning');
         if (Math.abs(annualizedBasis) > 20) annualEl.classList.replace('text-warning', 'text-danger');
+
+        // Update Margin Requirements if data available
+        updateMarginRequirements(data);
+    }
+
+    // Margin Requirements display (matching trading_portal.py)
+    function updateMarginRequirements(data) {
+        if (!data.margin) return;
+
+        const m = data.margin;
+        document.getElementById('margin-leverage').textContent = '1:' + m.leverage;
+        document.getElementById('margin-spot').textContent = '$' + m.margin_per_lot_spot.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        document.getElementById('margin-futures').textContent = '$' + m.margin_per_lot_futures.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        document.getElementById('margin-total').textContent = '$' + m.margin_per_lot_total.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        document.getElementById('margin-lots').textContent = m.user_lot_size;
+        document.getElementById('margin-required').textContent = '$' + m.margin_required.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        document.getElementById('margin-buffer').textContent = '$' + m.margin_with_buffer.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
     }
 
     // Update signal
@@ -836,14 +1137,20 @@
             document.getElementById('std-value').textContent = data.std.toFixed(2);
             document.getElementById('calc-std').textContent = '$' + data.std.toFixed(2);
         }
-        if (data.hurst !== null) {
-            document.getElementById('hurst-value').textContent = data.hurst.toFixed(3);
+        // Handle hurst as object with value and regime
+        if (data.hurst !== null && data.hurst !== undefined) {
+            const hurstValue = typeof data.hurst === 'object' ? data.hurst.value : data.hurst;
+            const hurstRegime = typeof data.hurst === 'object' ? data.hurst.regime : data.regime;
+
+            if (hurstValue !== null && hurstValue !== undefined) {
+                document.getElementById('hurst-value').textContent = hurstValue.toFixed(3);
+            }
             const regimeBadge = document.getElementById('regime-badge');
-            regimeBadge.textContent = data.regime || 'Unknown';
+            regimeBadge.textContent = hurstRegime || 'Unknown';
             regimeBadge.className = 'badge';
-            if (data.regime === 'MEAN_REVERTING') {
+            if (hurstRegime === 'MEAN_REVERTING') {
                 regimeBadge.classList.add('bg-success');
-            } else if (data.regime === 'TRENDING') {
+            } else if (hurstRegime === 'TRENDING') {
                 regimeBadge.classList.add('bg-danger');
             } else {
                 regimeBadge.classList.add('bg-warning');
