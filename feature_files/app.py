@@ -2449,6 +2449,173 @@ def api_mt5_history():
     return api_broker_history()
 
 
+# ==================== Trade Journal API ====================
+
+@app.route('/api/trade-journal')
+def api_trade_journal():
+    """Get trade journal data with summary statistics"""
+    try:
+        database = get_db()
+        trades = database.get_trades(limit=500)
+
+        # Convert trades to dict format
+        trades_list = []
+        total_pnl = 0
+        winning_trades = 0
+        losing_trades = 0
+        returns = []
+        total_margin_used = 0
+
+        for trade in trades:
+            trade_dict = {
+                'trade_id': trade.trade_id,
+                'asset': trade.asset,
+                'direction': trade.direction,
+                'entry_date': trade.entry_date,
+                'exit_date': trade.exit_date,
+                'days_held': trade.days_held,
+                'entry_zscore': trade.entry_zscore,
+                'exit_zscore': trade.exit_zscore,
+                'spot_pnl': trade.spot_pnl,
+                'futures_pnl': trade.futures_pnl,
+                'gross_pnl': trade.gross_pnl,
+                'swap_cost': trade.swap_cost,
+                'commission': trade.commission,
+                'spread_cost': trade.spread_cost,
+                'net_pnl': trade.net_pnl,
+                'return_pct': trade.return_pct,
+                'lot_size': trade.lot_size,
+                'status': trade.status
+            }
+            trades_list.append(trade_dict)
+
+            # Calculate summary stats for closed trades
+            if trade.status == 'CLOSED':
+                net_pnl = trade.net_pnl or 0
+                total_pnl += net_pnl
+
+                if net_pnl > 0:
+                    winning_trades += 1
+                else:
+                    losing_trades += 1
+
+                # Track return for Sharpe calculation
+                if trade.return_pct is not None:
+                    returns.append(trade.return_pct)
+
+                # Estimate margin used (simple approximation)
+                if trade.lot_size and trade.entry_spot_price:
+                    margin = trade.entry_spot_price * trade.lot_size * 100 / 100  # Assuming 1:100 leverage
+                    total_margin_used += margin
+
+        total_trades = winning_trades + losing_trades
+
+        # Calculate cumulative return
+        cumulative_return = (total_pnl / total_margin_used * 100) if total_margin_used > 0 else 0
+
+        # Calculate Sharpe ratio
+        sharpe_ratio = 0.0
+        if len(returns) >= 2:
+            import statistics
+            mean_return = statistics.mean(returns)
+            std_return = statistics.stdev(returns)
+            if std_return > 0:
+                sharpe_ratio = mean_return / std_return
+
+        # Calculate drawdown from cumulative returns
+        max_drawdown = 0.0
+        current_drawdown = 0.0
+        if len(returns) > 0:
+            cumulative = 0.0
+            peak = 0.0
+            for ret in returns:
+                cumulative += ret
+                if cumulative > peak:
+                    peak = cumulative
+                dd = peak - cumulative
+                if dd > max_drawdown:
+                    max_drawdown = dd
+            current_drawdown = peak - cumulative if peak > 0 else 0
+
+        summary = {
+            'total_trades': total_trades,
+            'winning_trades': winning_trades,
+            'losing_trades': losing_trades,
+            'win_rate': (winning_trades / total_trades * 100) if total_trades > 0 else 0,
+            'total_pnl': total_pnl,
+            'cumulative_return': cumulative_return,
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'current_drawdown': current_drawdown
+        }
+
+        return jsonify({
+            'success': True,
+            'trades': trades_list,
+            'summary': summary
+        })
+
+    except Exception as e:
+        logger.error(f"Trade journal error: {e}")
+        return jsonify({'success': False, 'error': str(e), 'trades': [], 'summary': {}})
+
+
+@app.route('/api/trade-journal/csv')
+def api_trade_journal_csv():
+    """Download trade journal as CSV"""
+    try:
+        import csv
+        import io
+        from datetime import datetime
+
+        database = get_db()
+        trades = database.get_trades(limit=1000)
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Header
+        writer.writerow([
+            'Trade ID', 'Asset', 'Direction', 'Lots', 'Entry Date', 'Exit Date',
+            'Days Held', 'Entry Z', 'Exit Z', 'Spot P&L', 'Futures P&L',
+            'Gross P&L', 'Swap', 'Commission', 'Spread', 'Net P&L', 'Return %', 'Status'
+        ])
+
+        # Data rows
+        for trade in trades:
+            writer.writerow([
+                trade.trade_id,
+                trade.asset,
+                trade.direction,
+                trade.lot_size,
+                trade.entry_date,
+                trade.exit_date or '',
+                trade.days_held or '',
+                f"{trade.entry_zscore:.2f}" if trade.entry_zscore else '',
+                f"{trade.exit_zscore:.2f}" if trade.exit_zscore else '',
+                f"{trade.spot_pnl:.2f}" if trade.spot_pnl else '0.00',
+                f"{trade.futures_pnl:.2f}" if trade.futures_pnl else '0.00',
+                f"{trade.gross_pnl:.2f}" if trade.gross_pnl else '0.00',
+                f"{trade.swap_cost:.2f}" if trade.swap_cost else '0.00',
+                f"{trade.commission:.2f}" if trade.commission else '0.00',
+                f"{trade.spread_cost:.2f}" if trade.spread_cost else '0.00',
+                f"{trade.net_pnl:.2f}" if trade.net_pnl else '0.00',
+                f"{trade.return_pct:.2f}" if trade.return_pct else '0.00',
+                trade.status
+            ])
+
+        from flask import Response
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=trade_journal_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'}
+        )
+
+    except Exception as e:
+        logger.error(f"Trade journal CSV error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
 # ==================== SocketIO Events ====================
 
 @socketio.on('disconnect')
