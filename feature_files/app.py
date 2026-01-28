@@ -774,6 +774,24 @@ class AutoTrader:
 
             spot_price_for_order = spot_tick.ask if spot_order_type == mt5.ORDER_TYPE_BUY else spot_tick.bid
 
+            # Get correct filling mode from symbol info
+            spot_symbol_info = mt5.symbol_info(spot_broker.symbol)
+            if spot_symbol_info is None:
+                self._logger.error(f"[AUTO] Could not get symbol info for {spot_broker.symbol}")
+                mt5.shutdown()
+                return
+
+            # Determine filling mode based on what the symbol supports
+            spot_filling_mode = mt5.ORDER_FILLING_FOK  # Default to Fill or Kill
+            if spot_symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                spot_filling_mode = mt5.ORDER_FILLING_IOC
+            elif spot_symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                spot_filling_mode = mt5.ORDER_FILLING_FOK
+            else:
+                # Some brokers use RETURN mode
+                spot_filling_mode = mt5.ORDER_FILLING_RETURN
+            self._logger.info(f"[AUTO] Spot symbol filling mode: {spot_symbol_info.filling_mode}, using: {spot_filling_mode}")
+
             # Place spot order
             spot_request = {
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -785,7 +803,7 @@ class AutoTrader:
                 "magic": 123456,
                 "comment": f"AutoTrader {direction} Entry - Spot",
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": spot_filling_mode,
             }
 
             self._logger.info(f"[AUTO] Sending SPOT order: symbol={spot_broker.symbol}, type={'BUY' if spot_order_type == mt5.ORDER_TYPE_BUY else 'SELL'}, volume={lot_size}, price={spot_price_for_order}")
@@ -820,12 +838,35 @@ class AutoTrader:
                 mt5.order_send({
                     "action": mt5.TRADE_ACTION_DEAL, "symbol": spot_broker.symbol, "volume": lot_size,
                     "type": reverse_type, "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
-                    "deviation": 20, "magic": 123456, "comment": "AutoTrader Reversal", "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
+                    "deviation": 20, "magic": 123456, "comment": "AutoTrader Reversal", "type_time": mt5.ORDER_TIME_GTC, "type_filling": spot_filling_mode,
                 })
                 mt5.shutdown()
                 return
 
             futures_price_for_order = futures_tick.ask if futures_order_type == mt5.ORDER_TYPE_BUY else futures_tick.bid
+
+            # Get correct filling mode for futures symbol
+            futures_symbol_info = mt5.symbol_info(futures_broker.symbol)
+            if futures_symbol_info is None:
+                self._logger.error(f"[AUTO] Could not get symbol info for {futures_broker.symbol}")
+                # Reverse spot trade
+                reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                mt5.order_send({
+                    "action": mt5.TRADE_ACTION_DEAL, "symbol": spot_broker.symbol, "volume": lot_size,
+                    "type": reverse_type, "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
+                    "deviation": 20, "magic": 123456, "comment": "AutoTrader Reversal", "type_time": mt5.ORDER_TIME_GTC, "type_filling": spot_filling_mode,
+                })
+                mt5.shutdown()
+                return
+
+            futures_filling_mode = mt5.ORDER_FILLING_FOK
+            if futures_symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                futures_filling_mode = mt5.ORDER_FILLING_IOC
+            elif futures_symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                futures_filling_mode = mt5.ORDER_FILLING_FOK
+            else:
+                futures_filling_mode = mt5.ORDER_FILLING_RETURN
+            self._logger.info(f"[AUTO] Futures symbol filling mode: {futures_symbol_info.filling_mode}, using: {futures_filling_mode}")
 
             # Place futures order
             futures_request = {
@@ -838,7 +879,7 @@ class AutoTrader:
                 "magic": 123456,
                 "comment": f"AutoTrader {direction} Entry - Futures",
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": futures_filling_mode,
             }
 
             self._logger.info(f"[AUTO] Sending FUTURES order: symbol={futures_broker.symbol}, type={'BUY' if futures_order_type == mt5.ORDER_TYPE_BUY else 'SELL'}, volume={lot_size}, price={futures_price_for_order}")
@@ -861,7 +902,7 @@ class AutoTrader:
                     "magic": 123456,
                     "comment": "AutoTrader Reversal",
                     "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,
+                    "type_filling": spot_filling_mode,
                 }
                 mt5.order_send(reverse_request)
                 # Log failed attempt
@@ -972,6 +1013,26 @@ class AutoTrader:
                 spot_order_type = mt5.ORDER_TYPE_BUY
                 futures_order_type = mt5.ORDER_TYPE_SELL
 
+            # Get correct filling modes
+            spot_symbol_info = mt5.symbol_info(spot_broker.symbol)
+            futures_symbol_info = mt5.symbol_info(futures_broker.symbol)
+
+            spot_filling_mode = mt5.ORDER_FILLING_FOK
+            if spot_symbol_info and spot_symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                spot_filling_mode = mt5.ORDER_FILLING_IOC
+            elif spot_symbol_info and spot_symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                spot_filling_mode = mt5.ORDER_FILLING_FOK
+            elif spot_symbol_info:
+                spot_filling_mode = mt5.ORDER_FILLING_RETURN
+
+            futures_filling_mode = mt5.ORDER_FILLING_FOK
+            if futures_symbol_info and futures_symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                futures_filling_mode = mt5.ORDER_FILLING_IOC
+            elif futures_symbol_info and futures_symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                futures_filling_mode = mt5.ORDER_FILLING_FOK
+            elif futures_symbol_info:
+                futures_filling_mode = mt5.ORDER_FILLING_RETURN
+
             # Close spot position
             spot_request = {
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -983,13 +1044,13 @@ class AutoTrader:
                 "magic": 123456,
                 "comment": f"AutoTrader Exit - Spot ({signal_type})",
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": spot_filling_mode,
             }
 
             spot_result = mt5.order_send(spot_request)
 
             if spot_result.retcode != mt5.TRADE_RETCODE_DONE:
-                self._logger.error(f"[AUTO] Spot close failed: {spot_result.comment}")
+                self._logger.error(f"[AUTO] Spot close failed: {spot_result.retcode} - {spot_result.comment}")
                 mt5.shutdown()
                 return
 
@@ -1004,7 +1065,7 @@ class AutoTrader:
                 "magic": 123456,
                 "comment": f"AutoTrader Exit - Futures ({signal_type})",
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": futures_filling_mode,
             }
 
             futures_result = mt5.order_send(futures_request)
