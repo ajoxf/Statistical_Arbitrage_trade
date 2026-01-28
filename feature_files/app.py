@@ -482,6 +482,46 @@ class AutoTrader:
         except Exception as e:
             self._logger.error(f"[AUTO] Error loading open position: {e}")
 
+    def _log_std_filter_event(self, database, zscore, signal_type, current_std,
+                               min_required_std, std_ratio, is_profitable,
+                               spot_spread_cents=None, futures_spread_cents=None,
+                               round_trip_cost=None, action_taken=None,
+                               trade_id=None, blocked_reason=None):
+        """Log STD filter event to database AND emit via SocketIO for real-time updates"""
+        try:
+            # Log to database
+            database.log_std_filter_event(
+                zscore=zscore, signal_type=signal_type, current_std=current_std,
+                min_required_std=min_required_std, std_ratio=std_ratio, is_profitable=is_profitable,
+                spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                round_trip_cost=round_trip_cost, action_taken=action_taken,
+                trade_id=trade_id, blocked_reason=blocked_reason
+            )
+
+            # Emit via SocketIO for real-time UI updates
+            socketio.emit('std_filter_event', {
+                'timestamp': datetime.now().isoformat(),
+                'zscore': zscore,
+                'signal_type': signal_type,
+                'current_std': current_std,
+                'min_required_std': min_required_std,
+                'std_ratio': std_ratio,
+                'is_profitable': is_profitable,
+                'spot_spread_cents': spot_spread_cents,
+                'futures_spread_cents': futures_spread_cents,
+                'round_trip_cost': round_trip_cost,
+                'action_taken': action_taken,
+                'trade_id': trade_id,
+                'blocked_reason': blocked_reason
+            })
+
+            self._logger.info(f"[AUTO] STD filter event logged: {signal_type}, action={action_taken}")
+
+        except Exception as e:
+            self._logger.error(f"[AUTO] FAILED to log STD filter event: {e}")
+            # Re-raise to alert caller that logging failed
+            raise
+
     def handle_signal(self, signal):
         """
         Handle trading signal from the engine.
@@ -695,22 +735,14 @@ class AutoTrader:
             else:
                 action_taken = 'BLOCKED_OTHER'
 
-            try:
-                database.log_std_filter_event(
-                    zscore=signal.zscore,
-                    signal_type=signal.signal_type,
-                    current_std=current_std,
-                    min_required_std=std_filter_result['min_std'],
-                    std_ratio=std_filter_result['std_ratio'],
-                    is_profitable=std_filter_result['is_profitable'],
-                    spot_spread_cents=spot_spread_cents,
-                    futures_spread_cents=futures_spread_cents,
-                    round_trip_cost=std_filter_result['round_trip_cost'],
-                    action_taken=action_taken,
-                    blocked_reason=reason
-                )
-            except Exception as e:
-                self._logger.warning(f"[AUTO] Could not log STD filter event: {e}")
+            self._log_std_filter_event(
+                database, zscore=signal.zscore, signal_type=signal.signal_type,
+                current_std=current_std, min_required_std=std_filter_result['min_std'],
+                std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                round_trip_cost=std_filter_result['round_trip_cost'],
+                action_taken=action_taken, blocked_reason=reason
+            )
 
         if not passes:
             self._logger.info(f"[AUTO] Entry blocked: {reason}")
@@ -742,8 +774,8 @@ class AutoTrader:
                 self._logger.error(f"[AUTO] MT5 initialization failed for trade - error: {mt5_error}")
                 # Log failed attempt
                 if std_filter_result:
-                    database.log_std_filter_event(
-                        zscore=signal.zscore, signal_type=signal.signal_type,
+                    self._log_std_filter_event(
+                        database, zscore=signal.zscore, signal_type=signal.signal_type,
                         current_std=current_std, min_required_std=std_filter_result['min_std'],
                         std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
                         spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
@@ -820,8 +852,8 @@ class AutoTrader:
                 self._logger.error(f"[AUTO] {error_msg}")
                 # Log failed attempt
                 if std_filter_result:
-                    database.log_std_filter_event(
-                        zscore=signal.zscore, signal_type=signal.signal_type,
+                    self._log_std_filter_event(
+                        database, zscore=signal.zscore, signal_type=signal.signal_type,
                         current_std=current_std, min_required_std=std_filter_result['min_std'],
                         std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
                         spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
@@ -917,8 +949,8 @@ class AutoTrader:
                 mt5.order_send(reverse_request)
                 # Log failed attempt
                 if std_filter_result:
-                    database.log_std_filter_event(
-                        zscore=signal.zscore, signal_type=signal.signal_type,
+                    self._log_std_filter_event(
+                        database, zscore=signal.zscore, signal_type=signal.signal_type,
                         current_std=current_std, min_required_std=std_filter_result['min_std'],
                         std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
                         spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
@@ -955,8 +987,8 @@ class AutoTrader:
 
             # Log successful trade entry to STD filter log
             if std_filter_result:
-                database.log_std_filter_event(
-                    zscore=signal.zscore, signal_type=signal.signal_type,
+                self._log_std_filter_event(
+                    database, zscore=signal.zscore, signal_type=signal.signal_type,
                     current_std=current_std, min_required_std=std_filter_result['min_std'],
                     std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
                     spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,

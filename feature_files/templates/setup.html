@@ -538,6 +538,9 @@
                     case 'TRADE_ENTERED':
                         actionBadge = '<span class="badge bg-primary">Trade Entered</span>';
                         break;
+                    case 'TRADE_FAILED':
+                        actionBadge = '<span class="badge bg-danger">TRADE_FAILED</span>';
+                        break;
                     case 'BLOCKED_STD':
                         actionBadge = '<span class="badge bg-warning text-dark">Blocked (STD)</span>';
                         break;
@@ -780,6 +783,84 @@
         if (currentDiagnoseBrokerId) {
             diagnoseBroker(currentDiagnoseBrokerId);
         }
+    });
+
+    // === REAL-TIME STD FILTER LOG UPDATES ===
+    // Listen for new STD filter events via SocketIO
+    socket.on('std_filter_event', function(data) {
+        console.log('[STD LOG] Real-time event received:', data);
+
+        // Format the new row
+        const time = new Date(data.timestamp).toLocaleString();
+        const profitable = data.is_profitable
+            ? '<span class="badge bg-success">Yes</span>'
+            : '<span class="badge bg-danger">No</span>';
+
+        let actionBadge = '';
+        switch(data.action_taken) {
+            case 'TRADE_ENTERED':
+                actionBadge = '<span class="badge bg-primary">Trade Entered</span>';
+                break;
+            case 'TRADE_FAILED':
+                actionBadge = '<span class="badge bg-danger">TRADE_FAILED</span>';
+                break;
+            case 'BLOCKED_STD':
+                actionBadge = '<span class="badge bg-warning text-dark">Blocked (STD)</span>';
+                break;
+            case 'BLOCKED_HURST':
+                actionBadge = '<span class="badge bg-secondary">Blocked (Hurst)</span>';
+                break;
+            case 'BLOCKED_POSITION':
+                actionBadge = '<span class="badge bg-info">Position Open</span>';
+                break;
+            default:
+                actionBadge = `<span class="badge bg-secondary">${data.action_taken || '-'}</span>`;
+        }
+
+        const ratio = data.std_ratio ? (data.std_ratio * 100).toFixed(1) + '%' : '-';
+        const ratioClass = data.std_ratio >= 1 ? 'text-success' : 'text-danger';
+        const signalBadge = data.signal_type.includes('LONG') ? 'success' : 'danger';
+
+        const newRow = `<tr class="table-active" style="animation: fadeIn 0.5s;">
+            <td class="small">${time}</td>
+            <td><span class="badge bg-${signalBadge}">${data.signal_type}</span></td>
+            <td>${data.zscore ? data.zscore.toFixed(2) : '-'}</td>
+            <td>${data.current_std ? data.current_std.toFixed(4) : '-'}</td>
+            <td>${data.min_required_std ? data.min_required_std.toFixed(4) : '-'}</td>
+            <td class="${ratioClass}">${ratio}</td>
+            <td>${profitable}</td>
+            <td>${actionBadge}</td>
+            <td class="small text-muted">${data.blocked_reason || '-'}</td>
+        </tr>`;
+
+        // Prepend new row to table
+        const tbody = document.getElementById('stdFilterLogBody');
+        if (tbody) {
+            // Remove "no events" placeholder if present
+            const placeholder = tbody.querySelector('td[colspan]');
+            if (placeholder) {
+                tbody.innerHTML = '';
+            }
+            tbody.insertAdjacentHTML('afterbegin', newRow);
+
+            // Limit table to 100 rows
+            while (tbody.children.length > 100) {
+                tbody.removeChild(tbody.lastChild);
+            }
+        }
+
+        // Update stats
+        loadStdFilterStats();
+
+        // Flash notification for TRADE_FAILED
+        if (data.action_taken === 'TRADE_FAILED') {
+            console.error('[STD LOG] TRADE FAILED:', data.blocked_reason);
+        }
+    });
+
+    // Handle connection errors
+    socket.on('connect_error', function(error) {
+        console.error('[SOCKET] Connection error:', error);
     });
 </script>
 {% endblock %}
