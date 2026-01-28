@@ -1290,6 +1290,7 @@
             });
             let result = await response.json();
             if (!result.success) throw new Error('Spot buy failed: ' + result.error);
+            const spotTicket = result.ticket;  // Save ticket for closing
 
             statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 2: Opening Futures position...</span>';
 
@@ -1301,28 +1302,29 @@
             });
             result = await response.json();
             if (!result.success) throw new Error('Futures buy failed: ' + result.error);
+            const futuresTicket = result.ticket;  // Save ticket for closing
 
             // Wait a moment
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 3: Closing Spot position...</span>';
 
-            // Step 3: Sell Spot (close)
+            // Step 3: Sell Spot (close by ticket)
             response = await fetch('/api/test-order', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ leg: 'spot', direction: 'sell' })
+                body: JSON.stringify({ leg: 'spot', direction: 'sell', close_ticket: spotTicket })
             });
             result = await response.json();
             if (!result.success) throw new Error('Spot close failed: ' + result.error);
 
             statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 4: Closing Futures position...</span>';
 
-            // Step 4: Sell Futures (close)
+            // Step 4: Sell Futures (close by ticket)
             response = await fetch('/api/test-order', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ leg: 'futures', direction: 'sell' })
+                body: JSON.stringify({ leg: 'futures', direction: 'sell', close_ticket: futuresTicket })
             });
             result = await response.json();
             if (!result.success) throw new Error('Futures close failed: ' + result.error);

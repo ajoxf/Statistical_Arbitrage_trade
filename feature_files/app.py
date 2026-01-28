@@ -2723,6 +2723,12 @@ def api_test_order():
                     "type_filling": filling_mode,
                 }
 
+                # If closing a position, include the position ticket
+                close_ticket = data.get('close_ticket')
+                if close_ticket and direction == 'sell':
+                    request_order["position"] = int(close_ticket)
+                    request_order["comment"] = "Test Order Close"
+
                 # Send order
                 result = mt5.order_send(request_order)
                 mt5.shutdown()
