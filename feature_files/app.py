@@ -857,20 +857,16 @@ class AutoTrader:
                 self._logger.info(f"[AUTO] Selecting spot symbol {spot_broker.symbol} in Market Watch")
                 mt5.symbol_select(spot_broker.symbol, True)
 
-            # Determine filling mode - RETURN is most universally supported
-            # filling_mode flags: 1=FOK, 2=IOC. If 0 or other, use RETURN
-            spot_filling_mode = mt5.ORDER_FILLING_RETURN  # Most compatible default
-            try:
-                fm = spot_symbol_info.filling_mode
-                if fm == 1:  # Only FOK
-                    spot_filling_mode = mt5.ORDER_FILLING_FOK
-                elif fm == 2:  # Only IOC
-                    spot_filling_mode = mt5.ORDER_FILLING_IOC
-                elif fm == 3:  # Both FOK and IOC
-                    spot_filling_mode = mt5.ORDER_FILLING_FOK
-                # else: keep RETURN (fm=0 or other values)
-            except:
-                pass  # Keep RETURN on any error
+            # Determine filling mode - use bitwise check like test order
+            FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
+            FILLING_IOC = getattr(mt5, 'SYMBOL_FILLING_IOC', 2)
+            spot_filling_mode = mt5.ORDER_FILLING_IOC  # Default
+            if spot_symbol_info.filling_mode & FILLING_FOK:
+                spot_filling_mode = mt5.ORDER_FILLING_FOK
+            elif spot_symbol_info.filling_mode & FILLING_IOC:
+                spot_filling_mode = mt5.ORDER_FILLING_IOC
+            else:
+                spot_filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
             self._logger.info(f"[AUTO] Spot symbol filling_mode={spot_symbol_info.filling_mode}, using ORDER_FILLING={spot_filling_mode}")
 
             # Place spot order
@@ -1012,19 +1008,17 @@ class AutoTrader:
 
             futures_price_for_order = futures_tick.ask if futures_order_type == mt5.ORDER_TYPE_BUY else futures_tick.bid
 
-            # Determine filling mode for futures - RETURN is most universally supported
+            # Determine filling mode for futures - use bitwise check like test order
             # (futures_symbol_info already retrieved and symbol selected above)
-            futures_filling_mode = mt5.ORDER_FILLING_RETURN
-            try:
-                fm = futures_symbol_info.filling_mode
-                if fm == 1:
-                    futures_filling_mode = mt5.ORDER_FILLING_FOK
-                elif fm == 2:
-                    futures_filling_mode = mt5.ORDER_FILLING_IOC
-                elif fm == 3:
-                    futures_filling_mode = mt5.ORDER_FILLING_FOK
-            except:
-                pass
+            FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
+            FILLING_IOC = getattr(mt5, 'SYMBOL_FILLING_IOC', 2)
+            futures_filling_mode = mt5.ORDER_FILLING_IOC  # Default
+            if futures_symbol_info.filling_mode & FILLING_FOK:
+                futures_filling_mode = mt5.ORDER_FILLING_FOK
+            elif futures_symbol_info.filling_mode & FILLING_IOC:
+                futures_filling_mode = mt5.ORDER_FILLING_IOC
+            else:
+                futures_filling_mode = mt5.ORDER_FILLING_RETURN  # Fallback
             self._logger.info(f"[AUTO] Futures symbol filling_mode={futures_symbol_info.filling_mode}, using ORDER_FILLING={futures_filling_mode}")
 
             # Place futures order
