@@ -879,7 +879,7 @@ class AutoTrader:
                 "price": spot_price_for_order,
                 "deviation": 20,
                 "magic": 123456,
-                "comment": f"AutoTrader {direction} Entry - Spot",
+                "comment": f"AT {direction} Spot",  # Max 31 chars for MT5
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": spot_filling_mode,
             }
@@ -941,7 +941,7 @@ class AutoTrader:
                     "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
                     "deviation": 20,
                     "magic": 123456,
-                    "comment": "AutoTrader Rollback - No Futures Symbol Info",
+                    "comment": "AT Rollback NoFutSymbol",  # Max 31 chars
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": spot_filling_mode,
                     "position": int(spot_result.order),
@@ -984,7 +984,7 @@ class AutoTrader:
                     "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
                     "deviation": 20,
                     "magic": 123456,
-                    "comment": "AutoTrader Rollback - No Futures Tick",
+                    "comment": "AT Rollback NoFutTick",  # Max 31 chars
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": spot_filling_mode,
                     "position": int(spot_result.order),  # CRITICAL: Close the spot position
@@ -1031,7 +1031,7 @@ class AutoTrader:
                 "price": futures_price_for_order,
                 "deviation": 20,
                 "magic": 123456,
-                "comment": f"AutoTrader {direction} Entry - Futures",
+                "comment": f"AT {direction} Futures",  # Max 31 chars for MT5
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": futures_filling_mode,
             }
@@ -1056,7 +1056,7 @@ class AutoTrader:
                     "price": mt5.symbol_info_tick(spot_broker.symbol).ask if reverse_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
                     "deviation": 20,
                     "magic": 123456,
-                    "comment": "AutoTrader Rollback - Futures None",
+                    "comment": "AT Rollback FutNone",  # Max 31 chars
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": spot_filling_mode,
                     "position": int(spot_result.order),
@@ -1101,7 +1101,7 @@ class AutoTrader:
                     "price": mt5.symbol_info_tick(spot_broker.symbol).ask if reverse_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
                     "deviation": 20,
                     "magic": 123456,
-                    "comment": "AutoTrader Rollback - Spot",
+                    "comment": "AT Rollback Spot",  # Max 31 chars
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": spot_filling_mode,
                     "position": int(spot_result.order),  # CRITICAL: Include position ticket to close
@@ -1272,7 +1272,7 @@ class AutoTrader:
                 "price": mt5.symbol_info_tick(spot_broker.symbol).ask if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
                 "deviation": 20,
                 "magic": 123456,
-                "comment": f"AutoTrader Exit - Spot ({signal_type})",
+                "comment": f"AT Exit Spot",  # Max 31 chars for MT5
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": spot_filling_mode,
             }
@@ -1305,7 +1305,7 @@ class AutoTrader:
                 "price": mt5.symbol_info_tick(futures_broker.symbol).ask if futures_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(futures_broker.symbol).bid,
                 "deviation": 20,
                 "magic": 123456,
-                "comment": f"AutoTrader Exit - Futures ({signal_type})",
+                "comment": f"AT Exit Futures",  # Max 31 chars for MT5
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": futures_filling_mode,
             }
