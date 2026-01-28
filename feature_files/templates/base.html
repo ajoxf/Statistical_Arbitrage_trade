@@ -251,13 +251,14 @@
                         </a>
                     </li>
                 </ul>
-                <div class="d-flex align-items-center">
+                <!-- Engine Start button removed - Auto trading now works via Algo toggle -->
+                <!-- <div class="d-flex align-items-center">
                     <span id="status-indicator" class="status-stopped"></span>
                     <span id="status-text" class="me-3">Stopped</span>
                     <button id="engine-toggle" class="btn btn-outline-success btn-sm">
                         <i class="bi bi-play-fill"></i> Start
                     </button>
-                </div>
+                </div> -->
             </div>
         </div>
     </nav>
@@ -297,44 +298,14 @@
             handleTrade(data);
         });
 
-        // Status indicator
+        // Status indicator (engine button removed - auto trading via Algo toggle)
         function updateStatus(state) {
-            const indicator = document.getElementById('status-indicator');
-            const text = document.getElementById('status-text');
-            const btn = document.getElementById('engine-toggle');
-
-            indicator.className = '';
-            if (state === 'RUNNING') {
-                indicator.classList.add('status-running');
-                text.textContent = 'Running';
-                btn.innerHTML = '<i class="bi bi-stop-fill"></i> Stop';
-                btn.classList.remove('btn-outline-success');
-                btn.classList.add('btn-outline-danger');
-            } else if (state === 'ERROR') {
-                indicator.classList.add('status-error');
-                text.textContent = 'Error';
-            } else {
-                indicator.classList.add('status-stopped');
-                text.textContent = 'Stopped';
-                btn.innerHTML = '<i class="bi bi-play-fill"></i> Start';
-                btn.classList.remove('btn-outline-danger');
-                btn.classList.add('btn-outline-success');
-            }
+            // Engine status UI removed - now using Algo toggle for auto trading
+            console.log('Engine state:', state);
         }
 
-        // Engine toggle
-        document.getElementById('engine-toggle').addEventListener('click', async () => {
-            const btn = document.getElementById('engine-toggle');
-            const isRunning = btn.classList.contains('btn-outline-danger');
-
-            const endpoint = isRunning ? '/api/engine/stop' : '/api/engine/start';
-            const response = await fetch(endpoint, { method: 'POST' });
-            const result = await response.json();
-
-            if (!result.success) {
-                alert('Error: ' + result.error);
-            }
-        });
+        // Engine toggle button removed - auto trading now works via Algo toggle in dashboard
+        // The button has been commented out in the HTML above
 
         // Override these in specific pages
         function updateTickData(data) {}

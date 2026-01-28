@@ -1028,12 +1028,16 @@ class AutoTrader:
 
 def init_app(db_path: str = "trading.db"):
     """Initialize application components"""
-    global db, engine
+    global db, engine, auto_trader
 
     db = DatabaseManager(db_path)
     db.initialize()
 
-    # Engine will be initialized on first start
+    # Initialize AutoTrader for automatic trade execution
+    auto_trader = AutoTrader(db_path=db_path)
+    logger.info("[APP] AutoTrader initialized")
+
+    # Engine will be initialized on first start (optional, not required for auto trading)
     engine = None
 
 
@@ -2160,7 +2164,19 @@ def api_toggle_algo():
     if engine:
         engine.reload_config()
 
-    return jsonify({'success': True, 'algo_enabled': enabled})
+    # Return message for user alert
+    if enabled:
+        message = "Auto Trading ENABLED! The system will now automatically execute trades when z-score crosses your entry thresholds."
+        logger.info("[ALGO] Auto trading enabled by user")
+    else:
+        message = "Auto Trading DISABLED. No automatic trades will be executed."
+        logger.info("[ALGO] Auto trading disabled by user")
+
+    return jsonify({
+        'success': True,
+        'algo_enabled': enabled,
+        'message': message
+    })
 
 
 @app.route('/api/auto-trader/status')
@@ -3542,6 +3558,66 @@ def start_price_streaming():
                                 'regime': hurst_regime,
                                 'threshold': config.hurst_threshold if config else 0.5
                             }
+
+                    # === AUTO TRADING SIGNAL GENERATION ===
+                    if config and config.algo_enabled and zscore is not None and auto_trader:
+                        entry_threshold = config.entry_std_dev
+                        exit_threshold = config.exit_std_dev
+                        exit_opposite = config.exit_at_opposite_sd
+                        stop_loss_threshold = config.stop_loss_std_dev
+
+                        # Create a simple signal object for AutoTrader
+                        class Signal:
+                            def __init__(self, signal_type, zscore, spread):
+                                self.signal_type = signal_type
+                                self.zscore = zscore
+                                self.spread = spread
+
+                        # Check for entry signals (no position open)
+                        if not auto_trader.has_position:
+                            if zscore >= entry_threshold:
+                                # Z-score high - short the spread
+                                signal = Signal('ENTRY_SHORT', zscore, spread)
+                                logger.info(f"[SIGNAL] ENTRY_SHORT triggered: z={zscore:.2f} >= {entry_threshold}")
+                                auto_trader.handle_signal(signal)
+                                socketio.emit('signal', {'type': 'ENTRY_SHORT', 'zscore': zscore})
+
+                            elif zscore <= -entry_threshold:
+                                # Z-score low - long the spread
+                                signal = Signal('ENTRY_LONG', zscore, spread)
+                                logger.info(f"[SIGNAL] ENTRY_LONG triggered: z={zscore:.2f} <= -{entry_threshold}")
+                                auto_trader.handle_signal(signal)
+                                socketio.emit('signal', {'type': 'ENTRY_LONG', 'zscore': zscore})
+
+                        # Check for exit signals (position open)
+                        else:
+                            should_exit = False
+                            exit_reason = None
+
+                            # Stop loss check
+                            if abs(zscore) >= stop_loss_threshold:
+                                should_exit = True
+                                exit_reason = 'STOP_LOSS'
+
+                            # Exit at opposite SD (if configured)
+                            elif exit_opposite > 0:
+                                if auto_trader.position_direction == 'SHORT' and zscore <= -exit_opposite:
+                                    should_exit = True
+                                    exit_reason = 'EXIT'
+                                elif auto_trader.position_direction == 'LONG' and zscore >= exit_opposite:
+                                    should_exit = True
+                                    exit_reason = 'EXIT'
+
+                            # Normal exit at mean
+                            elif abs(zscore) <= exit_threshold:
+                                should_exit = True
+                                exit_reason = 'EXIT'
+
+                            if should_exit:
+                                signal = Signal(exit_reason, zscore, spread)
+                                logger.info(f"[SIGNAL] {exit_reason} triggered: z={zscore:.2f}")
+                                auto_trader.handle_signal(signal)
+                                socketio.emit('signal', {'type': exit_reason, 'zscore': zscore})
 
                     socketio.emit('tick', {
                         'spot_bid': spot_bid,

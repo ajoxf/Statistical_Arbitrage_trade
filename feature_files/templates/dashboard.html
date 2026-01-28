@@ -1085,9 +1085,27 @@
         }
     }
 
-    // Algo toggle
+    // Algo toggle with confirmation
     document.getElementById('algo-toggle').addEventListener('change', async (e) => {
         const enabled = e.target.checked;
+
+        // Confirm before enabling
+        if (enabled) {
+            const confirmed = confirm(
+                "⚠️ ENABLE AUTO TRADING?\n\n" +
+                "The system will automatically execute REAL trades when:\n" +
+                "• Z-score crosses your Entry threshold\n" +
+                "• Exit conditions are met\n\n" +
+                "Make sure your settings are correct!\n\n" +
+                "Click OK to enable, Cancel to abort."
+            );
+
+            if (!confirmed) {
+                e.target.checked = false;
+                return;
+            }
+        }
+
         const response = await fetch('/api/engine/toggle-algo', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1096,6 +1114,11 @@
 
         const result = await response.json();
         document.getElementById('algo-status').textContent = enabled ? 'ENABLED' : 'DISABLED';
+
+        // Show alert with message from server
+        if (result.message) {
+            alert(result.message);
+        }
     });
 
     // Initial status fetch
