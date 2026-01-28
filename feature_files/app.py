@@ -456,6 +456,9 @@ class AutoTrader:
         self._entry_futures_price: Optional[float] = None
         self._entry_zscore: Optional[float] = None
         self._entry_time: Optional[datetime] = None
+        # MT5 position tickets for closing positions
+        self._spot_ticket: Optional[int] = None
+        self._futures_ticket: Optional[int] = None
         self._logger = logging.getLogger(__name__)
 
         # Load any existing open position from database
@@ -478,7 +481,10 @@ class AutoTrader:
                 self._entry_futures_price = row['entry_futures_price']
                 self._entry_zscore = row['entry_zscore']
                 self._entry_time = datetime.fromisoformat(row['entry_date']) if row['entry_date'] else None
-                self._logger.info(f"[AUTO] Loaded open position: {self._position_direction} (ID: {self._entry_trade_id})")
+                # Load MT5 tickets for closing positions
+                self._spot_ticket = row['mt5_spot_ticket'] if 'mt5_spot_ticket' in row.keys() else None
+                self._futures_ticket = row['mt5_futures_ticket'] if 'mt5_futures_ticket' in row.keys() else None
+                self._logger.info(f"[AUTO] Loaded open position: {self._position_direction} (ID: {self._entry_trade_id}, spot_ticket={self._spot_ticket}, futures_ticket={self._futures_ticket})")
         except Exception as e:
             self._logger.error(f"[AUTO] Error loading open position: {e}")
 
@@ -1004,8 +1010,11 @@ class AutoTrader:
             self._entry_futures_price = futures_result.price
             self._entry_zscore = signal.zscore
             self._entry_time = datetime.now()
+            # Store MT5 tickets for closing positions later
+            self._spot_ticket = spot_result.order
+            self._futures_ticket = futures_result.order
 
-            self._logger.info(f"[AUTO] Trade opened: {trade_id} ({direction})")
+            self._logger.info(f"[AUTO] Trade opened: {trade_id} ({direction}) - spot_ticket={self._spot_ticket}, futures_ticket={self._futures_ticket}")
 
             # Emit to frontend
             socketio.emit('auto_trade', {
@@ -1085,7 +1094,8 @@ class AutoTrader:
                 except:
                     pass
 
-            # Close spot position
+            # Close spot position - MUST include position ticket to close existing position
+            self._logger.info(f"[AUTO] Closing spot position: ticket={self._spot_ticket}")
             spot_request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": spot_broker.symbol,
@@ -1098,6 +1108,9 @@ class AutoTrader:
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": spot_filling_mode,
             }
+            # Include position ticket if available (required to close existing position)
+            if self._spot_ticket:
+                spot_request["position"] = int(self._spot_ticket)
 
             spot_result = mt5.order_send(spot_request)
 
@@ -1106,7 +1119,10 @@ class AutoTrader:
                 mt5.shutdown()
                 return
 
-            # Close futures position
+            self._logger.info(f"[AUTO] Spot position closed successfully")
+
+            # Close futures position - MUST include position ticket to close existing position
+            self._logger.info(f"[AUTO] Closing futures position: ticket={self._futures_ticket}")
             futures_request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": futures_broker.symbol,
@@ -1119,14 +1135,19 @@ class AutoTrader:
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": futures_filling_mode,
             }
+            # Include position ticket if available (required to close existing position)
+            if self._futures_ticket:
+                futures_request["position"] = int(self._futures_ticket)
 
             futures_result = mt5.order_send(futures_request)
 
             if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
-                self._logger.error(f"[AUTO] Futures close failed: {futures_result.comment}")
+                self._logger.error(f"[AUTO] Futures close failed: {futures_result.retcode} - {futures_result.comment}")
                 # Don't reverse - we're partially closed, log for manual intervention
                 mt5.shutdown()
                 return
+
+            self._logger.info(f"[AUTO] Futures position closed successfully")
 
             mt5.shutdown()
 
@@ -1202,6 +1223,8 @@ class AutoTrader:
             self._entry_futures_price = None
             self._entry_zscore = None
             self._entry_time = None
+            self._spot_ticket = None
+            self._futures_ticket = None
 
         except ImportError:
             self._logger.error("[AUTO] MetaTrader5 not installed")
