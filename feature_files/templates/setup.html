@@ -267,9 +267,100 @@
                     <button class="btn btn-outline-warning" onclick="clearData('sd_touches')">
                         <i class="bi bi-bar-chart me-1"></i>Clear SD Touches
                     </button>
+                    <button class="btn btn-outline-warning" onclick="clearData('std_filter_log')">
+                        <i class="bi bi-funnel me-1"></i>Clear STD Log
+                    </button>
                     <button class="btn btn-outline-danger" onclick="clearData('all')">
                         <i class="bi bi-trash me-1"></i>Clear All
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- STD Filter Log Section -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-funnel me-2"></i>STD Filter Profitability Log</span>
+                <div>
+                    <button class="btn btn-sm btn-outline-primary me-2" onclick="loadStdFilterStats()">
+                        <i class="bi bi-bar-chart me-1"></i>Stats
+                    </button>
+                    <button class="btn btn-sm btn-primary" onclick="loadStdFilterLog()">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- Stats Panel -->
+                <div id="stdFilterStats" class="mb-3" style="display:none;">
+                    <div class="row text-center">
+                        <div class="col">
+                            <div class="border rounded p-2">
+                                <div class="text-muted small">Total Signals</div>
+                                <div class="h5 mb-0" id="statTotalSignals">-</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2">
+                                <div class="text-muted small">Profitable</div>
+                                <div class="h5 mb-0 text-success" id="statProfitable">-</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2">
+                                <div class="text-muted small">Trades Entered</div>
+                                <div class="h5 mb-0 text-primary" id="statTradesEntered">-</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2">
+                                <div class="text-muted small">Blocked (STD)</div>
+                                <div class="h5 mb-0 text-warning" id="statBlockedStd">-</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2">
+                                <div class="text-muted small">Blocked (Other)</div>
+                                <div class="h5 mb-0 text-secondary" id="statBlockedOther">-</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2">
+                                <div class="text-muted small">Entry Rate</div>
+                                <div class="h5 mb-0" id="statEntryRate">-</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Log Table -->
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-sm table-striped">
+                        <thead class="table-dark sticky-top">
+                            <tr>
+                                <th>Time</th>
+                                <th>Signal</th>
+                                <th>Z-Score</th>
+                                <th>Current STD</th>
+                                <th>Min Required</th>
+                                <th>Ratio</th>
+                                <th>Profitable</th>
+                                <th>Action</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stdFilterLogBody">
+                            <tr>
+                                <td colspan="9" class="text-center text-muted">
+                                    Click Refresh to load data
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -414,6 +505,91 @@
 
         const result = await response.json();
         alert(result.success ? 'Data cleared!' : 'Error: ' + result.error);
+
+        // Refresh STD log if that was cleared
+        if (type === 'std_filter_log' || type === 'all') {
+            loadStdFilterLog();
+            loadStdFilterStats();
+        }
+    }
+
+    // Load STD Filter Log
+    async function loadStdFilterLog() {
+        const tbody = document.getElementById('stdFilterLogBody');
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center"><div class="spinner-border spinner-border-sm"></div> Loading...</td></tr>';
+
+        try {
+            const response = await fetch('/api/std-filter-log?limit=100');
+            const data = await response.json();
+
+            if (data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No STD filter events logged yet</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.map(row => {
+                const time = new Date(row.timestamp).toLocaleString();
+                const profitable = row.is_profitable
+                    ? '<span class="badge bg-success">Yes</span>'
+                    : '<span class="badge bg-danger">No</span>';
+
+                let actionBadge = '';
+                switch(row.action_taken) {
+                    case 'TRADE_ENTERED':
+                        actionBadge = '<span class="badge bg-primary">Trade Entered</span>';
+                        break;
+                    case 'BLOCKED_STD':
+                        actionBadge = '<span class="badge bg-warning text-dark">Blocked (STD)</span>';
+                        break;
+                    case 'BLOCKED_HURST':
+                        actionBadge = '<span class="badge bg-secondary">Blocked (Hurst)</span>';
+                        break;
+                    case 'BLOCKED_POSITION':
+                        actionBadge = '<span class="badge bg-info">Position Open</span>';
+                        break;
+                    default:
+                        actionBadge = `<span class="badge bg-secondary">${row.action_taken || '-'}</span>`;
+                }
+
+                const ratio = row.std_ratio ? (row.std_ratio * 100).toFixed(1) + '%' : '-';
+                const ratioClass = row.std_ratio >= 1 ? 'text-success' : 'text-danger';
+
+                return `<tr>
+                    <td class="small">${time}</td>
+                    <td><span class="badge bg-${row.signal_type.includes('LONG') ? 'success' : 'danger'}">${row.signal_type}</span></td>
+                    <td>${row.zscore ? row.zscore.toFixed(2) : '-'}</td>
+                    <td>${row.current_std ? row.current_std.toFixed(4) : '-'}</td>
+                    <td>${row.min_required_std ? row.min_required_std.toFixed(4) : '-'}</td>
+                    <td class="${ratioClass}">${ratio}</td>
+                    <td>${profitable}</td>
+                    <td>${actionBadge}</td>
+                    <td class="small text-muted">${row.blocked_reason || '-'}</td>
+                </tr>`;
+            }).join('');
+
+        } catch (error) {
+            tbody.innerHTML = `<tr><td colspan="9" class="text-center text-danger">Error: ${error.message}</td></tr>`;
+        }
+    }
+
+    // Load STD Filter Stats
+    async function loadStdFilterStats() {
+        const statsPanel = document.getElementById('stdFilterStats');
+        statsPanel.style.display = 'block';
+
+        try {
+            const response = await fetch('/api/std-filter-stats');
+            const stats = await response.json();
+
+            document.getElementById('statTotalSignals').textContent = stats.total_signals;
+            document.getElementById('statProfitable').textContent = stats.profitable_signals;
+            document.getElementById('statTradesEntered').textContent = stats.trades_entered;
+            document.getElementById('statBlockedStd').textContent = stats.blocked_by_std;
+            document.getElementById('statBlockedOther').textContent = stats.blocked_by_other;
+            document.getElementById('statEntryRate').textContent = stats.entry_rate.toFixed(1) + '%';
+        } catch (error) {
+            console.error('Error loading STD filter stats:', error);
+        }
     }
 
     // Test broker connectivity
