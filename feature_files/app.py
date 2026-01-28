@@ -937,8 +937,8 @@ class AutoTrader:
             if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
                 error_msg = f"Futures order failed: {futures_result.retcode} - {futures_result.comment}"
                 self._logger.error(f"[AUTO] {error_msg}")
-                # Reverse spot trade
-                self._logger.warning("[AUTO] Reversing spot trade due to futures failure")
+                # Reverse/close spot trade - MUST include position ticket
+                self._logger.warning(f"[AUTO] Closing spot position due to futures failure: ticket={spot_result.order}")
                 reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
                 reverse_request = {
                     "action": mt5.TRADE_ACTION_DEAL,
@@ -948,11 +948,20 @@ class AutoTrader:
                     "price": mt5.symbol_info_tick(spot_broker.symbol).ask if reverse_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
                     "deviation": 20,
                     "magic": 123456,
-                    "comment": "AutoTrader Reversal",
+                    "comment": "AutoTrader Rollback - Spot",
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": spot_filling_mode,
+                    "position": int(spot_result.order),  # CRITICAL: Include position ticket to close
                 }
-                mt5.order_send(reverse_request)
+                rollback_result = mt5.order_send(reverse_request)
+
+                # Check if rollback succeeded
+                if rollback_result.retcode != mt5.TRADE_RETCODE_DONE:
+                    self._logger.error(f"[AUTO] CRITICAL: Spot rollback FAILED! Manual intervention needed. Ticket={spot_result.order}, Error={rollback_result.retcode} - {rollback_result.comment}")
+                    error_msg += f" | ROLLBACK FAILED: {rollback_result.comment}"
+                else:
+                    self._logger.info(f"[AUTO] Spot position rolled back successfully")
+
                 # Log failed attempt
                 if std_filter_result:
                     self._log_std_filter_event(
