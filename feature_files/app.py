@@ -781,16 +781,21 @@ class AutoTrader:
                 mt5.shutdown()
                 return
 
-            # Determine filling mode based on what the symbol supports
-            spot_filling_mode = mt5.ORDER_FILLING_FOK  # Default to Fill or Kill
-            if spot_symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
-                spot_filling_mode = mt5.ORDER_FILLING_IOC
-            elif spot_symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
-                spot_filling_mode = mt5.ORDER_FILLING_FOK
-            else:
-                # Some brokers use RETURN mode
-                spot_filling_mode = mt5.ORDER_FILLING_RETURN
-            self._logger.info(f"[AUTO] Spot symbol filling mode: {spot_symbol_info.filling_mode}, using: {spot_filling_mode}")
+            # Determine filling mode - RETURN is most universally supported
+            # filling_mode flags: 1=FOK, 2=IOC. If 0 or other, use RETURN
+            spot_filling_mode = mt5.ORDER_FILLING_RETURN  # Most compatible default
+            try:
+                fm = spot_symbol_info.filling_mode
+                if fm == 1:  # Only FOK
+                    spot_filling_mode = mt5.ORDER_FILLING_FOK
+                elif fm == 2:  # Only IOC
+                    spot_filling_mode = mt5.ORDER_FILLING_IOC
+                elif fm == 3:  # Both FOK and IOC
+                    spot_filling_mode = mt5.ORDER_FILLING_FOK
+                # else: keep RETURN (fm=0 or other values)
+            except:
+                pass  # Keep RETURN on any error
+            self._logger.info(f"[AUTO] Spot symbol filling_mode={spot_symbol_info.filling_mode}, using ORDER_FILLING={spot_filling_mode}")
 
             # Place spot order
             spot_request = {
@@ -859,14 +864,19 @@ class AutoTrader:
                 mt5.shutdown()
                 return
 
-            futures_filling_mode = mt5.ORDER_FILLING_FOK
-            if futures_symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
-                futures_filling_mode = mt5.ORDER_FILLING_IOC
-            elif futures_symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
-                futures_filling_mode = mt5.ORDER_FILLING_FOK
-            else:
-                futures_filling_mode = mt5.ORDER_FILLING_RETURN
-            self._logger.info(f"[AUTO] Futures symbol filling mode: {futures_symbol_info.filling_mode}, using: {futures_filling_mode}")
+            # Determine filling mode for futures - RETURN is most universally supported
+            futures_filling_mode = mt5.ORDER_FILLING_RETURN
+            try:
+                fm = futures_symbol_info.filling_mode
+                if fm == 1:
+                    futures_filling_mode = mt5.ORDER_FILLING_FOK
+                elif fm == 2:
+                    futures_filling_mode = mt5.ORDER_FILLING_IOC
+                elif fm == 3:
+                    futures_filling_mode = mt5.ORDER_FILLING_FOK
+            except:
+                pass
+            self._logger.info(f"[AUTO] Futures symbol filling_mode={futures_symbol_info.filling_mode}, using ORDER_FILLING={futures_filling_mode}")
 
             # Place futures order
             futures_request = {
@@ -1013,25 +1023,35 @@ class AutoTrader:
                 spot_order_type = mt5.ORDER_TYPE_BUY
                 futures_order_type = mt5.ORDER_TYPE_SELL
 
-            # Get correct filling modes
+            # Get correct filling modes - RETURN is most universally supported
             spot_symbol_info = mt5.symbol_info(spot_broker.symbol)
             futures_symbol_info = mt5.symbol_info(futures_broker.symbol)
 
-            spot_filling_mode = mt5.ORDER_FILLING_FOK
-            if spot_symbol_info and spot_symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
-                spot_filling_mode = mt5.ORDER_FILLING_IOC
-            elif spot_symbol_info and spot_symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
-                spot_filling_mode = mt5.ORDER_FILLING_FOK
-            elif spot_symbol_info:
-                spot_filling_mode = mt5.ORDER_FILLING_RETURN
+            spot_filling_mode = mt5.ORDER_FILLING_RETURN
+            if spot_symbol_info:
+                try:
+                    fm = spot_symbol_info.filling_mode
+                    if fm == 1:
+                        spot_filling_mode = mt5.ORDER_FILLING_FOK
+                    elif fm == 2:
+                        spot_filling_mode = mt5.ORDER_FILLING_IOC
+                    elif fm == 3:
+                        spot_filling_mode = mt5.ORDER_FILLING_FOK
+                except:
+                    pass
 
-            futures_filling_mode = mt5.ORDER_FILLING_FOK
-            if futures_symbol_info and futures_symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
-                futures_filling_mode = mt5.ORDER_FILLING_IOC
-            elif futures_symbol_info and futures_symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
-                futures_filling_mode = mt5.ORDER_FILLING_FOK
-            elif futures_symbol_info:
-                futures_filling_mode = mt5.ORDER_FILLING_RETURN
+            futures_filling_mode = mt5.ORDER_FILLING_RETURN
+            if futures_symbol_info:
+                try:
+                    fm = futures_symbol_info.filling_mode
+                    if fm == 1:
+                        futures_filling_mode = mt5.ORDER_FILLING_FOK
+                    elif fm == 2:
+                        futures_filling_mode = mt5.ORDER_FILLING_IOC
+                    elif fm == 3:
+                        futures_filling_mode = mt5.ORDER_FILLING_FOK
+                except:
+                    pass
 
             # Close spot position
             spot_request = {
