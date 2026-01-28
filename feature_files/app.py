@@ -489,41 +489,46 @@ class AutoTrader:
         This is called for every signal generated. It checks all conditions
         and executes trades when appropriate.
         """
+        self._logger.info(f"[AUTO] >>> handle_signal CALLED with {signal.signal_type} <<<")
         try:
             database = DatabaseManager(self.db_path)
             config = database.get_config()
 
             if not config:
-                self._logger.warning("[AUTO] No config found")
+                self._logger.warning("[AUTO] No config found - ABORTING")
                 return
 
             # Check if algo trading is enabled
             if not config.algo_enabled:
-                self._logger.debug("[AUTO] Algo trading disabled, ignoring signal")
+                self._logger.info("[AUTO] Algo trading disabled - ABORTING")
                 return
 
             signal_type = signal.signal_type
             zscore = signal.zscore
 
-            self._logger.info(f"[AUTO] Processing signal: {signal_type} (z={zscore:.2f})")
+            self._logger.info(f"[AUTO] Processing signal: {signal_type} (z={zscore:.2f}) - algo_enabled={config.algo_enabled}")
 
             # Get current market prices for execution
             spot_broker_id, futures_broker_id = load_active_brokers()
+            self._logger.info(f"[AUTO] Active brokers: spot={spot_broker_id}, futures={futures_broker_id}")
             if not spot_broker_id or not futures_broker_id:
-                self._logger.warning("[AUTO] No active brokers configured")
+                self._logger.warning("[AUTO] No active brokers configured - ABORTING")
                 return
 
             spot_broker = database.get_broker(spot_broker_id)
             futures_broker = database.get_broker(futures_broker_id)
 
             if not spot_broker or not futures_broker:
-                self._logger.warning("[AUTO] Broker config not found")
+                self._logger.warning(f"[AUTO] Broker config not found: spot={spot_broker}, futures={futures_broker} - ABORTING")
                 return
+
+            self._logger.info(f"[AUTO] Brokers loaded: spot={spot_broker.symbol}, futures={futures_broker.symbol}")
 
             # Get current prices
             spot_price, futures_price = self._get_current_prices(spot_broker, futures_broker)
+            self._logger.info(f"[AUTO] Current prices: spot={spot_price}, futures={futures_price}")
             if spot_price <= 0 or futures_price <= 0:
-                self._logger.warning("[AUTO] Could not get valid prices")
+                self._logger.warning(f"[AUTO] Invalid prices (spot={spot_price}, futures={futures_price}) - ABORTING")
                 return
 
             # Handle entry signals
@@ -623,9 +628,11 @@ class AutoTrader:
                             spot_broker, futures_broker,
                             spot_price: float, futures_price: float):
         """Handle entry signal (ENTRY_LONG or ENTRY_SHORT)"""
+        self._logger.info(f"[AUTO] >>> _handle_entry_signal CALLED for {signal.signal_type} <<<")
+        self._logger.info(f"[AUTO] Position state: open={self._position_open}, direction={self._position_direction}")
 
         if self._position_open:
-            self._logger.info("[AUTO] Position already open, skipping entry signal")
+            self._logger.info("[AUTO] Position already open, skipping entry signal - ABORTING")
             return
 
         # Get current market data for filter checks
@@ -670,10 +677,12 @@ class AutoTrader:
             )
 
         # Check filters with STD data
+        self._logger.info(f"[AUTO] Checking filters: std={current_std}, std_filter_enabled={config.std_filter_enabled}")
         passes, reason = self._check_filters(
             config, signal.zscore, spread_history,
             current_std, spot_spread_cents, futures_spread_cents
         )
+        self._logger.info(f"[AUTO] Filter check result: passes={passes}, reason={reason}")
 
         # Log STD filter event to database (for blocked signals only - successful trades logged after execution)
         if std_filter_result and not passes:
@@ -717,7 +726,8 @@ class AutoTrader:
         signal_type = signal.signal_type
         direction = 'LONG' if signal_type == 'ENTRY_LONG' else 'SHORT'
 
-        self._logger.info(f"[AUTO] Executing {direction} entry trade")
+        self._logger.info(f"[AUTO] === FILTERS PASSED === Executing {direction} entry trade")
+        self._logger.info(f"[AUTO] Trade details: lot_size={config.lot_size}, z={signal.zscore:.2f}")
 
         # Determine trade direction
         # ENTRY_LONG (z-score low): Buy futures, Sell spot (expecting spread to widen)
@@ -726,8 +736,10 @@ class AutoTrader:
         try:
             import MetaTrader5 as mt5
 
+            self._logger.info("[AUTO] Attempting MT5 initialization...")
             if not mt5.initialize():
-                self._logger.error("[AUTO] MT5 initialization failed for trade")
+                mt5_error = mt5.last_error()
+                self._logger.error(f"[AUTO] MT5 initialization failed for trade - error: {mt5_error}")
                 # Log failed attempt
                 if std_filter_result:
                     database.log_std_filter_event(
@@ -741,6 +753,7 @@ class AutoTrader:
                 return
 
             lot_size = config.lot_size
+            self._logger.info(f"[AUTO] MT5 initialized successfully, lot_size={lot_size}")
 
             # Execute spot leg
             if direction == 'SHORT':
@@ -752,13 +765,22 @@ class AutoTrader:
                 spot_order_type = mt5.ORDER_TYPE_SELL
                 futures_order_type = mt5.ORDER_TYPE_BUY
 
+            # Get spot tick for pricing
+            spot_tick = mt5.symbol_info_tick(spot_broker.symbol)
+            if not spot_tick:
+                self._logger.error(f"[AUTO] Could not get spot tick for {spot_broker.symbol}")
+                mt5.shutdown()
+                return
+
+            spot_price_for_order = spot_tick.ask if spot_order_type == mt5.ORDER_TYPE_BUY else spot_tick.bid
+
             # Place spot order
             spot_request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": spot_broker.symbol,
                 "volume": lot_size,
                 "type": spot_order_type,
-                "price": mt5.symbol_info_tick(spot_broker.symbol).ask if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
+                "price": spot_price_for_order,
                 "deviation": 20,
                 "magic": 123456,
                 "comment": f"AutoTrader {direction} Entry - Spot",
@@ -766,7 +788,9 @@ class AutoTrader:
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
+            self._logger.info(f"[AUTO] Sending SPOT order: symbol={spot_broker.symbol}, type={'BUY' if spot_order_type == mt5.ORDER_TYPE_BUY else 'SELL'}, volume={lot_size}, price={spot_price_for_order}")
             spot_result = mt5.order_send(spot_request)
+            self._logger.info(f"[AUTO] SPOT order result: retcode={spot_result.retcode}, order={spot_result.order}, comment={spot_result.comment}")
 
             if spot_result.retcode != mt5.TRADE_RETCODE_DONE:
                 error_msg = f"Spot order failed: {spot_result.retcode} - {spot_result.comment}"
@@ -786,13 +810,30 @@ class AutoTrader:
 
             self._logger.info(f"[AUTO] Spot order filled: ticket={spot_result.order}, price={spot_result.price}")
 
+            # Get futures tick for pricing
+            futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
+            if not futures_tick:
+                self._logger.error(f"[AUTO] Could not get futures tick for {futures_broker.symbol}")
+                # Reverse spot trade
+                self._logger.warning("[AUTO] Reversing spot trade due to missing futures tick")
+                reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                mt5.order_send({
+                    "action": mt5.TRADE_ACTION_DEAL, "symbol": spot_broker.symbol, "volume": lot_size,
+                    "type": reverse_type, "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
+                    "deviation": 20, "magic": 123456, "comment": "AutoTrader Reversal", "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
+                })
+                mt5.shutdown()
+                return
+
+            futures_price_for_order = futures_tick.ask if futures_order_type == mt5.ORDER_TYPE_BUY else futures_tick.bid
+
             # Place futures order
             futures_request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": futures_broker.symbol,
                 "volume": lot_size,
                 "type": futures_order_type,
-                "price": mt5.symbol_info_tick(futures_broker.symbol).ask if futures_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(futures_broker.symbol).bid,
+                "price": futures_price_for_order,
                 "deviation": 20,
                 "magic": 123456,
                 "comment": f"AutoTrader {direction} Entry - Futures",
@@ -800,7 +841,9 @@ class AutoTrader:
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
+            self._logger.info(f"[AUTO] Sending FUTURES order: symbol={futures_broker.symbol}, type={'BUY' if futures_order_type == mt5.ORDER_TYPE_BUY else 'SELL'}, volume={lot_size}, price={futures_price_for_order}")
             futures_result = mt5.order_send(futures_request)
+            self._logger.info(f"[AUTO] FUTURES order result: retcode={futures_result.retcode}, order={futures_result.order}, comment={futures_result.comment}")
 
             if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
                 error_msg = f"Futures order failed: {futures_result.retcode} - {futures_result.comment}"
@@ -857,6 +900,7 @@ class AutoTrader:
             )
 
             database.add_trade(trade)
+            self._logger.info(f"[AUTO] === TRADE RECORDED IN DATABASE: {trade_id} ===")
 
             # Log successful trade entry to STD filter log
             if std_filter_result:
