@@ -891,15 +891,38 @@ class AutoTrader:
             # Get futures tick for pricing
             futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
             if not futures_tick:
-                self._logger.error(f"[AUTO] Could not get futures tick for {futures_broker.symbol}")
-                # Reverse spot trade
-                self._logger.warning("[AUTO] Reversing spot trade due to missing futures tick")
+                error_msg = f"Could not get futures tick for {futures_broker.symbol}"
+                self._logger.error(f"[AUTO] {error_msg}")
+                # Reverse spot trade - MUST include position ticket
+                self._logger.warning(f"[AUTO] Reversing spot trade (ticket={spot_result.order}) due to missing futures tick")
                 reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                mt5.order_send({
-                    "action": mt5.TRADE_ACTION_DEAL, "symbol": spot_broker.symbol, "volume": lot_size,
-                    "type": reverse_type, "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
-                    "deviation": 20, "magic": 123456, "comment": "AutoTrader Reversal", "type_time": mt5.ORDER_TIME_GTC, "type_filling": spot_filling_mode,
+                rollback_result = mt5.order_send({
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": spot_broker.symbol,
+                    "volume": lot_size,
+                    "type": reverse_type,
+                    "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
+                    "deviation": 20,
+                    "magic": 123456,
+                    "comment": "AutoTrader Rollback - No Futures Tick",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": spot_filling_mode,
+                    "position": int(spot_result.order),  # CRITICAL: Close the spot position
                 })
+                if rollback_result is None or rollback_result.retcode != mt5.TRADE_RETCODE_DONE:
+                    self._logger.error(f"[AUTO] CRITICAL: Rollback FAILED! Manual intervention needed. Spot ticket={spot_result.order}")
+                else:
+                    self._logger.info(f"[AUTO] Spot position rolled back successfully")
+                # Log to STD filter
+                if std_filter_result:
+                    self._log_std_filter_event(
+                        database, zscore=signal.zscore, signal_type=signal.signal_type,
+                        current_std=current_std, min_required_std=std_filter_result['min_std'],
+                        std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                        spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                        round_trip_cost=std_filter_result['round_trip_cost'],
+                        action_taken='TRADE_FAILED', blocked_reason=error_msg
+                    )
                 mt5.shutdown()
                 return
 
@@ -908,14 +931,38 @@ class AutoTrader:
             # Get correct filling mode for futures symbol
             futures_symbol_info = mt5.symbol_info(futures_broker.symbol)
             if futures_symbol_info is None:
-                self._logger.error(f"[AUTO] Could not get symbol info for {futures_broker.symbol}")
-                # Reverse spot trade
+                error_msg = f"Could not get symbol info for {futures_broker.symbol}"
+                self._logger.error(f"[AUTO] {error_msg}")
+                # Reverse spot trade - MUST include position ticket
+                self._logger.warning(f"[AUTO] Reversing spot trade (ticket={spot_result.order}) due to missing futures symbol info")
                 reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-                mt5.order_send({
-                    "action": mt5.TRADE_ACTION_DEAL, "symbol": spot_broker.symbol, "volume": lot_size,
-                    "type": reverse_type, "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
-                    "deviation": 20, "magic": 123456, "comment": "AutoTrader Reversal", "type_time": mt5.ORDER_TIME_GTC, "type_filling": spot_filling_mode,
+                rollback_result = mt5.order_send({
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": spot_broker.symbol,
+                    "volume": lot_size,
+                    "type": reverse_type,
+                    "price": spot_tick.ask if reverse_type == mt5.ORDER_TYPE_BUY else spot_tick.bid,
+                    "deviation": 20,
+                    "magic": 123456,
+                    "comment": "AutoTrader Rollback - No Futures Symbol Info",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": spot_filling_mode,
+                    "position": int(spot_result.order),  # CRITICAL: Close the spot position
                 })
+                if rollback_result is None or rollback_result.retcode != mt5.TRADE_RETCODE_DONE:
+                    self._logger.error(f"[AUTO] CRITICAL: Rollback FAILED! Manual intervention needed. Spot ticket={spot_result.order}")
+                else:
+                    self._logger.info(f"[AUTO] Spot position rolled back successfully")
+                # Log to STD filter
+                if std_filter_result:
+                    self._log_std_filter_event(
+                        database, zscore=signal.zscore, signal_type=signal.signal_type,
+                        current_std=current_std, min_required_std=std_filter_result['min_std'],
+                        std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                        spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                        round_trip_cost=std_filter_result['round_trip_cost'],
+                        action_taken='TRADE_FAILED', blocked_reason=error_msg
+                    )
                 mt5.shutdown()
                 return
 
