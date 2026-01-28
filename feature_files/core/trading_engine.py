@@ -114,6 +114,12 @@ class TradingEngine:
         """Register trade callback"""
         self._trade_callbacks.append(callback)
 
+    def set_position_state(self, has_position: bool, direction: Optional[str] = None):
+        """Update engine position state (called by AutoTrader after trade execution)"""
+        self._has_position = has_position
+        self._position_direction = direction
+        logger.info(f"Engine position state updated: has_position={has_position}, direction={direction}")
+
     async def initialize(self):
         """Initialize the trading engine"""
         self._state = EngineState.STARTING
@@ -133,6 +139,29 @@ class TradingEngine:
             self._config = db.get_config()
 
             logger.info(f"Loaded config: algo_enabled={self._config.algo_enabled}")
+
+            # Load open position state from database
+            try:
+                conn = db._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT trade_id, position_direction FROM trades
+                    WHERE status = 'OPEN'
+                    ORDER BY entry_date DESC LIMIT 1
+                ''')
+                row = cursor.fetchone()
+                if row:
+                    self._has_position = True
+                    self._position_direction = row['position_direction']
+                    logger.info(f"Engine loaded open position: direction={self._position_direction}")
+                else:
+                    self._has_position = False
+                    self._position_direction = None
+                    logger.info("Engine: No open position found")
+            except Exception as e:
+                logger.warning(f"Could not load position state: {e}")
+                self._has_position = False
+                self._position_direction = None
 
             self._state = EngineState.STOPPED
             logger.info("Trading engine initialized successfully")

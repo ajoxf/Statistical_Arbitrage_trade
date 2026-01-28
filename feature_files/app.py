@@ -1080,6 +1080,12 @@ class AutoTrader:
 
             self._logger.info(f"[AUTO] Trade opened: {trade_id} ({direction}) - spot_ticket={self._spot_ticket}, futures_ticket={self._futures_ticket}")
 
+            # Sync engine position state to prevent duplicate signals
+            global engine
+            if engine:
+                engine.set_position_state(True, direction)
+                self._logger.info(f"[AUTO] Engine position state synced: has_position=True, direction={direction}")
+
             # Emit to frontend
             socketio.emit('auto_trade', {
                 'action': 'ENTRY',
@@ -1302,6 +1308,12 @@ class AutoTrader:
             self._entry_time = None
             self._spot_ticket = None
             self._futures_ticket = None
+
+            # Sync engine position state
+            global engine
+            if engine:
+                engine.set_position_state(False, None)
+                self._logger.info(f"[AUTO] Engine position state synced: has_position=False")
 
         except ImportError:
             self._logger.error("[AUTO] MetaTrader5 not installed")
