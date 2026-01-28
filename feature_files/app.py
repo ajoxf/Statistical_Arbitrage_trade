@@ -851,6 +851,23 @@ class AutoTrader:
 
             self._logger.info(f"[AUTO] Sending SPOT order: symbol={spot_broker.symbol}, type={'BUY' if spot_order_type == mt5.ORDER_TYPE_BUY else 'SELL'}, volume={lot_size}, price={spot_price_for_order}")
             spot_result = mt5.order_send(spot_request)
+
+            # Handle None result (connection lost, symbol issue, etc.)
+            if spot_result is None:
+                error_msg = f"Spot order failed: order_send returned None (connection lost or symbol issue)"
+                self._logger.error(f"[AUTO] {error_msg}")
+                if std_filter_result:
+                    self._log_std_filter_event(
+                        database, zscore=signal.zscore, signal_type=signal.signal_type,
+                        current_std=current_std, min_required_std=std_filter_result['min_std'],
+                        std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                        spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                        round_trip_cost=std_filter_result['round_trip_cost'],
+                        action_taken='TRADE_FAILED', blocked_reason=error_msg
+                    )
+                mt5.shutdown()
+                return
+
             self._logger.info(f"[AUTO] SPOT order result: retcode={spot_result.retcode}, order={spot_result.order}, comment={spot_result.comment}")
 
             if spot_result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -932,6 +949,44 @@ class AutoTrader:
 
             self._logger.info(f"[AUTO] Sending FUTURES order: symbol={futures_broker.symbol}, type={'BUY' if futures_order_type == mt5.ORDER_TYPE_BUY else 'SELL'}, volume={lot_size}, price={futures_price_for_order}")
             futures_result = mt5.order_send(futures_request)
+
+            # Handle None result (connection lost, symbol issue, etc.)
+            if futures_result is None:
+                error_msg = f"Futures order failed: order_send returned None (connection lost or symbol issue)"
+                self._logger.error(f"[AUTO] {error_msg}")
+                # MUST close the spot position that was already opened
+                self._logger.warning(f"[AUTO] CRITICAL: Closing orphan spot position: ticket={spot_result.order}")
+                reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                rollback_request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": spot_broker.symbol,
+                    "volume": lot_size,
+                    "type": reverse_type,
+                    "price": mt5.symbol_info_tick(spot_broker.symbol).ask if reverse_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
+                    "deviation": 20,
+                    "magic": 123456,
+                    "comment": "AutoTrader Rollback - Futures None",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": spot_filling_mode,
+                    "position": int(spot_result.order),
+                }
+                rollback_result = mt5.order_send(rollback_request)
+                if rollback_result is None or rollback_result.retcode != mt5.TRADE_RETCODE_DONE:
+                    self._logger.error(f"[AUTO] CRITICAL: Rollback FAILED! Manual intervention needed. Spot ticket={spot_result.order}")
+                else:
+                    self._logger.info(f"[AUTO] Spot position rolled back successfully")
+                if std_filter_result:
+                    self._log_std_filter_event(
+                        database, zscore=signal.zscore, signal_type=signal.signal_type,
+                        current_std=current_std, min_required_std=std_filter_result['min_std'],
+                        std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                        spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                        round_trip_cost=std_filter_result['round_trip_cost'],
+                        action_taken='TRADE_FAILED', blocked_reason=error_msg
+                    )
+                mt5.shutdown()
+                return
+
             self._logger.info(f"[AUTO] FUTURES order result: retcode={futures_result.retcode}, order={futures_result.order}, comment={futures_result.comment}")
 
             if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -1123,6 +1178,12 @@ class AutoTrader:
 
             spot_result = mt5.order_send(spot_request)
 
+            # Handle None result
+            if spot_result is None:
+                self._logger.error(f"[AUTO] Spot close failed: order_send returned None (connection lost or symbol issue)")
+                mt5.shutdown()
+                return
+
             if spot_result.retcode != mt5.TRADE_RETCODE_DONE:
                 self._logger.error(f"[AUTO] Spot close failed: {spot_result.retcode} - {spot_result.comment}")
                 mt5.shutdown()
@@ -1149,6 +1210,13 @@ class AutoTrader:
                 futures_request["position"] = int(self._futures_ticket)
 
             futures_result = mt5.order_send(futures_request)
+
+            # Handle None result
+            if futures_result is None:
+                self._logger.error(f"[AUTO] Futures close failed: order_send returned None (connection lost or symbol issue)")
+                # Don't reverse - we're partially closed, log for manual intervention
+                mt5.shutdown()
+                return
 
             if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
                 self._logger.error(f"[AUTO] Futures close failed: {futures_result.retcode} - {futures_result.comment}")
