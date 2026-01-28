@@ -662,11 +662,54 @@ class AutoTrader:
         except Exception as e:
             self._logger.warning(f"[AUTO] Could not get market data for filters: {e}")
 
+        # Calculate STD filter result for logging
+        std_filter_result = None
+        if current_std is not None:
+            std_filter_result = calculate_min_profitable_std(
+                config, current_std, spot_spread_cents, futures_spread_cents
+            )
+
         # Check filters with STD data
         passes, reason = self._check_filters(
             config, signal.zscore, spread_history,
             current_std, spot_spread_cents, futures_spread_cents
         )
+
+        # Log STD filter event to database
+        if std_filter_result:
+            action_taken = None
+            blocked_reason = None
+
+            if not passes:
+                if 'STD filter' in reason:
+                    action_taken = 'BLOCKED_STD'
+                elif 'Hurst filter' in reason:
+                    action_taken = 'BLOCKED_HURST'
+                elif 'Position already open' in reason:
+                    action_taken = 'BLOCKED_POSITION'
+                else:
+                    action_taken = 'BLOCKED_OTHER'
+                blocked_reason = reason
+            else:
+                action_taken = 'TRADE_ENTERED'
+
+            try:
+                database.log_std_filter_event(
+                    zscore=signal.zscore,
+                    signal_type=signal.signal_type,
+                    current_std=current_std,
+                    min_required_std=std_filter_result['min_std'],
+                    std_ratio=std_filter_result['std_ratio'],
+                    is_profitable=std_filter_result['is_profitable'],
+                    spot_spread_cents=spot_spread_cents,
+                    futures_spread_cents=futures_spread_cents,
+                    round_trip_cost=std_filter_result['round_trip_cost'],
+                    action_taken=action_taken,
+                    blocked_reason=blocked_reason
+                )
+            except Exception as e:
+                self._logger.warning(f"[AUTO] Could not log STD filter event: {e}")
+
         if not passes:
             self._logger.info(f"[AUTO] Entry blocked: {reason}")
             # Emit blocked signal to frontend
@@ -2145,6 +2188,48 @@ def api_auto_trader_status():
     })
 
 
+# ==================== STD Filter Log API ====================
+
+@app.route('/api/std-filter-log')
+def api_std_filter_log():
+    """Get STD filter profitability log"""
+    database = get_db()
+    limit = request.args.get('limit', 100, type=int)
+    profitable_only = request.args.get('profitable_only', 'false').lower() == 'true'
+
+    log = database.get_std_filter_log(limit=limit, profitable_only=profitable_only)
+
+    # Convert to list of dicts
+    result = []
+    for row in log:
+        result.append({
+            'id': row['id'],
+            'timestamp': row['timestamp'],
+            'zscore': row['zscore'],
+            'signal_type': row['signal_type'],
+            'current_std': row['current_std'],
+            'min_required_std': row['min_required_std'],
+            'std_ratio': row['std_ratio'],
+            'is_profitable': bool(row['is_profitable']),
+            'spot_spread_cents': row['spot_spread_cents'],
+            'futures_spread_cents': row['futures_spread_cents'],
+            'round_trip_cost': row['round_trip_cost'],
+            'action_taken': row['action_taken'],
+            'trade_id': row['trade_id'],
+            'blocked_reason': row['blocked_reason']
+        })
+
+    return jsonify(result)
+
+
+@app.route('/api/std-filter-stats')
+def api_std_filter_stats():
+    """Get STD filter statistics"""
+    database = get_db()
+    stats = database.get_std_filter_stats()
+    return jsonify(stats)
+
+
 @app.route('/api/clear-data', methods=['POST'])
 def api_clear_data():
     """Clear historical data"""
@@ -2160,6 +2245,9 @@ def api_clear_data():
 
     if data_type == 'sd_touches' or data_type == 'all':
         database.clear_sd_touches()
+
+    if data_type == 'std_filter_log' or data_type == 'all':
+        database.clear_std_filter_log()
 
     return jsonify({'success': True})
 

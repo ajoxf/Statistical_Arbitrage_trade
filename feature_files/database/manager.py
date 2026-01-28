@@ -216,6 +216,26 @@ class DatabaseManager:
             )
         ''')
 
+        # STD Filter profitability log table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS std_filter_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                zscore REAL,
+                signal_type TEXT,
+                current_std REAL,
+                min_required_std REAL,
+                std_ratio REAL,
+                is_profitable INTEGER,
+                spot_spread_cents REAL,
+                futures_spread_cents REAL,
+                round_trip_cost REAL,
+                action_taken TEXT,
+                trade_id TEXT,
+                blocked_reason TEXT
+            )
+        ''')
+
         # Insert default config if not exists
         cursor.execute('SELECT COUNT(*) FROM trading_config')
         if cursor.fetchone()[0] == 0:
@@ -790,6 +810,92 @@ class DatabaseManager:
         cursor.execute('DELETE FROM sd_touch_log')
         conn.commit()
         logger.info("SD touches cleared")
+
+    def log_std_filter_event(self, zscore: float, signal_type: str, current_std: float,
+                             min_required_std: float, std_ratio: float, is_profitable: bool,
+                             spot_spread_cents: float = None, futures_spread_cents: float = None,
+                             round_trip_cost: float = None, action_taken: str = None,
+                             trade_id: str = None, blocked_reason: str = None):
+        """Log STD filter profitability event"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO std_filter_log (
+                timestamp, zscore, signal_type, current_std, min_required_std,
+                std_ratio, is_profitable, spot_spread_cents, futures_spread_cents,
+                round_trip_cost, action_taken, trade_id, blocked_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            datetime.now().isoformat(),
+            zscore, signal_type, current_std, min_required_std,
+            std_ratio, int(is_profitable), spot_spread_cents, futures_spread_cents,
+            round_trip_cost, action_taken, trade_id, blocked_reason
+        ))
+        conn.commit()
+        logger.debug(f"STD filter event logged: {signal_type}, profitable={is_profitable}, action={action_taken}")
+
+    def get_std_filter_log(self, limit: int = 100, profitable_only: bool = False):
+        """Get STD filter profitability log"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        if profitable_only:
+            cursor.execute('''
+                SELECT * FROM std_filter_log
+                WHERE is_profitable = 1
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (limit,))
+        else:
+            cursor.execute('''
+                SELECT * FROM std_filter_log
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (limit,))
+
+        return cursor.fetchall()
+
+    def get_std_filter_stats(self):
+        """Get STD filter statistics"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Total events
+        cursor.execute('SELECT COUNT(*) FROM std_filter_log')
+        total = cursor.fetchone()[0]
+
+        # Profitable events
+        cursor.execute('SELECT COUNT(*) FROM std_filter_log WHERE is_profitable = 1')
+        profitable = cursor.fetchone()[0]
+
+        # Trades entered
+        cursor.execute("SELECT COUNT(*) FROM std_filter_log WHERE action_taken = 'TRADE_ENTERED'")
+        trades_entered = cursor.fetchone()[0]
+
+        # Blocked by STD filter
+        cursor.execute("SELECT COUNT(*) FROM std_filter_log WHERE action_taken = 'BLOCKED_STD'")
+        blocked_std = cursor.fetchone()[0]
+
+        # Blocked by other filters
+        cursor.execute("SELECT COUNT(*) FROM std_filter_log WHERE action_taken LIKE 'BLOCKED_%' AND action_taken != 'BLOCKED_STD'")
+        blocked_other = cursor.fetchone()[0]
+
+        return {
+            'total_signals': total,
+            'profitable_signals': profitable,
+            'trades_entered': trades_entered,
+            'blocked_by_std': blocked_std,
+            'blocked_by_other': blocked_other,
+            'entry_rate': (trades_entered / profitable * 100) if profitable > 0 else 0
+        }
+
+    def clear_std_filter_log(self):
+        """Clear STD filter log table"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM std_filter_log')
+        conn.commit()
+        logger.info("STD filter log cleared")
 
     def close(self):
         """Close database connection"""
