@@ -86,8 +86,9 @@ class AlgoTradingConfig:
         'GOLD': {
             'name': 'GOLD',
             'spot_symbols': ['XAUUSD_', 'XAUUSD', 'GOLD'],
-            'futures_symbols': ['GC0426', 'GC1225', 'XAUUSD.f', 'GCZ4'],  # Added GC0426 (April 2026)
-            'futures_expiry': datetime(2026, 4, 28),  # Updated to April 2026 expiry
+            'futures_patterns': ['GC*', 'GOLD.f*', 'XAUUSD.f*'],  # Patterns to search for futures
+            'futures_prefix': 'GC',  # Primary prefix for CME Gold futures
+            'futures_expiry': None,  # Will be auto-detected
             'risk_free_rate': 0.0425,
             'multiplier': 1.0,
             'lot_size': 100,  # oz per lot
@@ -97,8 +98,9 @@ class AlgoTradingConfig:
         'SILVER': {
             'name': 'SILVER',
             'spot_symbols': ['XAGUSD_', 'XAGUSD', 'SILVER'],
-            'futures_symbols': ['SI0426', 'SI1225', 'XAGUSD.f', 'SIU4'],  # Added SI0426 (April 2026)
-            'futures_expiry': datetime(2026, 4, 28),  # Updated to April 2026 expiry
+            'futures_patterns': ['SI*', 'SILVER.f*', 'XAGUSD.f*'],  # Patterns to search for futures
+            'futures_prefix': 'SI',  # Primary prefix for CME Silver futures
+            'futures_expiry': None,  # Will be auto-detected
             'risk_free_rate': 0.0425,
             'multiplier': 1.0,
             'lot_size': 5000,  # oz per lot
@@ -877,17 +879,99 @@ class AlgorithmicTradingSystem:
             
         return self.setup_all_symbols()
     
+    def detect_futures_symbol(self, asset_key, asset_config):
+        """Auto-detect available futures symbol for an asset"""
+        futures_prefix = asset_config.get('futures_prefix', '')
+        futures_patterns = asset_config.get('futures_patterns', [])
+
+        # Get all available symbols from MT5
+        all_symbols = mt5.symbols_get()
+        if not all_symbols:
+            logging.warning(f"Could not retrieve symbols from MT5 for {asset_key}")
+            return None, None
+
+        # Find matching futures symbols
+        matching_futures = []
+
+        for symbol in all_symbols:
+            symbol_name = symbol.name
+
+            # Check if symbol matches our futures patterns
+            matched = False
+
+            # Check by prefix (e.g., GC for Gold, SI for Silver)
+            if futures_prefix and symbol_name.startswith(futures_prefix):
+                matched = True
+
+            # Check by patterns
+            for pattern in futures_patterns:
+                if pattern.endswith('*'):
+                    if symbol_name.startswith(pattern[:-1]):
+                        matched = True
+                        break
+                elif symbol_name == pattern:
+                    matched = True
+                    break
+
+            if matched:
+                # Get symbol info to check if it's tradeable
+                symbol_info = mt5.symbol_info(symbol_name)
+                if symbol_info and symbol_info.trade_mode != 0:  # 0 = disabled
+                    # Try to get expiration from symbol properties
+                    expiry_time = symbol_info.expiration_time if hasattr(symbol_info, 'expiration_time') else 0
+
+                    matching_futures.append({
+                        'name': symbol_name,
+                        'expiry_time': expiry_time,
+                        'info': symbol_info
+                    })
+
+        if not matching_futures:
+            logging.warning(f"No futures symbols found for {asset_key} with prefix '{futures_prefix}'")
+            return None, None
+
+        # Sort by expiry time (nearest first) or by name if no expiry info
+        # Filter out expired contracts
+        current_time = datetime.now().timestamp()
+        valid_futures = [f for f in matching_futures if f['expiry_time'] == 0 or f['expiry_time'] > current_time]
+
+        if not valid_futures:
+            # If all have expired or no expiry info, use all matching
+            valid_futures = matching_futures
+
+        # Sort: prefer contracts with expiry info, then by expiry time
+        valid_futures.sort(key=lambda x: (x['expiry_time'] == 0, x['expiry_time'] if x['expiry_time'] > 0 else float('inf')))
+
+        # Select the nearest expiry contract
+        selected = valid_futures[0]
+        futures_symbol = selected['name']
+
+        # Calculate expiry datetime
+        if selected['expiry_time'] > 0:
+            futures_expiry = datetime.fromtimestamp(selected['expiry_time'])
+        else:
+            # Default to 90 days from now if no expiry info
+            futures_expiry = datetime.now() + timedelta(days=90)
+
+        logging.info(f"Auto-detected futures for {asset_key}: {futures_symbol} (expiry: {futures_expiry.strftime('%Y-%m-%d')})")
+
+        # Log all available futures for reference
+        logging.info(f"  Available {asset_key} futures: {[f['name'] for f in valid_futures[:5]]}")
+
+        return futures_symbol, futures_expiry
+
     def setup_all_symbols(self):
-        """Setup symbols for all enabled assets"""
+        """Setup symbols for all enabled assets with auto-detection"""
         logging.info("Setting up symbols for algorithmic trading...")
-        
+
         for asset_key, asset_config in self.config.ASSETS.items():
             if not asset_config['enabled']:
                 continue
-                
+
             spot_symbol = None
             futures_symbol = None
-            
+            futures_expiry = None
+
             # Find available spot symbol
             for symbol in asset_config['spot_symbols']:
                 symbol_info = mt5.symbol_info(symbol)
@@ -896,27 +980,31 @@ class AlgorithmicTradingSystem:
                         mt5.symbol_select(symbol, True)
                     spot_symbol = symbol
                     break
-            
-            # Find available futures symbol
-            for symbol in asset_config['futures_symbols']:
-                symbol_info = mt5.symbol_info(symbol)
-                if symbol_info:
-                    if not symbol_info.visible:
-                        mt5.symbol_select(symbol, True)
-                    futures_symbol = symbol
-                    break
-            
+
+            # Auto-detect futures symbol
+            futures_symbol, futures_expiry = self.detect_futures_symbol(asset_key, asset_config)
+
+            if futures_symbol:
+                # Select the symbol in MT5
+                symbol_info = mt5.symbol_info(futures_symbol)
+                if symbol_info and not symbol_info.visible:
+                    mt5.symbol_select(futures_symbol, True)
+
+                # Update the config with detected expiry
+                self.config.ASSETS[asset_key]['futures_expiry'] = futures_expiry
+
             if spot_symbol and futures_symbol:
                 self.active_assets[asset_key] = {
                     'config': asset_config,
                     'spot_symbol': spot_symbol,
                     'futures_symbol': futures_symbol,
+                    'futures_expiry': futures_expiry,
                     'last_data': None
                 }
-                logging.info(f"{asset_key}: {spot_symbol} + {futures_symbol}")
+                logging.info(f"{asset_key}: {spot_symbol} + {futures_symbol} (expiry: {futures_expiry.strftime('%Y-%m-%d') if futures_expiry else 'unknown'})")
             else:
                 logging.warning(f"{asset_key}: Missing symbols - Spot: {spot_symbol}, Futures: {futures_symbol}")
-        
+
         return len(self.active_assets) > 0
     
     def get_current_session(self):
