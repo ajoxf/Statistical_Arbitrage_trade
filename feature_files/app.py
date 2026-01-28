@@ -645,7 +645,10 @@ class AutoTrader:
             Tuple of (passes, reason)
         """
         # STD Filter check - only at entry, ensures trade is profitable
-        if config.std_filter_enabled and current_std is not None:
+        if config.std_filter_enabled:
+            if current_std is None:
+                # CRITICAL: If STD filter is enabled but we can't calculate STD, block the trade
+                return False, f"STD filter: Cannot calculate current STD (insufficient price history)"
             std_filter_result = calculate_min_profitable_std(
                 config, current_std, spot_spread_cents, futures_spread_cents
             )
@@ -731,7 +734,7 @@ class AutoTrader:
         self._logger.info(f"[AUTO] Filter check result: passes={passes}, reason={reason}")
 
         # Log STD filter event to database (for blocked signals only - successful trades logged after execution)
-        if std_filter_result and not passes:
+        if not passes:
             if 'STD filter' in reason:
                 action_taken = 'BLOCKED_STD'
             elif 'Hurst filter' in reason:
@@ -741,12 +744,15 @@ class AutoTrader:
             else:
                 action_taken = 'BLOCKED_OTHER'
 
+            # Log even if std_filter_result is None (e.g., when STD couldn't be calculated)
             self._log_std_filter_event(
                 database, zscore=signal.zscore, signal_type=signal.signal_type,
-                current_std=current_std, min_required_std=std_filter_result['min_std'],
-                std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                current_std=current_std,
+                min_required_std=std_filter_result['min_std'] if std_filter_result else None,
+                std_ratio=std_filter_result['std_ratio'] if std_filter_result else None,
+                is_profitable=std_filter_result['is_profitable'] if std_filter_result else False,
                 spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
-                round_trip_cost=std_filter_result['round_trip_cost'],
+                round_trip_cost=std_filter_result['round_trip_cost'] if std_filter_result else None,
                 action_taken=action_taken, blocked_reason=reason
             )
 
