@@ -675,23 +675,16 @@ class AutoTrader:
             current_std, spot_spread_cents, futures_spread_cents
         )
 
-        # Log STD filter event to database
-        if std_filter_result:
-            action_taken = None
-            blocked_reason = None
-
-            if not passes:
-                if 'STD filter' in reason:
-                    action_taken = 'BLOCKED_STD'
-                elif 'Hurst filter' in reason:
-                    action_taken = 'BLOCKED_HURST'
-                elif 'Position already open' in reason:
-                    action_taken = 'BLOCKED_POSITION'
-                else:
-                    action_taken = 'BLOCKED_OTHER'
-                blocked_reason = reason
+        # Log STD filter event to database (for blocked signals only - successful trades logged after execution)
+        if std_filter_result and not passes:
+            if 'STD filter' in reason:
+                action_taken = 'BLOCKED_STD'
+            elif 'Hurst filter' in reason:
+                action_taken = 'BLOCKED_HURST'
+            elif 'Position already open' in reason:
+                action_taken = 'BLOCKED_POSITION'
             else:
-                action_taken = 'TRADE_ENTERED'
+                action_taken = 'BLOCKED_OTHER'
 
             try:
                 database.log_std_filter_event(
@@ -705,7 +698,7 @@ class AutoTrader:
                     futures_spread_cents=futures_spread_cents,
                     round_trip_cost=std_filter_result['round_trip_cost'],
                     action_taken=action_taken,
-                    blocked_reason=blocked_reason
+                    blocked_reason=reason
                 )
             except Exception as e:
                 self._logger.warning(f"[AUTO] Could not log STD filter event: {e}")
@@ -735,6 +728,16 @@ class AutoTrader:
 
             if not mt5.initialize():
                 self._logger.error("[AUTO] MT5 initialization failed for trade")
+                # Log failed attempt
+                if std_filter_result:
+                    database.log_std_filter_event(
+                        zscore=signal.zscore, signal_type=signal.signal_type,
+                        current_std=current_std, min_required_std=std_filter_result['min_std'],
+                        std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                        spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                        round_trip_cost=std_filter_result['round_trip_cost'],
+                        action_taken='TRADE_FAILED', blocked_reason='MT5 initialization failed'
+                    )
                 return
 
             lot_size = config.lot_size
@@ -766,7 +769,18 @@ class AutoTrader:
             spot_result = mt5.order_send(spot_request)
 
             if spot_result.retcode != mt5.TRADE_RETCODE_DONE:
-                self._logger.error(f"[AUTO] Spot order failed: {spot_result.comment}")
+                error_msg = f"Spot order failed: {spot_result.retcode} - {spot_result.comment}"
+                self._logger.error(f"[AUTO] {error_msg}")
+                # Log failed attempt
+                if std_filter_result:
+                    database.log_std_filter_event(
+                        zscore=signal.zscore, signal_type=signal.signal_type,
+                        current_std=current_std, min_required_std=std_filter_result['min_std'],
+                        std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                        spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                        round_trip_cost=std_filter_result['round_trip_cost'],
+                        action_taken='TRADE_FAILED', blocked_reason=error_msg
+                    )
                 mt5.shutdown()
                 return
 
@@ -789,7 +803,8 @@ class AutoTrader:
             futures_result = mt5.order_send(futures_request)
 
             if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
-                self._logger.error(f"[AUTO] Futures order failed: {futures_result.comment}")
+                error_msg = f"Futures order failed: {futures_result.retcode} - {futures_result.comment}"
+                self._logger.error(f"[AUTO] {error_msg}")
                 # Reverse spot trade
                 self._logger.warning("[AUTO] Reversing spot trade due to futures failure")
                 reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
@@ -806,6 +821,16 @@ class AutoTrader:
                     "type_filling": mt5.ORDER_FILLING_IOC,
                 }
                 mt5.order_send(reverse_request)
+                # Log failed attempt
+                if std_filter_result:
+                    database.log_std_filter_event(
+                        zscore=signal.zscore, signal_type=signal.signal_type,
+                        current_std=current_std, min_required_std=std_filter_result['min_std'],
+                        std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                        spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                        round_trip_cost=std_filter_result['round_trip_cost'],
+                        action_taken='TRADE_FAILED', blocked_reason=error_msg + ' (spot reversed)'
+                    )
                 mt5.shutdown()
                 return
 
@@ -832,6 +857,17 @@ class AutoTrader:
             )
 
             database.add_trade(trade)
+
+            # Log successful trade entry to STD filter log
+            if std_filter_result:
+                database.log_std_filter_event(
+                    zscore=signal.zscore, signal_type=signal.signal_type,
+                    current_std=current_std, min_required_std=std_filter_result['min_std'],
+                    std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                    spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                    round_trip_cost=std_filter_result['round_trip_cost'],
+                    action_taken='TRADE_ENTERED', trade_id=trade_id
+                )
 
             # Update position tracking
             self._position_open = True
