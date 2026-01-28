@@ -709,11 +709,15 @@ class AutoTrader:
             # Get spread history from database to calculate current STD
             lookback = config.lookback_period if config else 90
             history = database.get_price_history('ACTIVE', limit=lookback, max_age_hours=24)
-            if history and len(history) >= 20:
+            # CRITICAL: Require full lookback period before calculating STD
+            # This ensures we wait for sufficient data (e.g., 90 samples for 90-minute lookback)
+            if history and len(history) >= lookback:
                 spreads = [row[0] for row in reversed(history)]  # spread column
                 spread_history = spreads
                 current_std = float(np.std(spreads))
-                self._logger.info(f"[AUTO] Current STD: {current_std:.4f} (from {len(spreads)} samples)")
+                self._logger.info(f"[AUTO] Current STD: {current_std:.4f} (from {len(spreads)} samples, lookback={lookback})")
+            elif history:
+                self._logger.info(f"[AUTO] Insufficient data: {len(history)}/{lookback} samples (waiting for full lookback period)")
 
         except Exception as e:
             self._logger.warning(f"[AUTO] Could not get market data for filters: {e}")
