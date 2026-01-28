@@ -852,6 +852,11 @@ class AutoTrader:
                 self._unlock_position()
                 return
 
+            # Ensure symbol is visible in Market Watch (required for trading)
+            if not spot_symbol_info.visible:
+                self._logger.info(f"[AUTO] Selecting spot symbol {spot_broker.symbol} in Market Watch")
+                mt5.symbol_select(spot_broker.symbol, True)
+
             # Determine filling mode - RETURN is most universally supported
             # filling_mode flags: 1=FOK, 2=IOC. If 0 or other, use RETURN
             spot_filling_mode = mt5.ORDER_FILLING_RETURN  # Most compatible default
@@ -1002,6 +1007,11 @@ class AutoTrader:
                 mt5.shutdown()
                 self._unlock_position()
                 return
+
+            # Ensure futures symbol is visible in Market Watch (required for trading)
+            if not futures_symbol_info.visible:
+                self._logger.info(f"[AUTO] Selecting futures symbol {futures_broker.symbol} in Market Watch")
+                mt5.symbol_select(futures_broker.symbol, True)
 
             # Determine filling mode for futures - RETURN is most universally supported
             futures_filling_mode = mt5.ORDER_FILLING_RETURN
