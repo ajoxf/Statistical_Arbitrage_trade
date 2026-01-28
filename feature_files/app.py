@@ -1041,8 +1041,10 @@ class AutoTrader:
 
             # Handle None result (connection lost, symbol issue, etc.)
             if futures_result is None:
-                error_msg = f"Futures order failed: order_send returned None (connection lost or symbol issue)"
+                mt5_error = mt5.last_error()
+                error_msg = f"Futures order failed: order_send returned None - MT5 error: {mt5_error}"
                 self._logger.error(f"[AUTO] {error_msg}")
+                self._logger.error(f"[AUTO] Futures request was: {futures_request}")
                 # MUST close the spot position that was already opened
                 self._logger.warning(f"[AUTO] CRITICAL: Closing orphan spot position: ticket={spot_result.order}")
                 reverse_type = mt5.ORDER_TYPE_SELL if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
@@ -1060,8 +1062,14 @@ class AutoTrader:
                     "position": int(spot_result.order),
                 }
                 rollback_result = mt5.order_send(rollback_request)
-                if rollback_result is None or rollback_result.retcode != mt5.TRADE_RETCODE_DONE:
-                    self._logger.error(f"[AUTO] CRITICAL: Rollback FAILED! Manual intervention needed. Spot ticket={spot_result.order}")
+                if rollback_result is None:
+                    rollback_error = mt5.last_error()
+                    self._logger.error(f"[AUTO] CRITICAL: Rollback returned None! MT5 error: {rollback_error}")
+                    self._logger.error(f"[AUTO] Rollback request was: {rollback_request}")
+                    self._logger.error(f"[AUTO] Manual intervention needed. Spot ticket={spot_result.order}")
+                elif rollback_result.retcode != mt5.TRADE_RETCODE_DONE:
+                    self._logger.error(f"[AUTO] CRITICAL: Rollback FAILED! retcode={rollback_result.retcode}, comment={rollback_result.comment}")
+                    self._logger.error(f"[AUTO] Manual intervention needed. Spot ticket={spot_result.order}")
                 else:
                     self._logger.info(f"[AUTO] Spot position rolled back successfully")
                 if std_filter_result:
