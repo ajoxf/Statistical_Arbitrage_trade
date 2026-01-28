@@ -1176,8 +1176,7 @@ class AutoTrader:
 
             self._logger.info(f"[AUTO] Trade opened: {trade_id} ({direction}) - spot_ticket={self._spot_ticket}, futures_ticket={self._futures_ticket}")
 
-            # Sync engine position state to prevent duplicate signals
-            global engine
+            # Sync engine position state to prevent duplicate signals (already locked above, this confirms success)
             if engine:
                 engine.set_position_state(True, direction)
                 self._logger.info(f"[AUTO] Engine position state synced: has_position=True, direction={direction}")
