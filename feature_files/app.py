@@ -528,6 +528,15 @@ class AutoTrader:
             # Re-raise to alert caller that logging failed
             raise
 
+    def _unlock_position(self):
+        """Unlock position state after failed trade attempt"""
+        self._position_open = False
+        self._position_direction = None
+        global engine
+        if engine:
+            engine.set_position_state(False, None)
+        self._logger.info(f"[AUTO] Position UNLOCKED after failed trade")
+
     def handle_signal(self, signal):
         """
         Handle trading signal from the engine.
@@ -777,6 +786,17 @@ class AutoTrader:
         self._logger.info(f"[AUTO] === FILTERS PASSED === Executing {direction} entry trade")
         self._logger.info(f"[AUTO] Trade details: lot_size={config.lot_size}, z={signal.zscore:.2f}")
 
+        # CRITICAL: Lock position immediately to prevent race conditions
+        # This prevents duplicate signals from being processed while we execute
+        self._position_open = True
+        self._position_direction = direction
+
+        # Sync engine state immediately to stop new signals
+        global engine
+        if engine:
+            engine.set_position_state(True, direction)
+            self._logger.info(f"[AUTO] Position LOCKED before trade execution")
+
         # Determine trade direction
         # ENTRY_LONG (z-score low): Buy futures, Sell spot (expecting spread to widen)
         # ENTRY_SHORT (z-score high): Sell futures, Buy spot (expecting spread to narrow)
@@ -798,6 +818,7 @@ class AutoTrader:
                         round_trip_cost=std_filter_result['round_trip_cost'],
                         action_taken='TRADE_FAILED', blocked_reason='MT5 initialization failed'
                     )
+                self._unlock_position()
                 return
 
             lot_size = config.lot_size
@@ -818,6 +839,7 @@ class AutoTrader:
             if not spot_tick:
                 self._logger.error(f"[AUTO] Could not get spot tick for {spot_broker.symbol}")
                 mt5.shutdown()
+                self._unlock_position()
                 return
 
             spot_price_for_order = spot_tick.ask if spot_order_type == mt5.ORDER_TYPE_BUY else spot_tick.bid
@@ -827,6 +849,7 @@ class AutoTrader:
             if spot_symbol_info is None:
                 self._logger.error(f"[AUTO] Could not get symbol info for {spot_broker.symbol}")
                 mt5.shutdown()
+                self._unlock_position()
                 return
 
             # Determine filling mode - RETURN is most universally supported
@@ -876,6 +899,7 @@ class AutoTrader:
                         action_taken='TRADE_FAILED', blocked_reason=error_msg
                     )
                 mt5.shutdown()
+                self._unlock_position()
                 return
 
             self._logger.info(f"[AUTO] SPOT order result: retcode={spot_result.retcode}, order={spot_result.order}, comment={spot_result.comment}")
@@ -894,6 +918,7 @@ class AutoTrader:
                         action_taken='TRADE_FAILED', blocked_reason=error_msg
                     )
                 mt5.shutdown()
+                self._unlock_position()
                 return
 
             self._logger.info(f"[AUTO] Spot order filled: ticket={spot_result.order}, price={spot_result.price}")
@@ -934,6 +959,7 @@ class AutoTrader:
                         action_taken='TRADE_FAILED', blocked_reason=error_msg
                     )
                 mt5.shutdown()
+                self._unlock_position()
                 return
 
             futures_price_for_order = futures_tick.ask if futures_order_type == mt5.ORDER_TYPE_BUY else futures_tick.bid
@@ -974,6 +1000,7 @@ class AutoTrader:
                         action_taken='TRADE_FAILED', blocked_reason=error_msg
                     )
                 mt5.shutdown()
+                self._unlock_position()
                 return
 
             # Determine filling mode for futures - RETURN is most universally supported
@@ -1042,6 +1069,7 @@ class AutoTrader:
                         action_taken='TRADE_FAILED', blocked_reason=error_msg
                     )
                 mt5.shutdown()
+                self._unlock_position()
                 return
 
             self._logger.info(f"[AUTO] FUTURES order result: retcode={futures_result.retcode}, order={futures_result.order}, comment={futures_result.comment}")
@@ -1085,6 +1113,7 @@ class AutoTrader:
                         action_taken='TRADE_FAILED', blocked_reason=error_msg + ' (spot reversed)'
                     )
                 mt5.shutdown()
+                self._unlock_position()
                 return
 
             self._logger.info(f"[AUTO] Futures order filled: ticket={futures_result.order}, price={futures_result.price}")
