@@ -664,9 +664,10 @@ class AutoTrader:
             if not std_filter_result['is_profitable']:
                 min_std = std_filter_result['min_std']
                 std_ratio = std_filter_result['std_ratio']
+                self._logger.warning(f"[AUTO] STD filter BLOCKED: current={current_std:.4f}, min_required={min_std:.4f}, ratio={std_ratio:.1%}")
                 return False, f"STD filter: current {current_std:.4f} < min required {min_std:.4f} (ratio: {std_ratio:.1%})"
             else:
-                self._logger.info(f"[AUTO] STD filter passed: {current_std:.4f} >= {std_filter_result['min_std']:.4f}")
+                self._logger.info(f"[AUTO] STD filter PASSED: {current_std:.4f} >= {std_filter_result['min_std']:.4f} (ratio: {std_filter_result['std_ratio']:.1%})")
 
         # Hurst Filter check - only trade in mean-reverting markets
         if config.hurst_enabled and spread_history:
