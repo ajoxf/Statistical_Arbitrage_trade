@@ -86,8 +86,8 @@ class AlgoTradingConfig:
         'GOLD': {
             'name': 'GOLD',
             'spot_symbols': ['XAUUSD_', 'XAUUSD', 'GOLD'],
-            'futures_symbols': ['GC1225', 'XAUUSD.f', 'GCZ4'],
-            'futures_expiry': datetime(2025, 11, 26),
+            'futures_symbols': ['GC0426', 'GC1225', 'XAUUSD.f', 'GCZ4'],  # Added GC0426 (April 2026)
+            'futures_expiry': datetime(2026, 4, 28),  # Updated to April 2026 expiry
             'risk_free_rate': 0.0425,
             'multiplier': 1.0,
             'lot_size': 100,  # oz per lot
@@ -97,8 +97,8 @@ class AlgoTradingConfig:
         'SILVER': {
             'name': 'SILVER',
             'spot_symbols': ['XAGUSD_', 'XAGUSD', 'SILVER'],
-            'futures_symbols': ['SI1225', 'XAGUSD.f', 'SIU4'],
-            'futures_expiry': datetime(2025, 11, 26),
+            'futures_symbols': ['SI0426', 'SI1225', 'XAGUSD.f', 'SIU4'],  # Added SI0426 (April 2026)
+            'futures_expiry': datetime(2026, 4, 28),  # Updated to April 2026 expiry
             'risk_free_rate': 0.0425,
             'multiplier': 1.0,
             'lot_size': 5000,  # oz per lot
@@ -290,7 +290,19 @@ class OrderManager:
             
             # Calculate deviation
             deviation = int(self.config.EXECUTION['SLIPPAGE_TOLERANCE'] / point)
-            
+
+            # Determine appropriate filling type based on symbol
+            # Futures typically require FOK or RETURN, spot CFDs often use IOC
+            filling_type = mt5.ORDER_FILLING_IOC  # Default for spot
+
+            # Check symbol's allowed filling modes
+            if symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                filling_type = mt5.ORDER_FILLING_FOK
+            elif symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                filling_type = mt5.ORDER_FILLING_IOC
+            elif symbol_info.filling_mode & mt5.ORDER_FILLING_RETURN:
+                filling_type = mt5.ORDER_FILLING_RETURN
+
             # Prepare order request
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
@@ -302,12 +314,19 @@ class OrderManager:
                 "magic": 12345,
                 "comment": f"AlgoTrading_{trade.trade_id}",
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": filling_type,
             }
             
             # Send order
             result = mt5.order_send(request)
-            
+
+            # Check if order_send returned None (connection lost or terminal issue)
+            if result is None:
+                trade.status = "ERROR"
+                trade.error_message = "order_send returned None (connection lost or symbol issue)"
+                logging.error(f"order_send returned None for {trade.symbol} - check MT5 connection and symbol availability")
+                return False
+
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 trade.status = "ERROR"
                 trade.error_message = f"Order failed: {result.retcode} - {result.comment}"
@@ -345,7 +364,9 @@ class OrderManager:
                 spot_order_type = mt5.ORDER_TYPE_SELL
                 futures_order_type = mt5.ORDER_TYPE_BUY
             else:
-                raise ValueError(f"Invalid signal type for opening: {signal_type}")
+                # NO_SIGNAL or invalid - should not be used for opening new positions
+                logging.error(f"Invalid signal type for opening trade pair: {signal_type}")
+                return False, None, None
             
             # Create trade objects
             spot_trade = Trade(spot_symbol, spot_order_type, lot_size)
@@ -366,7 +387,7 @@ class OrderManager:
             
             logging.info(f"Trade pair executed successfully: {asset} {signal_type.value}")
             return True, spot_trade, futures_trade
-            
+
         except Exception as e:
             logging.error(f"Trade pair execution error: {e}")
             if spot_trade:
@@ -376,6 +397,72 @@ class OrderManager:
                 futures_trade.status = "ERROR"
                 futures_trade.error_message = str(e)
             return False, spot_trade, futures_trade
+
+    def close_position_by_ticket(self, ticket, symbol, lot_size, order_type):
+        """Close a position using its ticket number"""
+        try:
+            # Get symbol info
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                logging.error(f"Symbol {symbol} not found for closing position {ticket}")
+                return False, f"Symbol {symbol} not found"
+
+            if not symbol_info.visible:
+                mt5.symbol_select(symbol, True)
+
+            # Get current price
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                logging.error(f"No tick data for {symbol} when closing position {ticket}")
+                return False, f"No tick data for {symbol}"
+
+            # For closing: if original was BUY, we SELL to close (and vice versa)
+            close_type = mt5.ORDER_TYPE_SELL if order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+            price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+
+            # Determine appropriate filling type
+            filling_type = mt5.ORDER_FILLING_IOC
+            if symbol_info.filling_mode & mt5.SYMBOL_FILLING_FOK:
+                filling_type = mt5.ORDER_FILLING_FOK
+            elif symbol_info.filling_mode & mt5.SYMBOL_FILLING_IOC:
+                filling_type = mt5.ORDER_FILLING_IOC
+            elif symbol_info.filling_mode & mt5.ORDER_FILLING_RETURN:
+                filling_type = mt5.ORDER_FILLING_RETURN
+
+            point = symbol_info.point
+            deviation = int(self.config.EXECUTION['SLIPPAGE_TOLERANCE'] / point)
+
+            # Prepare close request with position ticket
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": lot_size,
+                "type": close_type,
+                "position": ticket,  # This specifies which position to close
+                "price": price,
+                "deviation": deviation,
+                "magic": 12345,
+                "comment": f"AlgoClose_{ticket}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling_type,
+            }
+
+            result = mt5.order_send(request)
+
+            if result is None:
+                logging.error(f"order_send returned None when closing position {ticket}")
+                return False, "order_send returned None"
+
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                logging.error(f"Failed to close position {ticket}: {result.retcode} - {result.comment}")
+                return False, f"Close failed: {result.retcode} - {result.comment}"
+
+            logging.info(f"Position {ticket} closed successfully at {result.price}")
+            return True, result.price
+
+        except Exception as e:
+            logging.error(f"Exception closing position {ticket}: {e}")
+            return False, str(e)
 
 class PositionManager:
     """Manages trading positions and P&L"""
@@ -428,52 +515,87 @@ class PositionManager:
         self.data_logger.log_position(position)
     
     def close_position(self, position_id, close_reason, order_manager):
-        """Close position"""
+        """Close position using ticket numbers for precise closing"""
         if position_id not in self.positions:
             return False
-        
+
         position = self.positions[position_id]
         if position.status != PositionStatus.ACTIVE:
             return False
-        
+
         position.status = PositionStatus.CLOSING
-        
+
         try:
-            # Create closing trades (reverse of opening trades)
-            if position.signal_type == SignalType.SELL_BASIS:
-                # Close: Sell spot, buy futures
-                close_spot_type = mt5.ORDER_TYPE_SELL
-                close_futures_type = mt5.ORDER_TYPE_BUY
-            else:  # BUY_BASIS
-                # Close: Buy spot, sell futures
-                close_spot_type = mt5.ORDER_TYPE_BUY
-                close_futures_type = mt5.ORDER_TYPE_SELL
-            
-            # Execute closing trades
-            success, close_spot_trade, close_futures_trade = order_manager.execute_trade_pair(
-                position.asset, SignalType.NO_SIGNAL, position.spot_trade.lot_size,
-                position.spot_trade.symbol, position.futures_trade.symbol
-            )
-            
-            if success:
+            spot_closed = False
+            futures_closed = False
+            spot_close_price = None
+            futures_close_price = None
+
+            # Close spot position by ticket
+            if position.spot_trade.order_ticket:
+                spot_closed, spot_result = order_manager.close_position_by_ticket(
+                    position.spot_trade.order_ticket,
+                    position.spot_trade.symbol,
+                    position.spot_trade.lot_size,
+                    position.spot_trade.order_type
+                )
+                if spot_closed:
+                    spot_close_price = spot_result
+                else:
+                    logging.error(f"Failed to close spot position {position.spot_trade.order_ticket}: {spot_result}")
+            else:
+                logging.warning(f"No ticket for spot trade in position {position_id}, using market order")
+                # Fallback: create reverse trade
+                close_spot_type = mt5.ORDER_TYPE_SELL if position.spot_trade.order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                close_spot_trade = Trade(position.spot_trade.symbol, close_spot_type, position.spot_trade.lot_size)
+                spot_closed = order_manager.execute_market_order(close_spot_trade)
+                if spot_closed:
+                    spot_close_price = close_spot_trade.executed_price
+
+            # Close futures position by ticket
+            if position.futures_trade.order_ticket:
+                futures_closed, futures_result = order_manager.close_position_by_ticket(
+                    position.futures_trade.order_ticket,
+                    position.futures_trade.symbol,
+                    position.futures_trade.lot_size,
+                    position.futures_trade.order_type
+                )
+                if futures_closed:
+                    futures_close_price = futures_result
+                else:
+                    logging.error(f"Failed to close futures position {position.futures_trade.order_ticket}: {futures_result}")
+            else:
+                logging.warning(f"No ticket for futures trade in position {position_id}, using market order")
+                # Fallback: create reverse trade
+                close_futures_type = mt5.ORDER_TYPE_SELL if position.futures_trade.order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                close_futures_trade = Trade(position.futures_trade.symbol, close_futures_type, position.futures_trade.lot_size)
+                futures_closed = order_manager.execute_market_order(close_futures_trade)
+                if futures_closed:
+                    futures_close_price = close_futures_trade.executed_price
+
+            if spot_closed and futures_closed:
                 position.status = PositionStatus.CLOSED
                 position.close_time = datetime.now()
                 position.close_reason = close_reason
                 position.realized_pnl = position.unrealized_pnl
                 position.unrealized_pnl = 0.0
-                
-                # Log closing trades
-                self.data_logger.log_trade(close_spot_trade, position_id)
-                self.data_logger.log_trade(close_futures_trade, position_id)
+
+                # Log position update
                 self.data_logger.log_position(position)
-                
+
                 logging.info(f"Position closed: {position_id} - {close_reason} - P&L: ${position.realized_pnl:.2f}")
+                logging.info(f"  Spot closed at: {spot_close_price}, Futures closed at: {futures_close_price}")
                 return True
             else:
                 position.status = PositionStatus.ERROR
-                logging.error(f"Failed to close position: {position_id}")
+                error_details = []
+                if not spot_closed:
+                    error_details.append("spot")
+                if not futures_closed:
+                    error_details.append("futures")
+                logging.error(f"Failed to close position {position_id}: {', '.join(error_details)} leg(s) failed")
                 return False
-                
+
         except Exception as e:
             position.status = PositionStatus.ERROR
             logging.error(f"Error closing position {position_id}: {e}")
