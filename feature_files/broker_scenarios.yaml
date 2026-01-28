@@ -1,0 +1,252 @@
+# =============================================================================
+# StatArb Pro - Flexible Broker Configuration Examples
+# =============================================================================
+#
+# This file shows ALL possible broker combinations for basis trading.
+# Uncomment the scenario you want to use.
+#
+# Supported Combinations:
+#   1. Same broker (MT5) for Spot and Futures - UNIFIED mode
+#   2. Same broker (FIX) for Spot and Futures - UNIFIED mode
+#   3. Different MT5 brokers for Spot and Futures
+#   4. Different FIX brokers for Spot and Futures
+#   5. MT5 for Spot + FIX for Futures (or vice versa)
+#   6. IBKR for Spot + FIX for Futures (or vice versa)
+#   7. OKX for both Spot and Futures (same account)
+#
+# =============================================================================
+
+
+# =============================================================================
+# SCENARIO 1: Same MT5 Broker - UNIFIED Mode
+# =============================================================================
+# Use when your MT5 broker offers BOTH spot and futures on same account
+# Example: Broker offers XAUUSD (spot) and GOLD.f (futures)
+
+# scenario_1_mt5_unified:
+#   mode: unified
+#   brokers:
+#     - broker_id: mt5_unified
+#       name: "MT5 Unified (Spot + Futures)"
+#       type: MT5
+#       role: UNIFIED
+#       unified_mode: true
+#
+#       # MT5 Connection
+#       mt5_path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+#       mt5_account: 12345678
+#       mt5_server: "YourBroker-Live"
+#       mt5_password: "your_password"
+#
+#       # Both symbols on same account
+#       spot_symbol: XAUUSD
+#       futures_symbol: GOLD.f    # Or GC-Z24, depending on broker
+
+
+# =============================================================================
+# SCENARIO 2: Same FIX Broker - UNIFIED Mode
+# =============================================================================
+# Use when your FIX broker offers BOTH spot and futures via same session
+
+# scenario_2_fix_unified:
+#   mode: unified
+#   brokers:
+#     - broker_id: fix_unified
+#       name: "FIX Unified (Spot + Futures)"
+#       type: FIX
+#       role: UNIFIED
+#       unified_mode: true
+#
+#       # FIX Connection
+#       fix_host: "fix.yourbroker.com"
+#       fix_port: 5001
+#       fix_sender_comp: "YOUR_SENDER"
+#       fix_target_comp: "BROKER_TARGET"
+#       fix_username: "username"
+#       fix_password: "password"
+#
+#       # Both symbols via same FIX session
+#       spot_symbol: XAUUSD
+#       futures_symbol: GCZ24
+
+
+# =============================================================================
+# SCENARIO 3: Different MT5 Brokers for Spot and Futures
+# =============================================================================
+# Use when you have two separate MT5 brokers
+
+# scenario_3_mt5_separate:
+#   mode: separate
+#   brokers:
+#     # Broker A - Spot
+#     - broker_id: mt5_spot
+#       name: "IC Markets (Spot)"
+#       type: MT5
+#       role: SPOT
+#       mt5_path: "C:\\Program Files\\IC Markets MT5\\terminal64.exe"
+#       mt5_account: 11111111
+#       mt5_server: "ICMarkets-Live"
+#       mt5_password: "password_a"
+#       symbol: XAUUSD
+#
+#     # Broker B - Futures
+#     - broker_id: mt5_futures
+#       name: "AMP Futures (Futures)"
+#       type: MT5
+#       role: FUTURES
+#       mt5_path: "C:\\Program Files\\AMP MT5\\terminal64.exe"
+#       mt5_account: 22222222
+#       mt5_server: "AMP-Live"
+#       mt5_password: "password_b"
+#       symbol: GCZ24
+
+
+# =============================================================================
+# SCENARIO 4: Different FIX Brokers for Spot and Futures
+# =============================================================================
+# Use when you have two separate FIX connections
+
+# scenario_4_fix_separate:
+#   mode: separate
+#   brokers:
+#     # Broker A - Spot via FIX
+#     - broker_id: fix_spot
+#       name: "LMAX (Spot)"
+#       type: FIX
+#       role: SPOT
+#       fix_host: "fix.lmax.com"
+#       fix_port: 5001
+#       fix_sender_comp: "LMAX_SENDER"
+#       fix_target_comp: "LMAX"
+#       symbol: XAUUSD
+#
+#     # Broker B - Futures via FIX
+#     - broker_id: fix_futures
+#       name: "CME (Futures)"
+#       type: FIX
+#       role: FUTURES
+#       fix_host: "fix.cme.com"
+#       fix_port: 5002
+#       fix_sender_comp: "CME_SENDER"
+#       fix_target_comp: "CME"
+#       symbol: GCZ24
+
+
+# =============================================================================
+# SCENARIO 5: MT5 for Spot + FIX for Futures (Cross-Platform)
+# =============================================================================
+# Most common institutional setup
+
+# scenario_5_mt5_fix_cross:
+#   mode: separate
+#   brokers:
+#     # MT5 for Spot
+#     - broker_id: mt5_spot
+#       name: "IC Markets MT5 (Spot)"
+#       type: MT5
+#       role: SPOT
+#       mt5_path: "C:\\Program Files\\IC Markets MT5\\terminal64.exe"
+#       mt5_account: 12345678
+#       mt5_server: "ICMarkets-Live"
+#       mt5_password: "password"
+#       symbol: XAUUSD
+#
+#     # FIX for Futures
+#     - broker_id: fix_futures
+#       name: "CME via FIX (Futures)"
+#       type: FIX
+#       role: FUTURES
+#       fix_host: "fix.clearingfirm.com"
+#       fix_port: 5001
+#       fix_sender_comp: "YOUR_ID"
+#       fix_target_comp: "CME"
+#       symbol: GCZ24
+
+
+# =============================================================================
+# SCENARIO 6: IBKR for Spot + FIX for Futures
+# =============================================================================
+# Interactive Brokers combined with FIX
+
+# scenario_6_ibkr_fix:
+#   mode: separate
+#   brokers:
+#     # IBKR for Spot
+#     - broker_id: ibkr_spot
+#       name: "Interactive Brokers (Spot)"
+#       type: IB
+#       role: SPOT
+#       ib_host: "127.0.0.1"
+#       ib_port: 7497
+#       ib_client_id: 1
+#       symbol: XAUUSD
+#
+#     # FIX for Futures
+#     - broker_id: fix_futures
+#       name: "CME via FIX (Futures)"
+#       type: FIX
+#       role: FUTURES
+#       fix_host: "fix.clearingfirm.com"
+#       fix_port: 5001
+#       fix_sender_comp: "YOUR_ID"
+#       fix_target_comp: "CME"
+#       symbol: GCZ24
+
+
+# =============================================================================
+# SCENARIO 7: OKX for Both Spot and Futures (Recommended for Crypto)
+# =============================================================================
+# OKX Unified Account - same credentials, different symbols
+
+scenario_7_okx:
+  mode: separate  # Still uses two adapters, but same credentials
+  brokers:
+    # OKX Spot
+    - broker_id: okx_spot
+      name: "OKX Spot"
+      type: OKX
+      role: SPOT
+      # Credentials from .env file (OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)
+      okx_simulated: true
+      okx_account_type: spot
+      symbol: BTC-USDT
+
+    # OKX Perpetual Swap (Futures)
+    - broker_id: okx_futures
+      name: "OKX Perpetual Swap"
+      type: OKX
+      role: FUTURES
+      # Same credentials from .env
+      okx_simulated: true
+      okx_account_type: swap
+      symbol: BTC-USDT-SWAP
+
+
+# =============================================================================
+# TRADING PARAMETERS (Common to all scenarios)
+# =============================================================================
+
+trading:
+  # Signal generation
+  z_score_entry: 2.0
+  z_score_exit: 0.5
+  lookback_period: 100
+
+  # Position sizing
+  max_position_size: 1.0
+  min_position_size: 0.01
+
+  # Risk management
+  max_spread_pct: 0.1
+  max_positions: 5
+
+  # Execution
+  order_type: PEGGED_LIMIT  # MARKET, LIMIT, or PEGGED_LIMIT
+  peg_offset_ticks: 1
+
+database:
+  path: trading.db
+
+logging:
+  level: INFO
+  file: logs/statarb.log

@@ -1,0 +1,170 @@
+# Multi-Broker Configuration Examples
+#
+# This file shows how to configure the system for different broker scenarios.
+# The system automatically detects and optimizes for your setup:
+#
+# - SINGLE BROKER: No multiprocessing overhead, direct MT5 connection
+# - MULTI-BROKER: Separate processes for each broker, coordinated execution
+
+# ============================================================================
+# EXAMPLE 1: Single Broker for Both Spot and Futures (Recommended if possible)
+# ============================================================================
+# This configuration uses ONE broker for both spot (XAUUSD_) and futures (GC1225).
+# Benefits:
+# - Zero multiprocessing overhead
+# - Fastest possible execution
+# - Simplest configuration
+# - Atomic execution is guaranteed
+
+single_broker_config:
+  brokers:
+    main_broker:
+      name: "My MT5 Broker"
+      type: "MT5"
+      path: "C:/Program Files/MetaTrader 5/terminal64.exe"
+      # Both spot AND futures symbols on the same broker
+      symbols:
+        - "XAUUSD_"     # Gold spot
+        - "XAGUSD_"     # Silver spot
+        - "GC1225"      # Gold futures (Dec 2025)
+        - "SI1225"      # Silver futures (Dec 2025)
+      # Mark as UNIFIED - handles both roles
+      role: "UNIFIED"
+
+  # Point both to the same broker
+  spot_broker: "main_broker"
+  futures_broker: "main_broker"
+
+
+# ============================================================================
+# EXAMPLE 2: Different Brokers for Spot and Futures
+# ============================================================================
+# This configuration uses SEPARATE brokers for spot and futures.
+# Use this when:
+# - Your spot broker doesn't offer futures
+# - You want best pricing from different sources
+# - You're using crypto (OKX) for one leg
+
+multi_broker_config:
+  brokers:
+    spot_broker:
+      name: "Spot Broker (MT5)"
+      type: "MT5"
+      path: "C:/MT5_Spot/terminal64.exe"
+      symbols:
+        - "XAUUSD_"
+        - "XAGUSD_"
+      role: "SPOT"
+
+    futures_broker:
+      name: "Futures Broker (MT5)"
+      type: "MT5"
+      path: "C:/MT5_Futures/terminal64.exe"
+      symbols:
+        - "GC1225"
+        - "SI1225"
+      role: "FUTURES"
+
+  spot_broker: "spot_broker"
+  futures_broker: "futures_broker"
+
+
+# ============================================================================
+# EXAMPLE 3: MT5 Spot + OKX Futures (Hybrid)
+# ============================================================================
+# Mix traditional forex broker with crypto exchange.
+
+hybrid_config:
+  brokers:
+    mt5_spot:
+      name: "MT5 Gold Spot"
+      type: "MT5"
+      path: "C:/Program Files/MetaTrader 5/terminal64.exe"
+      symbols:
+        - "XAUUSD"
+      role: "SPOT"
+
+    okx_futures:
+      name: "OKX Gold Futures"
+      type: "OKX"
+      okx_api_key: "${OKX_API_KEY}"        # From environment
+      okx_api_secret: "${OKX_API_SECRET}"
+      okx_passphrase: "${OKX_PASSPHRASE}"
+      okx_simulated: false                  # true for demo
+      okx_account_type: "swap"              # perpetual swap
+      symbols:
+        - "XAU-USDT-SWAP"
+      role: "FUTURES"
+
+  spot_broker: "mt5_spot"
+  futures_broker: "okx_futures"
+
+
+# ============================================================================
+# EXAMPLE 4: Asset-Specific Broker Assignment
+# ============================================================================
+# Different brokers for different assets (advanced configuration)
+
+asset_specific_config:
+  brokers:
+    broker_a:
+      name: "Broker A - Gold Specialist"
+      type: "MT5"
+      path: "C:/MT5_BrokerA/terminal64.exe"
+      symbols:
+        - "XAUUSD_"
+        - "GC1225"
+      role: "UNIFIED"
+
+    broker_b:
+      name: "Broker B - Silver Specialist"
+      type: "MT5"
+      path: "C:/MT5_BrokerB/terminal64.exe"
+      symbols:
+        - "XAGUSD_"
+        - "SI1225"
+      role: "UNIFIED"
+
+  # Asset routing
+  assets:
+    GOLD:
+      spot_broker: "broker_a"
+      futures_broker: "broker_a"
+      spot_symbol: "XAUUSD_"
+      futures_symbol: "GC1225"
+
+    SILVER:
+      spot_broker: "broker_b"
+      futures_broker: "broker_b"
+      spot_symbol: "XAGUSD_"
+      futures_symbol: "SI1225"
+
+
+# ============================================================================
+# CONFIGURATION NOTES
+# ============================================================================
+#
+# 1. Symbol Names:
+#    - Symbol names vary by broker (XAUUSD, XAUUSD_, GOLD, etc.)
+#    - Check your broker's Market Watch for exact names
+#    - Futures symbols include expiry date (GC1225 = Dec 2025)
+#
+# 2. MT5 Path:
+#    - Full path to terminal64.exe
+#    - Each broker needs its own MT5 installation if using multiple brokers
+#    - The system will auto-detect and connect to running terminals
+#
+# 3. Execution Mode:
+#    - SINGLE BROKER = Direct execution, no IPC overhead
+#    - MULTI BROKER = Separate processes, coordinated via IPC
+#    - The system auto-detects based on your configuration
+#
+# 4. Atomic Execution:
+#    - Basis trades execute both legs together
+#    - If futures leg fails, spot leg is automatically reversed
+#    - This protects against one-sided exposure
+#
+# 5. Recommended Setup:
+#    - Start with single broker if it offers both spot and futures
+#    - Use multi-broker only when necessary for specific instruments
+#    - Consider latency: same-broker is always faster
