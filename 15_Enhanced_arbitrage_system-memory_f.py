@@ -79,7 +79,10 @@ class AlgoTradingConfig:
         'SLIPPAGE_TOLERANCE': 1.0,    # points
         'ORDER_TIMEOUT': 30,          # seconds
         'MIN_TIME_BETWEEN_SIGNALS': 180,  # seconds
-        'RETRY_ATTEMPTS': 3
+        'RETRY_ATTEMPTS': 3,
+        'USE_LIMIT_ORDERS_FOR_EXIT': True,  # Use limit orders for exits to save bid-ask spread
+        'LIMIT_ORDER_PRICE_BUFFER_PCT': 0.01,  # Buffer % for limit order prices (0.01 = 1 cent per $100)
+        'LIMIT_ORDER_UPDATE_THRESHOLD': 0.5,  # Update limit orders if target price changes by this %
     }
     
     ASSETS = {
@@ -106,6 +109,28 @@ class AlgoTradingConfig:
             'enabled': True
         }
     }
+
+class OrderType(Enum):
+    """Order execution type"""
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+
+class LimitOrder:
+    """Represents a pending limit order for position exit"""
+    def __init__(self, order_id, symbol, order_type, lot_size, limit_price, position_id):
+        self.order_id = order_id
+        self.symbol = symbol
+        self.order_type = order_type  # mt5.ORDER_TYPE_BUY_LIMIT or mt5.ORDER_TYPE_SELL_LIMIT
+        self.lot_size = lot_size
+        self.limit_price = limit_price
+        self.position_id = position_id
+        self.mt5_ticket = None
+        self.status = "PENDING"  # PENDING, PLACED, FILLED, CANCELLED, ERROR
+        self.created_time = datetime.now()
+        self.last_modified = datetime.now()
+        self.fill_price = None
+        self.fill_time = None
+        self.error_message = None
 
 class Trade:
     """Represents a single trade"""
@@ -138,6 +163,12 @@ class Position:
         self.realized_pnl = 0.0
         self.close_time = None
         self.close_reason = None
+        # Limit order tracking for exits
+        self.spot_limit_order = None  # LimitOrder for spot exit
+        self.futures_limit_order = None  # LimitOrder for futures exit
+        self.target_spot_exit_price = None
+        self.target_futures_exit_price = None
+        self.exit_order_type = OrderType.LIMIT  # Default to limit orders for exits
 
 class DataLogger:
     """Database logger for trades and market data"""
@@ -366,7 +397,7 @@ class OrderManager:
             
             logging.info(f"Trade pair executed successfully: {asset} {signal_type.value}")
             return True, spot_trade, futures_trade
-            
+
         except Exception as e:
             logging.error(f"Trade pair execution error: {e}")
             if spot_trade:
@@ -376,6 +407,178 @@ class OrderManager:
                 futures_trade.status = "ERROR"
                 futures_trade.error_message = str(e)
             return False, spot_trade, futures_trade
+
+    def place_limit_order(self, limit_order):
+        """Place a limit order on MT5"""
+        try:
+            symbol_info = mt5.symbol_info(limit_order.symbol)
+            if not symbol_info:
+                limit_order.status = "ERROR"
+                limit_order.error_message = f"Symbol {limit_order.symbol} not found"
+                return False
+
+            if not symbol_info.visible:
+                mt5.symbol_select(limit_order.symbol, True)
+
+            # Determine the MT5 order type based on the limit order direction
+            # For exit orders: SELL_LIMIT to close long, BUY_LIMIT to close short
+            if limit_order.order_type == mt5.ORDER_TYPE_SELL:
+                mt5_order_type = mt5.ORDER_TYPE_SELL_LIMIT
+            else:
+                mt5_order_type = mt5.ORDER_TYPE_BUY_LIMIT
+
+            # Prepare limit order request
+            request = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": limit_order.symbol,
+                "volume": limit_order.lot_size,
+                "type": mt5_order_type,
+                "price": limit_order.limit_price,
+                "magic": 12346,  # Different magic number for limit orders
+                "comment": f"LimitExit_{limit_order.order_id}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_RETURN,  # Allow partial fills
+            }
+
+            result = mt5.order_send(request)
+
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                limit_order.status = "ERROR"
+                limit_order.error_message = f"Limit order failed: {result.retcode} - {result.comment}"
+                logging.error(f"Limit order placement failed: {limit_order.symbol} - {result.comment}")
+                return False
+
+            limit_order.mt5_ticket = result.order
+            limit_order.status = "PLACED"
+            limit_order.last_modified = datetime.now()
+            self.pending_orders[limit_order.order_id] = limit_order
+
+            logging.info(f"Limit order placed: {limit_order.symbol} {limit_order.lot_size} lots @ {limit_order.limit_price} (ticket: {result.order})")
+            return True
+
+        except Exception as e:
+            limit_order.status = "ERROR"
+            limit_order.error_message = f"Limit order error: {str(e)}"
+            logging.error(f"Limit order exception: {e}")
+            return False
+
+    def modify_limit_order(self, limit_order, new_price):
+        """Modify an existing limit order price"""
+        try:
+            if not limit_order.mt5_ticket:
+                logging.error(f"Cannot modify limit order {limit_order.order_id}: no MT5 ticket")
+                return False
+
+            # Determine order type
+            if limit_order.order_type == mt5.ORDER_TYPE_SELL:
+                mt5_order_type = mt5.ORDER_TYPE_SELL_LIMIT
+            else:
+                mt5_order_type = mt5.ORDER_TYPE_BUY_LIMIT
+
+            request = {
+                "action": mt5.TRADE_ACTION_MODIFY,
+                "order": limit_order.mt5_ticket,
+                "price": new_price,
+                "type_time": mt5.ORDER_TIME_GTC,
+            }
+
+            result = mt5.order_send(request)
+
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                logging.error(f"Failed to modify limit order: {result.comment}")
+                return False
+
+            limit_order.limit_price = new_price
+            limit_order.last_modified = datetime.now()
+
+            logging.info(f"Limit order modified: {limit_order.symbol} new price @ {new_price}")
+            return True
+
+        except Exception as e:
+            logging.error(f"Error modifying limit order: {e}")
+            return False
+
+    def cancel_limit_order(self, limit_order):
+        """Cancel a pending limit order"""
+        try:
+            if not limit_order.mt5_ticket:
+                logging.warning(f"Limit order {limit_order.order_id} has no MT5 ticket to cancel")
+                limit_order.status = "CANCELLED"
+                return True
+
+            request = {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": limit_order.mt5_ticket,
+            }
+
+            result = mt5.order_send(request)
+
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                # Check if order was already filled or doesn't exist
+                orders = mt5.orders_get(ticket=limit_order.mt5_ticket)
+                if not orders:
+                    # Order no longer exists - might have been filled
+                    limit_order.status = "CANCELLED"
+                    logging.info(f"Limit order {limit_order.order_id} no longer exists (may have filled)")
+                    return True
+                logging.error(f"Failed to cancel limit order: {result.comment}")
+                return False
+
+            limit_order.status = "CANCELLED"
+            if limit_order.order_id in self.pending_orders:
+                del self.pending_orders[limit_order.order_id]
+
+            logging.info(f"Limit order cancelled: {limit_order.symbol} @ {limit_order.limit_price}")
+            return True
+
+        except Exception as e:
+            logging.error(f"Error cancelling limit order: {e}")
+            return False
+
+    def check_limit_order_filled(self, limit_order):
+        """Check if a limit order has been filled"""
+        try:
+            if not limit_order.mt5_ticket:
+                return False
+
+            # Check if order still exists in pending orders
+            orders = mt5.orders_get(ticket=limit_order.mt5_ticket)
+
+            if orders is None or len(orders) == 0:
+                # Order no longer pending - check if it was filled by looking at deals
+                deals = mt5.history_deals_get(position=limit_order.mt5_ticket)
+                if deals and len(deals) > 0:
+                    # Order was filled
+                    limit_order.status = "FILLED"
+                    limit_order.fill_price = deals[-1].price
+                    limit_order.fill_time = datetime.fromtimestamp(deals[-1].time)
+
+                    if limit_order.order_id in self.pending_orders:
+                        del self.pending_orders[limit_order.order_id]
+
+                    logging.info(f"Limit order filled: {limit_order.symbol} @ {limit_order.fill_price}")
+                    return True
+
+                # Also check history orders to see final state
+                history_orders = mt5.history_orders_get(ticket=limit_order.mt5_ticket)
+                if history_orders and len(history_orders) > 0:
+                    last_order = history_orders[-1]
+                    if last_order.state == mt5.ORDER_STATE_FILLED:
+                        limit_order.status = "FILLED"
+                        limit_order.fill_price = last_order.price_current
+                        limit_order.fill_time = datetime.fromtimestamp(last_order.time_done)
+
+                        if limit_order.order_id in self.pending_orders:
+                            del self.pending_orders[limit_order.order_id]
+
+                        logging.info(f"Limit order filled (from history): {limit_order.symbol} @ {limit_order.fill_price}")
+                        return True
+
+            return False
+
+        except Exception as e:
+            logging.error(f"Error checking limit order status: {e}")
+            return False
 
 class PositionManager:
     """Manages trading positions and P&L"""
@@ -817,18 +1020,226 @@ class AlgorithmicTradingSystem:
         config = self.config.ASSETS[asset_key]
         swap_charge = config['swap_charge']
         lot_size = config['lot_size']
-        
+
         # Calculate daily swap rate as percentage of position value
         position_value = spot_price * lot_size
         daily_swap_rate = swap_charge / position_value
         annual_swap_rate = daily_swap_rate * 365
-        
+
         # Calculate swap-implied futures price and basis
         swap_futures_price = spot_price * math.exp(annual_swap_rate * time_to_expiry)
         swap_basis = swap_futures_price - spot_price
-        
+
         return swap_futures_price, swap_basis, annual_swap_rate
-    
+
+    def calculate_target_exit_prices(self, position, current_spot_price, current_futures_price, time_to_expiry):
+        """
+        Calculate target exit prices for limit orders based on the exit threshold.
+
+        For SELL_BASIS: Exit when premium ≤ 5% (target_premium = 5%)
+        For BUY_BASIS: Exit when discount ≥ -5% (target_premium = -5%)
+
+        Returns (target_spot_price, target_futures_price) for limit orders.
+
+        Strategy: We set limit orders that achieve the target premium when filled.
+        Since we're trading a spread, we calculate target prices for BOTH legs
+        to maximize the chance of getting filled at favorable prices.
+        """
+        asset_key = position.asset
+
+        # Get swap basis at current spot price
+        swap_futures_price, swap_basis, _ = self.calculate_swap_basis(
+            asset_key, current_spot_price, time_to_expiry
+        )
+
+        # Determine target premium based on position type
+        if position.signal_type == SignalType.SELL_BASIS:
+            target_premium_pct = self.config.SIGNAL_THRESHOLDS['PREMIUM_EXIT']
+        else:  # BUY_BASIS
+            target_premium_pct = self.config.SIGNAL_THRESHOLDS['DISCOUNT_EXIT']
+
+        # Calculate target basis that corresponds to target premium
+        # swap_premium_pct = ((actual_basis - swap_basis) / abs(swap_basis)) * 100
+        # Solving for target_basis:
+        # target_premium_pct = ((target_basis - swap_basis) / abs(swap_basis)) * 100
+        # target_basis = swap_basis + (target_premium_pct / 100) * abs(swap_basis)
+        target_basis = swap_basis + (target_premium_pct / 100) * abs(swap_basis)
+
+        # Now we need to determine target prices for spot and futures
+        # target_basis = target_futures_price - target_spot_price
+
+        # For SELL_BASIS (long spot, short futures):
+        #   Exit: Sell spot (want high price), Buy futures (want low price)
+        #   We want basis to decrease (converge)
+        #   Place SELL_LIMIT on spot, BUY_LIMIT on futures
+
+        # For BUY_BASIS (short spot, long futures):
+        #   Exit: Buy spot (want low price), Sell futures (want high price)
+        #   We want basis to increase (converge toward zero)
+        #   Place BUY_LIMIT on spot, SELL_LIMIT on futures
+
+        # Calculate target prices using current spot as anchor
+        # Target futures = current_spot + target_basis
+        target_futures_price = current_spot_price + target_basis
+
+        # Add a small buffer for better fill probability
+        buffer_pct = self.config.EXECUTION['LIMIT_ORDER_PRICE_BUFFER_PCT']
+
+        if position.signal_type == SignalType.SELL_BASIS:
+            # Exit: Sell spot (slightly lower limit), Buy futures (slightly higher limit)
+            target_spot_exit = current_spot_price * (1 - buffer_pct / 100)
+            target_futures_exit = target_futures_price * (1 + buffer_pct / 100)
+        else:  # BUY_BASIS
+            # Exit: Buy spot (slightly higher limit), Sell futures (slightly lower limit)
+            target_spot_exit = current_spot_price * (1 + buffer_pct / 100)
+            target_futures_exit = target_futures_price * (1 - buffer_pct / 100)
+
+        return target_spot_exit, target_futures_exit, target_basis
+
+    def place_limit_exit_orders(self, position, market_data):
+        """
+        Place limit exit orders for a position to save on bid-ask spread.
+        Called after position entry to set up automatic exit at target prices.
+        """
+        if not self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+            return False
+
+        try:
+            # Calculate target exit prices
+            target_spot, target_futures, target_basis = self.calculate_target_exit_prices(
+                position,
+                market_data['spot_price'],
+                market_data['futures_price'],
+                market_data['time_to_expiry']
+            )
+
+            # Store target prices on position
+            position.target_spot_exit_price = target_spot
+            position.target_futures_exit_price = target_futures
+
+            # Determine exit order types based on position
+            if position.signal_type == SignalType.SELL_BASIS:
+                # Exit: Sell spot, Buy futures
+                spot_exit_type = mt5.ORDER_TYPE_SELL
+                futures_exit_type = mt5.ORDER_TYPE_BUY
+            else:  # BUY_BASIS
+                # Exit: Buy spot, Sell futures
+                spot_exit_type = mt5.ORDER_TYPE_BUY
+                futures_exit_type = mt5.ORDER_TYPE_SELL
+
+            # Create limit order objects
+            spot_limit_order = LimitOrder(
+                order_id=f"{position.position_id}_SPOT_EXIT",
+                symbol=position.spot_trade.symbol,
+                order_type=spot_exit_type,
+                lot_size=position.spot_trade.lot_size,
+                limit_price=round(target_spot, 2),
+                position_id=position.position_id
+            )
+
+            futures_limit_order = LimitOrder(
+                order_id=f"{position.position_id}_FUT_EXIT",
+                symbol=position.futures_trade.symbol,
+                order_type=futures_exit_type,
+                lot_size=position.futures_trade.lot_size,
+                limit_price=round(target_futures, 2),
+                position_id=position.position_id
+            )
+
+            # Place spot limit order
+            spot_success = self.order_manager.place_limit_order(spot_limit_order)
+            if spot_success:
+                position.spot_limit_order = spot_limit_order
+                logging.info(f"Placed spot limit exit order: {spot_limit_order.symbol} @ {target_spot:.2f}")
+            else:
+                logging.warning(f"Failed to place spot limit exit order for {position.position_id}")
+
+            # Place futures limit order
+            futures_success = self.order_manager.place_limit_order(futures_limit_order)
+            if futures_success:
+                position.futures_limit_order = futures_limit_order
+                logging.info(f"Placed futures limit exit order: {futures_limit_order.symbol} @ {target_futures:.2f}")
+            else:
+                logging.warning(f"Failed to place futures limit exit order for {position.position_id}")
+
+            return spot_success and futures_success
+
+        except Exception as e:
+            logging.error(f"Error placing limit exit orders: {e}")
+            return False
+
+    def update_limit_exit_orders(self, position, market_data):
+        """
+        Update limit exit order prices if market has moved significantly.
+        This keeps limit orders at optimal prices as swap_basis changes with time.
+        """
+        if not self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+            return
+
+        if not position.spot_limit_order or not position.futures_limit_order:
+            return
+
+        try:
+            # Calculate new target exit prices
+            new_target_spot, new_target_futures, _ = self.calculate_target_exit_prices(
+                position,
+                market_data['spot_price'],
+                market_data['futures_price'],
+                market_data['time_to_expiry']
+            )
+
+            update_threshold = self.config.EXECUTION['LIMIT_ORDER_UPDATE_THRESHOLD']
+
+            # Check if spot limit needs update
+            if position.spot_limit_order.status == "PLACED":
+                spot_change_pct = abs(new_target_spot - position.spot_limit_order.limit_price) / position.spot_limit_order.limit_price * 100
+                if spot_change_pct > update_threshold:
+                    self.order_manager.modify_limit_order(position.spot_limit_order, round(new_target_spot, 2))
+                    position.target_spot_exit_price = new_target_spot
+
+            # Check if futures limit needs update
+            if position.futures_limit_order.status == "PLACED":
+                futures_change_pct = abs(new_target_futures - position.futures_limit_order.limit_price) / position.futures_limit_order.limit_price * 100
+                if futures_change_pct > update_threshold:
+                    self.order_manager.modify_limit_order(position.futures_limit_order, round(new_target_futures, 2))
+                    position.target_futures_exit_price = new_target_futures
+
+        except Exception as e:
+            logging.error(f"Error updating limit exit orders: {e}")
+
+    def check_limit_order_fills(self, position):
+        """
+        Check if limit exit orders have been filled.
+        Returns True if BOTH orders are filled (position fully closed via limits).
+        """
+        if not position.spot_limit_order or not position.futures_limit_order:
+            return False
+
+        spot_filled = False
+        futures_filled = False
+
+        # Check spot limit order
+        if position.spot_limit_order.status == "PLACED":
+            spot_filled = self.order_manager.check_limit_order_filled(position.spot_limit_order)
+        elif position.spot_limit_order.status == "FILLED":
+            spot_filled = True
+
+        # Check futures limit order
+        if position.futures_limit_order.status == "PLACED":
+            futures_filled = self.order_manager.check_limit_order_filled(position.futures_limit_order)
+        elif position.futures_limit_order.status == "FILLED":
+            futures_filled = True
+
+        return spot_filled and futures_filled
+
+    def cancel_limit_exit_orders(self, position):
+        """Cancel pending limit exit orders for a position (e.g., before market exit or stop loss)."""
+        if position.spot_limit_order and position.spot_limit_order.status == "PLACED":
+            self.order_manager.cancel_limit_order(position.spot_limit_order)
+
+        if position.futures_limit_order and position.futures_limit_order.status == "PLACED":
+            self.order_manager.cancel_limit_order(position.futures_limit_order)
+
     def get_market_data(self, asset_key):
         """Get market data for specific asset"""
         if asset_key not in self.active_assets:
@@ -941,37 +1352,67 @@ class AlgorithmicTradingSystem:
         for asset_key, market_data in all_market_data.items():
             # Get active positions for this asset
             active_positions = self.position_manager.get_positions_for_asset(asset_key)
-            
-            # Update P&L for active positions
+
+            # Update P&L and process limit orders for active positions
+            positions_to_close = []
             for position_id, position in active_positions.items():
                 self.position_manager.update_position_pnl(
-                    position_id, 
-                    market_data['spot_price'], 
+                    position_id,
+                    market_data['spot_price'],
                     market_data['futures_price'],
                     market_data['swap_premium_pct']
                 )
-                
-                # Check for risk management actions
+
+                # Check if limit exit orders have been filled (position closed via limits)
+                if self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+                    if self.check_limit_order_fills(position):
+                        # Both limit orders filled - position closed at target prices
+                        position.status = PositionStatus.CLOSED
+                        position.close_time = datetime.now()
+                        position.close_reason = "LIMIT_ORDER_EXIT"
+                        position.realized_pnl = position.unrealized_pnl
+                        position.unrealized_pnl = 0.0
+                        self.data_logger.log_position(position)
+                        self.performance_tracker.update_with_closed_position(position)
+                        logging.info(f"Position {position_id} closed via limit orders - saved bid-ask spread!")
+                        continue  # Skip further processing for this closed position
+
+                    # Update limit order prices if market has moved
+                    self.update_limit_exit_orders(position, market_data)
+
+                # Check for risk management actions (stop loss)
                 needs_action, action_type = self.risk_manager.check_position_risk(
                     position, market_data['swap_premium_pct']
                 )
-                
+
                 if needs_action:
+                    # Cancel pending limit orders before forced market exit
+                    if self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+                        self.cancel_limit_exit_orders(position)
+                        logging.info(f"Cancelled limit orders for {position_id} due to {action_type}")
+
                     self.position_manager.close_position(position_id, action_type, self.order_manager)
                     self.performance_tracker.update_with_closed_position(position)
-            
+
             # Generate new signal
             signal = self.signal_generator.generate_signal(asset_key, market_data, active_positions)
             self.last_signals[asset_key] = signal
-            
+
             # Log market data
             self.data_logger.log_market_data(asset_key, market_data, signal)
-            
+
             # Process signal
             if signal == SignalType.SELL_BASIS or signal == SignalType.BUY_BASIS:
                 self.execute_entry_signal(asset_key, signal, market_data)
             elif isinstance(signal, tuple) and len(signal) == 2:
                 position_id, close_signal = signal
+                position = self.position_manager.positions.get(position_id)
+
+                # Cancel pending limit orders before signal-based market exit
+                if position and self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+                    self.cancel_limit_exit_orders(position)
+                    logging.info(f"Cancelled limit orders for {position_id} due to signal exit")
+
                 self.position_manager.close_position(position_id, "SIGNAL_EXIT", self.order_manager)
                 if position_id in self.position_manager.positions:
                     self.performance_tracker.update_with_closed_position(
@@ -1001,19 +1442,27 @@ class AlgorithmicTradingSystem:
             success, spot_trade, futures_trade = self.order_manager.execute_trade_pair(
                 asset_key, signal_type, lot_size, spot_symbol, futures_symbol
             )
-            
+
             if success:
                 # Create position
                 position = self.position_manager.create_position(
-                    asset_key, signal_type, spot_trade, futures_trade, 
+                    asset_key, signal_type, spot_trade, futures_trade,
                     market_data['swap_premium_pct']
                 )
-                
+
                 self.risk_manager.record_trade(asset_key)
                 logging.info(f"Position opened: {position.position_id} - {asset_key} {signal_type.value}")
+
+                # Place limit exit orders to save on bid-ask spread
+                if self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+                    limit_success = self.place_limit_exit_orders(position, market_data)
+                    if limit_success:
+                        logging.info(f"Limit exit orders placed for {position.position_id}")
+                    else:
+                        logging.warning(f"Failed to place limit exit orders for {position.position_id}, will use market orders for exit")
             else:
                 logging.error(f"Failed to execute trades for {asset_key} {signal_type.value}")
-                
+
         else:  # PAPER mode
             # Simulate trades
             logging.info(f"PAPER TRADE: {asset_key} {signal_type.value} at premium {market_data['swap_premium_pct']:.2f}%")
@@ -1092,6 +1541,16 @@ class AlgorithmicTradingSystem:
                 age = datetime.now() - position.entry_time
                 age_str = f"{age.seconds//3600}h {(age.seconds%3600)//60}m"
                 print(f"  {position_id}: {position.signal_type.value} | Entry: {position.entry_premium:+.1f}% | Current: {position.current_premium:+.1f}% | P&L: ${position.unrealized_pnl:>+8.0f} | Age: {age_str}")
+
+                # Show limit order status if enabled
+                if self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+                    spot_status = "N/A"
+                    fut_status = "N/A"
+                    if position.spot_limit_order:
+                        spot_status = f"{position.spot_limit_order.status}@{position.spot_limit_order.limit_price:.2f}"
+                    if position.futures_limit_order:
+                        fut_status = f"{position.futures_limit_order.status}@{position.futures_limit_order.limit_price:.2f}"
+                    print(f"    Limit Orders: Spot={spot_status} | Fut={fut_status}")
         else:
             print("No active positions")
         
@@ -1109,7 +1568,8 @@ class AlgorithmicTradingSystem:
         
         # Trading thresholds
         print(f"Entry Thresholds: Premium >{self.config.SIGNAL_THRESHOLDS['PREMIUM_ENTRY']:+.0f}% | Discount <{self.config.SIGNAL_THRESHOLDS['DISCOUNT_ENTRY']:+.0f}%")
-        print(f"Exit Thresholds:  Premium ≤{self.config.SIGNAL_THRESHOLDS['PREMIUM_EXIT']:+.0f}% | Discount ≥{self.config.SIGNAL_THRESHOLDS['DISCOUNT_EXIT']:+.0f}%")
+        exit_mode = "LIMIT ORDERS" if self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT'] else "MARKET ORDERS"
+        print(f"Exit Thresholds:  Premium ≤{self.config.SIGNAL_THRESHOLDS['PREMIUM_EXIT']:+.0f}% | Discount ≥{self.config.SIGNAL_THRESHOLDS['DISCOUNT_EXIT']:+.0f}% | Exit Mode: {exit_mode}")
         
         # Risk status
         risk_status = "NORMAL"
@@ -1252,7 +1712,16 @@ class AlgorithmicTradingSystem:
         print("\nTrading Strategy:")
         print(f"  • SELL BASIS: Premium >{self.config.SIGNAL_THRESHOLDS['PREMIUM_ENTRY']:+.0f}% → Exit ≤{self.config.SIGNAL_THRESHOLDS['PREMIUM_EXIT']:+.0f}%")
         print(f"  • BUY BASIS:  Discount <{self.config.SIGNAL_THRESHOLDS['DISCOUNT_ENTRY']:+.0f}% → Exit ≥{self.config.SIGNAL_THRESHOLDS['DISCOUNT_EXIT']:+.0f}%")
-        
+
+        print("\nExit Order Strategy:")
+        if self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+            print("  • LIMIT ORDERS for exits - saves bid-ask spread!")
+            print("  • Target prices calculated from exit thresholds")
+            print("  • Orders auto-adjusted as market moves")
+            print("  • Falls back to market orders for stop loss/forced exit")
+        else:
+            print("  • MARKET ORDERS for exits")
+
         print("\nRisk Management:")
         print(f"  • Max positions per asset: {self.config.RISK_LIMITS['MAX_POSITIONS_PER_ASSET']}")
         print(f"  • Max lot size: {self.config.RISK_LIMITS['MAX_LOT_SIZE']}")
@@ -1290,14 +1759,19 @@ class AlgorithmicTradingSystem:
         """Stop the trading system"""
         logging.info("Stopping Algorithmic Trading System...")
         self.is_running = False
-        
+
         # Close any pending orders
         active_positions = self.position_manager.get_active_positions()
         if active_positions:
             print("Closing active positions...")
             for position_id, position in active_positions.items():
+                # Cancel pending limit orders before closing with market orders
+                if self.config.EXECUTION['USE_LIMIT_ORDERS_FOR_EXIT']:
+                    self.cancel_limit_exit_orders(position)
+                    logging.info(f"Cancelled limit orders for {position_id} due to system shutdown")
+
                 self.position_manager.close_position(position_id, "SYSTEM_SHUTDOWN", self.order_manager)
-        
+
         mt5.shutdown()
         
         # Print final summary
@@ -1330,11 +1804,12 @@ def main():
     print("  • Paper and live trading modes")
     print("  • SQLite database logging")
     print("  • Built on proven monitoring framework")
+    print("  • LIMIT ORDERS for exits - saves bid-ask spread!")
     print("\nTrading Logic:")
     print("  • SELL BASIS when premium >20% (auto: buy spot, sell futures)")
     print("  • BUY BASIS when discount <-15% (auto: buy futures, sell spot)")
-    print("  • Exit when premium/discount normalizes (automatic closure)")
-    print("  • Stop loss and position limits protect capital")
+    print("  • Exit via LIMIT ORDERS at calculated target prices")
+    print("  • Stop loss uses market orders for guaranteed exit")
     print()
     
     confirm = input("Start algorithmic trading system? (y/n, default: y): ").strip().lower()
