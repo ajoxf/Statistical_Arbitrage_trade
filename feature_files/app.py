@@ -3763,10 +3763,6 @@ def start_price_streaming():
         import numpy as np
         from collections import deque
 
-        # Tick interval in seconds (must match sleep interval at end of loop)
-        TICK_INTERVAL = 0.3
-        TICKS_PER_MINUTE = 60 / TICK_INTERVAL  # 200 ticks per minute
-
         log_counter = 0
         # Max 25000 ticks = ~125 minutes of data at 0.3s intervals
         spread_history = deque(maxlen=25000)
@@ -3775,12 +3771,14 @@ def start_price_streaming():
         mt5_initialized = False  # Track MT5 connection state
         cached_leverage = 100  # Cache leverage to avoid repeated MT5 calls
 
-        # Load spread history from database on startup (handles reconnection)
+        # Load config for tick_interval and spread history from database on startup
         try:
             database = get_db()
             config = database.get_config()
             lookback_period = config.lookback_period if config else 90
             lookback_unit = config.lookback_unit if config else 'minutes'
+            # Tick interval from settings (seconds between price updates)
+            tick_interval = config.tick_interval if config and hasattr(config, 'tick_interval') else 0.3
 
             # Calculate max age based on lookback
             if lookback_unit == 'days':
@@ -3899,13 +3897,16 @@ def start_price_streaming():
                     config = database.get_config()
                     lookback_period = config.lookback_period if config else 90
                     lookback_unit = config.lookback_unit if config else 'minutes'
+                    # Get tick_interval from config (update outer scope variable for sleep)
+                    tick_interval = config.tick_interval if config and hasattr(config, 'tick_interval') else 0.3
+                    ticks_per_minute = 60 / tick_interval
 
                     # Convert lookback period to number of ticks
-                    # lookback_period is in minutes (or days), convert to ticks at TICK_INTERVAL
+                    # lookback_period is in minutes (or days), convert to ticks based on tick_interval
                     if lookback_unit == 'days':
-                        lookback_ticks = int(lookback_period * 24 * 60 * TICKS_PER_MINUTE)
+                        lookback_ticks = int(lookback_period * 24 * 60 * ticks_per_minute)
                     else:  # minutes
-                        lookback_ticks = int(lookback_period * TICKS_PER_MINUTE)
+                        lookback_ticks = int(lookback_period * ticks_per_minute)
 
                     # Calculate mean, std, and z-score from spread history
                     mean_val = 0.0
@@ -4069,7 +4070,7 @@ def start_price_streaming():
                         'hurst': hurst_data
                     })
 
-                time.sleep(0.3)  # Update every 0.3 seconds
+                time.sleep(tick_interval)  # Update interval from settings
 
             except Exception as e:
                 logger.error(f"Price streaming error: {e}")

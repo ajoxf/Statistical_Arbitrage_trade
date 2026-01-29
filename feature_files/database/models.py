@@ -84,6 +84,9 @@ class TradingConfig:
     limit_order_timeout: int = 60
     limit_peg_interval: float = 1.5
 
+    # Price Streaming
+    tick_interval: float = 0.3  # Seconds between price updates (0.1 to 2.0)
+
     # Mode Settings
     algo_enabled: bool = False
     paper_mode: bool = True
@@ -127,6 +130,7 @@ class TradingConfig:
             'order_type': self.order_type,
             'limit_order_timeout': self.limit_order_timeout,
             'limit_peg_interval': self.limit_peg_interval,
+            'tick_interval': self.tick_interval,
             'algo_enabled': self.algo_enabled,
             'paper_mode': self.paper_mode,
             'selected_asset': self.selected_asset,
