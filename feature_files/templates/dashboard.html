@@ -330,7 +330,7 @@
             <div class="card-header">
                 <i class="bi bi-briefcase me-2"></i>Current Position
             </div>
-            <div class="card-body">
+            <div class="card-body" id="current-position-body">
                 {% if open_trades %}
                 {% set trade = open_trades[0] %}
                 <div class="mb-2">
@@ -1587,7 +1587,24 @@
 
             if (result.success) {
                 alert(result.message);
-                refreshTradeJournal();  // Refresh the table
+                refreshTradeJournal();  // Refresh the journal table and stats
+
+                // Reset top stats cards
+                const pnlEl = document.getElementById('pnl-value');
+                if (pnlEl) {
+                    pnlEl.textContent = '$0.00';
+                    pnlEl.className = 'stat-value positive';
+                }
+                const winRateEl = document.getElementById('win-rate');
+                if (winRateEl) {
+                    winRateEl.textContent = '0.0%';
+                }
+
+                // Reset Current Position card
+                const positionBody = document.getElementById('current-position-body');
+                if (positionBody) {
+                    positionBody.innerHTML = '<p class="text-muted mb-0 text-center">No open position</p>';
+                }
             } else {
                 alert('Error: ' + result.error);
             }

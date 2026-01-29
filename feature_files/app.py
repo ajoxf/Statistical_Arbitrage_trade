@@ -827,13 +827,13 @@ class AutoTrader:
 
             # Execute spot leg
             if direction == 'SHORT':
-                # Short spread: Buy spot
-                spot_order_type = mt5.ORDER_TYPE_BUY
-                futures_order_type = mt5.ORDER_TYPE_SELL
-            else:
-                # Long spread: Sell spot
+                # Short spread: SELL spot, BUY futures (profit when spread decreases)
                 spot_order_type = mt5.ORDER_TYPE_SELL
                 futures_order_type = mt5.ORDER_TYPE_BUY
+            else:
+                # Long spread: BUY spot, SELL futures (profit when spread increases)
+                spot_order_type = mt5.ORDER_TYPE_BUY
+                futures_order_type = mt5.ORDER_TYPE_SELL
 
             # Get spot tick for pricing
             spot_tick = mt5.symbol_info_tick(spot_broker.symbol)
@@ -1224,13 +1224,13 @@ class AutoTrader:
 
             # Close in opposite direction of entry
             if self._position_direction == 'SHORT':
-                # Was short spread (bought spot, sold futures) - now sell spot, buy futures
-                spot_order_type = mt5.ORDER_TYPE_SELL
-                futures_order_type = mt5.ORDER_TYPE_BUY
-            else:
-                # Was long spread (sold spot, bought futures) - now buy spot, sell futures
+                # Was short spread (sold spot, bought futures) - now buy spot, sell futures
                 spot_order_type = mt5.ORDER_TYPE_BUY
                 futures_order_type = mt5.ORDER_TYPE_SELL
+            else:
+                # Was long spread (bought spot, sold futures) - now sell spot, buy futures
+                spot_order_type = mt5.ORDER_TYPE_SELL
+                futures_order_type = mt5.ORDER_TYPE_BUY
 
             # Get correct filling modes - RETURN is most universally supported
             spot_symbol_info = mt5.symbol_info(spot_broker.symbol)
@@ -1334,15 +1334,15 @@ class AutoTrader:
 
             # Calculate P&L
             if self._position_direction == 'SHORT':
-                # Short spread: Bought spot at entry, sold at exit
-                spot_pnl = (spot_result.price - self._entry_spot_price) * lot_size * config.contract_size
-                # Sold futures at entry, bought at exit
-                futures_pnl = (self._entry_futures_price - futures_result.price) * lot_size * config.contract_size
-            else:
-                # Long spread: Sold spot at entry, bought at exit
+                # Short spread: SOLD spot at entry, BOUGHT at exit
                 spot_pnl = (self._entry_spot_price - spot_result.price) * lot_size * config.contract_size
-                # Bought futures at entry, sold at exit
+                # BOUGHT futures at entry, SOLD at exit
                 futures_pnl = (futures_result.price - self._entry_futures_price) * lot_size * config.contract_size
+            else:
+                # Long spread: BOUGHT spot at entry, SOLD at exit
+                spot_pnl = (spot_result.price - self._entry_spot_price) * lot_size * config.contract_size
+                # SOLD futures at entry, BOUGHT at exit
+                futures_pnl = (self._entry_futures_price - futures_result.price) * lot_size * config.contract_size
 
             gross_pnl = spot_pnl + futures_pnl
             commission = config.commission_per_lot * lot_size * 2  # Both legs, entry and exit
