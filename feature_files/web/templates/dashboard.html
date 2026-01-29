@@ -397,7 +397,7 @@
                 </div>
                 <div class="d-flex justify-content-between">
                     <span class="text-muted">Entry Spread:</span>
-                    <span>${{ "%.2f"|format((trade.entry_spot_price or 0) - (trade.entry_futures_price or 0)) }}</span>
+                    <span>${{ "%.2f"|format((trade.entry_futures_price or 0) - (trade.entry_spot_price or 0)) }}</span>
                 </div>
                 <div class="d-flex justify-content-between">
                     <span class="text-muted">Unrealized P&L:</span>

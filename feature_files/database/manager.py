@@ -153,7 +153,9 @@ class DatabaseManager:
                 futures_broker_id TEXT,
                 mt5_futures_ticket INTEGER,
                 order_status TEXT,
-                status TEXT DEFAULT 'OPEN'
+                status TEXT DEFAULT 'OPEN',
+                entry_mean REAL,
+                entry_std REAL
             )
         ''')
 
@@ -240,6 +242,19 @@ class DatabaseManager:
         cursor.execute('SELECT COUNT(*) FROM trading_config')
         if cursor.fetchone()[0] == 0:
             cursor.execute('INSERT INTO trading_config (id) VALUES (1)')
+
+        # Migration: Add entry_mean and entry_std columns to trades table if not exist
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN entry_mean REAL')
+            logger.info("Migration: Added entry_mean column to trades table")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN entry_std REAL')
+            logger.info("Migration: Added entry_std column to trades table")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         conn.commit()
         logger.info(f"Database initialized: {self.db_path}")
@@ -554,6 +569,8 @@ class DatabaseManager:
 
         trades = []
         for row in cursor.fetchall():
+            # Get entry_mean/entry_std safely (may not exist in older DBs before migration)
+            row_dict = dict(row)
             trades.append(Trade(
                 trade_id=row['trade_id'],
                 asset=row['asset'],
@@ -581,7 +598,9 @@ class DatabaseManager:
                 futures_broker_id=row['futures_broker_id'],
                 mt5_futures_ticket=row['mt5_futures_ticket'],
                 order_status=row['order_status'],
-                status=row['status']
+                status=row['status'],
+                entry_mean=row_dict.get('entry_mean'),
+                entry_std=row_dict.get('entry_std')
             ))
 
         return trades
@@ -602,8 +621,8 @@ class DatabaseManager:
                 exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
                 gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
                 lot_size, spot_broker_id, mt5_spot_ticket, futures_broker_id,
-                mt5_futures_ticket, order_status, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                mt5_futures_ticket, order_status, status, entry_mean, entry_std
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             trade.trade_id, trade.asset, trade.direction, trade.entry_date,
             trade.exit_date, trade.days_held, trade.entry_zscore, trade.exit_zscore,
@@ -612,7 +631,7 @@ class DatabaseManager:
             trade.gross_pnl, trade.swap_cost, trade.commission, trade.spread_cost,
             trade.net_pnl, trade.return_pct, trade.lot_size, trade.spot_broker_id,
             trade.mt5_spot_ticket, trade.futures_broker_id, trade.mt5_futures_ticket,
-            trade.order_status, trade.status
+            trade.order_status, trade.status, trade.entry_mean, trade.entry_std
         ))
 
         conn.commit()

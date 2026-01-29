@@ -1148,7 +1148,9 @@ class AutoTrader:
                 mt5_spot_ticket=spot_result.order,
                 futures_broker_id=futures_broker.broker_id,
                 mt5_futures_ticket=futures_result.order,
-                status='OPEN'
+                status='OPEN',
+                entry_mean=getattr(signal, 'entry_mean', None),
+                entry_std=getattr(signal, 'entry_std', None)
             )
 
             database.add_trade(trade)
@@ -3946,6 +3948,15 @@ def start_price_streaming():
                 else:
                     logger.info(f"[PRICES] Loaded {len(history)} historical spreads (need {MIN_BOOTSTRAP_SAMPLES} for stats)")
 
+                # Check if there's an open trade - if so, use its entry stats instead
+                open_trades = database.get_trades(status='OPEN', limit=1)
+                if open_trades and open_trades[0].entry_mean is not None and open_trades[0].entry_std is not None:
+                    open_trade = open_trades[0]
+                    locked_mean = open_trade.entry_mean
+                    locked_std = open_trade.entry_std
+                    logger.info(f"[PRICES] OPEN TRADE DETECTED - using entry stats: mean={locked_mean:.4f}, std={locked_std:.4f}")
+                    logger.info(f"[PRICES] Trade ID: {open_trade.trade_id}, Entry Z: {open_trade.entry_zscore:.2f}")
+
                 history_loaded = True
         except Exception as e:
             logger.error(f"[PRICES] Failed to load spread history: {e}")
@@ -4191,24 +4202,26 @@ def start_price_streaming():
 
                         # Create a simple signal object for AutoTrader
                         class Signal:
-                            def __init__(self, signal_type, zscore, spread):
+                            def __init__(self, signal_type, zscore, spread, entry_mean=None, entry_std=None):
                                 self.signal_type = signal_type
                                 self.zscore = zscore
                                 self.spread = spread
+                                self.entry_mean = entry_mean  # Locked mean at signal time
+                                self.entry_std = entry_std    # Locked std at signal time
 
                         # Check for entry signals (no position open)
                         if not auto_trader.has_position:
                             if zscore >= entry_threshold:
                                 # Z-score high - short the spread
-                                signal = Signal('ENTRY_SHORT', zscore, spread)
-                                logger.info(f"[SIGNAL] ENTRY_SHORT triggered: z={zscore:.2f} >= {entry_threshold}")
+                                signal = Signal('ENTRY_SHORT', zscore, spread, locked_mean, locked_std)
+                                logger.info(f"[SIGNAL] ENTRY_SHORT triggered: z={zscore:.2f} >= {entry_threshold} (locked mean={locked_mean:.4f}, std={locked_std:.4f})")
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'ENTRY_SHORT', 'zscore': zscore})
 
                             elif zscore <= -entry_threshold:
                                 # Z-score low - long the spread
-                                signal = Signal('ENTRY_LONG', zscore, spread)
-                                logger.info(f"[SIGNAL] ENTRY_LONG triggered: z={zscore:.2f} <= -{entry_threshold}")
+                                signal = Signal('ENTRY_LONG', zscore, spread, locked_mean, locked_std)
+                                logger.info(f"[SIGNAL] ENTRY_LONG triggered: z={zscore:.2f} <= -{entry_threshold} (locked mean={locked_mean:.4f}, std={locked_std:.4f})")
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'ENTRY_LONG', 'zscore': zscore})
 
