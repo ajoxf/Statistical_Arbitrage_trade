@@ -4146,7 +4146,8 @@ def start_price_streaming():
                     entry_exit_bands = None
                     hurst_data = None
 
-                    if lookback_complete and std_val > 0:
+                    # Show bands and STD filter as soon as we have valid stats (not just when lookback complete)
+                    if std_val > 0:
                         # Get bid-ask spreads in cents for cost calculation
                         spot_spread_cents = (spot_ask - spot_bid) * 100 if spot_bid > 0 else None
                         futures_spread_cents = (futures_ask - futures_bid) * 100 if futures_bid > 0 else None
