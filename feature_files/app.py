@@ -4060,7 +4060,7 @@ def start_price_streaming():
                         lookback_ticks = int(lookback_period * ticks_per_minute)
 
                     # Calculate mean, std, and z-score using LOCKED statistics
-                    # Stats are only recalculated every STATS_RECALC_INTERVAL seconds
+                    # TRADE-BASED LOCKING: Stats are locked when in a trade, only update when flat
                     mean_val = 0.0
                     std_val = 0.0
                     zscore = None
@@ -4068,8 +4068,13 @@ def start_price_streaming():
                     lookback_complete = len(spread_history) >= lookback_ticks
                     current_time = time.time()
 
-                    # Check if we need to recalculate stats (either first time or interval passed)
-                    should_recalc = (locked_mean is None) or (current_time - last_stats_update >= STATS_RECALC_INTERVAL)
+                    # Check if we're in a trade (stats should be locked during trades)
+                    in_trade = auto_trader and auto_trader.has_position
+
+                    # Only recalculate stats when:
+                    # 1. We have no stats yet (first time), OR
+                    # 2. We're FLAT (no position) AND recalc interval has passed
+                    should_recalc = (locked_mean is None) or (not in_trade and current_time - last_stats_update >= STATS_RECALC_INTERVAL)
 
                     if should_recalc and len(spread_history) >= MIN_BOOTSTRAP_SAMPLES:
                         # Recalculate and lock new statistics
@@ -4084,24 +4089,28 @@ def start_price_streaming():
                         new_std = float(np.std(history_list))
 
                         if new_std > 0:
-                            # Log if this is a significant change
+                            # Log the change
                             if locked_mean is not None:
-                                mean_change = abs(new_mean - locked_mean)
-                                std_change = abs(new_std - locked_std) if locked_std else 0
-                                logger.info(f"[PRICES] Stats RECALCULATED: mean={new_mean:.4f} (was {locked_mean:.4f}), std={new_std:.4f} (was {locked_std:.4f})")
+                                logger.info(f"[PRICES] Stats UPDATED (flat): mean={new_mean:.4f} (was {locked_mean:.4f}), std={new_std:.4f} (was {locked_std:.4f})")
                             else:
-                                logger.info(f"[PRICES] Stats LOCKED: mean={new_mean:.4f}, std={new_std:.4f} (from {len(history_list)} samples)")
+                                logger.info(f"[PRICES] Stats INITIALIZED: mean={new_mean:.4f}, std={new_std:.4f} (from {len(history_list)} samples)")
 
                             locked_mean = new_mean
                             locked_std = new_std
                             last_stats_update = current_time
+
+                    # Log when trade starts (stats will be locked for duration)
+                    # This is detected by checking if we just entered a trade
+                    if in_trade and locked_mean is not None:
+                        stats_source = 'locked_trade'  # Stats locked during trade
+                    elif locked_mean is not None:
+                        stats_source = 'live' if lookback_complete else 'bootstrap'
 
                     # Use locked statistics for z-score calculation
                     if locked_mean is not None and locked_std is not None and locked_std > 0:
                         mean_val = locked_mean
                         std_val = locked_std
                         zscore = (spread - mean_val) / std_val
-                        stats_source = 'live' if lookback_complete else 'bootstrap'
 
                     # === Basis Premium Calculation ===
                     # Read swap from spot broker (CFDs charge swap on spot position)
@@ -4237,8 +4246,9 @@ def start_price_streaming():
                         'history_count': len(spread_history),
                         'lookback_required': lookback_ticks,
                         'lookback_complete': lookback_complete,
-                        'stats_source': stats_source,  # 'none', 'bootstrap', or 'live'
+                        'stats_source': stats_source,  # 'none', 'bootstrap', 'live', or 'locked_trade'
                         'stats_locked': locked_mean is not None,  # True if stats are locked
+                        'in_trade': in_trade,  # True if position is open (stats frozen)
                         # Basis Premium Data
                         'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else None,
                         'swap_charge': swap_charge,
