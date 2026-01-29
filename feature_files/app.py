@@ -3910,6 +3910,7 @@ def start_price_streaming():
         last_stats_update = 0
         STATS_RECALC_INTERVAL = 300  # Recalculate mean/std every 5 minutes (300 seconds)
         MIN_BOOTSTRAP_SAMPLES = 30  # Minimum DB samples needed for reliable bootstrap
+        was_in_trade = False  # Track previous trade state for lock logging
 
         # Load config for tick_interval and spread history from database on startup
         try:
@@ -4100,8 +4101,16 @@ def start_price_streaming():
                             locked_std = new_std
                             last_stats_update = current_time
 
-                    # Log when trade starts (stats will be locked for duration)
-                    # This is detected by checking if we just entered a trade
+                    # Log when trade state changes
+                    if in_trade and not was_in_trade and locked_mean is not None:
+                        # Just entered a trade - log the locked values
+                        logger.info(f"[PRICES] Stats LOCKED for trade: mean={locked_mean:.4f}, std={locked_std:.4f}")
+                    elif not in_trade and was_in_trade:
+                        # Just exited a trade - stats will update on next recalc
+                        logger.info(f"[PRICES] Trade exited - stats UNLOCKED (will recalc within {STATS_RECALC_INTERVAL}s)")
+                    was_in_trade = in_trade
+
+                    # Set stats source based on current state
                     if in_trade and locked_mean is not None:
                         stats_source = 'locked_trade'  # Stats locked during trade
                     elif locked_mean is not None:
