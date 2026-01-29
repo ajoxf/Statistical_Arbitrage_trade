@@ -862,5 +862,66 @@
     socket.on('connect_error', function(error) {
         console.error('[SOCKET] Connection error:', error);
     });
+
+    // === TRADE DEBUG INFO ===
+    socket.on('trade_debug', function(data) {
+        console.log('[TRADE DEBUG]', data);
+
+        // Create or get debug panel
+        let debugPanel = document.getElementById('tradeDebugPanel');
+        if (!debugPanel) {
+            debugPanel = document.createElement('div');
+            debugPanel.id = 'tradeDebugPanel';
+            debugPanel.style.cssText = 'position:fixed;top:10px;right:10px;width:450px;max-height:80vh;overflow-y:auto;background:#1a1a2e;border:2px solid #e94560;border-radius:8px;padding:15px;z-index:9999;font-family:monospace;font-size:12px;color:#eee;box-shadow:0 4px 20px rgba(0,0,0,0.5);';
+            debugPanel.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><strong style="color:#e94560;font-size:14px;">🔍 TRADE DEBUG</strong><button onclick="this.parentElement.parentElement.remove()" style="background:#e94560;border:none;color:white;padding:2px 8px;border-radius:4px;cursor:pointer;">×</button></div><div id="debugContent"></div>';
+            document.body.appendChild(debugPanel);
+        }
+
+        const content = document.getElementById('debugContent');
+        const timestamp = new Date().toLocaleTimeString();
+
+        if (data.event === 'ENTRY') {
+            content.innerHTML = `
+                <div style="background:#16213e;padding:10px;border-radius:4px;margin-bottom:10px;">
+                    <div style="color:#4ecca3;font-weight:bold;margin-bottom:8px;">📥 ENTRY - ${data.direction}</div>
+                    <table style="width:100%;border-collapse:collapse;">
+                        <tr><td style="color:#888;">Signal Spread:</td><td style="text-align:right;">${data.signal_spread}</td></tr>
+                        <tr><td style="color:#888;">Exec Spread:</td><td style="text-align:right;">${data.exec_spread}</td></tr>
+                        <tr><td style="color:#888;">Spread Diff:</td><td style="text-align:right;color:${Math.abs(data.spread_diff) > 1 ? '#e94560' : '#4ecca3'};">${data.spread_diff}</td></tr>
+                        <tr><td style="color:#888;">Z-Score:</td><td style="text-align:right;">${data.signal_zscore}</td></tr>
+                        <tr><td style="color:#888;">Spot Price:</td><td style="text-align:right;">$${data.spot_price}</td></tr>
+                        <tr><td style="color:#888;">Futures Price:</td><td style="text-align:right;">$${data.futures_price}</td></tr>
+                    </table>
+                    <div style="color:#666;font-size:10px;margin-top:5px;">${timestamp}</div>
+                </div>
+            ` + content.innerHTML;
+        } else if (data.event === 'EXIT') {
+            const discColor = Math.abs(data.DISCREPANCY) > 0.5 ? '#e94560' : '#4ecca3';
+            content.innerHTML = `
+                <div style="background:#1e3a5f;padding:10px;border-radius:4px;margin-bottom:10px;border-left:3px solid ${discColor};">
+                    <div style="color:#f39c12;font-weight:bold;margin-bottom:8px;">📤 EXIT - ${data.direction}</div>
+                    <table style="width:100%;border-collapse:collapse;">
+                        <tr style="background:#16213e;"><td colspan="2" style="padding:4px;color:#4ecca3;">Signal (Mid Prices)</td></tr>
+                        <tr><td style="color:#888;padding-left:10px;">Entry Spread:</td><td style="text-align:right;">${data.entry_signal_spread}</td></tr>
+                        <tr><td style="color:#888;padding-left:10px;">Exit Spread:</td><td style="text-align:right;">${data.exit_signal_spread}</td></tr>
+                        <tr><td style="color:#888;padding-left:10px;">Change:</td><td style="text-align:right;color:#4ecca3;">${data.signal_spread_change > 0 ? '+' : ''}${data.signal_spread_change}</td></tr>
+
+                        <tr style="background:#16213e;"><td colspan="2" style="padding:4px;color:#e94560;">Execution (Bid/Ask)</td></tr>
+                        <tr><td style="color:#888;padding-left:10px;">Entry Spread:</td><td style="text-align:right;">${data.entry_exec_spread}</td></tr>
+                        <tr><td style="color:#888;padding-left:10px;">Exit Spread:</td><td style="text-align:right;">${data.exit_exec_spread}</td></tr>
+                        <tr><td style="color:#888;padding-left:10px;">Change:</td><td style="text-align:right;color:${data.exec_spread_change > 0 ? '#4ecca3' : '#e94560'};">${data.exec_spread_change > 0 ? '+' : ''}${data.exec_spread_change}</td></tr>
+
+                        <tr style="background:#2d1f3d;"><td style="padding:4px;color:#fff;font-weight:bold;">⚠️ DISCREPANCY:</td><td style="text-align:right;color:${discColor};font-weight:bold;font-size:14px;">${data.DISCREPANCY}</td></tr>
+
+                        <tr><td style="color:#888;">Entry Z:</td><td style="text-align:right;">${data.entry_zscore}</td></tr>
+                        <tr><td style="color:#888;">Exit Z:</td><td style="text-align:right;">${data.exit_zscore}</td></tr>
+                        <tr><td style="color:#888;">Spot:</td><td style="text-align:right;">$${data.spot_entry} → $${data.spot_exit}</td></tr>
+                        <tr><td style="color:#888;">Futures:</td><td style="text-align:right;">$${data.futures_entry} → $${data.futures_exit}</td></tr>
+                    </table>
+                    <div style="color:#666;font-size:10px;margin-top:5px;">${timestamp}</div>
+                </div>
+            ` + content.innerHTML;
+        }
+    });
 </script>
 {% endblock %}

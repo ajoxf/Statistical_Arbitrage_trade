@@ -1139,6 +1139,22 @@ class AutoTrader:
             self._logger.info(f"[DEBUG EXEC] Entry execution spread={execution_spread:.4f} (futures={futures_result.price:.4f} - spot={spot_result.price:.4f})")
             self._logger.info(f"[DEBUG EXEC] Signal spread={signal.spread:.4f}, Signal zscore={signal.zscore:.4f}")
 
+            # Store entry debug info for comparison at exit
+            self._entry_signal_spread = signal.spread
+            self._entry_exec_spread = execution_spread
+
+            # Emit debug info to UI
+            socketio.emit('trade_debug', {
+                'event': 'ENTRY',
+                'direction': direction,
+                'signal_spread': round(signal.spread, 4),
+                'signal_zscore': round(signal.zscore, 4),
+                'exec_spread': round(execution_spread, 4),
+                'spot_price': round(spot_result.price, 2),
+                'futures_price': round(futures_result.price, 2),
+                'spread_diff': round(execution_spread - signal.spread, 4)
+            })
+
             mt5.shutdown()
 
             # Record trade in database
@@ -1342,10 +1358,33 @@ class AutoTrader:
             # DEBUG: Log exit execution spread vs signal spread
             exit_execution_spread = futures_result.price - spot_result.price
             entry_execution_spread = self._entry_futures_price - self._entry_spot_price
+            exec_spread_change = exit_execution_spread - entry_execution_spread
+            signal_spread_change = signal.spread - getattr(self, '_entry_signal_spread', signal.spread)
+
             self._logger.info(f"[DEBUG EXEC] Exit execution spread={exit_execution_spread:.4f} (futures={futures_result.price:.4f} - spot={spot_result.price:.4f})")
             self._logger.info(f"[DEBUG EXEC] Entry was: spread={entry_execution_spread:.4f} (futures={self._entry_futures_price:.4f} - spot={self._entry_spot_price:.4f})")
-            self._logger.info(f"[DEBUG EXEC] Execution spread change={exit_execution_spread - entry_execution_spread:.4f}")
-            self._logger.info(f"[DEBUG EXEC] Signal spread={signal.spread:.4f}, Signal zscore={signal.zscore:.4f}")
+            self._logger.info(f"[DEBUG EXEC] Execution spread change={exec_spread_change:.4f}")
+            self._logger.info(f"[DEBUG EXEC] Signal spread change={signal_spread_change:.4f}")
+            self._logger.info(f"[DEBUG EXEC] DISCREPANCY={exec_spread_change - signal_spread_change:.4f}")
+
+            # Emit debug info to UI
+            socketio.emit('trade_debug', {
+                'event': 'EXIT',
+                'direction': self._position_direction,
+                'entry_signal_spread': round(getattr(self, '_entry_signal_spread', 0), 4),
+                'exit_signal_spread': round(signal.spread, 4),
+                'signal_spread_change': round(signal_spread_change, 4),
+                'entry_exec_spread': round(entry_execution_spread, 4),
+                'exit_exec_spread': round(exit_execution_spread, 4),
+                'exec_spread_change': round(exec_spread_change, 4),
+                'DISCREPANCY': round(exec_spread_change - signal_spread_change, 4),
+                'entry_zscore': round(self._entry_zscore, 4) if self._entry_zscore else None,
+                'exit_zscore': round(signal.zscore, 4),
+                'spot_entry': round(self._entry_spot_price, 2),
+                'spot_exit': round(spot_result.price, 2),
+                'futures_entry': round(self._entry_futures_price, 2),
+                'futures_exit': round(futures_result.price, 2)
+            })
 
             mt5.shutdown()
 
