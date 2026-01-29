@@ -1134,6 +1134,11 @@ class AutoTrader:
 
             self._logger.info(f"[AUTO] Futures order filled: ticket={futures_result.order}, price={futures_result.price}")
 
+            # DEBUG: Log execution spread vs signal spread
+            execution_spread = futures_result.price - spot_result.price
+            self._logger.info(f"[DEBUG EXEC] Entry execution spread={execution_spread:.4f} (futures={futures_result.price:.4f} - spot={spot_result.price:.4f})")
+            self._logger.info(f"[DEBUG EXEC] Signal spread={signal.spread:.4f}, Signal zscore={signal.zscore:.4f}")
+
             mt5.shutdown()
 
             # Record trade in database
@@ -1333,6 +1338,14 @@ class AutoTrader:
                 return
 
             self._logger.info(f"[AUTO] Futures position closed successfully")
+
+            # DEBUG: Log exit execution spread vs signal spread
+            exit_execution_spread = futures_result.price - spot_result.price
+            entry_execution_spread = self._entry_futures_price - self._entry_spot_price
+            self._logger.info(f"[DEBUG EXEC] Exit execution spread={exit_execution_spread:.4f} (futures={futures_result.price:.4f} - spot={spot_result.price:.4f})")
+            self._logger.info(f"[DEBUG EXEC] Entry was: spread={entry_execution_spread:.4f} (futures={self._entry_futures_price:.4f} - spot={self._entry_spot_price:.4f})")
+            self._logger.info(f"[DEBUG EXEC] Execution spread change={exit_execution_spread - entry_execution_spread:.4f}")
+            self._logger.info(f"[DEBUG EXEC] Signal spread={signal.spread:.4f}, Signal zscore={signal.zscore:.4f}")
 
             mt5.shutdown()
 
@@ -4081,6 +4094,10 @@ def start_price_streaming():
                     # 2. We're FLAT (no position) AND recalc interval has passed
                     should_recalc = (locked_mean is None) or (not in_trade and current_time - last_stats_update >= STATS_RECALC_INTERVAL)
 
+                    # DEBUG: Log when stats recalculation is considered
+                    if should_recalc:
+                        logger.info(f"[DEBUG STATS] Recalculating stats: in_trade={in_trade}, locked_mean={'None' if locked_mean is None else f'{locked_mean:.4f}'}")
+
                     if should_recalc and len(spread_history) >= MIN_BOOTSTRAP_SAMPLES:
                         # Recalculate and lock new statistics
                         if lookback_complete:
@@ -4204,6 +4221,8 @@ def start_price_streaming():
                                 # Z-score low - long the spread
                                 signal = Signal('ENTRY_LONG', zscore, spread)
                                 logger.info(f"[SIGNAL] ENTRY_LONG triggered: z={zscore:.2f} <= -{entry_threshold}")
+                                logger.info(f"[DEBUG ENTRY] spread={spread:.4f}, mean={mean_val:.4f}, std={std_val:.4f}, zscore={zscore:.4f}")
+                                logger.info(f"[DEBUG ENTRY] spot_mid={spot_mid:.4f}, futures_mid={futures_mid:.4f}")
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'ENTRY_LONG', 'zscore': zscore})
 
@@ -4234,6 +4253,8 @@ def start_price_streaming():
                             if should_exit:
                                 signal = Signal(exit_reason, zscore, spread)
                                 logger.info(f"[SIGNAL] {exit_reason} triggered: z={zscore:.2f}")
+                                logger.info(f"[DEBUG EXIT] spread={spread:.4f}, mean={mean_val:.4f}, std={std_val:.4f}, zscore={zscore:.4f}")
+                                logger.info(f"[DEBUG EXIT] spot_mid={spot_mid:.4f}, futures_mid={futures_mid:.4f}")
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': exit_reason, 'zscore': zscore})
 
