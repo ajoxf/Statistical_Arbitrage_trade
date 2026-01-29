@@ -3763,8 +3763,13 @@ def start_price_streaming():
         import numpy as np
         from collections import deque
 
+        # Tick interval in seconds (must match sleep interval at end of loop)
+        TICK_INTERVAL = 0.3
+        TICKS_PER_MINUTE = 60 / TICK_INTERVAL  # 200 ticks per minute
+
         log_counter = 0
-        spread_history = deque(maxlen=2000)  # Store spread history for z-score calculation
+        # Max 25000 ticks = ~125 minutes of data at 0.3s intervals
+        spread_history = deque(maxlen=25000)
         last_save_time = time.time()
         history_loaded = False
         mt5_initialized = False  # Track MT5 connection state
@@ -3893,16 +3898,24 @@ def start_price_streaming():
                     # Get config for calculations
                     config = database.get_config()
                     lookback_period = config.lookback_period if config else 90
+                    lookback_unit = config.lookback_unit if config else 'minutes'
+
+                    # Convert lookback period to number of ticks
+                    # lookback_period is in minutes (or days), convert to ticks at TICK_INTERVAL
+                    if lookback_unit == 'days':
+                        lookback_ticks = int(lookback_period * 24 * 60 * TICKS_PER_MINUTE)
+                    else:  # minutes
+                        lookback_ticks = int(lookback_period * TICKS_PER_MINUTE)
 
                     # Calculate mean, std, and z-score from spread history
                     mean_val = 0.0
                     std_val = 0.0
                     zscore = None  # None until lookback is complete
-                    lookback_complete = len(spread_history) >= lookback_period
+                    lookback_complete = len(spread_history) >= lookback_ticks
 
                     if lookback_complete:
-                        # Use most recent lookback_period points
-                        history_list = list(spread_history)[-lookback_period:]
+                        # Use most recent lookback_ticks points (proper time-based lookback)
+                        history_list = list(spread_history)[-lookback_ticks:]
                         mean_val = float(np.mean(history_list))
                         std_val = float(np.std(history_list))
 
@@ -4038,7 +4051,7 @@ def start_price_streaming():
                         'mean': mean_val if lookback_complete else None,
                         'std': std_val if lookback_complete else None,
                         'history_count': len(spread_history),
-                        'lookback_required': lookback_period,
+                        'lookback_required': lookback_ticks,
                         'lookback_complete': lookback_complete,
                         # Basis Premium Data
                         'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else None,
