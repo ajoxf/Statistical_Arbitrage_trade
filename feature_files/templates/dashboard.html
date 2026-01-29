@@ -545,11 +545,12 @@
                                         <th>Spread</th>
                                         <th>Net P&L</th>
                                         <th>Return</th>
+                                        <th>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody id="trade-journal-body">
                                     <tr>
-                                        <td colspan="16" class="text-center text-muted">No trades yet</td>
+                                        <td colspan="17" class="text-center text-muted">No trades yet</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1519,6 +1520,12 @@
                 const netPnlClass = (t.net_pnl || 0) >= 0 ? 'text-success' : 'text-danger';
                 const returnClass = (t.return_pct || 0) >= 0 ? 'text-success' : 'text-danger';
 
+                const actionBtn = t.status === 'OPEN'
+                    ? `<button class="btn btn-sm btn-outline-danger" onclick="closeTradeManually('${t.trade_id}')" title="Close trade manually (if closed in MT5)">
+                         <i class="bi bi-x-circle"></i> Close
+                       </button>`
+                    : '<span class="text-muted">-</span>';
+
                 return `<tr class="${t.status === 'OPEN' ? 'table-warning' : ''}">
                     <td>${i + 1}</td>
                     <td class="${dirClass}">${icon} ${t.direction}</td>
@@ -1536,6 +1543,7 @@
                     <td class="text-muted">$${Math.abs(t.spread_cost || 0).toFixed(2)}</td>
                     <td class="${netPnlClass}"><strong>$${(t.net_pnl || 0).toFixed(2)}</strong></td>
                     <td class="${returnClass}">${(t.return_pct || 0).toFixed(2)}%</td>
+                    <td>${actionBtn}</td>
                 </tr>`;
             }).join('');
 
@@ -1546,6 +1554,30 @@
 
     function downloadTradesCSV() {
         window.location.href = '/api/trade-journal/csv';
+    }
+
+    async function closeTradeManually(tradeId) {
+        if (!confirm(`Close trade ${tradeId} manually?\n\nUse this if the position was closed directly in MT5.\nThis will reset the algo to allow new positions.`)) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/trade-journal/close/${tradeId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                alert(result.message);
+                refreshTradeJournal();  // Refresh the table
+            } else {
+                alert('Error: ' + result.error);
+            }
+        } catch (err) {
+            console.error('Close trade error:', err);
+            alert('Error closing trade: ' + err.message);
+        }
     }
 
     // Load broker history and trade journal on page load

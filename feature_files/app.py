@@ -1428,6 +1428,33 @@ class AutoTrader:
     def position_direction(self) -> Optional[str]:
         return self._position_direction
 
+    def reset_position(self, trade_id: str = None):
+        """
+        Manually reset position state (for when position closed externally in MT5).
+
+        This allows the algo to continue taking new positions after manual close.
+        """
+        self._logger.info(f"[AUTO] Manual position reset requested (trade_id={trade_id})")
+
+        # Reset position tracking
+        self._position_open = False
+        self._position_direction = None
+        self._entry_trade_id = None
+        self._entry_spot_price = None
+        self._entry_futures_price = None
+        self._entry_zscore = None
+        self._entry_time = None
+        self._spot_ticket = None
+        self._futures_ticket = None
+
+        # Sync engine position state
+        global engine
+        if engine:
+            engine.set_position_state(False, None)
+            self._logger.info(f"[AUTO] Engine position state synced: has_position=False")
+
+        self._logger.info(f"[AUTO] Position state reset complete - algo can now take new positions")
+
 
 def init_app(db_path: str = "trading.db"):
     """Initialize application components"""
@@ -3669,6 +3696,70 @@ def api_trade_journal():
     except Exception as e:
         logger.error(f"Trade journal error: {e}")
         return jsonify({'success': False, 'error': str(e), 'trades': [], 'summary': {}})
+
+
+@app.route('/api/trade-journal/close/<trade_id>', methods=['POST'])
+def api_trade_journal_close(trade_id):
+    """
+    Manually close a trade in the journal.
+
+    Use this when a position was closed directly in MT5 but the trade journal
+    still shows it as OPEN. This resets the algo's position state so it can
+    take new positions.
+    """
+    global auto_trader
+
+    try:
+        database = get_db()
+
+        # Get the trade to verify it exists
+        trades = database.get_trades(limit=500)
+        trade = None
+        for t in trades:
+            if t.trade_id == trade_id:
+                trade = t
+                break
+
+        if not trade:
+            return jsonify({'success': False, 'error': f'Trade {trade_id} not found'})
+
+        if trade.status == 'CLOSED':
+            return jsonify({'success': False, 'error': f'Trade {trade_id} is already closed'})
+
+        # Update trade status to CLOSED in database
+        conn = database.conn
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE trades
+            SET status = 'CLOSED',
+                exit_date = datetime('now'),
+                order_status = 'MANUAL_CLOSE'
+            WHERE trade_id = ?
+        ''', (trade_id,))
+        conn.commit()
+
+        logger.info(f"[TRADE] Manually closed trade: {trade_id}")
+
+        # Reset AutoTrader position state so algo can take new positions
+        if auto_trader:
+            auto_trader.reset_position(trade_id)
+
+        # Emit update to frontend
+        socketio.emit('trade_closed', {
+            'trade_id': trade_id,
+            'status': 'CLOSED',
+            'close_type': 'MANUAL'
+        })
+
+        return jsonify({
+            'success': True,
+            'message': f'Trade {trade_id} closed successfully. Algo can now take new positions.',
+            'trade_id': trade_id
+        })
+
+    except Exception as e:
+        logger.error(f"Error closing trade {trade_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/api/trade-journal/csv')
