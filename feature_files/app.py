@@ -3727,7 +3727,7 @@ def api_trade_journal_close(trade_id):
             return jsonify({'success': False, 'error': f'Trade {trade_id} is already closed'})
 
         # Update trade status to CLOSED in database
-        conn = database.conn
+        conn = database._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             UPDATE trades
@@ -3779,11 +3779,8 @@ def api_trade_journal_reset():
         trades = database.get_trades(limit=10000)
         trade_count = len(trades)
 
-        # Delete all trades from database
-        conn = database.conn
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM trades')
-        conn.commit()
+        # Delete all trades from database using proper method
+        database.clear_trades()
 
         logger.info(f"[TRADE] Trade journal reset - deleted {trade_count} trades")
 
