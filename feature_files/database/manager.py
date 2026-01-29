@@ -75,6 +75,9 @@ class DatabaseManager:
                 order_type TEXT DEFAULT 'MARKET',
                 limit_order_timeout INTEGER DEFAULT 60,
                 limit_peg_interval REAL DEFAULT 1.5,
+                exit_order_type TEXT DEFAULT 'MARKET',
+                exit_limit_timeout INTEGER DEFAULT 30,
+                exit_limit_offset_cents REAL DEFAULT 0.0,
                 algo_enabled INTEGER DEFAULT 0,
                 paper_mode INTEGER DEFAULT 1,
                 selected_asset TEXT DEFAULT 'GOLD',
@@ -241,6 +244,25 @@ class DatabaseManager:
         if cursor.fetchone()[0] == 0:
             cursor.execute('INSERT INTO trading_config (id) VALUES (1)')
 
+        # Migration: Add missing columns for exit limit orders (for existing databases)
+        try:
+            cursor.execute("SELECT exit_order_type FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding exit_order_type column to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_order_type TEXT DEFAULT 'MARKET'")
+
+        try:
+            cursor.execute("SELECT exit_limit_timeout FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding exit_limit_timeout column to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_limit_timeout INTEGER DEFAULT 30")
+
+        try:
+            cursor.execute("SELECT exit_limit_offset_cents FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding exit_limit_offset_cents column to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_limit_offset_cents REAL DEFAULT 0.0")
+
         conn.commit()
         logger.info(f"Database initialized: {self.db_path}")
 
@@ -285,6 +307,9 @@ class DatabaseManager:
                 order_type=row['order_type'] or 'MARKET',
                 limit_order_timeout=row['limit_order_timeout'] or 60,
                 limit_peg_interval=row['limit_peg_interval'] or 1.5,
+                exit_order_type=row['exit_order_type'] if 'exit_order_type' in row.keys() else 'MARKET',
+                exit_limit_timeout=row['exit_limit_timeout'] if 'exit_limit_timeout' in row.keys() else 30,
+                exit_limit_offset_cents=row['exit_limit_offset_cents'] if 'exit_limit_offset_cents' in row.keys() else 0.0,
                 algo_enabled=bool(row['algo_enabled']),
                 paper_mode=bool(row['paper_mode']),
                 selected_asset=row['selected_asset'] or 'GOLD'
@@ -330,6 +355,9 @@ class DatabaseManager:
                 order_type = ?,
                 limit_order_timeout = ?,
                 limit_peg_interval = ?,
+                exit_order_type = ?,
+                exit_limit_timeout = ?,
+                exit_limit_offset_cents = ?,
                 algo_enabled = ?,
                 paper_mode = ?,
                 selected_asset = ?
@@ -366,6 +394,9 @@ class DatabaseManager:
             config.order_type,
             config.limit_order_timeout,
             config.limit_peg_interval,
+            config.exit_order_type,
+            config.exit_limit_timeout,
+            config.exit_limit_offset_cents,
             int(config.algo_enabled),
             int(config.paper_mode),
             config.selected_asset

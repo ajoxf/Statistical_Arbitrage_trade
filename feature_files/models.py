@@ -80,9 +80,14 @@ class TradingConfig:
     overnight_close_minute: int = 55
 
     # Order Execution
-    order_type: str = "MARKET"  # 'MARKET' or 'LIMIT'
+    order_type: str = "MARKET"  # 'MARKET' or 'LIMIT' (for entries)
     limit_order_timeout: int = 60
     limit_peg_interval: float = 1.5
+
+    # Exit Order Execution (separate from entry - can use LIMIT to save bid-ask spread)
+    exit_order_type: str = "MARKET"  # 'MARKET' or 'LIMIT' - exits can use limit orders since target prices are known
+    exit_limit_timeout: int = 30  # Seconds to wait for limit fill before fallback to market
+    exit_limit_offset_cents: float = 0.0  # Offset from target price in cents (0 = exactly at target)
 
     # Mode Settings
     algo_enabled: bool = False
@@ -127,6 +132,9 @@ class TradingConfig:
             'order_type': self.order_type,
             'limit_order_timeout': self.limit_order_timeout,
             'limit_peg_interval': self.limit_peg_interval,
+            'exit_order_type': self.exit_order_type,
+            'exit_limit_timeout': self.exit_limit_timeout,
+            'exit_limit_offset_cents': self.exit_limit_offset_cents,
             'algo_enabled': self.algo_enabled,
             'paper_mode': self.paper_mode,
             'selected_asset': self.selected_asset,

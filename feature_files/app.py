@@ -459,6 +459,9 @@ class AutoTrader:
         # MT5 position tickets for closing positions
         self._spot_ticket: Optional[int] = None
         self._futures_ticket: Optional[int] = None
+        # Locked stats at entry time (for calculating exit limit prices)
+        self._entry_locked_mean: Optional[float] = None
+        self._entry_locked_std: Optional[float] = None
         self._logger = logging.getLogger(__name__)
 
         # Load any existing open position from database
@@ -1176,6 +1179,11 @@ class AutoTrader:
             # Store MT5 tickets for closing positions later
             self._spot_ticket = spot_result.order
             self._futures_ticket = futures_result.order
+            # Store locked stats for limit order exit calculations
+            self._entry_locked_mean = getattr(signal, 'locked_mean', None)
+            self._entry_locked_std = getattr(signal, 'locked_std', None)
+            if self._entry_locked_mean is not None and self._entry_locked_std is not None:
+                self._logger.info(f"[AUTO] Locked stats stored: mean={self._entry_locked_mean:.4f}, std={self._entry_locked_std:.4f}")
 
             self._logger.info(f"[AUTO] Trade opened: {trade_id} ({direction}) - spot_ticket={self._spot_ticket}, futures_ticket={self._futures_ticket}")
 
@@ -1201,6 +1209,287 @@ class AutoTrader:
             import traceback
             traceback.print_exc()
 
+    def _calculate_exit_limit_prices(self, config, spot_price: float, futures_price: float):
+        """
+        Calculate target limit prices for exit based on locked stats.
+
+        For limit order exits, we can calculate the exact spread at which
+        we want to exit (z-score = exit_std_dev) and derive limit prices.
+
+        Returns: (spot_limit_price, futures_limit_price, target_spread) or (None, None, None) if can't calculate
+        """
+        if self._entry_locked_mean is None or self._entry_locked_std is None:
+            self._logger.warning("[AUTO] No locked stats available for limit price calculation")
+            return None, None, None
+
+        if self._entry_locked_std <= 0:
+            self._logger.warning("[AUTO] Invalid locked std for limit price calculation")
+            return None, None, None
+
+        # Calculate target exit spread based on position direction
+        # spread = spot - futures
+        # zscore = (spread - mean) / std
+        # At exit: zscore = exit_std_dev (for SHORT) or zscore = -exit_std_dev (for LONG)
+
+        exit_zscore_target = config.exit_std_dev
+        offset_cents = config.exit_limit_offset_cents / 100.0  # Convert cents to dollars
+
+        if self._position_direction == 'SHORT':
+            # SHORT: Entered when spread was high (z >= entry_threshold)
+            # Exit when spread falls to z = exit_std_dev (e.g., 0.5)
+            # target_spread = mean + exit_std_dev * std
+            target_spread = self._entry_locked_mean + (exit_zscore_target * self._entry_locked_std)
+            # Add offset to make limit more aggressive (slightly worse price for faster fill)
+            target_spread += offset_cents
+        else:
+            # LONG: Entered when spread was low (z <= -entry_threshold)
+            # Exit when spread rises to z = -exit_std_dev (e.g., -0.5)
+            # target_spread = mean - exit_std_dev * std
+            target_spread = self._entry_locked_mean - (exit_zscore_target * self._entry_locked_std)
+            # Subtract offset to make limit more aggressive
+            target_spread -= offset_cents
+
+        # Given target spread, calculate limit prices
+        # Approach: Fix futures at current price, calculate spot limit
+        # spread = spot - futures => spot = spread + futures
+        spot_limit_price = target_spread + futures_price
+
+        self._logger.info(f"[AUTO] Exit limit calc: target_spread={target_spread:.4f}, "
+                         f"spot_limit={spot_limit_price:.2f}, futures={futures_price:.2f}")
+
+        return spot_limit_price, futures_price, target_spread
+
+    def _execute_limit_exit(self, config, database, spot_broker, futures_broker,
+                           spot_limit_price: float, signal, lot_size: float):
+        """
+        Execute exit using limit orders with timeout fallback to market.
+
+        Strategy:
+        1. Place limit order for spot leg at calculated target price
+        2. Wait for fill or timeout
+        3. Once spot fills (or timeout triggers market), execute futures at market
+        4. This captures bid-ask savings on the more liquid spot leg
+
+        Returns: (spot_result, futures_result) or (None, None) on failure
+        """
+        import MetaTrader5 as mt5
+        import time
+
+        timeout_seconds = config.exit_limit_timeout
+
+        # Determine order directions
+        if self._position_direction == 'SHORT':
+            spot_order_type = mt5.ORDER_TYPE_SELL
+            futures_order_type = mt5.ORDER_TYPE_BUY
+            spot_limit_type = mt5.ORDER_TYPE_SELL_LIMIT  # Sell at or above limit price
+        else:
+            spot_order_type = mt5.ORDER_TYPE_BUY
+            futures_order_type = mt5.ORDER_TYPE_SELL
+            spot_limit_type = mt5.ORDER_TYPE_BUY_LIMIT  # Buy at or below limit price
+
+        # Get symbol info for filling modes
+        spot_symbol_info = mt5.symbol_info(spot_broker.symbol)
+        futures_symbol_info = mt5.symbol_info(futures_broker.symbol)
+
+        if not spot_symbol_info or not futures_symbol_info:
+            self._logger.error("[AUTO] Could not get symbol info for limit exit")
+            return None, None
+
+        spot_filling_mode = self._get_filling_mode(spot_symbol_info)
+        futures_filling_mode = self._get_filling_mode(futures_symbol_info)
+
+        # Round limit price to symbol's tick size
+        spot_tick_size = spot_symbol_info.trade_tick_size if spot_symbol_info.trade_tick_size > 0 else 0.01
+        spot_limit_price = round(spot_limit_price / spot_tick_size) * spot_tick_size
+
+        # For SHORT (selling spot): Use SELL_LIMIT - fills at limit price or better (higher)
+        # For LONG (buying spot): Use BUY_LIMIT - fills at limit price or better (lower)
+        self._logger.info(f"[AUTO] Placing LIMIT exit for spot: {spot_limit_type}, price={spot_limit_price:.2f}")
+
+        # Place limit order for spot
+        spot_request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": spot_broker.symbol,
+            "volume": lot_size,
+            "type": spot_limit_type,
+            "price": spot_limit_price,
+            "magic": 123456,
+            "comment": "AT Limit Exit Spot",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": spot_filling_mode,
+        }
+
+        # Include position ticket if available
+        if self._spot_ticket:
+            spot_request["position"] = int(self._spot_ticket)
+
+        pending_result = mt5.order_send(spot_request)
+
+        if pending_result is None or pending_result.retcode != mt5.TRADE_RETCODE_DONE:
+            error_msg = pending_result.comment if pending_result else "order_send returned None"
+            self._logger.warning(f"[AUTO] Limit order failed ({error_msg}), falling back to market")
+            return self._execute_market_exit(config, spot_broker, futures_broker,
+                                            spot_filling_mode, futures_filling_mode,
+                                            spot_order_type, futures_order_type, lot_size)
+
+        pending_order_ticket = pending_result.order
+        self._logger.info(f"[AUTO] Limit order placed: ticket={pending_order_ticket}, waiting for fill...")
+
+        # Wait for fill with timeout
+        start_time = time.time()
+        spot_filled = False
+        spot_result = None
+
+        while time.time() - start_time < timeout_seconds:
+            # Check if order was filled (converted to position)
+            orders = mt5.orders_get(ticket=pending_order_ticket)
+            if orders is None or len(orders) == 0:
+                # Order no longer pending - either filled or cancelled
+                # Check deal history for fill
+                deals = mt5.history_deals_get(position=self._spot_ticket)
+                if deals and len(deals) > 0:
+                    # Find the most recent deal
+                    last_deal = deals[-1]
+                    self._logger.info(f"[AUTO] Limit order filled: price={last_deal.price}")
+                    spot_filled = True
+                    # Create a result-like object
+                    class LimitFillResult:
+                        def __init__(self, deal):
+                            self.retcode = mt5.TRADE_RETCODE_DONE
+                            self.price = deal.price
+                            self.volume = deal.volume
+                            self.order = deal.order
+                    spot_result = LimitFillResult(last_deal)
+                    break
+                else:
+                    # Order might be cancelled, break out
+                    self._logger.warning("[AUTO] Limit order disappeared without fill")
+                    break
+
+            time.sleep(0.5)  # Check every 500ms
+
+        if not spot_filled:
+            # Timeout - cancel pending order and execute at market
+            self._logger.info(f"[AUTO] Limit order timeout after {timeout_seconds}s, falling back to market")
+
+            # Cancel the pending order
+            cancel_request = {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": pending_order_ticket,
+            }
+            mt5.order_send(cancel_request)
+
+            return self._execute_market_exit(config, spot_broker, futures_broker,
+                                            spot_filling_mode, futures_filling_mode,
+                                            spot_order_type, futures_order_type, lot_size)
+
+        # Spot filled via limit - now execute futures at market
+        self._logger.info(f"[AUTO] Spot limit filled, executing futures at market")
+
+        futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
+        if not futures_tick:
+            self._logger.error("[AUTO] Could not get futures tick after spot fill")
+            return spot_result, None
+
+        futures_price = futures_tick.ask if futures_order_type == mt5.ORDER_TYPE_BUY else futures_tick.bid
+
+        futures_request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": futures_broker.symbol,
+            "volume": lot_size,
+            "type": futures_order_type,
+            "price": futures_price,
+            "deviation": 20,
+            "magic": 123456,
+            "comment": "AT Exit Futures",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": futures_filling_mode,
+        }
+        if self._futures_ticket:
+            futures_request["position"] = int(self._futures_ticket)
+
+        futures_result = mt5.order_send(futures_request)
+
+        return spot_result, futures_result
+
+    def _execute_market_exit(self, config, spot_broker, futures_broker,
+                            spot_filling_mode, futures_filling_mode,
+                            spot_order_type, futures_order_type, lot_size: float):
+        """Execute exit using market orders (original behavior)."""
+        import MetaTrader5 as mt5
+
+        # Close spot position
+        spot_tick = mt5.symbol_info_tick(spot_broker.symbol)
+        if not spot_tick:
+            self._logger.error("[AUTO] Could not get spot tick for market exit")
+            return None, None
+
+        spot_price = spot_tick.ask if spot_order_type == mt5.ORDER_TYPE_BUY else spot_tick.bid
+
+        spot_request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": spot_broker.symbol,
+            "volume": lot_size,
+            "type": spot_order_type,
+            "price": spot_price,
+            "deviation": 20,
+            "magic": 123456,
+            "comment": "AT Exit Spot",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": spot_filling_mode,
+        }
+        if self._spot_ticket:
+            spot_request["position"] = int(self._spot_ticket)
+
+        spot_result = mt5.order_send(spot_request)
+
+        if spot_result is None or spot_result.retcode != mt5.TRADE_RETCODE_DONE:
+            return spot_result, None
+
+        # Close futures position
+        futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
+        if not futures_tick:
+            return spot_result, None
+
+        futures_price = futures_tick.ask if futures_order_type == mt5.ORDER_TYPE_BUY else futures_tick.bid
+
+        futures_request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": futures_broker.symbol,
+            "volume": lot_size,
+            "type": futures_order_type,
+            "price": futures_price,
+            "deviation": 20,
+            "magic": 123456,
+            "comment": "AT Exit Futures",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": futures_filling_mode,
+        }
+        if self._futures_ticket:
+            futures_request["position"] = int(self._futures_ticket)
+
+        futures_result = mt5.order_send(futures_request)
+
+        return spot_result, futures_result
+
+    def _get_filling_mode(self, symbol_info):
+        """Get the appropriate filling mode for a symbol."""
+        import MetaTrader5 as mt5
+
+        filling_mode = mt5.ORDER_FILLING_RETURN
+        if symbol_info:
+            try:
+                fm = symbol_info.filling_mode
+                if fm == 1:
+                    filling_mode = mt5.ORDER_FILLING_FOK
+                elif fm == 2:
+                    filling_mode = mt5.ORDER_FILLING_IOC
+                elif fm == 3:
+                    filling_mode = mt5.ORDER_FILLING_FOK
+            except:
+                pass
+        return filling_mode
+
     def _handle_exit_signal(self, signal, config, database,
                            spot_broker, futures_broker,
                            spot_price: float, futures_price: float):
@@ -1211,7 +1500,9 @@ class AutoTrader:
             return
 
         signal_type = signal.signal_type
-        self._logger.info(f"[AUTO] Executing exit trade ({signal_type})")
+        use_limit_orders = config.exit_order_type == 'LIMIT' and signal_type != 'STOP_LOSS'
+
+        self._logger.info(f"[AUTO] Executing exit trade ({signal_type}), order_type={'LIMIT' if use_limit_orders else 'MARKET'}")
 
         try:
             import MetaTrader5 as mt5
@@ -1232,103 +1523,66 @@ class AutoTrader:
                 spot_order_type = mt5.ORDER_TYPE_BUY
                 futures_order_type = mt5.ORDER_TYPE_SELL
 
-            # Get correct filling modes - RETURN is most universally supported
+            # Get symbol info for filling modes
             spot_symbol_info = mt5.symbol_info(spot_broker.symbol)
             futures_symbol_info = mt5.symbol_info(futures_broker.symbol)
+            spot_filling_mode = self._get_filling_mode(spot_symbol_info)
+            futures_filling_mode = self._get_filling_mode(futures_symbol_info)
 
-            spot_filling_mode = mt5.ORDER_FILLING_RETURN
-            if spot_symbol_info:
-                try:
-                    fm = spot_symbol_info.filling_mode
-                    if fm == 1:
-                        spot_filling_mode = mt5.ORDER_FILLING_FOK
-                    elif fm == 2:
-                        spot_filling_mode = mt5.ORDER_FILLING_IOC
-                    elif fm == 3:
-                        spot_filling_mode = mt5.ORDER_FILLING_FOK
-                except:
-                    pass
+            # Execute exit using limit orders or market orders based on config
+            if use_limit_orders:
+                # Calculate target limit prices based on locked stats
+                spot_limit_price, _, target_spread = self._calculate_exit_limit_prices(
+                    config, spot_price, futures_price
+                )
 
-            futures_filling_mode = mt5.ORDER_FILLING_RETURN
-            if futures_symbol_info:
-                try:
-                    fm = futures_symbol_info.filling_mode
-                    if fm == 1:
-                        futures_filling_mode = mt5.ORDER_FILLING_FOK
-                    elif fm == 2:
-                        futures_filling_mode = mt5.ORDER_FILLING_IOC
-                    elif fm == 3:
-                        futures_filling_mode = mt5.ORDER_FILLING_FOK
-                except:
-                    pass
+                if spot_limit_price is not None:
+                    self._logger.info(f"[AUTO] Using LIMIT exit: target_spread={target_spread:.4f}, spot_limit={spot_limit_price:.2f}")
+                    spot_result, futures_result = self._execute_limit_exit(
+                        config, database, spot_broker, futures_broker,
+                        spot_limit_price, signal, lot_size
+                    )
+                else:
+                    # Couldn't calculate limit prices, fall back to market
+                    self._logger.warning("[AUTO] Could not calculate limit prices, using market orders")
+                    spot_result, futures_result = self._execute_market_exit(
+                        config, spot_broker, futures_broker,
+                        spot_filling_mode, futures_filling_mode,
+                        spot_order_type, futures_order_type, lot_size
+                    )
+            else:
+                # Use market orders (original behavior)
+                self._logger.info(f"[AUTO] Using MARKET exit")
+                spot_result, futures_result = self._execute_market_exit(
+                    config, spot_broker, futures_broker,
+                    spot_filling_mode, futures_filling_mode,
+                    spot_order_type, futures_order_type, lot_size
+                )
 
-            # Close spot position - MUST include position ticket to close existing position
-            self._logger.info(f"[AUTO] Closing spot position: ticket={self._spot_ticket}")
-            spot_request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": spot_broker.symbol,
-                "volume": lot_size,
-                "type": spot_order_type,
-                "price": mt5.symbol_info_tick(spot_broker.symbol).ask if spot_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(spot_broker.symbol).bid,
-                "deviation": 20,
-                "magic": 123456,
-                "comment": f"AT Exit Spot",  # Max 31 chars for MT5
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": spot_filling_mode,
-            }
-            # Include position ticket if available (required to close existing position)
-            if self._spot_ticket:
-                spot_request["position"] = int(self._spot_ticket)
-
-            spot_result = mt5.order_send(spot_request)
-
-            # Handle None result
+            # Handle execution results
             if spot_result is None:
-                self._logger.error(f"[AUTO] Spot close failed: order_send returned None (connection lost or symbol issue)")
+                self._logger.error(f"[AUTO] Spot close failed: order_send returned None")
                 mt5.shutdown()
                 return
 
             if spot_result.retcode != mt5.TRADE_RETCODE_DONE:
-                self._logger.error(f"[AUTO] Spot close failed: {spot_result.retcode} - {spot_result.comment}")
+                self._logger.error(f"[AUTO] Spot close failed: {spot_result.retcode}")
                 mt5.shutdown()
                 return
 
-            self._logger.info(f"[AUTO] Spot position closed successfully")
+            self._logger.info(f"[AUTO] Spot position closed: price={spot_result.price}")
 
-            # Close futures position - MUST include position ticket to close existing position
-            self._logger.info(f"[AUTO] Closing futures position: ticket={self._futures_ticket}")
-            futures_request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": futures_broker.symbol,
-                "volume": lot_size,
-                "type": futures_order_type,
-                "price": mt5.symbol_info_tick(futures_broker.symbol).ask if futures_order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(futures_broker.symbol).bid,
-                "deviation": 20,
-                "magic": 123456,
-                "comment": f"AT Exit Futures",  # Max 31 chars for MT5
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": futures_filling_mode,
-            }
-            # Include position ticket if available (required to close existing position)
-            if self._futures_ticket:
-                futures_request["position"] = int(self._futures_ticket)
-
-            futures_result = mt5.order_send(futures_request)
-
-            # Handle None result
             if futures_result is None:
-                self._logger.error(f"[AUTO] Futures close failed: order_send returned None (connection lost or symbol issue)")
-                # Don't reverse - we're partially closed, log for manual intervention
+                self._logger.error(f"[AUTO] Futures close failed: order_send returned None")
                 mt5.shutdown()
                 return
 
             if futures_result.retcode != mt5.TRADE_RETCODE_DONE:
-                self._logger.error(f"[AUTO] Futures close failed: {futures_result.retcode} - {futures_result.comment}")
-                # Don't reverse - we're partially closed, log for manual intervention
+                self._logger.error(f"[AUTO] Futures close failed: {futures_result.retcode}")
                 mt5.shutdown()
                 return
 
-            self._logger.info(f"[AUTO] Futures position closed successfully")
+            self._logger.info(f"[AUTO] Futures position closed: price={futures_result.price}")
 
             mt5.shutdown()
 
@@ -1406,6 +1660,8 @@ class AutoTrader:
             self._entry_time = None
             self._spot_ticket = None
             self._futures_ticket = None
+            self._entry_locked_mean = None
+            self._entry_locked_std = None
 
             # Sync engine position state
             global engine
@@ -1446,6 +1702,8 @@ class AutoTrader:
         self._entry_time = None
         self._spot_ticket = None
         self._futures_ticket = None
+        self._entry_locked_mean = None
+        self._entry_locked_std = None
 
         # Sync engine position state
         global engine
@@ -4182,23 +4440,27 @@ def start_price_streaming():
 
                         # Create a simple signal object for AutoTrader
                         class Signal:
-                            def __init__(self, signal_type, zscore, spread):
+                            def __init__(self, signal_type, zscore, spread, locked_mean=None, locked_std=None):
                                 self.signal_type = signal_type
                                 self.zscore = zscore
                                 self.spread = spread
+                                self.locked_mean = locked_mean  # Mean at signal time (for limit order exits)
+                                self.locked_std = locked_std    # Std at signal time (for limit order exits)
 
                         # Check for entry signals (no position open)
                         if not auto_trader.has_position:
                             if zscore >= entry_threshold:
                                 # Z-score high - short the spread
-                                signal = Signal('ENTRY_SHORT', zscore, spread)
+                                # Pass locked stats for limit order exit calculation
+                                signal = Signal('ENTRY_SHORT', zscore, spread, locked_mean, locked_std)
                                 logger.info(f"[SIGNAL] ENTRY_SHORT triggered: z={zscore:.2f} >= {entry_threshold}")
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'ENTRY_SHORT', 'zscore': zscore})
 
                             elif zscore <= -entry_threshold:
                                 # Z-score low - long the spread
-                                signal = Signal('ENTRY_LONG', zscore, spread)
+                                # Pass locked stats for limit order exit calculation
+                                signal = Signal('ENTRY_LONG', zscore, spread, locked_mean, locked_std)
                                 logger.info(f"[SIGNAL] ENTRY_LONG triggered: z={zscore:.2f} <= -{entry_threshold}")
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'ENTRY_LONG', 'zscore': zscore})
