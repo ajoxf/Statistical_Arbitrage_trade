@@ -3904,6 +3904,11 @@ def start_price_streaming():
         mt5_initialized = False  # Track MT5 connection state
         cached_leverage = 100  # Cache leverage to avoid repeated MT5 calls
 
+        # Bootstrap statistics from DB (used until live data accumulates)
+        bootstrap_mean = None
+        bootstrap_std = None
+        MIN_BOOTSTRAP_SAMPLES = 30  # Minimum DB samples needed for reliable bootstrap
+
         # Load config for tick_interval and spread history from database on startup
         try:
             database = get_db()
@@ -3923,9 +3928,19 @@ def start_price_streaming():
             history = database.get_price_history('ACTIVE', limit=lookback_period, max_age_hours=max_age_hours)
             if history:
                 # history is ordered DESC, reverse to get chronological order
-                for row in reversed(history):
-                    spread_history.append(row[0])  # spread column
-                logger.info(f"[PRICES] Loaded {len(history)} historical spreads from database (no 90min wait needed)")
+                spreads_from_db = [row[0] for row in reversed(history)]
+                for spread_val in spreads_from_db:
+                    spread_history.append(spread_val)
+
+                # Calculate bootstrap statistics if we have enough samples
+                if len(spreads_from_db) >= MIN_BOOTSTRAP_SAMPLES:
+                    bootstrap_mean = float(np.mean(spreads_from_db))
+                    bootstrap_std = float(np.std(spreads_from_db))
+                    logger.info(f"[PRICES] Bootstrap stats from {len(spreads_from_db)} DB samples: mean={bootstrap_mean:.4f}, std={bootstrap_std:.4f}")
+                    logger.info(f"[PRICES] Z-score calculation READY (using bootstrap stats)")
+                else:
+                    logger.info(f"[PRICES] Loaded {len(history)} historical spreads (need {MIN_BOOTSTRAP_SAMPLES} for bootstrap)")
+
                 history_loaded = True
         except Exception as e:
             logger.error(f"[PRICES] Failed to load spread history: {e}")
@@ -4044,7 +4059,8 @@ def start_price_streaming():
                     # Calculate mean, std, and z-score from spread history
                     mean_val = 0.0
                     std_val = 0.0
-                    zscore = None  # None until lookback is complete
+                    zscore = None
+                    using_bootstrap = False  # Track if using bootstrap vs live data
                     lookback_complete = len(spread_history) >= lookback_ticks
 
                     if lookback_complete:
@@ -4055,6 +4071,12 @@ def start_price_streaming():
 
                         if std_val > 0:
                             zscore = (spread - mean_val) / std_val
+                    elif bootstrap_mean is not None and bootstrap_std is not None and bootstrap_std > 0:
+                        # Use bootstrap statistics from DB until live data accumulates
+                        mean_val = bootstrap_mean
+                        std_val = bootstrap_std
+                        zscore = (spread - mean_val) / std_val
+                        using_bootstrap = True
 
                     # === Basis Premium Calculation ===
                     # Read swap from spot broker (CFDs charge swap on spot position)
@@ -4175,6 +4197,9 @@ def start_price_streaming():
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': exit_reason, 'zscore': zscore})
 
+                    # Z-score is ready if we have live data OR bootstrap stats
+                    zscore_ready = lookback_complete or using_bootstrap
+
                     socketio.emit('tick', {
                         'spot_bid': spot_bid,
                         'spot_ask': spot_ask,
@@ -4182,11 +4207,12 @@ def start_price_streaming():
                         'futures_ask': futures_ask,
                         'spread': spread,
                         'zscore': zscore,
-                        'mean': mean_val if lookback_complete else None,
-                        'std': std_val if lookback_complete else None,
+                        'mean': mean_val if zscore_ready else None,
+                        'std': std_val if zscore_ready else None,
                         'history_count': len(spread_history),
                         'lookback_required': lookback_ticks,
                         'lookback_complete': lookback_complete,
+                        'using_bootstrap': using_bootstrap,  # True if using DB stats instead of live
                         # Basis Premium Data
                         'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else None,
                         'swap_charge': swap_charge,
