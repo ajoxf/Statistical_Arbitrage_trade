@@ -839,11 +839,18 @@
                     progressContainer.style.display = 'none';
                 }, 5000);
             } else {
-                // Still collecting
+                // Still collecting - but z-score may be available from bootstrap stats
                 progressBar.classList.add('progress-bar-animated', 'progress-bar-striped');
                 progressBar.classList.remove('bg-success');
-                progressStatus.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Collecting data... Z-score unavailable until complete (' + Math.round(percentage) + '%)';
-                progressStatus.className = 'text-warning small';
+                if (data.zscore !== null) {
+                    // Z-score active from bootstrap/early stats
+                    progressStatus.innerHTML = '<i class="bi bi-activity me-1"></i>Z-score active (collecting: ' + Math.round(percentage) + '%)';
+                    progressStatus.className = 'text-info small';
+                } else {
+                    // Still waiting for minimum samples
+                    progressStatus.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Collecting data... Z-score unavailable (' + Math.round(percentage) + '%)';
+                    progressStatus.className = 'text-warning small';
+                }
                 progressContainer.style.display = 'block';
             }
         }

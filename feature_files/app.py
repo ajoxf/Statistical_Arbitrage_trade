@@ -3920,11 +3920,12 @@ def start_price_streaming():
             # Tick interval from settings (seconds between price updates)
             tick_interval = config.tick_interval if config and hasattr(config, 'tick_interval') else 0.3
 
-            # Calculate max age based on lookback
+            # Calculate max age based on lookback - use generous window for bootstrap
+            # Allow at least 24 hours so overnight shutdowns don't lose bootstrap data
             if lookback_unit == 'days':
                 max_age_hours = int(lookback_period * 24 * 1.1)  # +10% buffer
             else:
-                max_age_hours = max(2, int(lookback_period / 60 * 1.1) + 1)
+                max_age_hours = max(24, int(lookback_period / 60 * 2) + 1)  # Min 24 hours
 
             # Load historical spreads from database
             history = database.get_price_history('ACTIVE', limit=lookback_period, max_age_hours=max_age_hours)
