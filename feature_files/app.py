@@ -3904,9 +3904,11 @@ def start_price_streaming():
         mt5_initialized = False  # Track MT5 connection state
         cached_leverage = 100  # Cache leverage to avoid repeated MT5 calls
 
-        # Bootstrap statistics from DB (used until live data accumulates)
-        bootstrap_mean = None
-        bootstrap_std = None
+        # Locked statistics - once calculated, only update periodically
+        locked_mean = None
+        locked_std = None
+        last_stats_update = 0
+        STATS_RECALC_INTERVAL = 300  # Recalculate mean/std every 5 minutes (300 seconds)
         MIN_BOOTSTRAP_SAMPLES = 30  # Minimum DB samples needed for reliable bootstrap
 
         # Load config for tick_interval and spread history from database on startup
@@ -3932,14 +3934,15 @@ def start_price_streaming():
                 for spread_val in spreads_from_db:
                     spread_history.append(spread_val)
 
-                # Calculate bootstrap statistics if we have enough samples
+                # Calculate and LOCK initial statistics if we have enough samples
                 if len(spreads_from_db) >= MIN_BOOTSTRAP_SAMPLES:
-                    bootstrap_mean = float(np.mean(spreads_from_db))
-                    bootstrap_std = float(np.std(spreads_from_db))
-                    logger.info(f"[PRICES] Bootstrap stats from {len(spreads_from_db)} DB samples: mean={bootstrap_mean:.4f}, std={bootstrap_std:.4f}")
-                    logger.info(f"[PRICES] Z-score calculation READY (using bootstrap stats)")
+                    locked_mean = float(np.mean(spreads_from_db))
+                    locked_std = float(np.std(spreads_from_db))
+                    last_stats_update = time.time()
+                    logger.info(f"[PRICES] LOCKED stats from {len(spreads_from_db)} DB samples: mean={locked_mean:.4f}, std={locked_std:.4f}")
+                    logger.info(f"[PRICES] Stats will recalculate every {STATS_RECALC_INTERVAL}s (5 min)")
                 else:
-                    logger.info(f"[PRICES] Loaded {len(history)} historical spreads (need {MIN_BOOTSTRAP_SAMPLES} for bootstrap)")
+                    logger.info(f"[PRICES] Loaded {len(history)} historical spreads (need {MIN_BOOTSTRAP_SAMPLES} for stats)")
 
                 history_loaded = True
         except Exception as e:
@@ -4056,27 +4059,49 @@ def start_price_streaming():
                     else:  # minutes
                         lookback_ticks = int(lookback_period * ticks_per_minute)
 
-                    # Calculate mean, std, and z-score from spread history
+                    # Calculate mean, std, and z-score using LOCKED statistics
+                    # Stats are only recalculated every STATS_RECALC_INTERVAL seconds
                     mean_val = 0.0
                     std_val = 0.0
                     zscore = None
-                    using_bootstrap = False  # Track if using bootstrap vs live data
+                    stats_source = 'none'  # Track where stats came from
                     lookback_complete = len(spread_history) >= lookback_ticks
+                    current_time = time.time()
 
-                    if lookback_complete:
-                        # Use most recent lookback_ticks points (proper time-based lookback)
-                        history_list = list(spread_history)[-lookback_ticks:]
-                        mean_val = float(np.mean(history_list))
-                        std_val = float(np.std(history_list))
+                    # Check if we need to recalculate stats (either first time or interval passed)
+                    should_recalc = (locked_mean is None) or (current_time - last_stats_update >= STATS_RECALC_INTERVAL)
 
-                        if std_val > 0:
-                            zscore = (spread - mean_val) / std_val
-                    elif bootstrap_mean is not None and bootstrap_std is not None and bootstrap_std > 0:
-                        # Use bootstrap statistics from DB until live data accumulates
-                        mean_val = bootstrap_mean
-                        std_val = bootstrap_std
+                    if should_recalc and len(spread_history) >= MIN_BOOTSTRAP_SAMPLES:
+                        # Recalculate and lock new statistics
+                        if lookback_complete:
+                            # Use full lookback window
+                            history_list = list(spread_history)[-lookback_ticks:]
+                        else:
+                            # Use all available data
+                            history_list = list(spread_history)
+
+                        new_mean = float(np.mean(history_list))
+                        new_std = float(np.std(history_list))
+
+                        if new_std > 0:
+                            # Log if this is a significant change
+                            if locked_mean is not None:
+                                mean_change = abs(new_mean - locked_mean)
+                                std_change = abs(new_std - locked_std) if locked_std else 0
+                                logger.info(f"[PRICES] Stats RECALCULATED: mean={new_mean:.4f} (was {locked_mean:.4f}), std={new_std:.4f} (was {locked_std:.4f})")
+                            else:
+                                logger.info(f"[PRICES] Stats LOCKED: mean={new_mean:.4f}, std={new_std:.4f} (from {len(history_list)} samples)")
+
+                            locked_mean = new_mean
+                            locked_std = new_std
+                            last_stats_update = current_time
+
+                    # Use locked statistics for z-score calculation
+                    if locked_mean is not None and locked_std is not None and locked_std > 0:
+                        mean_val = locked_mean
+                        std_val = locked_std
                         zscore = (spread - mean_val) / std_val
-                        using_bootstrap = True
+                        stats_source = 'live' if lookback_complete else 'bootstrap'
 
                     # === Basis Premium Calculation ===
                     # Read swap from spot broker (CFDs charge swap on spot position)
@@ -4197,8 +4222,8 @@ def start_price_streaming():
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': exit_reason, 'zscore': zscore})
 
-                    # Z-score is ready if we have live data OR bootstrap stats
-                    zscore_ready = lookback_complete or using_bootstrap
+                    # Z-score is ready if we have locked stats
+                    zscore_ready = stats_source != 'none'
 
                     socketio.emit('tick', {
                         'spot_bid': spot_bid,
@@ -4212,7 +4237,8 @@ def start_price_streaming():
                         'history_count': len(spread_history),
                         'lookback_required': lookback_ticks,
                         'lookback_complete': lookback_complete,
-                        'using_bootstrap': using_bootstrap,  # True if using DB stats instead of live
+                        'stats_source': stats_source,  # 'none', 'bootstrap', or 'live'
+                        'stats_locked': locked_mean is not None,  # True if stats are locked
                         # Basis Premium Data
                         'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else None,
                         'swap_charge': swap_charge,
