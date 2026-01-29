@@ -3762,6 +3762,51 @@ def api_trade_journal_close(trade_id):
         return jsonify({'success': False, 'error': str(e)})
 
 
+@app.route('/api/trade-journal/reset', methods=['POST'])
+def api_trade_journal_reset():
+    """
+    Reset/clear the entire trade journal.
+
+    This deletes all trades from the database and resets the algo's position state.
+    Use with caution - this action cannot be undone.
+    """
+    global auto_trader
+
+    try:
+        database = get_db()
+
+        # Count trades before deletion
+        trades = database.get_trades(limit=10000)
+        trade_count = len(trades)
+
+        # Delete all trades from database
+        conn = database.conn
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM trades')
+        conn.commit()
+
+        logger.info(f"[TRADE] Trade journal reset - deleted {trade_count} trades")
+
+        # Reset AutoTrader position state
+        if auto_trader:
+            auto_trader.reset_position()
+
+        # Emit update to frontend
+        socketio.emit('trade_journal_reset', {
+            'deleted_count': trade_count
+        })
+
+        return jsonify({
+            'success': True,
+            'message': f'Trade journal reset successfully. Deleted {trade_count} trades.',
+            'deleted_count': trade_count
+        })
+
+    except Exception as e:
+        logger.error(f"Error resetting trade journal: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/api/trade-journal/csv')
 def api_trade_journal_csv():
     """Download trade journal as CSV"""
