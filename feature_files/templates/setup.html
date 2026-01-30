@@ -959,5 +959,43 @@
         console.log('Stats reset requested');
     };
     console.log('💡 TIP: Call resetStats() in console to reset Z-score statistics');
+
+    // === ADD PERSISTENT DEBUG BUTTON ===
+    (function() {
+        // Create floating debug button
+        const floatBtn = document.createElement('div');
+        floatBtn.id = 'debugFloatBtn';
+        floatBtn.innerHTML = '🔍';
+        floatBtn.title = 'Open Debug Panel';
+        floatBtn.style.cssText = 'position:fixed;bottom:20px;right:20px;width:50px;height:50px;background:#e94560;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:9998;font-size:24px;box-shadow:0 4px 15px rgba(0,0,0,0.3);transition:transform 0.2s;';
+        floatBtn.onmouseover = function() { this.style.transform = 'scale(1.1)'; };
+        floatBtn.onmouseout = function() { this.style.transform = 'scale(1)'; };
+        floatBtn.onclick = function() {
+            let panel = document.getElementById('tradeDebugPanel');
+            if (!panel) {
+                // Create the debug panel
+                panel = document.createElement('div');
+                panel.id = 'tradeDebugPanel';
+                panel.style.cssText = 'position:fixed;top:10px;right:10px;width:450px;max-height:80vh;overflow-y:auto;background:#1a1a2e;border:2px solid #e94560;border-radius:8px;padding:15px;z-index:9999;font-family:monospace;font-size:12px;color:#eee;box-shadow:0 4px 20px rgba(0,0,0,0.5);';
+                panel.innerHTML = `
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                        <strong style="color:#e94560;font-size:14px;">🔍 TRADE DEBUG</strong>
+                        <button onclick="this.parentElement.parentElement.remove()" style="background:#e94560;border:none;color:white;padding:2px 8px;border-radius:4px;cursor:pointer;">×</button>
+                    </div>
+                    <div id="debugContent">
+                        <div style="color:#888;text-align:center;padding:20px;">
+                            No trades yet. Debug info will appear here when trades execute.
+                        </div>
+                    </div>
+                    <button id="resetStatsBtn" onclick="if(confirm('Reset statistics? This will clear all historical spread data and rebuild Z-score from fresh prices.')){socket.emit('reset_stats');alert('Stats reset requested...');}" style="background:#f39c12;border:none;color:white;padding:8px 15px;border-radius:4px;cursor:pointer;margin-top:10px;width:100%;font-weight:bold;">🔄 Reset Statistics (Fix Stale Z-Score)</button>
+                `;
+                document.body.appendChild(panel);
+            } else {
+                // Toggle visibility
+                panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+            }
+        };
+        document.body.appendChild(floatBtn);
+    })();
 </script>
 {% endblock %}
