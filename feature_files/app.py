@@ -4389,7 +4389,7 @@ def start_price_streaming():
                         short_penalty = spread - short_exec_spread
                         short_penalty_std = short_penalty / std_val
 
-                        max_penalty = config.max_spread_penalty_std if config else 0.5
+                        max_penalty = getattr(config, 'max_spread_penalty_std', 0.5) if config else 0.5
                         spread_penalty_data = {
                             'long_penalty': round(long_penalty, 4),
                             'long_penalty_std': round(long_penalty_std, 2),
