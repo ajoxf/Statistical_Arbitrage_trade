@@ -4276,10 +4276,15 @@ def start_price_streaming():
 
                         # Check for entry signals (no position open)
                         if not auto_trader.has_position:
-                            if zscore >= entry_threshold:
+                            # Block entry if Z is already beyond stop-loss level (prevents cascade)
+                            if stop_loss_threshold > 0 and abs(zscore) >= stop_loss_threshold:
+                                logger.info(f"[SIGNAL] Entry BLOCKED: |Z|={abs(zscore):.2f} >= stop_loss {stop_loss_threshold} (prevents cascade)")
+                            elif zscore >= entry_threshold:
                                 # Z-score high - short the spread
                                 signal = Signal('ENTRY_SHORT', zscore, spread)
                                 logger.info(f"[SIGNAL] ENTRY_SHORT triggered: z={zscore:.2f} >= {entry_threshold}")
+                                logger.info(f"[DEBUG ENTRY] spread={spread:.4f}, mean={mean_val:.4f}, std={std_val:.4f}, zscore={zscore:.4f}")
+                                logger.info(f"[DEBUG ENTRY] spot_mid={spot_mid:.4f}, futures_mid={futures_mid:.4f}")
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'ENTRY_SHORT', 'zscore': zscore})
 
