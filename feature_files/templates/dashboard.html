@@ -409,6 +409,35 @@
             </div>
         </div>
 
+        <!-- Spread Penalty (Slippage) -->
+        <div class="card mb-4" id="spread-penalty-container">
+            <div class="card-header">
+                <i class="bi bi-exclamation-triangle me-2"></i>Execution Slippage
+            </div>
+            <div class="card-body">
+                <div class="row text-center mb-2">
+                    <div class="col-6">
+                        <small class="text-success d-block">LONG Entry</small>
+                    </div>
+                    <div class="col-6">
+                        <small class="text-danger d-block">SHORT Entry</small>
+                    </div>
+                </div>
+                <div class="row text-center">
+                    <div class="col-6">
+                        <span id="spread-penalty-long" class="fw-bold">--</span>
+                        <span id="spread-penalty-long-status" class="ms-1">-</span>
+                    </div>
+                    <div class="col-6">
+                        <span id="spread-penalty-short" class="fw-bold">--</span>
+                        <span id="spread-penalty-short-status" class="ms-1">-</span>
+                    </div>
+                </div>
+                <div id="spread-penalty-warning" class="alert alert-warning py-1 px-2 mt-2 mb-0 small" style="display:none;">
+                </div>
+            </div>
+        </div>
+
         <!-- Entry/Exit Bands -->
         <div class="card">
             <div class="card-header">
@@ -893,6 +922,9 @@
         // Update STD Filter display
         updateSTDFilter(data);
 
+        // Update Spread Penalty display
+        updateSpreadPenalty(data);
+
         // Update Entry/Exit Bands display
         updateBands(data);
 
@@ -941,6 +973,50 @@
         roundTripEl.textContent = '$' + sf.round_trip_cost.toFixed(2);
         expectedProfitEl.textContent = '$' + sf.profit_if_successful.toFixed(2);
         expectedProfitEl.className = sf.profit_if_successful >= 0 ? 'text-success' : 'text-danger';
+    }
+
+    // Spread Penalty display
+    function updateSpreadPenalty(data) {
+        if (!data.spread_penalty) return;
+
+        const sp = data.spread_penalty;
+        const container = document.getElementById('spread-penalty-container');
+        if (!container) return;
+
+        // Update long penalty
+        const longPenaltyEl = document.getElementById('spread-penalty-long');
+        const longStatusEl = document.getElementById('spread-penalty-long-status');
+        if (longPenaltyEl) {
+            longPenaltyEl.textContent = sp.long_penalty_std.toFixed(2) + 'σ';
+            longPenaltyEl.className = sp.long_blocked ? 'text-danger fw-bold' : 'text-success';
+        }
+        if (longStatusEl) {
+            longStatusEl.textContent = sp.long_blocked ? '⛔' : '✓';
+            longStatusEl.className = sp.long_blocked ? 'text-danger' : 'text-success';
+        }
+
+        // Update short penalty
+        const shortPenaltyEl = document.getElementById('spread-penalty-short');
+        const shortStatusEl = document.getElementById('spread-penalty-short-status');
+        if (shortPenaltyEl) {
+            shortPenaltyEl.textContent = sp.short_penalty_std.toFixed(2) + 'σ';
+            shortPenaltyEl.className = sp.short_blocked ? 'text-danger fw-bold' : 'text-success';
+        }
+        if (shortStatusEl) {
+            shortStatusEl.textContent = sp.short_blocked ? '⛔' : '✓';
+            shortStatusEl.className = sp.short_blocked ? 'text-danger' : 'text-success';
+        }
+
+        // Show warning if either is blocked
+        const warningEl = document.getElementById('spread-penalty-warning');
+        if (warningEl) {
+            if (sp.long_blocked || sp.short_blocked) {
+                warningEl.style.display = 'block';
+                warningEl.textContent = 'Slippage too high - entries blocked';
+            } else {
+                warningEl.style.display = 'none';
+            }
+        }
     }
 
     // Entry/Exit Bands display

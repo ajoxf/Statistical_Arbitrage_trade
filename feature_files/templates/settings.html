@@ -165,6 +165,12 @@
                             <input type="number" class="form-control" name="profit_margin"
                                    value="{{ config.profit_margin }}" step="0.1" min="1" max="5">
                         </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Spread Penalty (σ)</label>
+                            <input type="number" class="form-control" name="max_spread_penalty_std"
+                                   value="{{ config.max_spread_penalty_std }}" step="0.1" min="0" max="2">
+                            <small class="text-muted">Block if execution slippage exceeds this</small>
+                        </div>
                         <div class="col-12">
                             <div id="std-profitability-status" class="alert alert-secondary mt-2 mb-0 py-2 small">
                                 <span id="std-status-text">Current STD: -- | Min Required: --</span>

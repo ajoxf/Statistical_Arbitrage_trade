@@ -638,7 +638,10 @@ class AutoTrader:
 
     def _check_filters(self, config, zscore: float, spread_history: list = None,
                        current_std: float = None, spot_spread_cents: float = None,
-                       futures_spread_cents: float = None) -> Tuple[bool, str]:
+                       futures_spread_cents: float = None,
+                       signal_spread: float = None, direction: str = None,
+                       spot_bid: float = None, spot_ask: float = None,
+                       futures_bid: float = None, futures_ask: float = None) -> Tuple[bool, str]:
         """
         Check if all trading filters pass.
 
@@ -649,10 +652,37 @@ class AutoTrader:
             current_std: Current standard deviation of spread (for STD filter)
             spot_spread_cents: Spot bid-ask spread in cents
             futures_spread_cents: Futures bid-ask spread in cents
+            signal_spread: Current signal spread (from mid prices)
+            direction: Trade direction ('LONG' or 'SHORT')
+            spot_bid, spot_ask, futures_bid, futures_ask: Current tick prices
 
         Returns:
             Tuple of (passes, reason)
         """
+        # Execution Spread Penalty Check - block if slippage is too large
+        if signal_spread is not None and direction and current_std and current_std > 0:
+            if spot_bid and spot_ask and futures_bid and futures_ask:
+                # Calculate what execution spread would be based on direction
+                if direction == 'LONG':
+                    # LONG: SELL spot (get bid), BUY futures (pay ask)
+                    exec_spread = futures_ask - spot_bid
+                else:  # SHORT
+                    # SHORT: BUY spot (pay ask), SELL futures (get bid)
+                    exec_spread = futures_bid - spot_ask
+
+                # Calculate penalty as fraction of STD
+                spread_penalty = abs(exec_spread - signal_spread)
+                penalty_in_std = spread_penalty / current_std
+
+                # Block if penalty exceeds threshold (default 0.5 STD)
+                max_penalty_std = getattr(config, 'max_spread_penalty_std', 0.5)
+                if penalty_in_std > max_penalty_std:
+                    self._logger.warning(f"[AUTO] Spread penalty BLOCKED: penalty={spread_penalty:.4f} ({penalty_in_std:.2f} STD > {max_penalty_std} max)")
+                    self._logger.warning(f"[AUTO] Signal spread={signal_spread:.4f}, Exec spread={exec_spread:.4f}")
+                    return False, f"Spread penalty: {penalty_in_std:.2f} STD > {max_penalty_std} max (signal={signal_spread:.2f}, exec={exec_spread:.2f})"
+                else:
+                    self._logger.info(f"[AUTO] Spread penalty OK: {penalty_in_std:.2f} STD <= {max_penalty_std} max")
+
         # STD Filter check - only at entry, ensures trade is profitable
         if config.std_filter_enabled:
             if current_std is None:
@@ -694,11 +724,16 @@ class AutoTrader:
             self._logger.info("[AUTO] Position already open, skipping entry signal - ABORTING")
             return
 
+        # Determine direction early for spread penalty check
+        direction = 'LONG' if signal.signal_type == 'ENTRY_LONG' else 'SHORT'
+
         # Get current market data for filter checks
         current_std = None
         spot_spread_cents = None
         futures_spread_cents = None
         spread_history = None
+        # Store bid/ask prices for spread penalty check
+        spot_bid, spot_ask, futures_bid, futures_ask = None, None, None, None
 
         try:
             import MetaTrader5 as mt5
@@ -711,8 +746,12 @@ class AutoTrader:
 
                 if spot_tick:
                     spot_spread_cents = (spot_tick.ask - spot_tick.bid) * 100
+                    spot_bid = spot_tick.bid
+                    spot_ask = spot_tick.ask
                 if futures_tick:
                     futures_spread_cents = (futures_tick.ask - futures_tick.bid) * 100
+                    futures_bid = futures_tick.bid
+                    futures_ask = futures_tick.ask
 
                 mt5.shutdown()
 
@@ -739,11 +778,14 @@ class AutoTrader:
                 config, current_std, spot_spread_cents, futures_spread_cents
             )
 
-        # Check filters with STD data
+        # Check filters with STD data and spread penalty check
         self._logger.info(f"[AUTO] Checking filters: std={current_std}, std_filter_enabled={config.std_filter_enabled}")
         passes, reason = self._check_filters(
             config, signal.zscore, spread_history,
-            current_std, spot_spread_cents, futures_spread_cents
+            current_std, spot_spread_cents, futures_spread_cents,
+            signal_spread=signal.spread, direction=direction,
+            spot_bid=spot_bid, spot_ask=spot_ask,
+            futures_bid=futures_bid, futures_ask=futures_ask
         )
         self._logger.info(f"[AUTO] Filter check result: passes={passes}, reason={reason}")
 
@@ -753,6 +795,8 @@ class AutoTrader:
                 action_taken = 'BLOCKED_STD'
             elif 'Hurst filter' in reason:
                 action_taken = 'BLOCKED_HURST'
+            elif 'Spread penalty' in reason:
+                action_taken = 'BLOCKED_SPREAD_PENALTY'
             elif 'Position already open' in reason:
                 action_taken = 'BLOCKED_POSITION'
             else:
@@ -4332,6 +4376,30 @@ def start_price_streaming():
                     # Z-score is ready if we have locked stats
                     zscore_ready = stats_source != 'none'
 
+                    # Calculate spread penalties for display (how much worse execution would be vs signal)
+                    spread_penalty_data = None
+                    if std_val > 0 and spot_bid > 0 and futures_bid > 0:
+                        # LONG execution spread (SELL spot @ bid, BUY futures @ ask)
+                        long_exec_spread = futures_ask - spot_bid
+                        long_penalty = long_exec_spread - spread
+                        long_penalty_std = long_penalty / std_val
+
+                        # SHORT execution spread (BUY spot @ ask, SELL futures @ bid)
+                        short_exec_spread = futures_bid - spot_ask
+                        short_penalty = spread - short_exec_spread
+                        short_penalty_std = short_penalty / std_val
+
+                        max_penalty = config.max_spread_penalty_std if config else 0.5
+                        spread_penalty_data = {
+                            'long_penalty': round(long_penalty, 4),
+                            'long_penalty_std': round(long_penalty_std, 2),
+                            'short_penalty': round(short_penalty, 4),
+                            'short_penalty_std': round(short_penalty_std, 2),
+                            'max_allowed_std': max_penalty,
+                            'long_blocked': long_penalty_std > max_penalty,
+                            'short_blocked': short_penalty_std > max_penalty
+                        }
+
                     socketio.emit('tick', {
                         'spot_bid': spot_bid,
                         'spot_ask': spot_ask,
@@ -4360,7 +4428,9 @@ def start_price_streaming():
                         # Entry/Exit Bands
                         'bands': entry_exit_bands,
                         # Hurst Exponent (regime detection)
-                        'hurst': hurst_data
+                        'hurst': hurst_data,
+                        # Spread Penalty Data (execution slippage)
+                        'spread_penalty': spread_penalty_data
                     })
 
                 time.sleep(tick_interval)  # Update interval from settings

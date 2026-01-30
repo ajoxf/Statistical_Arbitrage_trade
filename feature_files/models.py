@@ -73,6 +73,7 @@ class TradingConfig:
     spot_spread_cost: float = 0.40
     futures_spread_cost: float = 0.10
     profit_margin: float = 1.5
+    max_spread_penalty_std: float = 0.5  # Max execution spread penalty in STD units
 
     # Overnight Protection
     close_before_overnight: bool = False
@@ -121,6 +122,7 @@ class TradingConfig:
             'spot_spread_cost': self.spot_spread_cost,
             'futures_spread_cost': self.futures_spread_cost,
             'profit_margin': self.profit_margin,
+            'max_spread_penalty_std': self.max_spread_penalty_std,
             'close_before_overnight': self.close_before_overnight,
             'overnight_close_hour': self.overnight_close_hour,
             'overnight_close_minute': self.overnight_close_minute,
