@@ -42,9 +42,9 @@
                                    value="{{ config.exit_std_dev }}" step="0.1" min="0" max="2">
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Stop Loss SD (σ)</label>
+                            <label class="form-label">Stop Loss SD (σ) <small class="text-muted">(0=off)</small></label>
                             <input type="number" class="form-control" name="stop_loss_std_dev"
-                                   value="{{ config.stop_loss_std_dev }}" step="0.1" min="2" max="6">
+                                   value="{{ config.stop_loss_std_dev }}" step="0.5" min="0" max="20">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Exit at Opposite SD (0=disabled)</label>

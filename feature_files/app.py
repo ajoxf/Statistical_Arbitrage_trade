@@ -4297,8 +4297,8 @@ def start_price_streaming():
                             should_exit = False
                             exit_reason = None
 
-                            # Stop loss check
-                            if abs(zscore) >= stop_loss_threshold:
+                            # Stop loss check (only if enabled - threshold > 0)
+                            if stop_loss_threshold > 0 and abs(zscore) >= stop_loss_threshold:
                                 should_exit = True
                                 exit_reason = 'STOP_LOSS'
 
