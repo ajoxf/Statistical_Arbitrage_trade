@@ -923,5 +923,41 @@
             ` + content.innerHTML;
         }
     });
+
+    // === STATS RESET ===
+    socket.on('stats_reset', function(data) {
+        console.log('[STATS RESET]', data);
+        if (data.status === 'complete') {
+            alert('✅ Statistics reset! Z-score will rebuild from fresh data.\n\nWait for lookback period to complete before trading.');
+        }
+    });
+
+    // Add reset stats button to debug panel when it exists
+    function addResetButton() {
+        const debugPanel = document.getElementById('tradeDebugPanel');
+        if (debugPanel && !document.getElementById('resetStatsBtn')) {
+            const btn = document.createElement('button');
+            btn.id = 'resetStatsBtn';
+            btn.innerHTML = '🔄 Reset Stats';
+            btn.style.cssText = 'background:#f39c12;border:none;color:white;padding:5px 10px;border-radius:4px;cursor:pointer;margin-top:10px;width:100%;font-weight:bold;';
+            btn.onclick = function() {
+                if (confirm('Reset statistics? This will clear all historical spread data and rebuild Z-score from fresh prices.')) {
+                    socket.emit('reset_stats');
+                    alert('Stats reset requested. Wait for confirmation...');
+                }
+            };
+            debugPanel.appendChild(btn);
+        }
+    }
+
+    // Check periodically for debug panel
+    setInterval(addResetButton, 1000);
+
+    // Also add a global reset function accessible from console
+    window.resetStats = function() {
+        socket.emit('reset_stats');
+        console.log('Stats reset requested');
+    };
+    console.log('💡 TIP: Call resetStats() in console to reset Z-score statistics');
 </script>
 {% endblock %}

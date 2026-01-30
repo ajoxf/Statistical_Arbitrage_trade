@@ -3924,6 +3924,18 @@ def handle_disconnect():
     logger.info("Client disconnected")
 
 
+# Global flag to force stats reset
+force_stats_reset = False
+
+@socketio.on('reset_stats')
+def handle_reset_stats():
+    """Force statistics to be recalculated from fresh data"""
+    global force_stats_reset
+    force_stats_reset = True
+    logger.info("[STATS] Stats reset requested - will recalculate on next tick")
+    emit('stats_reset', {'status': 'pending', 'message': 'Stats will reset on next price tick'})
+
+
 @socketio.on('request_status')
 def handle_request_status():
     """Send current status to client"""
@@ -3976,12 +3988,14 @@ def start_price_streaming():
             # Tick interval from settings (seconds between price updates)
             tick_interval = config.tick_interval if config and hasattr(config, 'tick_interval') else 0.3
 
-            # Calculate max age based on lookback - use generous window for bootstrap
-            # Allow at least 24 hours so overnight shutdowns don't lose bootstrap data
+            # Calculate max age based on lookback - use tighter window to avoid stale data
+            # Old data can cause Z-score to be completely out of sync with current prices
             if lookback_unit == 'days':
-                max_age_hours = int(lookback_period * 24 * 1.1)  # +10% buffer
+                max_age_hours = int(lookback_period * 24 * 1.1)  # +10% buffer for days
             else:
-                max_age_hours = max(24, int(lookback_period / 60 * 2) + 1)  # Min 24 hours
+                # For minutes-based lookback, only use data from last 2 hours max
+                # This prevents stale overnight data from corrupting statistics
+                max_age_hours = max(2, int(lookback_period / 60) + 1)
 
             # Load historical spreads from database
             history = database.get_price_history('ACTIVE', limit=lookback_period, max_age_hours=max_age_hours)
@@ -4127,6 +4141,19 @@ def start_price_streaming():
 
                     # Check if we're in a trade (stats should be locked during trades)
                     in_trade = auto_trader and auto_trader.has_position
+
+                    # Check for manual stats reset request
+                    global force_stats_reset
+                    if force_stats_reset and not in_trade:
+                        logger.info(f"[STATS] FORCE RESET: Clearing history and recalculating from fresh data")
+                        logger.info(f"[STATS] Old stats: mean={locked_mean:.4f if locked_mean else 'None'}, std={locked_std:.4f if locked_std else 'None'}")
+                        # Clear history and force recalculation
+                        spread_history.clear()
+                        spread_history.append(spread)  # Start fresh with current spread
+                        locked_mean = None
+                        locked_std = None
+                        force_stats_reset = False
+                        socketio.emit('stats_reset', {'status': 'complete', 'message': 'Stats cleared - rebuilding from fresh data'})
 
                     # Only recalculate stats when:
                     # 1. We have no stats yet (first time), OR
