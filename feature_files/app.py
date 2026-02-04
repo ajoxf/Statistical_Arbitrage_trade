@@ -73,6 +73,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from database.manager import DatabaseManager
 from database.models import TradingConfig, Broker, Trade
 from core.trading_engine import TradingEngine, EngineState
+from pegged_executor import PeggedOrderExecutor, SpreadOrder, LegStatus
 from core.multi_broker import (
     MultiBrokerCoordinator,
     ExecutionMode,
@@ -463,6 +464,8 @@ class AutoTrader:
         self._entry_locked_mean: Optional[float] = None
         self._entry_locked_std: Optional[float] = None
         self._logger = logging.getLogger(__name__)
+        # Pegged order executor for maker-style execution
+        self._pegged_executor: Optional[PeggedOrderExecutor] = None
 
         # Load any existing open position from database
         self._load_open_position()
@@ -789,6 +792,19 @@ class AutoTrader:
 
         self._logger.info(f"[AUTO] === FILTERS PASSED === Executing {direction} entry trade")
         self._logger.info(f"[AUTO] Trade details: lot_size={config.lot_size}, z={signal.zscore:.2f}")
+
+        # Check if pegged limit order execution is configured
+        execution_mode = getattr(config, 'order_execution_mode', 'MARKET')
+        if execution_mode == 'PEGGED_LIMIT':
+            self._logger.info(f"[AUTO] Using PEGGED_LIMIT execution mode")
+            return self._handle_entry_signal_pegged(
+                signal, config, database, spot_broker, futures_broker,
+                spot_price, futures_price, std_filter_result, current_std,
+                spot_spread_cents, futures_spread_cents
+            )
+
+        # Standard market order execution continues below
+        self._logger.info(f"[AUTO] Using MARKET execution mode")
 
         # CRITICAL: Lock position immediately to prevent race conditions
         # This prevents duplicate signals from being processed while we execute
@@ -1209,6 +1225,156 @@ class AutoTrader:
             import traceback
             traceback.print_exc()
 
+    def _handle_entry_signal_pegged(self, signal, config, database,
+                                    spot_broker, futures_broker,
+                                    spot_price: float, futures_price: float,
+                                    std_filter_result=None, current_std=None,
+                                    spot_spread_cents=None, futures_spread_cents=None):
+        """
+        Handle entry signal using pegged limit orders.
+
+        Places limit orders near best bid/ask and continuously adjusts (re-pegs)
+        them as the market moves until filled or timeout.
+        """
+        signal_type = signal.signal_type
+        direction = 'LONG' if signal_type == 'ENTRY_LONG' else 'SHORT'
+
+        self._logger.info(f"[AUTO] === PEGGED LIMIT ENTRY === Executing {direction} trade")
+
+        # CRITICAL: Lock position immediately
+        self._position_open = True
+        self._position_direction = direction
+
+        global engine
+        if engine:
+            engine.set_position_state(True, direction)
+            self._logger.info(f"[AUTO] Position LOCKED for pegged execution")
+
+        try:
+            import MetaTrader5 as mt5
+
+            if not mt5.initialize():
+                self._logger.error("[AUTO] MT5 initialization failed for pegged entry")
+                self._unlock_position()
+                return
+
+            # Get current ticks for pegged execution
+            spot_tick = mt5.symbol_info_tick(spot_broker.symbol)
+            futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
+
+            if not spot_tick or not futures_tick:
+                self._logger.error("[AUTO] Could not get ticks for pegged entry")
+                mt5.shutdown()
+                self._unlock_position()
+                return
+
+            spot_tick_dict = {'bid': spot_tick.bid, 'ask': spot_tick.ask}
+            futures_tick_dict = {'bid': futures_tick.bid, 'ask': futures_tick.ask}
+
+            mt5.shutdown()  # Executor will manage its own MT5 connection
+
+            # Initialize pegged executor if needed
+            if self._pegged_executor is None:
+                self._pegged_executor = PeggedOrderExecutor(config)
+            else:
+                self._pegged_executor.update_config(config)
+
+            # Execute entry using pegged limit orders
+            spread_order = self._pegged_executor.execute_entry(
+                position_type=direction,
+                spot_broker=spot_broker,
+                futures_broker=futures_broker,
+                spot_tick=spot_tick_dict,
+                futures_tick=futures_tick_dict,
+                quantity=config.lot_size,
+            )
+
+            if spread_order is None:
+                self._logger.error("[AUTO] Pegged executor returned None")
+                self._unlock_position()
+                return
+
+            # Check if both legs filled
+            if not spread_order.is_complete:
+                self._logger.error(f"[AUTO] Pegged entry incomplete: spot={spread_order.spot_leg.status}, "
+                                  f"futures={spread_order.futures_leg.status}")
+                # Leg risk handling is done by the executor
+                self._unlock_position()
+                return
+
+            # Both legs filled - record the trade
+            spot_result_price = spread_order.spot_leg.filled_price
+            futures_result_price = spread_order.futures_leg.filled_price
+            spot_ticket = spread_order.spot_leg.order_ticket
+            futures_ticket = spread_order.futures_leg.order_ticket
+
+            self._logger.info(f"[AUTO] Pegged entry COMPLETE: spot={spot_result_price:.2f}, futures={futures_result_price:.2f}")
+
+            # Record trade in database
+            trade_id = f"AUTO_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            trade = Trade(
+                trade_id=trade_id,
+                asset=config.asset_name,
+                direction='Long Spread' if direction == 'LONG' else 'Short Spread',
+                entry_date=datetime.now().isoformat(),
+                entry_zscore=signal.zscore,
+                entry_spot_price=spot_result_price,
+                entry_futures_price=futures_result_price,
+                lot_size=config.lot_size,
+                spot_broker_id=spot_broker.broker_id,
+                mt5_spot_ticket=spot_ticket,
+                futures_broker_id=futures_broker.broker_id,
+                mt5_futures_ticket=futures_ticket,
+                status='OPEN'
+            )
+
+            database.add_trade(trade)
+            self._logger.info(f"[AUTO] === PEGGED TRADE RECORDED: {trade_id} ===")
+
+            # Log STD filter event
+            if std_filter_result:
+                self._log_std_filter_event(
+                    database, zscore=signal.zscore, signal_type=signal.signal_type,
+                    current_std=current_std, min_required_std=std_filter_result['min_std'],
+                    std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                    spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                    round_trip_cost=std_filter_result['round_trip_cost'],
+                    action_taken='TRADE_ENTERED', trade_id=trade_id
+                )
+
+            # Update position tracking
+            self._entry_trade_id = trade_id
+            self._entry_spot_price = spot_result_price
+            self._entry_futures_price = futures_result_price
+            self._entry_zscore = signal.zscore
+            self._entry_time = datetime.now()
+            self._spot_ticket = spot_ticket
+            self._futures_ticket = futures_ticket
+            self._entry_locked_mean = getattr(signal, 'locked_mean', None)
+            self._entry_locked_std = getattr(signal, 'locked_std', None)
+
+            if self._entry_locked_mean is not None and self._entry_locked_std is not None:
+                self._logger.info(f"[AUTO] Locked stats stored: mean={self._entry_locked_mean:.4f}, std={self._entry_locked_std:.4f}")
+
+            self._logger.info(f"[AUTO] Pegged trade opened: {trade_id} ({direction})")
+
+            # Emit to frontend
+            socketio.emit('auto_trade', {
+                'action': 'ENTRY',
+                'direction': direction,
+                'trade_id': trade_id,
+                'spot_price': spot_result_price,
+                'futures_price': futures_result_price,
+                'zscore': signal.zscore,
+                'execution_mode': 'PEGGED_LIMIT'
+            })
+
+        except Exception as e:
+            self._logger.error(f"[AUTO] Pegged entry error: {e}")
+            import traceback
+            traceback.print_exc()
+            self._unlock_position()
+
     def _calculate_exit_limit_prices(self, config, spot_price: float, futures_price: float):
         """
         Calculate target limit prices for exit based on locked stats.
@@ -1490,6 +1656,170 @@ class AutoTrader:
                 pass
         return filling_mode
 
+    def _handle_exit_signal_pegged(self, signal, config, database,
+                                   spot_broker, futures_broker,
+                                   spot_price: float, futures_price: float):
+        """
+        Handle exit signal using pegged limit orders.
+
+        Places limit orders near best bid/ask for exits, with timeout fallback.
+        Does NOT use pegged orders for STOP_LOSS signals (uses market for immediacy).
+        """
+        if not self._position_open:
+            self._logger.info("[AUTO] No position open, skipping exit signal")
+            return
+
+        signal_type = signal.signal_type
+
+        # STOP_LOSS always uses market for immediate execution
+        if signal_type == 'STOP_LOSS':
+            self._logger.info("[AUTO] STOP_LOSS signal - using market execution for immediacy")
+            return self._handle_exit_signal(signal, config, database,
+                                           spot_broker, futures_broker,
+                                           spot_price, futures_price)
+
+        self._logger.info(f"[AUTO] === PEGGED LIMIT EXIT === Closing {self._position_direction} position")
+
+        try:
+            import MetaTrader5 as mt5
+
+            if not mt5.initialize():
+                self._logger.error("[AUTO] MT5 initialization failed for pegged exit")
+                return
+
+            # Get current ticks for pegged execution
+            spot_tick = mt5.symbol_info_tick(spot_broker.symbol)
+            futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
+
+            if not spot_tick or not futures_tick:
+                self._logger.error("[AUTO] Could not get ticks for pegged exit")
+                mt5.shutdown()
+                return
+
+            spot_tick_dict = {'bid': spot_tick.bid, 'ask': spot_tick.ask}
+            futures_tick_dict = {'bid': futures_tick.bid, 'ask': futures_tick.ask}
+
+            mt5.shutdown()  # Executor will manage its own MT5 connection
+
+            # Initialize pegged executor if needed
+            if self._pegged_executor is None:
+                self._pegged_executor = PeggedOrderExecutor(config)
+            else:
+                self._pegged_executor.update_config(config)
+
+            # Execute exit using pegged limit orders
+            spread_order = self._pegged_executor.execute_exit(
+                position_type=self._position_direction,
+                spot_broker=spot_broker,
+                futures_broker=futures_broker,
+                spot_tick=spot_tick_dict,
+                futures_tick=futures_tick_dict,
+                quantity=config.lot_size,
+                spot_position_ticket=self._spot_ticket,
+                futures_position_ticket=self._futures_ticket,
+            )
+
+            if spread_order is None:
+                self._logger.error("[AUTO] Pegged executor returned None for exit")
+                return
+
+            # Check if both legs filled
+            if not spread_order.is_complete:
+                self._logger.error(f"[AUTO] Pegged exit incomplete: spot={spread_order.spot_leg.status}, "
+                                  f"futures={spread_order.futures_leg.status}")
+                # Leg risk handling is done by the executor
+                return
+
+            # Both legs filled - update trade record
+            spot_result_price = spread_order.spot_leg.filled_price
+            futures_result_price = spread_order.futures_leg.filled_price
+
+            self._logger.info(f"[AUTO] Pegged exit COMPLETE: spot={spot_result_price:.2f}, futures={futures_result_price:.2f}")
+
+            # Calculate P&L
+            if self._position_direction == 'SHORT':
+                spot_pnl = (spot_result_price - self._entry_spot_price) * config.lot_size * config.contract_size
+                futures_pnl = (self._entry_futures_price - futures_result_price) * config.lot_size * config.contract_size
+            else:
+                spot_pnl = (self._entry_spot_price - spot_result_price) * config.lot_size * config.contract_size
+                futures_pnl = (futures_result_price - self._entry_futures_price) * config.lot_size * config.contract_size
+
+            gross_pnl = spot_pnl + futures_pnl
+            commission = config.commission_per_lot * config.lot_size * 2
+            net_pnl = gross_pnl - commission
+
+            # Update trade in database
+            days_held = (datetime.now() - self._entry_time).total_seconds() / 86400 if self._entry_time else 0
+
+            conn = database._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE trades SET
+                    exit_date = ?,
+                    days_held = ?,
+                    exit_zscore = ?,
+                    exit_spot_price = ?,
+                    exit_futures_price = ?,
+                    spot_pnl = ?,
+                    futures_pnl = ?,
+                    gross_pnl = ?,
+                    commission = ?,
+                    net_pnl = ?,
+                    status = 'CLOSED'
+                WHERE trade_id = ?
+            ''', (
+                datetime.now().isoformat(),
+                days_held,
+                signal.zscore,
+                spot_result_price,
+                futures_result_price,
+                spot_pnl,
+                futures_pnl,
+                gross_pnl,
+                commission,
+                net_pnl,
+                self._entry_trade_id
+            ))
+            conn.commit()
+
+            self._logger.info(f"[AUTO] Pegged trade closed: {self._entry_trade_id}, Net P&L: ${net_pnl:.2f}")
+
+            # Emit to frontend
+            socketio.emit('auto_trade', {
+                'action': 'EXIT',
+                'signal_type': signal_type,
+                'trade_id': self._entry_trade_id,
+                'spot_price': spot_result_price,
+                'futures_price': futures_result_price,
+                'zscore': signal.zscore,
+                'net_pnl': net_pnl,
+                'execution_mode': 'PEGGED_LIMIT'
+            })
+
+            # Reset position tracking
+            self._position_open = False
+            self._position_direction = None
+            self._entry_trade_id = None
+            self._entry_spot_price = None
+            self._entry_futures_price = None
+            self._entry_zscore = None
+            self._entry_time = None
+            self._spot_ticket = None
+            self._futures_ticket = None
+            self._entry_locked_mean = None
+            self._entry_locked_std = None
+
+            # Sync engine position state
+            global engine
+            if engine:
+                engine.set_position_state(False, None)
+                self._logger.info(f"[AUTO] Engine position state synced: has_position=False")
+
+        except Exception as e:
+            self._logger.error(f"[AUTO] Pegged exit error: {e}")
+            import traceback
+            traceback.print_exc()
+
     def _handle_exit_signal(self, signal, config, database,
                            spot_broker, futures_broker,
                            spot_price: float, futures_price: float):
@@ -1500,6 +1830,17 @@ class AutoTrader:
             return
 
         signal_type = signal.signal_type
+
+        # Check if pegged limit order execution is configured
+        # STOP_LOSS always uses market for immediate execution
+        execution_mode = getattr(config, 'order_execution_mode', 'MARKET')
+        if execution_mode == 'PEGGED_LIMIT' and signal_type != 'STOP_LOSS':
+            self._logger.info(f"[AUTO] Using PEGGED_LIMIT execution mode for exit")
+            return self._handle_exit_signal_pegged(
+                signal, config, database, spot_broker, futures_broker,
+                spot_price, futures_price
+            )
+
         use_limit_orders = config.exit_order_type == 'LIMIT' and signal_type != 'STOP_LOSS'
 
         self._logger.info(f"[AUTO] Executing exit trade ({signal_type}), order_type={'LIMIT' if use_limit_orders else 'MARKET'}")

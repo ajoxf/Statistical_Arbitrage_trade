@@ -89,6 +89,13 @@ class TradingConfig:
     exit_limit_timeout: int = 30  # Seconds to wait for limit fill before fallback to market
     exit_limit_offset_cents: float = 0.0  # Offset from target price in cents (0 = exactly at target)
 
+    # Pegged Limit Order Execution (maker-style execution)
+    order_execution_mode: str = "MARKET"  # 'MARKET' or 'PEGGED_LIMIT'
+    limit_order_timeout_sec: int = 30  # Max wait time for limit orders
+    limit_order_price_offset_bps: float = 1.0  # Offset from bid/ask in basis points
+    maker_fee_bps: float = 2.0  # Maker fee for cost calculations
+    taker_fee_bps: float = 5.0  # Taker fee for cost calculations
+
     # Mode Settings
     algo_enabled: bool = False
     paper_mode: bool = True
@@ -135,6 +142,11 @@ class TradingConfig:
             'exit_order_type': self.exit_order_type,
             'exit_limit_timeout': self.exit_limit_timeout,
             'exit_limit_offset_cents': self.exit_limit_offset_cents,
+            'order_execution_mode': self.order_execution_mode,
+            'limit_order_timeout_sec': self.limit_order_timeout_sec,
+            'limit_order_price_offset_bps': self.limit_order_price_offset_bps,
+            'maker_fee_bps': self.maker_fee_bps,
+            'taker_fee_bps': self.taker_fee_bps,
             'algo_enabled': self.algo_enabled,
             'paper_mode': self.paper_mode,
             'selected_asset': self.selected_asset,

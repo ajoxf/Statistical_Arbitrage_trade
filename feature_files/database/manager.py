@@ -78,6 +78,11 @@ class DatabaseManager:
                 exit_order_type TEXT DEFAULT 'MARKET',
                 exit_limit_timeout INTEGER DEFAULT 30,
                 exit_limit_offset_cents REAL DEFAULT 0.0,
+                order_execution_mode TEXT DEFAULT 'MARKET',
+                limit_order_timeout_sec INTEGER DEFAULT 30,
+                limit_order_price_offset_bps REAL DEFAULT 1.0,
+                maker_fee_bps REAL DEFAULT 2.0,
+                taker_fee_bps REAL DEFAULT 5.0,
                 algo_enabled INTEGER DEFAULT 0,
                 paper_mode INTEGER DEFAULT 1,
                 selected_asset TEXT DEFAULT 'GOLD',
@@ -263,6 +268,37 @@ class DatabaseManager:
             logger.info("Adding exit_limit_offset_cents column to trading_config")
             cursor.execute("ALTER TABLE trading_config ADD COLUMN exit_limit_offset_cents REAL DEFAULT 0.0")
 
+        # Migration: Add pegged limit order columns (for existing databases)
+        try:
+            cursor.execute("SELECT order_execution_mode FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding order_execution_mode column to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN order_execution_mode TEXT DEFAULT 'MARKET'")
+
+        try:
+            cursor.execute("SELECT limit_order_timeout_sec FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding limit_order_timeout_sec column to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN limit_order_timeout_sec INTEGER DEFAULT 30")
+
+        try:
+            cursor.execute("SELECT limit_order_price_offset_bps FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding limit_order_price_offset_bps column to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN limit_order_price_offset_bps REAL DEFAULT 1.0")
+
+        try:
+            cursor.execute("SELECT maker_fee_bps FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding maker_fee_bps column to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN maker_fee_bps REAL DEFAULT 2.0")
+
+        try:
+            cursor.execute("SELECT taker_fee_bps FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding taker_fee_bps column to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN taker_fee_bps REAL DEFAULT 5.0")
+
         conn.commit()
         logger.info(f"Database initialized: {self.db_path}")
 
@@ -310,6 +346,11 @@ class DatabaseManager:
                 exit_order_type=row['exit_order_type'] if 'exit_order_type' in row.keys() else 'MARKET',
                 exit_limit_timeout=row['exit_limit_timeout'] if 'exit_limit_timeout' in row.keys() else 30,
                 exit_limit_offset_cents=row['exit_limit_offset_cents'] if 'exit_limit_offset_cents' in row.keys() else 0.0,
+                order_execution_mode=row['order_execution_mode'] if 'order_execution_mode' in row.keys() else 'MARKET',
+                limit_order_timeout_sec=row['limit_order_timeout_sec'] if 'limit_order_timeout_sec' in row.keys() else 30,
+                limit_order_price_offset_bps=row['limit_order_price_offset_bps'] if 'limit_order_price_offset_bps' in row.keys() else 1.0,
+                maker_fee_bps=row['maker_fee_bps'] if 'maker_fee_bps' in row.keys() else 2.0,
+                taker_fee_bps=row['taker_fee_bps'] if 'taker_fee_bps' in row.keys() else 5.0,
                 algo_enabled=bool(row['algo_enabled']),
                 paper_mode=bool(row['paper_mode']),
                 selected_asset=row['selected_asset'] or 'GOLD'
@@ -358,6 +399,11 @@ class DatabaseManager:
                 exit_order_type = ?,
                 exit_limit_timeout = ?,
                 exit_limit_offset_cents = ?,
+                order_execution_mode = ?,
+                limit_order_timeout_sec = ?,
+                limit_order_price_offset_bps = ?,
+                maker_fee_bps = ?,
+                taker_fee_bps = ?,
                 algo_enabled = ?,
                 paper_mode = ?,
                 selected_asset = ?
@@ -397,6 +443,11 @@ class DatabaseManager:
             config.exit_order_type,
             config.exit_limit_timeout,
             config.exit_limit_offset_cents,
+            config.order_execution_mode,
+            config.limit_order_timeout_sec,
+            config.limit_order_price_offset_bps,
+            config.maker_fee_bps,
+            config.taker_fee_bps,
             int(config.algo_enabled),
             int(config.paper_mode),
             config.selected_asset
