@@ -612,6 +612,7 @@
                                 <thead>
                                     <tr>
                                         <th>#</th>
+                                        <th>Source</th>
                                         <th>Direction</th>
                                         <th>Lots</th>
                                         <th>Entry</th>
@@ -632,7 +633,7 @@
                                 </thead>
                                 <tbody id="trade-journal-body">
                                     <tr>
-                                        <td colspan="17" class="text-center text-muted">No trades yet</td>
+                                        <td colspan="18" class="text-center text-muted">No trades yet</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1622,7 +1623,7 @@
             const trades = result.trades || [];
 
             if (trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="16" class="text-center text-muted">No trades yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="18" class="text-center text-muted">No trades yet</td></tr>';
                 return;
             }
 
@@ -1637,6 +1638,12 @@
                 const netPnlClass = (t.net_pnl || 0) >= 0 ? 'text-success' : 'text-danger';
                 const returnClass = (t.return_pct || 0) >= 0 ? 'text-success' : 'text-danger';
 
+                // Trade source badge
+                const tradeSource = t.trade_source || 'ALGO';
+                const sourceBadge = tradeSource === 'MANUAL'
+                    ? '<span class="badge bg-info">Manual</span>'
+                    : '<span class="badge bg-secondary">Algo</span>';
+
                 const actionBtn = t.status === 'OPEN'
                     ? `<button class="btn btn-sm btn-outline-danger" onclick="closeTradeManually('${t.trade_id}')" title="Close trade manually (if closed in MT5)">
                          <i class="bi bi-x-circle"></i> Close
@@ -1645,6 +1652,7 @@
 
                 return `<tr class="${t.status === 'OPEN' ? 'table-warning' : ''}">
                     <td>${i + 1}</td>
+                    <td>${sourceBadge}</td>
                     <td class="${dirClass}">${icon} ${t.direction}</td>
                     <td>${t.lot_size || 0.1}</td>
                     <td>${t.entry_date || '--'}</td>

@@ -1174,7 +1174,8 @@ class AutoTrader:
             mt5.shutdown()
 
             # Record trade in database
-            trade_id = f"AUTO_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            trade_source = getattr(signal, 'source', 'ALGO')
+            trade_id = f"{trade_source}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             trade = Trade(
                 trade_id=trade_id,
                 asset=config.asset_name,
@@ -1188,7 +1189,8 @@ class AutoTrader:
                 mt5_spot_ticket=spot_result.order,
                 futures_broker_id=futures_broker.broker_id,
                 mt5_futures_ticket=futures_result.order,
-                status='OPEN'
+                status='OPEN',
+                trade_source=trade_source
             )
 
             database.add_trade(trade)
@@ -1332,7 +1334,8 @@ class AutoTrader:
             self._logger.info(f"[AUTO] Pegged entry COMPLETE: spot={spot_result_price:.2f}, futures={futures_result_price:.2f}")
 
             # Record trade in database
-            trade_id = f"AUTO_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            trade_source = getattr(signal, 'source', 'ALGO')
+            trade_id = f"{trade_source}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             trade = Trade(
                 trade_id=trade_id,
                 asset=config.asset_name,
@@ -1346,7 +1349,8 @@ class AutoTrader:
                 mt5_spot_ticket=spot_ticket,
                 futures_broker_id=futures_broker.broker_id,
                 mt5_futures_ticket=futures_ticket,
-                status='OPEN'
+                status='OPEN',
+                trade_source=trade_source
             )
 
             database.add_trade(trade)
@@ -4861,21 +4865,26 @@ def start_price_streaming():
                                 'threshold': config.hurst_threshold if config else 0.5
                             }
 
+                    # === SIGNAL CLASS FOR TRADING ===
+                    # Define Signal class for both algo and manual trading
+                    class Signal:
+                        def __init__(self, signal_type, zscore, spread, locked_mean=None, locked_std=None, source='ALGO'):
+                            self.signal_type = signal_type
+                            self.zscore = zscore
+                            self.spread = spread
+                            self.locked_mean = locked_mean  # Mean at signal time (for limit order exits)
+                            self.locked_std = locked_std    # Std at signal time (for limit order exits)
+                            self.source = source  # 'ALGO' or 'MANUAL'
+
                     # === AUTO TRADING SIGNAL GENERATION ===
-                    if config and config.algo_enabled and zscore is not None and auto_trader:
+                    # Skip algo signals if manual trade is active and waiting for entry
+                    manual_trade_active = config and config.manual_trade_enabled and config.manual_trade_status in ['WAITING_ENTRY', 'IN_POSITION']
+
+                    if config and config.algo_enabled and zscore is not None and auto_trader and not manual_trade_active:
                         entry_threshold = config.entry_std_dev
                         exit_threshold = config.exit_std_dev
                         exit_opposite = config.exit_at_opposite_sd
                         stop_loss_threshold = config.stop_loss_std_dev
-
-                        # Create a simple signal object for AutoTrader
-                        class Signal:
-                            def __init__(self, signal_type, zscore, spread, locked_mean=None, locked_std=None):
-                                self.signal_type = signal_type
-                                self.zscore = zscore
-                                self.spread = spread
-                                self.locked_mean = locked_mean  # Mean at signal time (for limit order exits)
-                                self.locked_std = locked_std    # Std at signal time (for limit order exits)
 
                         # Check for entry signals (no position open)
                         if not auto_trader.has_position:
@@ -4944,7 +4953,7 @@ def start_price_streaming():
                             if entry_hit:
                                 logger.info(f"[MANUAL] Entry target hit! spread=${spread:.2f}, target=${entry_target:.2f}")
                                 signal_type = 'ENTRY_SHORT' if direction == 'SHORT_SPREAD' else 'ENTRY_LONG'
-                                signal = Signal(signal_type, zscore or 0, spread, locked_mean, locked_std)
+                                signal = Signal(signal_type, zscore or 0, spread, locked_mean, locked_std, source='MANUAL')
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': f'MANUAL_{signal_type}', 'spread': spread})
                                 # Update status to IN_POSITION
@@ -4988,7 +4997,7 @@ def start_price_streaming():
 
                             if exit_hit:
                                 logger.info(f"[MANUAL] Exit target hit! spread=${spread:.2f}, target=${exit_target:.2f}")
-                                signal = Signal('EXIT', zscore or 0, spread)
+                                signal = Signal('EXIT', zscore or 0, spread, source='MANUAL')
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'MANUAL_EXIT', 'spread': spread})
                                 # Reset manual trade
