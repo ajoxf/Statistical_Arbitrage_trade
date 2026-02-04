@@ -792,24 +792,30 @@ class DatabaseManager:
 
         stats = {}
 
-        for level in ['2σ', '2.5σ', '3σ', '3.5σ', '4σ']:
-            cursor.execute(
-                'SELECT COUNT(*) as count FROM sd_touch_log WHERE sd_level = ?',
-                (level,)
-            )
-            total = cursor.fetchone()['count']
+        try:
+            for level in ['2σ', '2.5σ', '3σ', '3.5σ', '4σ']:
+                cursor.execute(
+                    'SELECT COUNT(*) as count FROM sd_touch_log WHERE sd_level = ?',
+                    (level,)
+                )
+                total = cursor.fetchone()['count']
 
-            cursor.execute(
-                'SELECT COUNT(*) as count FROM sd_touch_log WHERE sd_level = ? AND reached_mean = 1',
-                (level,)
-            )
-            reached = cursor.fetchone()['count']
+                cursor.execute(
+                    'SELECT COUNT(*) as count FROM sd_touch_log WHERE sd_level = ? AND reached_mean = 1',
+                    (level,)
+                )
+                reached = cursor.fetchone()['count']
 
-            stats[level] = {
-                'total': total,
-                'reached_mean': reached,
-                'success_rate': (reached / total * 100) if total > 0 else 0
-            }
+                stats[level] = {
+                    'total': total,
+                    'reached_mean': reached,
+                    'success_rate': (reached / total * 100) if total > 0 else 0
+                }
+        except Exception as e:
+            logger.error(f"Error getting SD touch stats: {e}")
+            # Return empty stats on error
+            for level in ['2σ', '2.5σ', '3σ', '3.5σ', '4σ']:
+                stats[level] = {'total': 0, 'reached_mean': 0, 'success_rate': 0}
 
         return stats
 
@@ -818,21 +824,30 @@ class DatabaseManager:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute('SELECT COUNT(*) as total FROM limit_order_log')
-        total = cursor.fetchone()['total']
+        try:
+            cursor.execute('SELECT COUNT(*) as total FROM limit_order_log')
+            total = cursor.fetchone()['total']
 
-        cursor.execute('SELECT COUNT(*) as filled FROM limit_order_log WHERE status = "FILLED"')
-        filled = cursor.fetchone()['filled']
+            cursor.execute('SELECT COUNT(*) as filled FROM limit_order_log WHERE status = "FILLED"')
+            filled = cursor.fetchone()['filled']
 
-        cursor.execute('SELECT AVG(elapsed_seconds) as avg_time FROM limit_order_log WHERE status = "FILLED"')
-        avg_time = cursor.fetchone()['avg_time'] or 0
+            cursor.execute('SELECT AVG(elapsed_seconds) as avg_time FROM limit_order_log WHERE status = "FILLED"')
+            avg_time = cursor.fetchone()['avg_time'] or 0
 
-        return {
-            'total_orders': total,
-            'filled_orders': filled,
-            'fill_rate': (filled / total * 100) if total > 0 else 0,
-            'average_fill_time': avg_time
-        }
+            return {
+                'total_orders': total,
+                'filled_orders': filled,
+                'fill_rate': (filled / total * 100) if total > 0 else 0,
+                'average_fill_time': avg_time
+            }
+        except Exception as e:
+            logger.error(f"Error getting limit order stats: {e}")
+            return {
+                'total_orders': 0,
+                'filled_orders': 0,
+                'fill_rate': 0,
+                'average_fill_time': 0
+            }
 
     def save_price_data(self, asset: str, spot_price: float, futures_price: float,
                         spread: float, swap_diff: float = 0.0):
