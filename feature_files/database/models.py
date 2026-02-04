@@ -84,6 +84,18 @@ class TradingConfig:
     limit_order_timeout: int = 60
     limit_peg_interval: float = 1.5
 
+    # Exit Order Settings (limit orders for exits)
+    exit_order_type: str = "MARKET"  # 'MARKET' or 'LIMIT'
+    exit_limit_timeout: int = 30  # Seconds to wait for limit fill before market fallback
+    exit_limit_offset_cents: float = 5.0  # Offset from target price in cents
+
+    # Pegged Limit Order Execution (maker-style execution)
+    order_execution_mode: str = "MARKET"  # 'MARKET' or 'PEGGED_LIMIT'
+    limit_order_timeout_sec: int = 30  # Max wait time for limit orders
+    limit_order_price_offset_bps: float = 1.0  # Offset from bid/ask in basis points
+    maker_fee_bps: float = 2.0  # Maker fee for cost calculations
+    taker_fee_bps: float = 5.0  # Taker fee for cost calculations
+
     # Price Streaming
     tick_interval: float = 0.3  # Seconds between price updates (0.1 to 2.0)
 
@@ -130,6 +142,14 @@ class TradingConfig:
             'order_type': self.order_type,
             'limit_order_timeout': self.limit_order_timeout,
             'limit_peg_interval': self.limit_peg_interval,
+            'exit_order_type': self.exit_order_type,
+            'exit_limit_timeout': self.exit_limit_timeout,
+            'exit_limit_offset_cents': self.exit_limit_offset_cents,
+            'order_execution_mode': self.order_execution_mode,
+            'limit_order_timeout_sec': self.limit_order_timeout_sec,
+            'limit_order_price_offset_bps': self.limit_order_price_offset_bps,
+            'maker_fee_bps': self.maker_fee_bps,
+            'taker_fee_bps': self.taker_fee_bps,
             'tick_interval': self.tick_interval,
             'algo_enabled': self.algo_enabled,
             'paper_mode': self.paper_mode,
