@@ -260,7 +260,8 @@ def calculate_min_profitable_std(config, current_std: float,
     min_profit_per_lot = config.min_profit_per_lot if config else 50.0
 
     # Check execution mode - pegged limit orders avoid crossing the spread
-    execution_mode = getattr(config, 'order_execution_mode', 'MARKET') if config else 'MARKET'
+    # Note: order_type field is used in settings UI (MARKET, LIMIT, PEGGED_LIMIT)
+    execution_mode = getattr(config, 'order_type', 'MARKET') if config else 'MARKET'
     is_pegged = execution_mode == 'PEGGED_LIMIT'
 
     # Use configured spread costs if real-time not available
