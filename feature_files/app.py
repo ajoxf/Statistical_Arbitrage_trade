@@ -2372,7 +2372,8 @@ def api_config():
                     # String fields - keep as string or None
                     setattr(config, key, value if value else None)
                 elif isinstance(current_val, bool) or key in ['hurst_enabled', 'std_filter_enabled',
-                                                               'close_before_overnight', 'paper_mode', 'algo_enabled']:
+                                                               'close_before_overnight', 'trading_hours_enabled',
+                                                               'paper_mode', 'algo_enabled']:
                     setattr(config, key, bool(value))
                 elif isinstance(current_val, int):
                     setattr(config, key, int(value) if value else 0)
@@ -4858,8 +4859,26 @@ def start_price_streaming():
                     futures_mid = (futures_bid + futures_ask) / 2 if futures_bid > 0 else 0
                     spread = futures_mid - spot_mid if spot_mid > 0 and futures_mid > 0 else 0
 
-                    # Add spread to history for z-score calculation
-                    if spread != 0:
+                    # Check trading hours before adding to spread history
+                    # This prevents corrupting mean/std with zero or stale data outside market hours
+                    should_collect_data = True
+                    config_temp = database.get_config()
+                    if config_temp and getattr(config_temp, 'trading_hours_enabled', False):
+                        current_hour = datetime.now().hour
+                        current_minute = datetime.now().minute
+                        current_time_mins = current_hour * 60 + current_minute
+                        start_time_mins = (getattr(config_temp, 'trading_start_hour', 8) * 60 +
+                                         getattr(config_temp, 'trading_start_minute', 0))
+                        end_time_mins = (getattr(config_temp, 'trading_end_hour', 17) * 60 +
+                                       getattr(config_temp, 'trading_end_minute', 0))
+
+                        if start_time_mins < end_time_mins:
+                            should_collect_data = start_time_mins <= current_time_mins < end_time_mins
+                        else:
+                            should_collect_data = current_time_mins >= start_time_mins or current_time_mins < end_time_mins
+
+                    # Add spread to history for z-score calculation (only during trading hours)
+                    if spread != 0 and should_collect_data:
                         spread_history.append(spread)
 
                         # Save to database every 60 seconds for persistence (handles reconnection)
@@ -5018,6 +5037,24 @@ def start_price_streaming():
                         exit_opposite = config.exit_at_opposite_sd
                         stop_loss_threshold = config.stop_loss_std_dev
 
+                        # Check trading hours - only generate signals during market hours
+                        is_within_trading_hours = True
+                        if getattr(config, 'trading_hours_enabled', False):
+                            current_hour = datetime.now().hour
+                            current_minute = datetime.now().minute
+                            current_time_mins = current_hour * 60 + current_minute
+                            start_time_mins = (getattr(config, 'trading_start_hour', 8) * 60 +
+                                             getattr(config, 'trading_start_minute', 0))
+                            end_time_mins = (getattr(config, 'trading_end_hour', 17) * 60 +
+                                           getattr(config, 'trading_end_minute', 0))
+
+                            # Handle same-day trading hours (e.g., 8:00 - 17:00)
+                            if start_time_mins < end_time_mins:
+                                is_within_trading_hours = start_time_mins <= current_time_mins < end_time_mins
+                            else:
+                                # Handle overnight trading hours (e.g., 18:00 - 05:00)
+                                is_within_trading_hours = current_time_mins >= start_time_mins or current_time_mins < end_time_mins
+
                         # Check overnight protection for ALGO trades
                         is_after_overnight_close = False
                         if config.close_before_overnight:
@@ -5031,8 +5068,10 @@ def start_price_streaming():
 
                         # Check for entry signals (no position open)
                         if not auto_trader.has_position:
-                            # Block new entries if past overnight close time
-                            if is_after_overnight_close:
+                            # Block new entries if outside trading hours or past overnight close
+                            if not is_within_trading_hours:
+                                pass  # Don't generate entry signals outside trading hours
+                            elif is_after_overnight_close:
                                 pass  # Don't generate entry signals after overnight close
                             elif zscore >= entry_threshold:
                                 # Z-score high - short the spread

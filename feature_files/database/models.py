@@ -79,6 +79,13 @@ class TradingConfig:
     overnight_close_hour: int = 16
     overnight_close_minute: int = 55
 
+    # Trading Hours Filter (only trade during market hours)
+    trading_hours_enabled: bool = False
+    trading_start_hour: int = 8    # Market open hour (0-23)
+    trading_start_minute: int = 0
+    trading_end_hour: int = 17     # Market close hour (0-23)
+    trading_end_minute: int = 0
+
     # Order Execution
     order_type: str = "MARKET"  # 'MARKET' or 'LIMIT'
     limit_order_timeout: int = 60

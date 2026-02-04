@@ -257,6 +257,49 @@
             </div>
         </div>
 
+        <!-- Trading Hours Filter -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-clock me-2"></i>Trading Hours Filter
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="trading_hours_enabled"
+                                       id="trading-hours-enabled" {% if config.trading_hours_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="trading-hours-enabled">
+                                    Enable Trading Hours Filter
+                                </label>
+                            </div>
+                            <small class="text-muted">Only collect data and trade during specified hours (prevents bad data outside market hours)</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Start Hour</label>
+                            <input type="number" class="form-control" name="trading_start_hour"
+                                   value="{{ config.trading_start_hour if config.trading_start_hour is not none else 8 }}" min="0" max="23">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Start Minute</label>
+                            <input type="number" class="form-control" name="trading_start_minute"
+                                   value="{{ config.trading_start_minute if config.trading_start_minute is not none else 0 }}" min="0" max="59">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">End Hour</label>
+                            <input type="number" class="form-control" name="trading_end_hour"
+                                   value="{{ config.trading_end_hour if config.trading_end_hour is not none else 17 }}" min="0" max="23">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">End Minute</label>
+                            <input type="number" class="form-control" name="trading_end_minute"
+                                   value="{{ config.trading_end_minute if config.trading_end_minute is not none else 0 }}" min="0" max="59">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Active Trading Pair -->
         <div class="col-md-6">
             <div class="card border-primary">
@@ -808,7 +851,7 @@
         }
 
         // Ensure unchecked checkboxes are included
-        ['hurst_enabled', 'std_filter_enabled', 'close_before_overnight', 'paper_mode', 'algo_enabled'].forEach(name => {
+        ['hurst_enabled', 'std_filter_enabled', 'close_before_overnight', 'trading_hours_enabled', 'paper_mode', 'algo_enabled'].forEach(name => {
             if (!(name in data)) {
                 data[name] = false;
             }
