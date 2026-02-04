@@ -471,6 +471,7 @@ class AutoTrader:
 
     def __init__(self, db_path: str = "trading.db"):
         self.db_path = db_path
+        # Legacy single position tracking (for backwards compatibility)
         self._position_open = False
         self._position_direction: Optional[str] = None  # 'LONG' or 'SHORT'
         self._entry_trade_id: Optional[str] = None
@@ -488,32 +489,87 @@ class AutoTrader:
         # Pegged order executor for maker-style execution
         self._pegged_executor: Optional[PeggedOrderExecutor] = None
 
-        # Load any existing open position from database
+        # Separate position tracking for ALGO and MANUAL trades
+        self._algo_position = {
+            'open': False,
+            'direction': None,
+            'trade_id': None,
+            'spot_price': None,
+            'futures_price': None,
+            'zscore': None,
+            'entry_time': None,
+            'spot_ticket': None,
+            'futures_ticket': None,
+            'locked_mean': None,
+            'locked_std': None
+        }
+        self._manual_position = {
+            'open': False,
+            'direction': None,
+            'trade_id': None,
+            'spot_price': None,
+            'futures_price': None,
+            'zscore': None,
+            'entry_time': None,
+            'spot_ticket': None,
+            'futures_ticket': None,
+            'locked_mean': None,
+            'locked_std': None
+        }
+
+        # Load any existing open positions from database
         self._load_open_position()
 
     def _load_open_position(self):
-        """Load open position from database on startup"""
+        """Load open positions from database on startup (both ALGO and MANUAL)"""
         try:
             database = DatabaseManager(self.db_path)
-            # Check for open trades
             conn = database._get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM trades WHERE status = 'OPEN' ORDER BY entry_date DESC LIMIT 1")
-            row = cursor.fetchone()
-            if row:
-                self._position_open = True
-                self._position_direction = 'LONG' if row['direction'] == 'Long Spread' else 'SHORT'
-                self._entry_trade_id = row['trade_id']
-                self._entry_spot_price = row['entry_spot_price']
-                self._entry_futures_price = row['entry_futures_price']
-                self._entry_zscore = row['entry_zscore']
-                self._entry_time = datetime.fromisoformat(row['entry_date']) if row['entry_date'] else None
-                # Load MT5 tickets for closing positions
-                self._spot_ticket = row['mt5_spot_ticket'] if 'mt5_spot_ticket' in row.keys() else None
-                self._futures_ticket = row['mt5_futures_ticket'] if 'mt5_futures_ticket' in row.keys() else None
-                self._logger.info(f"[AUTO] Loaded open position: {self._position_direction} (ID: {self._entry_trade_id}, spot_ticket={self._spot_ticket}, futures_ticket={self._futures_ticket})")
+
+            # Load ALL open trades
+            cursor.execute("SELECT * FROM trades WHERE status = 'OPEN' ORDER BY entry_date DESC")
+            rows = cursor.fetchall()
+
+            for row in rows:
+                direction = 'LONG' if row['direction'] == 'Long Spread' else 'SHORT'
+                trade_source = row['trade_source'] if 'trade_source' in row.keys() else 'ALGO'
+                spot_ticket = row['mt5_spot_ticket'] if 'mt5_spot_ticket' in row.keys() else None
+                futures_ticket = row['mt5_futures_ticket'] if 'mt5_futures_ticket' in row.keys() else None
+
+                position_data = {
+                    'open': True,
+                    'direction': direction,
+                    'trade_id': row['trade_id'],
+                    'spot_price': row['entry_spot_price'],
+                    'futures_price': row['entry_futures_price'],
+                    'zscore': row['entry_zscore'],
+                    'entry_time': datetime.fromisoformat(row['entry_date']) if row['entry_date'] else None,
+                    'spot_ticket': spot_ticket,
+                    'futures_ticket': futures_ticket,
+                    'locked_mean': None,
+                    'locked_std': None
+                }
+
+                if trade_source == 'MANUAL':
+                    self._manual_position = position_data
+                    self._logger.info(f"[AUTO] Loaded MANUAL position: {direction} (ID: {row['trade_id']})")
+                else:
+                    self._algo_position = position_data
+                    # Also set legacy fields for backwards compatibility
+                    self._position_open = True
+                    self._position_direction = direction
+                    self._entry_trade_id = row['trade_id']
+                    self._entry_spot_price = row['entry_spot_price']
+                    self._entry_futures_price = row['entry_futures_price']
+                    self._entry_zscore = row['entry_zscore']
+                    self._entry_time = position_data['entry_time']
+                    self._spot_ticket = spot_ticket
+                    self._futures_ticket = futures_ticket
+                    self._logger.info(f"[AUTO] Loaded ALGO position: {direction} (ID: {row['trade_id']})")
+
         except Exception as e:
-            self._logger.error(f"[AUTO] Error loading open position: {e}")
+            self._logger.error(f"[AUTO] Error loading open positions: {e}")
 
     def _log_std_filter_event(self, database, zscore, signal_type, current_std,
                                min_required_std, std_ratio, is_profitable,
@@ -1207,24 +1263,41 @@ class AutoTrader:
                     action_taken='TRADE_ENTERED', trade_id=trade_id
                 )
 
-            # Update position tracking
-            self._position_open = True
-            self._position_direction = direction
-            self._entry_trade_id = trade_id
-            self._entry_spot_price = spot_result.price
-            self._entry_futures_price = futures_result.price
-            self._entry_zscore = signal.zscore
-            self._entry_time = datetime.now()
-            # Store MT5 tickets for closing positions later
-            self._spot_ticket = spot_result.order
-            self._futures_ticket = futures_result.order
-            # Store locked stats for limit order exit calculations
-            self._entry_locked_mean = getattr(signal, 'locked_mean', None)
-            self._entry_locked_std = getattr(signal, 'locked_std', None)
-            if self._entry_locked_mean is not None and self._entry_locked_std is not None:
-                self._logger.info(f"[AUTO] Locked stats stored: mean={self._entry_locked_mean:.4f}, std={self._entry_locked_std:.4f}")
+            # Update position tracking based on source
+            position_data = {
+                'open': True,
+                'direction': direction,
+                'trade_id': trade_id,
+                'spot_price': spot_result.price,
+                'futures_price': futures_result.price,
+                'zscore': signal.zscore,
+                'entry_time': datetime.now(),
+                'spot_ticket': spot_result.order,
+                'futures_ticket': futures_result.order,
+                'locked_mean': getattr(signal, 'locked_mean', None),
+                'locked_std': getattr(signal, 'locked_std', None)
+            }
 
-            self._logger.info(f"[AUTO] Trade opened: {trade_id} ({direction}) - spot_ticket={self._spot_ticket}, futures_ticket={self._futures_ticket}")
+            if trade_source == 'MANUAL':
+                self._manual_position = position_data
+                self._logger.info(f"[MANUAL] Trade opened: {trade_id} ({direction})")
+            else:
+                self._algo_position = position_data
+                # Also update legacy fields for backwards compatibility
+                self._position_open = True
+                self._position_direction = direction
+                self._entry_trade_id = trade_id
+                self._entry_spot_price = spot_result.price
+                self._entry_futures_price = futures_result.price
+                self._entry_zscore = signal.zscore
+                self._entry_time = datetime.now()
+                self._spot_ticket = spot_result.order
+                self._futures_ticket = futures_result.order
+                self._entry_locked_mean = getattr(signal, 'locked_mean', None)
+                self._entry_locked_std = getattr(signal, 'locked_std', None)
+                if self._entry_locked_mean is not None and self._entry_locked_std is not None:
+                    self._logger.info(f"[AUTO] Locked stats stored: mean={self._entry_locked_mean:.4f}, std={self._entry_locked_std:.4f}")
+                self._logger.info(f"[AUTO] Trade opened: {trade_id} ({direction}) - spot_ticket={self._spot_ticket}, futures_ticket={self._futures_ticket}")
 
             # Sync engine position state to prevent duplicate signals (already locked above, this confirms success)
             if engine:
@@ -1367,21 +1440,40 @@ class AutoTrader:
                     action_taken='TRADE_ENTERED', trade_id=trade_id
                 )
 
-            # Update position tracking
-            self._entry_trade_id = trade_id
-            self._entry_spot_price = spot_result_price
-            self._entry_futures_price = futures_result_price
-            self._entry_zscore = signal.zscore
-            self._entry_time = datetime.now()
-            self._spot_ticket = spot_ticket
-            self._futures_ticket = futures_ticket
-            self._entry_locked_mean = getattr(signal, 'locked_mean', None)
-            self._entry_locked_std = getattr(signal, 'locked_std', None)
+            # Update position tracking based on source
+            position_data = {
+                'open': True,
+                'direction': direction,
+                'trade_id': trade_id,
+                'spot_price': spot_result_price,
+                'futures_price': futures_result_price,
+                'zscore': signal.zscore,
+                'entry_time': datetime.now(),
+                'spot_ticket': spot_ticket,
+                'futures_ticket': futures_ticket,
+                'locked_mean': getattr(signal, 'locked_mean', None),
+                'locked_std': getattr(signal, 'locked_std', None)
+            }
 
-            if self._entry_locked_mean is not None and self._entry_locked_std is not None:
-                self._logger.info(f"[AUTO] Locked stats stored: mean={self._entry_locked_mean:.4f}, std={self._entry_locked_std:.4f}")
+            if trade_source == 'MANUAL':
+                self._manual_position = position_data
+                self._logger.info(f"[MANUAL] Pegged trade opened: {trade_id} ({direction})")
+            else:
+                self._algo_position = position_data
+                # Also update legacy fields for backwards compatibility
+                self._entry_trade_id = trade_id
+                self._entry_spot_price = spot_result_price
+                self._entry_futures_price = futures_result_price
+                self._entry_zscore = signal.zscore
+                self._entry_time = datetime.now()
+                self._spot_ticket = spot_ticket
+                self._futures_ticket = futures_ticket
+                self._entry_locked_mean = getattr(signal, 'locked_mean', None)
+                self._entry_locked_std = getattr(signal, 'locked_std', None)
 
-            self._logger.info(f"[AUTO] Pegged trade opened: {trade_id} ({direction})")
+                if self._entry_locked_mean is not None and self._entry_locked_std is not None:
+                    self._logger.info(f"[AUTO] Locked stats stored: mean={self._entry_locked_mean:.4f}, std={self._entry_locked_std:.4f}")
+                self._logger.info(f"[AUTO] Pegged trade opened: {trade_id} ({direction})")
 
             # Emit to frontend
             socketio.emit('auto_trade', {
@@ -1690,11 +1782,16 @@ class AutoTrader:
         Places limit orders near best bid/ask for exits, with timeout fallback.
         Does NOT use pegged orders for STOP_LOSS signals (uses market for immediacy).
         """
-        if not self._position_open:
-            self._logger.info("[AUTO] No position open, skipping exit signal")
+        # Determine signal source and get the correct position
+        trade_source = getattr(signal, 'source', 'ALGO')
+        position = self.get_position_by_source(trade_source)
+
+        if not position['open']:
+            self._logger.info(f"[AUTO] No {trade_source} position open, skipping exit signal")
             return
 
         signal_type = signal.signal_type
+        position_direction = position['direction']
 
         # STOP_LOSS always uses market for immediate execution
         if signal_type == 'STOP_LOSS':
@@ -1703,7 +1800,7 @@ class AutoTrader:
                                            spot_broker, futures_broker,
                                            spot_price, futures_price)
 
-        self._logger.info(f"[AUTO] === PEGGED LIMIT EXIT === Closing {self._position_direction} position")
+        self._logger.info(f"[{trade_source}] === PEGGED LIMIT EXIT === Closing {position_direction} position")
 
         try:
             import MetaTrader5 as mt5
@@ -1734,14 +1831,14 @@ class AutoTrader:
 
             # Execute exit using pegged limit orders
             spread_order = self._pegged_executor.execute_exit(
-                position_type=self._position_direction,
+                position_type=position_direction,
                 spot_broker=spot_broker,
                 futures_broker=futures_broker,
                 spot_tick=spot_tick_dict,
                 futures_tick=futures_tick_dict,
                 quantity=config.lot_size,
-                spot_position_ticket=self._spot_ticket,
-                futures_position_ticket=self._futures_ticket,
+                spot_position_ticket=position['spot_ticket'],
+                futures_position_ticket=position['futures_ticket'],
             )
 
             if spread_order is None:
@@ -1759,22 +1856,28 @@ class AutoTrader:
             spot_result_price = spread_order.spot_leg.filled_price
             futures_result_price = spread_order.futures_leg.filled_price
 
-            self._logger.info(f"[AUTO] Pegged exit COMPLETE: spot={spot_result_price:.2f}, futures={futures_result_price:.2f}")
+            self._logger.info(f"[{trade_source}] Pegged exit COMPLETE: spot={spot_result_price:.2f}, futures={futures_result_price:.2f}")
+
+            # Get position data for P&L calculation
+            entry_spot_price = position['spot_price']
+            entry_futures_price = position['futures_price']
+            entry_time = position['entry_time']
+            trade_id = position['trade_id']
 
             # Calculate P&L
-            if self._position_direction == 'SHORT':
-                spot_pnl = (spot_result_price - self._entry_spot_price) * config.lot_size * config.contract_size
-                futures_pnl = (self._entry_futures_price - futures_result_price) * config.lot_size * config.contract_size
+            if position_direction == 'SHORT':
+                spot_pnl = (spot_result_price - entry_spot_price) * config.lot_size * config.contract_size
+                futures_pnl = (entry_futures_price - futures_result_price) * config.lot_size * config.contract_size
             else:
-                spot_pnl = (self._entry_spot_price - spot_result_price) * config.lot_size * config.contract_size
-                futures_pnl = (futures_result_price - self._entry_futures_price) * config.lot_size * config.contract_size
+                spot_pnl = (entry_spot_price - spot_result_price) * config.lot_size * config.contract_size
+                futures_pnl = (futures_result_price - entry_futures_price) * config.lot_size * config.contract_size
 
             gross_pnl = spot_pnl + futures_pnl
             commission = config.commission_per_lot * config.lot_size * 2
             net_pnl = gross_pnl - commission
 
             # Update trade in database
-            days_held = (datetime.now() - self._entry_time).total_seconds() / 86400 if self._entry_time else 0
+            days_held = (datetime.now() - entry_time).total_seconds() / 86400 if entry_time else 0
 
             conn = database._get_connection()
             cursor = conn.cursor()
@@ -1803,42 +1906,34 @@ class AutoTrader:
                 gross_pnl,
                 commission,
                 net_pnl,
-                self._entry_trade_id
+                trade_id
             ))
             conn.commit()
 
-            self._logger.info(f"[AUTO] Pegged trade closed: {self._entry_trade_id}, Net P&L: ${net_pnl:.2f}")
+            self._logger.info(f"[{trade_source}] Pegged trade closed: {trade_id}, Net P&L: ${net_pnl:.2f}")
 
             # Emit to frontend
             socketio.emit('auto_trade', {
                 'action': 'EXIT',
                 'signal_type': signal_type,
-                'trade_id': self._entry_trade_id,
+                'trade_id': trade_id,
                 'spot_price': spot_result_price,
                 'futures_price': futures_result_price,
                 'zscore': signal.zscore,
                 'net_pnl': net_pnl,
-                'execution_mode': 'PEGGED_LIMIT'
+                'execution_mode': 'PEGGED_LIMIT',
+                'source': trade_source
             })
 
-            # Reset position tracking
-            self._position_open = False
-            self._position_direction = None
-            self._entry_trade_id = None
-            self._entry_spot_price = None
-            self._entry_futures_price = None
-            self._entry_zscore = None
-            self._entry_time = None
-            self._spot_ticket = None
-            self._futures_ticket = None
-            self._entry_locked_mean = None
-            self._entry_locked_std = None
+            # Reset the correct position based on source
+            self.reset_position(trade_id=trade_id, source=trade_source)
 
-            # Sync engine position state
-            global engine
-            if engine:
-                engine.set_position_state(False, None)
-                self._logger.info(f"[AUTO] Engine position state synced: has_position=False")
+            # Sync engine position state only for ALGO trades
+            if trade_source == 'ALGO':
+                global engine
+                if engine:
+                    engine.set_position_state(False, None)
+                    self._logger.info(f"[AUTO] Engine position state synced: has_position=False")
 
         except Exception as e:
             self._logger.error(f"[AUTO] Pegged exit error: {e}")
@@ -1850,11 +1945,16 @@ class AutoTrader:
                            spot_price: float, futures_price: float):
         """Handle exit signal (EXIT or STOP_LOSS)"""
 
-        if not self._position_open:
-            self._logger.info("[AUTO] No position open, skipping exit signal")
+        # Determine signal source and get the correct position
+        trade_source = getattr(signal, 'source', 'ALGO')
+        position = self.get_position_by_source(trade_source)
+
+        if not position['open']:
+            self._logger.info(f"[AUTO] No {trade_source} position open, skipping exit signal")
             return
 
         signal_type = signal.signal_type
+        position_direction = position['direction']
 
         # Check if pegged limit order execution is configured
         # STOP_LOSS always uses market for immediate execution
@@ -1868,7 +1968,7 @@ class AutoTrader:
 
         use_limit_orders = config.exit_order_type == 'LIMIT' and signal_type != 'STOP_LOSS'
 
-        self._logger.info(f"[AUTO] Executing exit trade ({signal_type}), order_type={'LIMIT' if use_limit_orders else 'MARKET'}")
+        self._logger.info(f"[AUTO] Executing {trade_source} exit trade ({signal_type}), order_type={'LIMIT' if use_limit_orders else 'MARKET'}")
 
         try:
             import MetaTrader5 as mt5
@@ -1880,7 +1980,7 @@ class AutoTrader:
             lot_size = config.lot_size
 
             # Close in opposite direction of entry
-            if self._position_direction == 'SHORT':
+            if position_direction == 'SHORT':
                 # Was short spread (bought spot, sold futures) - now sell spot, buy futures
                 spot_order_type = mt5.ORDER_TYPE_SELL
                 futures_order_type = mt5.ORDER_TYPE_BUY
@@ -1952,24 +2052,30 @@ class AutoTrader:
 
             mt5.shutdown()
 
+            # Get position data for P&L calculation
+            entry_spot_price = position['spot_price']
+            entry_futures_price = position['futures_price']
+            entry_time = position['entry_time']
+            trade_id = position['trade_id']
+
             # Calculate P&L
-            if self._position_direction == 'SHORT':
+            if position_direction == 'SHORT':
                 # Short spread: Bought spot at entry, sold at exit
-                spot_pnl = (spot_result.price - self._entry_spot_price) * lot_size * config.contract_size
+                spot_pnl = (spot_result.price - entry_spot_price) * lot_size * config.contract_size
                 # Sold futures at entry, bought at exit
-                futures_pnl = (self._entry_futures_price - futures_result.price) * lot_size * config.contract_size
+                futures_pnl = (entry_futures_price - futures_result.price) * lot_size * config.contract_size
             else:
                 # Long spread: Sold spot at entry, bought at exit
-                spot_pnl = (self._entry_spot_price - spot_result.price) * lot_size * config.contract_size
+                spot_pnl = (entry_spot_price - spot_result.price) * lot_size * config.contract_size
                 # Bought futures at entry, sold at exit
-                futures_pnl = (futures_result.price - self._entry_futures_price) * lot_size * config.contract_size
+                futures_pnl = (futures_result.price - entry_futures_price) * lot_size * config.contract_size
 
             gross_pnl = spot_pnl + futures_pnl
             commission = config.commission_per_lot * lot_size * 2  # Both legs, entry and exit
             net_pnl = gross_pnl - commission
 
             # Update trade in database
-            days_held = (datetime.now() - self._entry_time).total_seconds() / 86400 if self._entry_time else 0
+            days_held = (datetime.now() - entry_time).total_seconds() / 86400 if entry_time else 0
 
             # Load existing trade and update
             conn = database._get_connection()
@@ -1999,41 +2105,33 @@ class AutoTrader:
                 gross_pnl,
                 commission,
                 net_pnl,
-                self._entry_trade_id
+                trade_id
             ))
             conn.commit()
 
-            self._logger.info(f"[AUTO] Trade closed: {self._entry_trade_id}, Net P&L: ${net_pnl:.2f}")
+            self._logger.info(f"[{trade_source}] Trade closed: {trade_id}, Net P&L: ${net_pnl:.2f}")
 
             # Emit to frontend
             socketio.emit('auto_trade', {
                 'action': 'EXIT',
                 'signal_type': signal_type,
-                'trade_id': self._entry_trade_id,
+                'trade_id': trade_id,
                 'spot_price': spot_result.price,
                 'futures_price': futures_result.price,
                 'zscore': signal.zscore,
-                'net_pnl': net_pnl
+                'net_pnl': net_pnl,
+                'source': trade_source
             })
 
-            # Reset position tracking
-            self._position_open = False
-            self._position_direction = None
-            self._entry_trade_id = None
-            self._entry_spot_price = None
-            self._entry_futures_price = None
-            self._entry_zscore = None
-            self._entry_time = None
-            self._spot_ticket = None
-            self._futures_ticket = None
-            self._entry_locked_mean = None
-            self._entry_locked_std = None
+            # Reset the correct position based on source
+            self.reset_position(trade_id=trade_id, source=trade_source)
 
-            # Sync engine position state
-            global engine
-            if engine:
-                engine.set_position_state(False, None)
-                self._logger.info(f"[AUTO] Engine position state synced: has_position=False")
+            # Sync engine position state only for ALGO trades
+            if trade_source == 'ALGO':
+                global engine
+                if engine:
+                    engine.set_position_state(False, None)
+                    self._logger.info(f"[AUTO] Engine position state synced: has_position=False")
 
         except ImportError:
             self._logger.error("[AUTO] MetaTrader5 not installed")
@@ -2044,31 +2142,63 @@ class AutoTrader:
 
     @property
     def has_position(self) -> bool:
-        return self._position_open
+        """Legacy: returns True if ALGO has position (for backwards compatibility)"""
+        return self._algo_position['open']
 
     @property
     def position_direction(self) -> Optional[str]:
-        return self._position_direction
+        """Legacy: returns ALGO position direction"""
+        return self._algo_position['direction']
 
-    def reset_position(self, trade_id: str = None):
+    def has_algo_position(self) -> bool:
+        """Check if ALGO has an open position"""
+        return self._algo_position['open']
+
+    def has_manual_position(self) -> bool:
+        """Check if MANUAL trade has an open position"""
+        return self._manual_position['open']
+
+    def get_position_by_source(self, source: str) -> dict:
+        """Get position data by source ('ALGO' or 'MANUAL')"""
+        if source == 'MANUAL':
+            return self._manual_position
+        return self._algo_position
+
+    def reset_position(self, trade_id: str = None, source: str = 'ALGO'):
         """
-        Manually reset position state (for when position closed externally in MT5).
+        Reset position state by source (for when position closed externally in MT5).
 
-        This allows the algo to continue taking new positions after manual close.
+        Args:
+            trade_id: Optional trade ID for logging
+            source: 'ALGO' or 'MANUAL'
         """
-        self._logger.info(f"[AUTO] Manual position reset requested (trade_id={trade_id})")
+        self._logger.info(f"[AUTO] Position reset requested (trade_id={trade_id}, source={source})")
 
-        # Reset position tracking
-        self._position_open = False
-        self._position_direction = None
-        self._entry_trade_id = None
-        self._entry_spot_price = None
-        self._entry_futures_price = None
-        self._entry_zscore = None
-        self._entry_time = None
-        self._spot_ticket = None
-        self._futures_ticket = None
-        self._entry_locked_mean = None
+        if source == 'MANUAL':
+            self._manual_position = {
+                'open': False, 'direction': None, 'trade_id': None,
+                'spot_price': None, 'futures_price': None, 'zscore': None,
+                'entry_time': None, 'spot_ticket': None, 'futures_ticket': None,
+                'locked_mean': None, 'locked_std': None
+            }
+        else:
+            self._algo_position = {
+                'open': False, 'direction': None, 'trade_id': None,
+                'spot_price': None, 'futures_price': None, 'zscore': None,
+                'entry_time': None, 'spot_ticket': None, 'futures_ticket': None,
+                'locked_mean': None, 'locked_std': None
+            }
+            # Also reset legacy fields
+            self._position_open = False
+            self._position_direction = None
+            self._entry_trade_id = None
+            self._entry_spot_price = None
+            self._entry_futures_price = None
+            self._entry_zscore = None
+            self._entry_time = None
+            self._spot_ticket = None
+            self._futures_ticket = None
+            self._entry_locked_mean = None
         self._entry_locked_std = None
 
         # Sync engine position state
@@ -4877,10 +5007,8 @@ def start_price_streaming():
                             self.source = source  # 'ALGO' or 'MANUAL'
 
                     # === AUTO TRADING SIGNAL GENERATION ===
-                    # Skip algo signals if manual trade is active and waiting for entry
-                    manual_trade_active = config and config.manual_trade_enabled and config.manual_trade_status in ['WAITING_ENTRY', 'IN_POSITION']
-
-                    if config and config.algo_enabled and zscore is not None and auto_trader and not manual_trade_active:
+                    # Algo and Manual trades run independently with separate position tracking
+                    if config and config.algo_enabled and zscore is not None and auto_trader:
                         entry_threshold = config.entry_std_dev
                         exit_threshold = config.exit_std_dev
                         exit_opposite = config.exit_at_opposite_sd
@@ -4935,6 +5063,7 @@ def start_price_streaming():
                                 socketio.emit('signal', {'type': exit_reason, 'zscore': zscore})
 
                     # === MANUAL SPREAD TRADE LOGIC ===
+                    # Manual trade uses its own position tracking, separate from algo
                     manual_trade_info = None
                     if config and config.manual_trade_enabled and auto_trader:
                         manual_status = config.manual_trade_status
@@ -4942,8 +5071,8 @@ def start_price_streaming():
                         exit_target = config.manual_exit_spread
                         direction = config.manual_trade_direction
 
-                        # Waiting for entry
-                        if manual_status == 'WAITING_ENTRY' and not auto_trader.has_position:
+                        # Waiting for entry (check MANUAL position, not algo)
+                        if manual_status == 'WAITING_ENTRY' and not auto_trader.has_manual_position():
                             entry_hit = False
                             if direction == 'SHORT_SPREAD' and spread >= entry_target:
                                 entry_hit = True
@@ -4965,8 +5094,8 @@ def start_price_streaming():
                                 'info': f'<span class="text-warning"><i class="bi bi-hourglass-split me-1"></i>Waiting: spread ${spread:.2f} → ${entry_target:.2f}</span>'
                             }
 
-                        # In position, waiting for exit
-                        elif manual_status == 'IN_POSITION' and auto_trader.has_position:
+                        # In position, waiting for exit (check MANUAL position)
+                        elif manual_status == 'IN_POSITION' and auto_trader.has_manual_position():
                             exit_hit = False
                             if direction == 'SHORT_SPREAD' and spread <= exit_target:
                                 exit_hit = True
@@ -4985,8 +5114,9 @@ def start_price_streaming():
                                     exit_hit = True
                                     logger.info("[MANUAL] Overnight EXIT_ALWAYS triggered")
                                 elif overnight_mode == 'EXIT_IF_PROFIT':
-                                    # Check if in profit
-                                    entry_spread = auto_trader._entry_spot_price - auto_trader._entry_futures_price if auto_trader._entry_spot_price else 0
+                                    # Check if in profit using MANUAL position data
+                                    manual_pos = auto_trader._manual_position
+                                    entry_spread = manual_pos['spot_price'] - manual_pos['futures_price'] if manual_pos['spot_price'] else 0
                                     if direction == 'SHORT_SPREAD':
                                         in_profit = spread < entry_spread
                                     else:
