@@ -3229,6 +3229,74 @@ def api_toggle_algo():
     })
 
 
+@app.route('/api/manual-trade/activate', methods=['POST'])
+def api_manual_trade_activate():
+    """Activate manual spread trade mode"""
+    database = get_db()
+    data = request.get_json()
+
+    entry_spread = data.get('entry_spread')
+    exit_spread = data.get('exit_spread')
+    direction = data.get('direction', 'SHORT_SPREAD')
+    overnight_mode = data.get('overnight_mode', 'ALLOW')
+
+    if entry_spread is None or exit_spread is None:
+        return jsonify({'success': False, 'error': 'Entry and exit spread values required'})
+
+    # Update config
+    database.update_config_field('manual_trade_enabled', True)
+    database.update_config_field('manual_entry_spread', float(entry_spread))
+    database.update_config_field('manual_exit_spread', float(exit_spread))
+    database.update_config_field('manual_trade_direction', direction)
+    database.update_config_field('manual_overnight_mode', overnight_mode)
+    database.update_config_field('manual_trade_status', 'WAITING_ENTRY')
+
+    if engine:
+        engine.reload_config()
+
+    logger.info(f"[MANUAL TRADE] Activated: entry=${entry_spread}, exit=${exit_spread}, direction={direction}, overnight={overnight_mode}")
+
+    return jsonify({
+        'success': True,
+        'message': f"Manual trade activated!\n\nWaiting for spread to reach ${entry_spread:.2f} to enter {direction.replace('_', ' ')}."
+    })
+
+
+@app.route('/api/manual-trade/cancel', methods=['POST'])
+def api_manual_trade_cancel():
+    """Cancel manual spread trade mode"""
+    database = get_db()
+
+    database.update_config_field('manual_trade_enabled', False)
+    database.update_config_field('manual_trade_status', 'IDLE')
+
+    if engine:
+        engine.reload_config()
+
+    logger.info("[MANUAL TRADE] Cancelled by user")
+
+    return jsonify({
+        'success': True,
+        'message': 'Manual trade cancelled. Status reset to IDLE.'
+    })
+
+
+@app.route('/api/manual-trade/status')
+def api_manual_trade_status():
+    """Get manual trade status"""
+    database = get_db()
+    config = database.get_config()
+
+    return jsonify({
+        'enabled': config.manual_trade_enabled if config else False,
+        'entry_spread': config.manual_entry_spread if config else 0,
+        'exit_spread': config.manual_exit_spread if config else 0,
+        'direction': config.manual_trade_direction if config else 'SHORT_SPREAD',
+        'overnight_mode': config.manual_overnight_mode if config else 'ALLOW',
+        'status': config.manual_trade_status if config else 'IDLE'
+    })
+
+
 @app.route('/api/auto-trader/status')
 def api_auto_trader_status():
     """Get auto trader status including open position"""
@@ -4857,6 +4925,92 @@ def start_price_streaming():
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': exit_reason, 'zscore': zscore})
 
+                    # === MANUAL SPREAD TRADE LOGIC ===
+                    manual_trade_info = None
+                    if config and config.manual_trade_enabled and auto_trader:
+                        manual_status = config.manual_trade_status
+                        entry_target = config.manual_entry_spread
+                        exit_target = config.manual_exit_spread
+                        direction = config.manual_trade_direction
+
+                        # Waiting for entry
+                        if manual_status == 'WAITING_ENTRY' and not auto_trader.has_position:
+                            entry_hit = False
+                            if direction == 'SHORT_SPREAD' and spread >= entry_target:
+                                entry_hit = True
+                            elif direction == 'LONG_SPREAD' and spread <= entry_target:
+                                entry_hit = True
+
+                            if entry_hit:
+                                logger.info(f"[MANUAL] Entry target hit! spread=${spread:.2f}, target=${entry_target:.2f}")
+                                signal_type = 'ENTRY_SHORT' if direction == 'SHORT_SPREAD' else 'ENTRY_LONG'
+                                signal = Signal(signal_type, zscore or 0, spread, locked_mean, locked_std)
+                                auto_trader.handle_signal(signal)
+                                socketio.emit('signal', {'type': f'MANUAL_{signal_type}', 'spread': spread})
+                                # Update status to IN_POSITION
+                                database.update_config_field('manual_trade_status', 'IN_POSITION')
+                                manual_status = 'IN_POSITION'
+
+                            manual_trade_info = {
+                                'status': manual_status,
+                                'info': f'<span class="text-warning"><i class="bi bi-hourglass-split me-1"></i>Waiting: spread ${spread:.2f} → ${entry_target:.2f}</span>'
+                            }
+
+                        # In position, waiting for exit
+                        elif manual_status == 'IN_POSITION' and auto_trader.has_position:
+                            exit_hit = False
+                            if direction == 'SHORT_SPREAD' and spread <= exit_target:
+                                exit_hit = True
+                            elif direction == 'LONG_SPREAD' and spread >= exit_target:
+                                exit_hit = True
+
+                            # Check overnight exit
+                            overnight_mode = config.manual_overnight_mode
+                            current_hour = datetime.now().hour
+                            current_minute = datetime.now().minute
+                            overnight_hour = config.overnight_close_hour or 16
+                            overnight_minute = config.overnight_close_minute or 55
+
+                            if current_hour == overnight_hour and current_minute >= overnight_minute:
+                                if overnight_mode == 'EXIT_ALWAYS':
+                                    exit_hit = True
+                                    logger.info("[MANUAL] Overnight EXIT_ALWAYS triggered")
+                                elif overnight_mode == 'EXIT_IF_PROFIT':
+                                    # Check if in profit
+                                    entry_spread = auto_trader._entry_spot_price - auto_trader._entry_futures_price if auto_trader._entry_spot_price else 0
+                                    if direction == 'SHORT_SPREAD':
+                                        in_profit = spread < entry_spread
+                                    else:
+                                        in_profit = spread > entry_spread
+                                    if in_profit:
+                                        exit_hit = True
+                                        logger.info("[MANUAL] Overnight EXIT_IF_PROFIT triggered (in profit)")
+
+                            if exit_hit:
+                                logger.info(f"[MANUAL] Exit target hit! spread=${spread:.2f}, target=${exit_target:.2f}")
+                                signal = Signal('EXIT', zscore or 0, spread)
+                                auto_trader.handle_signal(signal)
+                                socketio.emit('signal', {'type': 'MANUAL_EXIT', 'spread': spread})
+                                # Reset manual trade
+                                database.update_config_field('manual_trade_status', 'IDLE')
+                                database.update_config_field('manual_trade_enabled', False)
+                                manual_status = 'IDLE'
+                                manual_trade_info = {
+                                    'status': 'IDLE',
+                                    'info': '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Trade completed!</span>'
+                                }
+                            else:
+                                profit_direction = "↓" if direction == 'SHORT_SPREAD' else "↑"
+                                manual_trade_info = {
+                                    'status': 'IN_POSITION',
+                                    'info': f'<span class="text-success"><i class="bi bi-check-circle me-1"></i>In position: ${spread:.2f} {profit_direction} ${exit_target:.2f}</span>'
+                                }
+                        else:
+                            manual_trade_info = {
+                                'status': manual_status,
+                                'info': '<span class="text-muted">Set your target spreads and activate</span>'
+                            }
+
                     # Z-score is ready if we have locked stats
                     zscore_ready = stats_source != 'none'
 
@@ -4888,7 +5042,9 @@ def start_price_streaming():
                         # Entry/Exit Bands
                         'bands': entry_exit_bands,
                         # Hurst Exponent (regime detection)
-                        'hurst': hurst_data
+                        'hurst': hurst_data,
+                        # Manual Spread Trade status
+                        'manual_trade': manual_trade_info
                     })
 
                 time.sleep(tick_interval)  # Update interval from settings

@@ -99,6 +99,14 @@ class TradingConfig:
     # Price Streaming
     tick_interval: float = 0.3  # Seconds between price updates (0.1 to 2.0)
 
+    # Manual Spread Trade Mode
+    manual_trade_enabled: bool = False
+    manual_entry_spread: float = 0.0  # Target spread to enter (e.g., 22.00)
+    manual_exit_spread: float = 0.0   # Target spread to exit (e.g., 19.00)
+    manual_trade_direction: str = "SHORT_SPREAD"  # 'LONG_SPREAD' or 'SHORT_SPREAD'
+    manual_overnight_mode: str = "ALLOW"  # 'ALLOW', 'EXIT_IF_PROFIT', 'EXIT_ALWAYS'
+    manual_trade_status: str = "IDLE"  # 'IDLE', 'WAITING_ENTRY', 'IN_POSITION', 'WAITING_EXIT'
+
     # Mode Settings
     algo_enabled: bool = False
     paper_mode: bool = True
@@ -151,6 +159,12 @@ class TradingConfig:
             'maker_fee_bps': self.maker_fee_bps,
             'taker_fee_bps': self.taker_fee_bps,
             'tick_interval': self.tick_interval,
+            'manual_trade_enabled': self.manual_trade_enabled,
+            'manual_entry_spread': self.manual_entry_spread,
+            'manual_exit_spread': self.manual_exit_spread,
+            'manual_trade_direction': self.manual_trade_direction,
+            'manual_overnight_mode': self.manual_overnight_mode,
+            'manual_trade_status': self.manual_trade_status,
             'algo_enabled': self.algo_enabled,
             'paper_mode': self.paper_mode,
             'selected_asset': self.selected_asset,

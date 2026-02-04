@@ -302,6 +302,81 @@
             </div>
         </div>
 
+        <!-- Manual Spread Trade -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-bullseye me-2"></i>Manual Spread Trade</span>
+                <span class="badge" id="manual-trade-status-badge">IDLE</span>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="text-muted small">Current Spread:</span>
+                        <span class="fw-bold fs-5" id="manual-current-spread">$0.00</span>
+                    </div>
+                </div>
+
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <label class="form-label small">Entry Spread</label>
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text">$</span>
+                            <input type="number" class="form-control" id="manual-entry-spread"
+                                   value="{{ config.manual_entry_spread or 22.0 }}" step="0.01">
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small">Exit Spread</label>
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text">$</span>
+                            <input type="number" class="form-control" id="manual-exit-spread"
+                                   value="{{ config.manual_exit_spread or 19.0 }}" step="0.01">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label small">Direction</label>
+                    <select class="form-select form-select-sm" id="manual-trade-direction">
+                        <option value="SHORT_SPREAD" {% if config.manual_trade_direction == 'SHORT_SPREAD' %}selected{% endif %}>
+                            Short Spread (Entry High → Exit Low)
+                        </option>
+                        <option value="LONG_SPREAD" {% if config.manual_trade_direction == 'LONG_SPREAD' %}selected{% endif %}>
+                            Long Spread (Entry Low → Exit High)
+                        </option>
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label small">Overnight Handling</label>
+                    <select class="form-select form-select-sm" id="manual-overnight-mode">
+                        <option value="ALLOW" {% if config.manual_overnight_mode == 'ALLOW' %}selected{% endif %}>
+                            Allow overnight (accept swap)
+                        </option>
+                        <option value="EXIT_IF_PROFIT" {% if config.manual_overnight_mode == 'EXIT_IF_PROFIT' %}selected{% endif %}>
+                            Exit before overnight if in profit
+                        </option>
+                        <option value="EXIT_ALWAYS" {% if config.manual_overnight_mode == 'EXIT_ALWAYS' %}selected{% endif %}>
+                            Exit before overnight always
+                        </option>
+                    </select>
+                </div>
+
+                <div class="d-grid gap-2">
+                    <button class="btn btn-primary btn-sm" id="manual-trade-activate" onclick="activateManualTrade()">
+                        <i class="bi bi-play-fill me-1"></i>Activate Trade
+                    </button>
+                    <button class="btn btn-danger btn-sm d-none" id="manual-trade-cancel" onclick="cancelManualTrade()">
+                        <i class="bi bi-stop-fill me-1"></i>Cancel Trade
+                    </button>
+                </div>
+
+                <div class="mt-2 small" id="manual-trade-info">
+                    <span class="text-muted">Set your target spreads and activate</span>
+                </div>
+            </div>
+        </div>
+
         <!-- Broker Status -->
         <div class="card mb-4">
             <div class="card-header">
@@ -900,6 +975,16 @@
 
         // Update Hurst from tick data (in addition to signal)
         updateHurst(data);
+
+        // Update Manual Spread Trade panel
+        if (data.spread !== undefined) {
+            updateManualTradePanel(data.spread);
+        }
+
+        // Update manual trade status from server
+        if (data.manual_trade) {
+            updateManualTradeStatus(data.manual_trade.status, data.manual_trade.info);
+        }
     }
 
     // STD Filter display
@@ -1638,6 +1723,147 @@
         } catch (err) {
             console.error('Close trade error:', err);
             alert('Error closing trade: ' + err.message);
+        }
+    }
+
+    // ==================== Manual Spread Trade Functions ====================
+
+    // Update manual trade panel with current spread
+    function updateManualTradePanel(spread) {
+        const spreadEl = document.getElementById('manual-current-spread');
+        if (spreadEl && spread !== undefined) {
+            spreadEl.textContent = '$' + spread.toFixed(2);
+        }
+    }
+
+    // Update manual trade status display
+    function updateManualTradeStatus(status, info) {
+        const badgeEl = document.getElementById('manual-trade-status-badge');
+        const infoEl = document.getElementById('manual-trade-info');
+        const activateBtn = document.getElementById('manual-trade-activate');
+        const cancelBtn = document.getElementById('manual-trade-cancel');
+        const entryInput = document.getElementById('manual-entry-spread');
+        const exitInput = document.getElementById('manual-exit-spread');
+        const directionSelect = document.getElementById('manual-trade-direction');
+        const overnightSelect = document.getElementById('manual-overnight-mode');
+
+        if (!badgeEl) return;
+
+        // Update badge
+        badgeEl.textContent = status;
+        switch(status) {
+            case 'IDLE':
+                badgeEl.className = 'badge bg-secondary';
+                break;
+            case 'WAITING_ENTRY':
+                badgeEl.className = 'badge bg-warning';
+                break;
+            case 'IN_POSITION':
+                badgeEl.className = 'badge bg-success';
+                break;
+            case 'WAITING_EXIT':
+                badgeEl.className = 'badge bg-info';
+                break;
+            default:
+                badgeEl.className = 'badge bg-secondary';
+        }
+
+        // Update info text
+        if (infoEl && info) {
+            infoEl.innerHTML = info;
+        }
+
+        // Update button visibility and input states
+        const isActive = status !== 'IDLE';
+        if (activateBtn) activateBtn.classList.toggle('d-none', isActive);
+        if (cancelBtn) cancelBtn.classList.toggle('d-none', !isActive);
+        if (entryInput) entryInput.disabled = isActive;
+        if (exitInput) exitInput.disabled = isActive;
+        if (directionSelect) directionSelect.disabled = isActive;
+        if (overnightSelect) overnightSelect.disabled = isActive;
+    }
+
+    async function activateManualTrade() {
+        const entrySpread = parseFloat(document.getElementById('manual-entry-spread').value);
+        const exitSpread = parseFloat(document.getElementById('manual-exit-spread').value);
+        const direction = document.getElementById('manual-trade-direction').value;
+        const overnightMode = document.getElementById('manual-overnight-mode').value;
+
+        // Validate
+        if (isNaN(entrySpread) || isNaN(exitSpread)) {
+            alert('Please enter valid spread values');
+            return;
+        }
+
+        // Validate direction makes sense
+        if (direction === 'SHORT_SPREAD' && entrySpread <= exitSpread) {
+            alert('For Short Spread: Entry spread should be HIGHER than exit spread\n(You profit when spread falls)');
+            return;
+        }
+        if (direction === 'LONG_SPREAD' && entrySpread >= exitSpread) {
+            alert('For Long Spread: Entry spread should be LOWER than exit spread\n(You profit when spread rises)');
+            return;
+        }
+
+        const confirmMsg = `Activate Manual Spread Trade?\n\n` +
+            `Direction: ${direction === 'SHORT_SPREAD' ? 'Short Spread (Sell Spot, Buy Futures)' : 'Long Spread (Buy Spot, Sell Futures)'}\n` +
+            `Entry when spread reaches: $${entrySpread.toFixed(2)}\n` +
+            `Exit when spread reaches: $${exitSpread.toFixed(2)}\n` +
+            `Expected profit: $${Math.abs(entrySpread - exitSpread).toFixed(2)} per unit\n` +
+            `Overnight: ${overnightMode}\n\n` +
+            `Click OK to activate.`;
+
+        if (!confirm(confirmMsg)) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/manual-trade/activate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    entry_spread: entrySpread,
+                    exit_spread: exitSpread,
+                    direction: direction,
+                    overnight_mode: overnightMode
+                })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                updateManualTradeStatus('WAITING_ENTRY',
+                    `<span class="text-warning"><i class="bi bi-hourglass-split me-1"></i>Waiting for spread to reach $${entrySpread.toFixed(2)}</span>`);
+                alert(result.message);
+            } else {
+                alert('Error: ' + result.error);
+            }
+        } catch (err) {
+            alert('Error activating trade: ' + err.message);
+        }
+    }
+
+    async function cancelManualTrade() {
+        if (!confirm('Cancel the manual spread trade?\n\nIf you have an open position, it will NOT be closed automatically.')) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/manual-trade/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                updateManualTradeStatus('IDLE', '<span class="text-muted">Set your target spreads and activate</span>');
+                alert(result.message);
+            } else {
+                alert('Error: ' + result.error);
+            }
+        } catch (err) {
+            alert('Error cancelling trade: ' + err.message);
         }
     }
 
