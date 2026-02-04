@@ -161,9 +161,21 @@ class DatabaseManager:
                 futures_broker_id TEXT,
                 mt5_futures_ticket INTEGER,
                 order_status TEXT,
-                status TEXT DEFAULT 'OPEN'
+                status TEXT DEFAULT 'OPEN',
+                trade_source TEXT DEFAULT 'ALGO',
+                execution_mode TEXT DEFAULT 'MARKET'
             )
         ''')
+
+        # Migration: Add columns to existing trades table if they don't exist
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN trade_source TEXT DEFAULT 'ALGO'")
+        except:
+            pass  # Column already exists
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN execution_mode TEXT DEFAULT 'MARKET'")
+        except:
+            pass  # Column already exists
 
         # Price history table
         cursor.execute('''
@@ -663,7 +675,9 @@ class DatabaseManager:
                 futures_broker_id=row['futures_broker_id'],
                 mt5_futures_ticket=row['mt5_futures_ticket'],
                 order_status=row['order_status'],
-                status=row['status']
+                status=row['status'],
+                trade_source=row['trade_source'] if 'trade_source' in row.keys() else 'ALGO',
+                execution_mode=row['execution_mode'] if 'execution_mode' in row.keys() else 'MARKET'
             ))
 
         return trades
@@ -684,8 +698,8 @@ class DatabaseManager:
                 exit_spot_price, exit_futures_price, spot_pnl, futures_pnl,
                 gross_pnl, swap_cost, commission, spread_cost, net_pnl, return_pct,
                 lot_size, spot_broker_id, mt5_spot_ticket, futures_broker_id,
-                mt5_futures_ticket, order_status, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                mt5_futures_ticket, order_status, status, trade_source, execution_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             trade.trade_id, trade.asset, trade.direction, trade.entry_date,
             trade.exit_date, trade.days_held, trade.entry_zscore, trade.exit_zscore,
@@ -694,7 +708,7 @@ class DatabaseManager:
             trade.gross_pnl, trade.swap_cost, trade.commission, trade.spread_cost,
             trade.net_pnl, trade.return_pct, trade.lot_size, trade.spot_broker_id,
             trade.mt5_spot_ticket, trade.futures_broker_id, trade.mt5_futures_ticket,
-            trade.order_status, trade.status
+            trade.order_status, trade.status, trade.trade_source, trade.execution_mode
         ))
 
         conn.commit()

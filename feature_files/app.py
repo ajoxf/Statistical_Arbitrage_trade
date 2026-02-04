@@ -1246,11 +1246,12 @@ class AutoTrader:
                 futures_broker_id=futures_broker.broker_id,
                 mt5_futures_ticket=futures_result.order,
                 status='OPEN',
-                trade_source=trade_source
+                trade_source=trade_source,
+                execution_mode='MARKET'
             )
 
             database.add_trade(trade)
-            self._logger.info(f"[AUTO] === TRADE RECORDED IN DATABASE: {trade_id} ===")
+            self._logger.info(f"[AUTO] === TRADE RECORDED (MARKET): {trade_id} ===")
 
             # Log successful trade entry to STD filter log
             if std_filter_result:
@@ -1423,11 +1424,12 @@ class AutoTrader:
                 futures_broker_id=futures_broker.broker_id,
                 mt5_futures_ticket=futures_ticket,
                 status='OPEN',
-                trade_source=trade_source
+                trade_source=trade_source,
+                execution_mode='PEGGED_LIMIT'
             )
 
             database.add_trade(trade)
-            self._logger.info(f"[AUTO] === PEGGED TRADE RECORDED: {trade_id} ===")
+            self._logger.info(f"[AUTO] === TRADE RECORDED (PEGGED_LIMIT): {trade_id} ===")
 
             # Log STD filter event
             if std_filter_result:
@@ -5014,9 +5016,23 @@ def start_price_streaming():
                         exit_opposite = config.exit_at_opposite_sd
                         stop_loss_threshold = config.stop_loss_std_dev
 
+                        # Check overnight protection for ALGO trades
+                        is_after_overnight_close = False
+                        if config.close_before_overnight:
+                            current_hour = datetime.now().hour
+                            current_minute = datetime.now().minute
+                            overnight_hour = config.overnight_close_hour or 16
+                            overnight_minute = config.overnight_close_minute or 55
+                            # Check if current time is at or after overnight close
+                            if current_hour > overnight_hour or (current_hour == overnight_hour and current_minute >= overnight_minute):
+                                is_after_overnight_close = True
+
                         # Check for entry signals (no position open)
                         if not auto_trader.has_position:
-                            if zscore >= entry_threshold:
+                            # Block new entries if past overnight close time
+                            if is_after_overnight_close:
+                                pass  # Don't generate entry signals after overnight close
+                            elif zscore >= entry_threshold:
                                 # Z-score high - short the spread
                                 # Pass locked stats for limit order exit calculation
                                 signal = Signal('ENTRY_SHORT', zscore, spread, locked_mean, locked_std)
@@ -5037,8 +5053,14 @@ def start_price_streaming():
                             should_exit = False
                             exit_reason = None
 
+                            # Overnight protection - force close positions
+                            if is_after_overnight_close:
+                                should_exit = True
+                                exit_reason = 'EXIT'
+                                logger.info(f"[SIGNAL] Overnight protection triggered - closing ALGO position")
+
                             # Stop loss check
-                            if abs(zscore) >= stop_loss_threshold:
+                            elif abs(zscore) >= stop_loss_threshold:
                                 should_exit = True
                                 exit_reason = 'STOP_LOSS'
 

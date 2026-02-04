@@ -223,6 +223,9 @@ class Trade:
     # Trade Source
     trade_source: str = "ALGO"  # 'ALGO' or 'MANUAL'
 
+    # Execution Mode
+    execution_mode: str = "MARKET"  # 'MARKET' or 'PEGGED_LIMIT'
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'trade_id': self.trade_id,
@@ -252,7 +255,8 @@ class Trade:
             'mt5_futures_ticket': self.mt5_futures_ticket,
             'order_status': self.order_status,
             'status': self.status,
-            'trade_source': self.trade_source
+            'trade_source': self.trade_source,
+            'execution_mode': self.execution_mode
         }
 
 

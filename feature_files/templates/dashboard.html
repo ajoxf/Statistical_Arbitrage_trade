@@ -613,6 +613,7 @@
                                     <tr>
                                         <th>#</th>
                                         <th>Source</th>
+                                        <th>Exec</th>
                                         <th>Direction</th>
                                         <th>Lots</th>
                                         <th>Entry</th>
@@ -633,7 +634,7 @@
                                 </thead>
                                 <tbody id="trade-journal-body">
                                     <tr>
-                                        <td colspan="18" class="text-center text-muted">No trades yet</td>
+                                        <td colspan="19" class="text-center text-muted">No trades yet</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1644,6 +1645,12 @@
                     ? '<span class="badge bg-info">Manual</span>'
                     : '<span class="badge bg-secondary">Algo</span>';
 
+                // Execution mode badge
+                const execMode = t.execution_mode || 'MARKET';
+                const execBadge = execMode === 'PEGGED_LIMIT'
+                    ? '<span class="badge bg-success">Limit</span>'
+                    : '<span class="badge bg-warning text-dark">Market</span>';
+
                 const actionBtn = t.status === 'OPEN'
                     ? `<button class="btn btn-sm btn-outline-danger" onclick="closeTradeManually('${t.trade_id}')" title="Close trade manually (if closed in MT5)">
                          <i class="bi bi-x-circle"></i> Close
@@ -1653,6 +1660,7 @@
                 return `<tr class="${t.status === 'OPEN' ? 'table-warning' : ''}">
                     <td>${i + 1}</td>
                     <td>${sourceBadge}</td>
+                    <td>${execBadge}</td>
                     <td class="${dirClass}">${icon} ${t.direction}</td>
                     <td>${t.lot_size || 0.1}</td>
                     <td>${t.entry_date || '--'}</td>
