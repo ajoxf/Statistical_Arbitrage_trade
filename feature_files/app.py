@@ -259,6 +259,10 @@ def calculate_min_profitable_std(config, current_std: float,
     contract_size = config.contract_size if config else 100.0
     min_profit_per_lot = config.min_profit_per_lot if config else 50.0
 
+    # Check execution mode - pegged limit orders avoid crossing the spread
+    execution_mode = getattr(config, 'order_execution_mode', 'MARKET') if config else 'MARKET'
+    is_pegged = execution_mode == 'PEGGED_LIMIT'
+
     # Use configured spread costs if real-time not available
     if spot_spread_cents is None:
         spot_spread_cents = (config.spot_spread_cost if config else 0.40) * 100
@@ -273,10 +277,23 @@ def calculate_min_profitable_std(config, current_std: float,
     else:
         z_move = entry_z - exit_z  # Normal exit near mean (e.g., 2.0 - 0.5 = 1.5σ)
 
-    # Calculate round-trip costs from bid-ask spreads
-    # Entry cost = (spot_spread + futures_spread) × lot_size × contract_size
-    entry_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * contract_size
-    round_trip_cost = entry_cost * 2  # Entry + exit
+    # Calculate round-trip costs based on execution mode
+    if is_pegged:
+        # Pegged limit orders: We're posting (maker), not crossing (taker)
+        # We avoid the bid-ask spread cost, only pay exchange fees
+        # Use maker fee from config (typically much lower)
+        maker_fee_bps = getattr(config, 'maker_fee_bps', 2.0) if config else 2.0
+        # Fee cost per leg: notional × fee_bps / 10000
+        # Notional ≈ price × lot_size × contract_size (approximate with spread as proxy)
+        # Simplified: use a small fraction of spread cost to represent maker fees
+        fee_cost_per_leg = (maker_fee_bps / 10000) * lot_size * contract_size * 100  # Rough estimate
+        entry_cost = fee_cost_per_leg * 2  # Both legs
+        round_trip_cost = entry_cost * 2  # Entry + exit
+    else:
+        # Market orders: We cross the spread (taker)
+        # Entry cost = (spot_spread + futures_spread) × lot_size × contract_size
+        entry_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * contract_size
+        round_trip_cost = entry_cost * 2  # Entry + exit
 
     # Min profit for this trade
     min_profit = min_profit_per_lot * lot_size
@@ -313,6 +330,9 @@ def calculate_min_profitable_std(config, current_std: float,
         'profit_if_successful': float(profit_if_successful),
         'std_deficit': float(max(0, min_std - current_std)),
         'std_ratio': float(current_std / min_std) if min_std > 0 else 0.0,
+        # Execution mode info
+        'execution_mode': execution_mode,
+        'is_pegged': is_pegged,
         # Debug values to verify config is being read correctly
         'entry_z': float(entry_z),
         'exit_z': float(exit_z),

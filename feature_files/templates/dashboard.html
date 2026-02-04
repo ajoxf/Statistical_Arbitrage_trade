@@ -372,8 +372,9 @@
 
         <!-- STD Profitability Filter -->
         <div class="card mb-4">
-            <div class="card-header">
-                <i class="bi bi-funnel me-2"></i>STD Profitability Filter
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-funnel me-2"></i>STD Profitability Filter</span>
+                <span class="badge bg-secondary" id="std-exec-mode">MARKET</span>
             </div>
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -398,7 +399,7 @@
                 </div>
                 <div class="mt-2 small">
                     <div class="d-flex justify-content-between">
-                        <span class="text-muted">Round-trip Cost:</span>
+                        <span class="text-muted" id="std-cost-label">Round-trip Cost:</span>
                         <span id="std-round-trip">$0.00</span>
                     </div>
                     <div class="d-flex justify-content-between">
@@ -406,6 +407,7 @@
                         <span id="std-expected-profit">$0.00</span>
                     </div>
                 </div>
+                <small class="text-muted d-block mt-2" id="std-exec-info"></small>
             </div>
         </div>
 
@@ -912,6 +914,9 @@
         const ratioBar = document.getElementById('std-ratio-bar');
         const roundTripEl = document.getElementById('std-round-trip');
         const expectedProfitEl = document.getElementById('std-expected-profit');
+        const execModeEl = document.getElementById('std-exec-mode');
+        const costLabelEl = document.getElementById('std-cost-label');
+        const execInfoEl = document.getElementById('std-exec-info');
 
         // Update values
         currentEl.textContent = '$' + sf.current_std.toFixed(2);
@@ -941,6 +946,21 @@
         roundTripEl.textContent = '$' + sf.round_trip_cost.toFixed(2);
         expectedProfitEl.textContent = '$' + sf.profit_if_successful.toFixed(2);
         expectedProfitEl.className = sf.profit_if_successful >= 0 ? 'text-success' : 'text-danger';
+
+        // Update execution mode display
+        if (sf.is_pegged) {
+            execModeEl.textContent = 'PEGGED LIMIT';
+            execModeEl.className = 'badge bg-info';
+            costLabelEl.textContent = 'Maker Fees (RT):';
+            execInfoEl.textContent = 'Pegged orders avoid spread crossing';
+            execInfoEl.className = 'text-info d-block mt-2 small';
+        } else {
+            execModeEl.textContent = 'MARKET';
+            execModeEl.className = 'badge bg-secondary';
+            costLabelEl.textContent = 'Round-trip Cost:';
+            execInfoEl.textContent = 'Market orders cross the spread';
+            execInfoEl.className = 'text-muted d-block mt-2 small';
+        }
     }
 
     // Entry/Exit Bands display
