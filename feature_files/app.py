@@ -871,7 +871,8 @@ class AutoTrader:
         self._logger.info(f"[AUTO] Trade details: lot_size={config.lot_size}, z={signal.zscore:.2f}")
 
         # Check if pegged limit order execution is configured
-        execution_mode = getattr(config, 'order_execution_mode', 'MARKET')
+        # Note: Settings UI saves to 'order_type' field (MARKET, LIMIT, PEGGED_LIMIT)
+        execution_mode = getattr(config, 'order_type', 'MARKET')
         if execution_mode == 'PEGGED_LIMIT':
             self._logger.info(f"[AUTO] Using PEGGED_LIMIT execution mode")
             return self._handle_entry_signal_pegged(
@@ -1959,8 +1960,9 @@ class AutoTrader:
         position_direction = position['direction']
 
         # Check if pegged limit order execution is configured
+        # Note: Settings UI saves to 'order_type' field (MARKET, LIMIT, PEGGED_LIMIT)
         # STOP_LOSS always uses market for immediate execution
-        execution_mode = getattr(config, 'order_execution_mode', 'MARKET')
+        execution_mode = getattr(config, 'order_type', 'MARKET')
         if execution_mode == 'PEGGED_LIMIT' and signal_type != 'STOP_LOSS':
             self._logger.info(f"[AUTO] Using PEGGED_LIMIT execution mode for exit")
             return self._handle_exit_signal_pegged(
