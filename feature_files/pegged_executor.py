@@ -683,7 +683,11 @@ class PeggedOrderExecutor:
         futures_broker,
         mt5,
     ) -> None:
-        """Amend (cancel and replace) existing limit orders with new prices."""
+        """Amend (cancel and replace) existing limit orders with new prices.
+
+        CRITICAL: Must NOT use 'return' for one leg - would skip the other leg!
+        Must verify cancel succeeded before placing new order.
+        """
         # Amend spot order if still open
         if spread_order.spot_leg.status == LegStatus.OPEN:
             try:
@@ -694,40 +698,47 @@ class PeggedOrderExecutor:
                     self._logger.info(f"[PEGGED] Spot order {spread_order.spot_leg.order_ticket} no longer pending, skipping amend")
                     # Check if it filled
                     self._check_order_status(spread_order, mt5)
-                    return  # Don't place new order
+                    # NOTE: Don't return - still need to check futures leg!
+                else:
+                    # Cancel existing order
+                    old_ticket = spread_order.spot_leg.order_ticket
+                    cancel_request = {
+                        "action": mt5.TRADE_ACTION_REMOVE,
+                        "order": old_ticket,
+                    }
+                    cancel_result = mt5.order_send(cancel_request)
 
-                # Cancel existing order
-                cancel_request = {
-                    "action": mt5.TRADE_ACTION_REMOVE,
-                    "order": spread_order.spot_leg.order_ticket,
-                }
-                cancel_result = mt5.order_send(cancel_request)
-
-                # Check if cancel succeeded
-                if cancel_result is None or cancel_result.retcode != mt5.TRADE_RETCODE_DONE:
-                    self._logger.warning(f"[PEGGED] Failed to cancel spot order: {cancel_result.retcode if cancel_result else 'None'}")
-                    # Check if order filled while we tried to cancel
-                    self._check_order_status(spread_order, mt5)
-                    return  # Don't place new order if cancel failed
-
-                # Place new order at updated price
-                remaining_qty = spread_order.spot_leg.quantity - spread_order.spot_leg.filled_qty
-                if remaining_qty > 0:
-                    result = self._place_limit_order_mt5(
-                        mt5, spot_broker.symbol,
-                        LegOrder(
-                            symbol=spot_broker.symbol,
-                            side=spread_order.spot_leg.side,
-                            quantity=remaining_qty,
-                            target_price=spread_order.spot_leg.target_price,
-                        ),
-                        spread_order.spot_leg.position_ticket
-                    )
-                    if result['success']:
-                        spread_order.spot_leg.order_ticket = result['order_id']
-                        self._logger.debug(f"[PEGGED] Spot order re-pegged: {spread_order.spot_leg.target_price:.2f}")
+                    # Check if cancel succeeded
+                    if cancel_result is None or cancel_result.retcode != mt5.TRADE_RETCODE_DONE:
+                        self._logger.warning(f"[PEGGED] Failed to cancel spot order {old_ticket}: {cancel_result.retcode if cancel_result else 'None'}")
+                        # Check if order filled while we tried to cancel
+                        self._check_order_status(spread_order, mt5)
+                        # NOTE: Don't place new order, but DON'T return - check futures
                     else:
-                        self._logger.error(f"[PEGGED] Failed to re-peg spot order: {result['error']}")
+                        self._logger.info(f"[PEGGED] Cancelled spot order {old_ticket}")
+                        # Verify order is actually gone before placing new one
+                        time.sleep(0.05)  # Brief pause to ensure cancel is processed
+                        verify = mt5.orders_get(ticket=old_ticket)
+                        if verify and len(verify) > 0:
+                            self._logger.error(f"[PEGGED] Spot order {old_ticket} still exists after cancel!")
+                        else:
+                            # Place new order at updated price
+                            remaining_qty = spread_order.spot_leg.quantity - spread_order.spot_leg.filled_qty
+                            if remaining_qty > 0:
+                                result = self._place_limit_order_mt5(
+                                    mt5, spot_broker.symbol,
+                                    LegOrder(
+                                        symbol=spot_broker.symbol,
+                                        side=spread_order.spot_leg.side,
+                                        quantity=remaining_qty,
+                                        target_price=spread_order.spot_leg.target_price,
+                                    ),
+                                    spread_order.spot_leg.position_ticket
+                                )
+                                if result['success']:
+                                    spread_order.spot_leg.order_ticket = result['order_id']
+                                else:
+                                    self._logger.error(f"[PEGGED] Failed to re-peg spot order: {result['error']}")
             except Exception as e:
                 self._logger.error(f"[PEGGED] Failed to amend spot order: {e}")
 
@@ -739,36 +750,41 @@ class PeggedOrderExecutor:
                 if orders is None or len(orders) == 0:
                     self._logger.info(f"[PEGGED] Futures order {spread_order.futures_leg.order_ticket} no longer pending, skipping amend")
                     self._check_order_status(spread_order, mt5)
-                    return
+                    # NOTE: No return needed here - this is the last leg
+                else:
+                    old_ticket = spread_order.futures_leg.order_ticket
+                    cancel_request = {
+                        "action": mt5.TRADE_ACTION_REMOVE,
+                        "order": old_ticket,
+                    }
+                    cancel_result = mt5.order_send(cancel_request)
 
-                cancel_request = {
-                    "action": mt5.TRADE_ACTION_REMOVE,
-                    "order": spread_order.futures_leg.order_ticket,
-                }
-                cancel_result = mt5.order_send(cancel_request)
-
-                if cancel_result is None or cancel_result.retcode != mt5.TRADE_RETCODE_DONE:
-                    self._logger.warning(f"[PEGGED] Failed to cancel futures order: {cancel_result.retcode if cancel_result else 'None'}")
-                    self._check_order_status(spread_order, mt5)
-                    return
-
-                remaining_qty = spread_order.futures_leg.quantity - spread_order.futures_leg.filled_qty
-                if remaining_qty > 0:
-                    result = self._place_limit_order_mt5(
-                        mt5, futures_broker.symbol,
-                        LegOrder(
-                            symbol=futures_broker.symbol,
-                            side=spread_order.futures_leg.side,
-                            quantity=remaining_qty,
-                            target_price=spread_order.futures_leg.target_price,
-                        ),
-                        spread_order.futures_leg.position_ticket
-                    )
-                    if result['success']:
-                        spread_order.futures_leg.order_ticket = result['order_id']
-                        self._logger.debug(f"[PEGGED] Futures order re-pegged: {spread_order.futures_leg.target_price:.2f}")
+                    if cancel_result is None or cancel_result.retcode != mt5.TRADE_RETCODE_DONE:
+                        self._logger.warning(f"[PEGGED] Failed to cancel futures order {old_ticket}: {cancel_result.retcode if cancel_result else 'None'}")
+                        self._check_order_status(spread_order, mt5)
                     else:
-                        self._logger.error(f"[PEGGED] Failed to re-peg futures order: {result['error']}")
+                        self._logger.info(f"[PEGGED] Cancelled futures order {old_ticket}")
+                        time.sleep(0.05)  # Brief pause to ensure cancel is processed
+                        verify = mt5.orders_get(ticket=old_ticket)
+                        if verify and len(verify) > 0:
+                            self._logger.error(f"[PEGGED] Futures order {old_ticket} still exists after cancel!")
+                        else:
+                            remaining_qty = spread_order.futures_leg.quantity - spread_order.futures_leg.filled_qty
+                            if remaining_qty > 0:
+                                result = self._place_limit_order_mt5(
+                                    mt5, futures_broker.symbol,
+                                    LegOrder(
+                                        symbol=futures_broker.symbol,
+                                        side=spread_order.futures_leg.side,
+                                        quantity=remaining_qty,
+                                        target_price=spread_order.futures_leg.target_price,
+                                    ),
+                                    spread_order.futures_leg.position_ticket
+                                )
+                                if result['success']:
+                                    spread_order.futures_leg.order_ticket = result['order_id']
+                                else:
+                                    self._logger.error(f"[PEGGED] Failed to re-peg futures order: {result['error']}")
             except Exception as e:
                 self._logger.error(f"[PEGGED] Failed to amend futures order: {e}")
 
