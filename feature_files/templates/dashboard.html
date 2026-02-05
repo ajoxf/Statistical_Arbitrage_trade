@@ -399,8 +399,9 @@
 
         <!-- STD Profitability Filter -->
         <div class="card mb-4">
-            <div class="card-header">
-                <i class="bi bi-funnel me-2"></i>STD Profitability Filter
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-funnel me-2"></i>STD Profitability Filter</span>
+                <span class="badge bg-secondary" id="std-order-type-badge">MARKET</span>
             </div>
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -438,8 +439,9 @@
 
         <!-- Spread Penalty (Slippage) -->
         <div class="card mb-4" id="spread-penalty-container">
-            <div class="card-header">
-                <i class="bi bi-exclamation-triangle me-2"></i>Execution Slippage
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-exclamation-triangle me-2"></i>Execution Slippage</span>
+                <span class="badge bg-secondary" id="slippage-order-type-badge">MARKET</span>
             </div>
             <div class="card-body">
                 <div class="row text-center mb-2">
@@ -971,6 +973,20 @@
         const ratioBar = document.getElementById('std-ratio-bar');
         const roundTripEl = document.getElementById('std-round-trip');
         const expectedProfitEl = document.getElementById('std-expected-profit');
+        const orderTypeBadge = document.getElementById('std-order-type-badge');
+
+        // Update order type badge
+        if (orderTypeBadge && sf.order_type) {
+            if (sf.is_maker) {
+                orderTypeBadge.textContent = 'MAKER';
+                orderTypeBadge.className = 'badge bg-info';
+                orderTypeBadge.title = 'Pegged limit orders - lower costs';
+            } else {
+                orderTypeBadge.textContent = 'TAKER';
+                orderTypeBadge.className = 'badge bg-warning text-dark';
+                orderTypeBadge.title = 'Market orders - crosses spread';
+            }
+        }
 
         // Update values
         currentEl.textContent = '$' + sf.current_std.toFixed(2);
@@ -1010,36 +1026,76 @@
         const container = document.getElementById('spread-penalty-container');
         if (!container) return;
 
+        // Update order type badge
+        const orderTypeBadge = document.getElementById('slippage-order-type-badge');
+        if (orderTypeBadge) {
+            if (sp.is_maker) {
+                orderTypeBadge.textContent = 'MAKER';
+                orderTypeBadge.className = 'badge bg-info';
+                orderTypeBadge.title = 'Pegged limit orders - no spread crossing';
+            } else {
+                orderTypeBadge.textContent = 'TAKER';
+                orderTypeBadge.className = 'badge bg-warning text-dark';
+                orderTypeBadge.title = 'Market orders - crosses spread';
+            }
+        }
+
         // Update long penalty
         const longPenaltyEl = document.getElementById('spread-penalty-long');
         const longStatusEl = document.getElementById('spread-penalty-long-status');
         if (longPenaltyEl) {
-            longPenaltyEl.textContent = sp.long_penalty_std.toFixed(2) + 'σ';
-            longPenaltyEl.className = sp.long_blocked ? 'text-danger fw-bold' : 'text-success';
+            if (sp.is_maker) {
+                // Maker mode: show 0σ with special styling
+                longPenaltyEl.textContent = '0.00σ';
+                longPenaltyEl.className = 'text-info fw-bold';
+            } else {
+                longPenaltyEl.textContent = sp.long_penalty_std.toFixed(2) + 'σ';
+                longPenaltyEl.className = sp.long_blocked ? 'text-danger fw-bold' : 'text-success';
+            }
         }
         if (longStatusEl) {
-            longStatusEl.textContent = sp.long_blocked ? '⛔' : '✓';
-            longStatusEl.className = sp.long_blocked ? 'text-danger' : 'text-success';
+            if (sp.is_maker) {
+                longStatusEl.textContent = '✓';
+                longStatusEl.className = 'text-info';
+            } else {
+                longStatusEl.textContent = sp.long_blocked ? '⛔' : '✓';
+                longStatusEl.className = sp.long_blocked ? 'text-danger' : 'text-success';
+            }
         }
 
         // Update short penalty
         const shortPenaltyEl = document.getElementById('spread-penalty-short');
         const shortStatusEl = document.getElementById('spread-penalty-short-status');
         if (shortPenaltyEl) {
-            shortPenaltyEl.textContent = sp.short_penalty_std.toFixed(2) + 'σ';
-            shortPenaltyEl.className = sp.short_blocked ? 'text-danger fw-bold' : 'text-success';
+            if (sp.is_maker) {
+                // Maker mode: show 0σ with special styling
+                shortPenaltyEl.textContent = '0.00σ';
+                shortPenaltyEl.className = 'text-info fw-bold';
+            } else {
+                shortPenaltyEl.textContent = sp.short_penalty_std.toFixed(2) + 'σ';
+                shortPenaltyEl.className = sp.short_blocked ? 'text-danger fw-bold' : 'text-success';
+            }
         }
         if (shortStatusEl) {
-            shortStatusEl.textContent = sp.short_blocked ? '⛔' : '✓';
-            shortStatusEl.className = sp.short_blocked ? 'text-danger' : 'text-success';
+            if (sp.is_maker) {
+                shortStatusEl.textContent = '✓';
+                shortStatusEl.className = 'text-info';
+            } else {
+                shortStatusEl.textContent = sp.short_blocked ? '⛔' : '✓';
+                shortStatusEl.className = sp.short_blocked ? 'text-danger' : 'text-success';
+            }
         }
 
-        // Show warning if either is blocked
+        // Show warning if either is blocked (only for taker mode)
         const warningEl = document.getElementById('spread-penalty-warning');
         if (warningEl) {
-            if (sp.long_blocked || sp.short_blocked) {
+            if (!sp.is_maker && (sp.long_blocked || sp.short_blocked)) {
                 warningEl.style.display = 'block';
                 warningEl.textContent = 'Slippage too high - entries blocked';
+            } else if (sp.is_maker) {
+                warningEl.style.display = 'block';
+                warningEl.className = 'alert alert-info py-1 px-2 mt-2 mb-0 small';
+                warningEl.textContent = 'Maker mode: no spread crossing cost';
             } else {
                 warningEl.style.display = 'none';
             }

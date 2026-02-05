@@ -235,7 +235,8 @@ def calculate_hurst_exponent(spread_history: list, min_points: int = 20) -> tupl
 
 def calculate_min_profitable_std(config, current_std: float,
                                   spot_spread_cents: float = None,
-                                  futures_spread_cents: float = None) -> dict:
+                                  futures_spread_cents: float = None,
+                                  order_type: str = None) -> dict:
     """
     Calculate the minimum STD required for a trade to be profitable.
 
@@ -247,6 +248,7 @@ def calculate_min_profitable_std(config, current_std: float,
         current_std: Current standard deviation of spread
         spot_spread_cents: Current spot bid-ask spread in cents (optional)
         futures_spread_cents: Current futures bid-ask spread in cents (optional)
+        order_type: 'MARKET' or 'PEGGED_LIMIT' - affects cost calculation
 
     Returns: dict with min_std, is_profitable, round_trip_cost, expected_profit, etc.
     """
@@ -257,6 +259,10 @@ def calculate_min_profitable_std(config, current_std: float,
     lot_size = config.lot_size if config else 0.1
     contract_size = config.contract_size if config else 100.0
     min_profit_per_lot = config.min_profit_per_lot if config else 50.0
+
+    # Get order type from config if not provided
+    if order_type is None:
+        order_type = getattr(config, 'order_type', 'MARKET') if config else 'MARKET'
 
     # Use configured spread costs if real-time not available
     if spot_spread_cents is None:
@@ -272,10 +278,23 @@ def calculate_min_profitable_std(config, current_std: float,
     else:
         z_move = entry_z - exit_z  # Normal exit near mean (e.g., 2.0 - 0.5 = 1.5σ)
 
-    # Calculate round-trip costs from bid-ask spreads
-    # Entry cost = (spot_spread + futures_spread) × lot_size × contract_size
-    entry_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * contract_size
-    round_trip_cost = entry_cost * 2  # Entry + exit
+    # Calculate round-trip costs based on order type
+    if order_type == 'PEGGED_LIMIT':
+        # MAKER orders: Don't cross the spread, only pay commission
+        # With pegged limit orders, you get filled at bid (for sells) or ask (for buys)
+        # The bid-ask spread cost is essentially zero or very minimal
+        # Only cost is the commission (typically lower for makers)
+        # Use a small fixed cost per trade (commission only)
+        commission_per_side = getattr(config, 'maker_commission', 0.02) if config else 0.02  # $0.02 per contract
+        entry_cost = commission_per_side * lot_size * contract_size * 2  # Both legs
+        round_trip_cost = entry_cost * 2  # Entry + exit (4 legs total)
+        is_maker = True
+    else:
+        # TAKER orders (MARKET): Cross the full bid-ask spread
+        # Entry cost = (spot_spread + futures_spread) × lot_size × contract_size
+        entry_cost = ((spot_spread_cents + futures_spread_cents) / 100) * lot_size * contract_size
+        round_trip_cost = entry_cost * 2  # Entry + exit
+        is_maker = False
 
     # Min profit for this trade
     min_profit = min_profit_per_lot * lot_size
@@ -315,7 +334,9 @@ def calculate_min_profitable_std(config, current_std: float,
         # Debug values to verify config is being read correctly
         'entry_z': float(entry_z),
         'exit_z': float(exit_z),
-        'exit_opposite_z': float(exit_opposite_z)
+        'exit_opposite_z': float(exit_opposite_z),
+        'order_type': order_type,
+        'is_maker': is_maker
     }
 
 
@@ -4592,15 +4613,30 @@ def start_price_streaming():
                     # Calculate spread penalties for display (how much worse execution would be vs signal)
                     spread_penalty_data = None
                     if std_val > 0 and spot_bid > 0 and futures_bid > 0:
-                        # LONG execution spread (SELL spot @ bid, BUY futures @ ask)
-                        long_exec_spread = futures_ask - spot_bid
-                        long_penalty = long_exec_spread - spread
-                        long_penalty_std = long_penalty / std_val
+                        order_type_config = getattr(config, 'order_type', 'MARKET') if config else 'MARKET'
 
-                        # SHORT execution spread (BUY spot @ ask, SELL futures @ bid)
-                        short_exec_spread = futures_bid - spot_ask
-                        short_penalty = spread - short_exec_spread
-                        short_penalty_std = short_penalty / std_val
+                        if order_type_config == 'PEGGED_LIMIT':
+                            # PEGGED_LIMIT (MAKER): No spread crossing - execution at bid/ask
+                            # LONG: SELL spot @ ask (maker), BUY futures @ bid (maker)
+                            # The exec spread equals the signal spread (mid-to-mid)
+                            # Penalty is essentially 0 since we don't cross the spread
+                            long_penalty = 0.0
+                            long_penalty_std = 0.0
+                            short_penalty = 0.0
+                            short_penalty_std = 0.0
+                            is_maker = True
+                        else:
+                            # MARKET (TAKER): Cross the spread
+                            # LONG execution spread (SELL spot @ bid, BUY futures @ ask)
+                            long_exec_spread = futures_ask - spot_bid
+                            long_penalty = long_exec_spread - spread
+                            long_penalty_std = long_penalty / std_val
+
+                            # SHORT execution spread (BUY spot @ ask, SELL futures @ bid)
+                            short_exec_spread = futures_bid - spot_ask
+                            short_penalty = spread - short_exec_spread
+                            short_penalty_std = short_penalty / std_val
+                            is_maker = False
 
                         max_penalty = getattr(config, 'max_spread_penalty_std', 0.5) if config else 0.5
                         spread_penalty_data = {
@@ -4610,7 +4646,9 @@ def start_price_streaming():
                             'short_penalty_std': round(short_penalty_std, 2),
                             'max_allowed_std': max_penalty,
                             'long_blocked': long_penalty_std > max_penalty,
-                            'short_blocked': short_penalty_std > max_penalty
+                            'short_blocked': short_penalty_std > max_penalty,
+                            'order_type': order_type_config,
+                            'is_maker': is_maker
                         }
 
                     socketio.emit('tick', {
