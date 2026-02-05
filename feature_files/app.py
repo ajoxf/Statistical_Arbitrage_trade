@@ -4747,4 +4747,16 @@ def run_server(host: str = '0.0.0.0', port: int = 5000, debug: bool = False):
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
+
+    # Suppress verbose werkzeug logs for socket.io polling (flooding logs on Windows)
+    class SocketIOPollingFilter(logging.Filter):
+        def filter(self, record):
+            # Filter out socket.io polling requests
+            if 'socket.io' in record.getMessage():
+                return False
+            return True
+
+    werkzeug_logger = logging.getLogger('werkzeug')
+    werkzeug_logger.addFilter(SocketIOPollingFilter())
+
     run_server(debug=True)
