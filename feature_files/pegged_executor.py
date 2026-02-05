@@ -384,25 +384,55 @@ class PeggedOrderExecutor:
         """
         Calculate target prices for limit orders based on current orderbook.
 
-        For BUY: place slightly above best bid to be near top of book (maker)
-        For SELL: place slightly below best ask to be near top of book (maker)
+        MT5 Limit Order Rules:
+        - BUY_LIMIT: price must be BELOW current Ask (we wait to buy cheaper)
+        - SELL_LIMIT: price must be ABOVE current Bid (we wait to sell higher)
+
+        Strategy: Place near best bid/ask to be a maker, but ensure price is valid.
+        - For BUY: place at bid (or bid + tiny offset, but must stay < ask)
+        - For SELL: place at ask (or ask - tiny offset, but must stay > bid)
         """
         offset_bps = getattr(self.config, 'limit_order_price_offset_bps', 1.0) / 10000
 
+        # SPOT LEG
+        spot_bid = spot_tick['bid']
+        spot_ask = spot_tick['ask']
         if spread_order.spot_leg.side == "BUY":
-            # Want to buy: place at bid + small offset (maker, won't cross)
-            spread_order.spot_leg.target_price = spot_tick['bid'] * (1 + offset_bps)
+            # BUY_LIMIT: price < ask, place near bid to be maker
+            target = spot_bid * (1 + offset_bps)
+            # CRITICAL: Ensure price stays below ask
+            if target >= spot_ask:
+                target = spot_bid  # Fall back to bid
+            spread_order.spot_leg.target_price = target
         else:
-            # Want to sell: place at ask - small offset (maker, won't cross)
-            spread_order.spot_leg.target_price = spot_tick['ask'] * (1 - offset_bps)
+            # SELL_LIMIT: price > bid, place near ask to be maker
+            target = spot_ask * (1 - offset_bps)
+            # CRITICAL: Ensure price stays above bid
+            if target <= spot_bid:
+                target = spot_ask  # Fall back to ask
+            spread_order.spot_leg.target_price = target
 
+        # FUTURES LEG
+        futures_bid = futures_tick['bid']
+        futures_ask = futures_tick['ask']
         if spread_order.futures_leg.side == "BUY":
-            spread_order.futures_leg.target_price = futures_tick['bid'] * (1 + offset_bps)
+            # BUY_LIMIT: price < ask
+            target = futures_bid * (1 + offset_bps)
+            if target >= futures_ask:
+                target = futures_bid
+            spread_order.futures_leg.target_price = target
         else:
-            spread_order.futures_leg.target_price = futures_tick['ask'] * (1 - offset_bps)
+            # SELL_LIMIT: price > bid
+            target = futures_ask * (1 - offset_bps)
+            if target <= futures_bid:
+                target = futures_ask
+            spread_order.futures_leg.target_price = target
 
-        self._logger.debug(f"[PEGGED] Target prices: spot={spread_order.spot_leg.target_price:.2f}, "
-                          f"futures={spread_order.futures_leg.target_price:.2f}")
+        self._logger.info(f"[PEGGED] Target prices calculated: "
+                         f"spot={spread_order.spot_leg.target_price:.2f} ({spread_order.spot_leg.side}), "
+                         f"futures={spread_order.futures_leg.target_price:.2f} ({spread_order.futures_leg.side})")
+        self._logger.info(f"[PEGGED] Market: spot bid/ask={spot_bid:.2f}/{spot_ask:.2f}, "
+                         f"futures bid/ask={futures_bid:.2f}/{futures_ask:.2f}")
 
     def _place_market_order_mt5(
         self,
@@ -551,6 +581,28 @@ class PeggedOrderExecutor:
 
         tick_size = symbol_info.trade_tick_size if symbol_info.trade_tick_size > 0 else 0.01
         price = round(leg.target_price / tick_size) * tick_size
+
+        # Get fresh tick to validate price
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            self._logger.error(f"[PEGGED] Could not get tick for {symbol}")
+            return {'success': False, 'error': f'Could not get tick for {symbol}'}
+
+        # Validate and adjust price for limit order rules
+        # BUY_LIMIT: price must be < ask
+        # SELL_LIMIT: price must be > bid
+        if leg.side == "BUY":
+            if price >= tick.ask:
+                # Price too high, adjust to be below ask
+                price = round((tick.bid) / tick_size) * tick_size
+                self._logger.warning(f"[PEGGED] BUY price adjusted: was >= ask, now using bid={price:.2f}")
+        else:  # SELL
+            if price <= tick.bid:
+                # Price too low, adjust to be above bid
+                price = round((tick.ask) / tick_size) * tick_size
+                self._logger.warning(f"[PEGGED] SELL price adjusted: was <= bid, now using ask={price:.2f}")
+
+        self._logger.info(f"[PEGGED] Market: bid={tick.bid:.2f}, ask={tick.ask:.2f}")
 
         # Get filling mode - use bitwise check for proper detection
         FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
