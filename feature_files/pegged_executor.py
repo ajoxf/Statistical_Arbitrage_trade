@@ -594,12 +594,28 @@ class PeggedOrderExecutor:
         # Amend spot order if still open
         if spread_order.spot_leg.status == LegStatus.OPEN:
             try:
+                # First check if order still exists as pending
+                orders = mt5.orders_get(ticket=spread_order.spot_leg.order_ticket)
+                if orders is None or len(orders) == 0:
+                    # Order no longer pending - might have filled or been cancelled
+                    self._logger.info(f"[PEGGED] Spot order {spread_order.spot_leg.order_ticket} no longer pending, skipping amend")
+                    # Check if it filled
+                    self._check_order_status(spread_order, mt5)
+                    return  # Don't place new order
+
                 # Cancel existing order
                 cancel_request = {
                     "action": mt5.TRADE_ACTION_REMOVE,
                     "order": spread_order.spot_leg.order_ticket,
                 }
-                mt5.order_send(cancel_request)
+                cancel_result = mt5.order_send(cancel_request)
+
+                # Check if cancel succeeded
+                if cancel_result is None or cancel_result.retcode != mt5.TRADE_RETCODE_DONE:
+                    self._logger.warning(f"[PEGGED] Failed to cancel spot order: {cancel_result.retcode if cancel_result else 'None'}")
+                    # Check if order filled while we tried to cancel
+                    self._check_order_status(spread_order, mt5)
+                    return  # Don't place new order if cancel failed
 
                 # Place new order at updated price
                 remaining_qty = spread_order.spot_leg.quantity - spread_order.spot_leg.filled_qty
@@ -617,17 +633,31 @@ class PeggedOrderExecutor:
                     if result['success']:
                         spread_order.spot_leg.order_ticket = result['order_id']
                         self._logger.debug(f"[PEGGED] Spot order re-pegged: {spread_order.spot_leg.target_price:.2f}")
+                    else:
+                        self._logger.error(f"[PEGGED] Failed to re-peg spot order: {result['error']}")
             except Exception as e:
                 self._logger.error(f"[PEGGED] Failed to amend spot order: {e}")
 
         # Amend futures order if still open
         if spread_order.futures_leg.status == LegStatus.OPEN:
             try:
+                # First check if order still exists as pending
+                orders = mt5.orders_get(ticket=spread_order.futures_leg.order_ticket)
+                if orders is None or len(orders) == 0:
+                    self._logger.info(f"[PEGGED] Futures order {spread_order.futures_leg.order_ticket} no longer pending, skipping amend")
+                    self._check_order_status(spread_order, mt5)
+                    return
+
                 cancel_request = {
                     "action": mt5.TRADE_ACTION_REMOVE,
                     "order": spread_order.futures_leg.order_ticket,
                 }
-                mt5.order_send(cancel_request)
+                cancel_result = mt5.order_send(cancel_request)
+
+                if cancel_result is None or cancel_result.retcode != mt5.TRADE_RETCODE_DONE:
+                    self._logger.warning(f"[PEGGED] Failed to cancel futures order: {cancel_result.retcode if cancel_result else 'None'}")
+                    self._check_order_status(spread_order, mt5)
+                    return
 
                 remaining_qty = spread_order.futures_leg.quantity - spread_order.futures_leg.filled_qty
                 if remaining_qty > 0:
@@ -644,6 +674,8 @@ class PeggedOrderExecutor:
                     if result['success']:
                         spread_order.futures_leg.order_ticket = result['order_id']
                         self._logger.debug(f"[PEGGED] Futures order re-pegged: {spread_order.futures_leg.target_price:.2f}")
+                    else:
+                        self._logger.error(f"[PEGGED] Failed to re-peg futures order: {result['error']}")
             except Exception as e:
                 self._logger.error(f"[PEGGED] Failed to amend futures order: {e}")
 
