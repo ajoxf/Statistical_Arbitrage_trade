@@ -293,6 +293,50 @@ class PeggedOrderExecutor:
 
         return spread_order
 
+    def _cancel_all_pending_orders(self, mt5, symbols: list) -> int:
+        """
+        Cancel ALL pending orders for the given symbols.
+
+        This is critical to prevent orphan orders from accumulating when:
+        - Previous execution timed out
+        - Cancel failed during amend
+        - Multiple signals triggered before cleanup
+
+        Returns: Number of orders cancelled
+        """
+        cancelled_count = 0
+
+        for symbol in symbols:
+            try:
+                orders = mt5.orders_get(symbol=symbol)
+                if orders is None or len(orders) == 0:
+                    continue
+
+                self._logger.warning(f"[PEGGED] Found {len(orders)} pending orders for {symbol} - cancelling all")
+
+                for order in orders:
+                    try:
+                        cancel_request = {
+                            "action": mt5.TRADE_ACTION_REMOVE,
+                            "order": order.ticket,
+                        }
+                        result = mt5.order_send(cancel_request)
+                        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                            self._logger.info(f"[PEGGED] Cancelled orphan order {order.ticket} for {symbol}")
+                            cancelled_count += 1
+                        else:
+                            self._logger.warning(f"[PEGGED] Failed to cancel order {order.ticket}: {result.retcode if result else 'None'}")
+                    except Exception as e:
+                        self._logger.error(f"[PEGGED] Error cancelling order {order.ticket}: {e}")
+
+            except Exception as e:
+                self._logger.error(f"[PEGGED] Error getting orders for {symbol}: {e}")
+
+        if cancelled_count > 0:
+            self._logger.info(f"[PEGGED] Cancelled {cancelled_count} orphan orders total")
+
+        return cancelled_count
+
     def _execute_pegged_limit(
         self,
         spread_order: SpreadOrder,
@@ -315,6 +359,10 @@ class PeggedOrderExecutor:
             return spread_order
 
         try:
+            # CRITICAL: Cancel ALL existing pending orders for these symbols first
+            # This prevents orphan orders from accumulating after failed/timed-out executions
+            self._cancel_all_pending_orders(mt5, [spot_broker.symbol, futures_broker.symbol])
+
             # Calculate initial target prices
             self._update_target_prices(spread_order, spot_tick, futures_tick)
 
