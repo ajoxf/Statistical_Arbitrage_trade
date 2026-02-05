@@ -468,8 +468,14 @@ class PeggedOrderExecutor:
         futures_broker,
         mt5,
     ) -> None:
-        """Place initial limit orders for both legs."""
-        # Place spot limit order
+        """Place initial limit orders for both legs.
+
+        CRITICAL: If spot order fails, we don't place futures to avoid orphaned orders.
+        If futures order fails after spot succeeds, we cancel the spot order.
+        """
+        self._logger.info(f"[PEGGED] Placing limit orders: spot={spot_broker.symbol}, futures={futures_broker.symbol}")
+
+        # Place spot limit order FIRST
         spot_result = self._place_limit_order_mt5(
             mt5, spot_broker.symbol, spread_order.spot_leg,
             spread_order.spot_leg.position_ticket
@@ -483,8 +489,11 @@ class PeggedOrderExecutor:
         else:
             spread_order.spot_leg.status = LegStatus.FAILED
             self._logger.error(f"[PEGGED] Failed to place spot limit order: {spot_result['error']}")
+            # DON'T place futures order if spot failed - would create orphaned order!
+            self._logger.error("[PEGGED] Aborting - will not place futures order since spot failed")
+            return
 
-        # Place futures limit order
+        # Place futures limit order (only if spot succeeded)
         futures_result = self._place_limit_order_mt5(
             mt5, futures_broker.symbol, spread_order.futures_leg,
             spread_order.futures_leg.position_ticket
@@ -498,6 +507,21 @@ class PeggedOrderExecutor:
         else:
             spread_order.futures_leg.status = LegStatus.FAILED
             self._logger.error(f"[PEGGED] Failed to place futures limit order: {futures_result['error']}")
+            # Cancel the spot order since futures failed - avoid orphaned spot order
+            self._logger.warning("[PEGGED] Futures failed - cancelling spot order to prevent orphan")
+            try:
+                cancel_request = {
+                    "action": mt5.TRADE_ACTION_REMOVE,
+                    "order": spread_order.spot_leg.order_ticket,
+                }
+                cancel_result = mt5.order_send(cancel_request)
+                if cancel_result and cancel_result.retcode == mt5.TRADE_RETCODE_DONE:
+                    spread_order.spot_leg.status = LegStatus.CANCELLED
+                    self._logger.info("[PEGGED] Spot order cancelled successfully")
+                else:
+                    self._logger.error(f"[PEGGED] Failed to cancel spot order: {cancel_result.retcode if cancel_result else 'None'}")
+            except Exception as e:
+                self._logger.error(f"[PEGGED] Exception cancelling spot order: {e}")
 
     def _place_limit_order_mt5(
         self,
@@ -516,19 +540,31 @@ class PeggedOrderExecutor:
         # Get symbol info for tick size rounding
         symbol_info = mt5.symbol_info(symbol)
         if not symbol_info:
-            return {'success': False, 'error': 'Could not get symbol info'}
+            self._logger.error(f"[PEGGED] Could not get symbol info for {symbol}")
+            return {'success': False, 'error': f'Could not get symbol info for {symbol}'}
+
+        # Ensure symbol is visible in Market Watch
+        if not symbol_info.visible:
+            self._logger.info(f"[PEGGED] Selecting symbol {symbol} in Market Watch")
+            mt5.symbol_select(symbol, True)
+            symbol_info = mt5.symbol_info(symbol)
 
         tick_size = symbol_info.trade_tick_size if symbol_info.trade_tick_size > 0 else 0.01
         price = round(leg.target_price / tick_size) * tick_size
 
-        # Get filling mode
-        filling_mode = mt5.ORDER_FILLING_RETURN
-        if symbol_info:
-            fm = symbol_info.filling_mode
-            if fm == 1:
-                filling_mode = mt5.ORDER_FILLING_FOK
-            elif fm == 2:
-                filling_mode = mt5.ORDER_FILLING_IOC
+        # Get filling mode - use bitwise check for proper detection
+        FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
+        FILLING_IOC = getattr(mt5, 'SYMBOL_FILLING_IOC', 2)
+        fm = symbol_info.filling_mode
+
+        filling_mode = mt5.ORDER_FILLING_RETURN  # Default for pending orders
+        if fm & FILLING_FOK:
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif fm & FILLING_IOC:
+            filling_mode = mt5.ORDER_FILLING_IOC
+
+        self._logger.info(f"[PEGGED] Placing {leg.side} LIMIT: {symbol}, price={price:.2f}, "
+                         f"qty={leg.quantity}, filling_mode={fm}→{filling_mode}")
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
@@ -548,11 +584,15 @@ class PeggedOrderExecutor:
         result = mt5.order_send(request)
 
         if result is None:
-            return {'success': False, 'error': 'order_send returned None'}
+            error = mt5.last_error()
+            self._logger.error(f"[PEGGED] order_send returned None for {symbol}, last_error: {error}")
+            return {'success': False, 'error': f'order_send returned None: {error}'}
 
         if result.retcode == mt5.TRADE_RETCODE_DONE:
+            self._logger.info(f"[PEGGED] Order placed successfully: ticket={result.order}")
             return {'success': True, 'order_id': result.order}
         else:
+            self._logger.error(f"[PEGGED] Order rejected for {symbol}: retcode={result.retcode}, comment={result.comment}")
             return {'success': False, 'error': f'{result.retcode} - {result.comment}'}
 
     def _check_order_status(self, spread_order: SpreadOrder, mt5) -> None:
@@ -687,10 +727,16 @@ class PeggedOrderExecutor:
         futures_broker,
         mt5,
     ) -> None:
-        """Handle timeout - cancel unfilled orders and close any partial fills."""
+        """Handle timeout - cancel unfilled orders and close any partial fills.
+
+        CRITICAL: Check if orders filled before marking as cancelled.
+        """
         self._logger.info("[PEGGED] Handling limit order timeout")
 
-        # Cancel spot order if still open
+        # First, check current status of orders (they might have filled)
+        self._check_order_status(spread_order, mt5)
+
+        # Cancel spot order if still open (not already filled)
         if spread_order.spot_leg.status == LegStatus.OPEN:
             try:
                 cancel_request = {
@@ -698,12 +744,17 @@ class PeggedOrderExecutor:
                     "order": spread_order.spot_leg.order_ticket,
                 }
                 result = mt5.order_send(cancel_request)
-                spread_order.spot_leg.status = LegStatus.CANCELLED
-                self._logger.info(f"[PEGGED] Spot limit order cancelled")
+                if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    spread_order.spot_leg.status = LegStatus.CANCELLED
+                    self._logger.info(f"[PEGGED] Spot limit order cancelled")
+                else:
+                    # Cancel failed - order might have filled, check again
+                    self._logger.warning(f"[PEGGED] Spot cancel returned: {result.retcode if result else 'None'}, checking if filled")
+                    self._check_order_status(spread_order, mt5)
             except Exception as e:
                 self._logger.error(f"[PEGGED] Failed to cancel spot order: {e}")
 
-        # Cancel futures order if still open
+        # Cancel futures order if still open (not already filled)
         if spread_order.futures_leg.status == LegStatus.OPEN:
             try:
                 cancel_request = {
@@ -711,12 +762,20 @@ class PeggedOrderExecutor:
                     "order": spread_order.futures_leg.order_ticket,
                 }
                 result = mt5.order_send(cancel_request)
-                spread_order.futures_leg.status = LegStatus.CANCELLED
-                self._logger.info(f"[PEGGED] Futures limit order cancelled")
+                if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    spread_order.futures_leg.status = LegStatus.CANCELLED
+                    self._logger.info(f"[PEGGED] Futures limit order cancelled")
+                else:
+                    # Cancel failed - order might have filled, check again
+                    self._logger.warning(f"[PEGGED] Futures cancel returned: {result.retcode if result else 'None'}, checking if filled")
+                    self._check_order_status(spread_order, mt5)
             except Exception as e:
                 self._logger.error(f"[PEGGED] Failed to cancel futures order: {e}")
 
-        # Handle partial fills
+        # Log final status
+        self._logger.info(f"[PEGGED] After timeout: spot={spread_order.spot_leg.status.value}, futures={spread_order.futures_leg.status.value}")
+
+        # Handle partial fills (one filled, one didn't)
         if spread_order.has_partial_fill:
             self._handle_leg_risk(spread_order, spot_broker, futures_broker, mt5)
 
