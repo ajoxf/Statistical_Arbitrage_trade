@@ -237,7 +237,9 @@ class PeggedOrderExecutor:
         self.active_order = spread_order
 
         try:
-            mode = getattr(self.config, 'order_execution_mode', 'MARKET')
+            # Note: Settings UI saves to 'order_type' field (MARKET, LIMIT, PEGGED_LIMIT)
+            mode = getattr(self.config, 'order_type', 'MARKET')
+            self._logger.info(f"[PEGGED] Execution mode from config: '{mode}'")
 
             if mode == "MARKET":
                 return self._execute_market(spread_order, spot_broker, futures_broker)
