@@ -580,29 +580,31 @@ class PeggedOrderExecutor:
             symbol_info = mt5.symbol_info(symbol)
 
         tick_size = symbol_info.trade_tick_size if symbol_info.trade_tick_size > 0 else 0.01
-        price = round(leg.target_price / tick_size) * tick_size
 
-        # Get fresh tick to validate price
+        # Get fresh tick - CRITICAL: market may have moved since target was calculated
         tick = mt5.symbol_info_tick(symbol)
         if not tick:
             self._logger.error(f"[PEGGED] Could not get tick for {symbol}")
             return {'success': False, 'error': f'Could not get tick for {symbol}'}
 
-        # Validate and adjust price for limit order rules
-        # BUY_LIMIT: price must be < ask
-        # SELL_LIMIT: price must be > bid
-        if leg.side == "BUY":
-            if price >= tick.ask:
-                # Price too high, adjust to be below ask
-                price = round((tick.bid) / tick_size) * tick_size
-                self._logger.warning(f"[PEGGED] BUY price adjusted: was >= ask, now using bid={price:.2f}")
-        else:  # SELL
-            if price <= tick.bid:
-                # Price too low, adjust to be above bid
-                price = round((tick.ask) / tick_size) * tick_size
-                self._logger.warning(f"[PEGGED] SELL price adjusted: was <= bid, now using ask={price:.2f}")
-
         self._logger.info(f"[PEGGED] Market: bid={tick.bid:.2f}, ask={tick.ask:.2f}")
+
+        # For pegged limit orders, ALWAYS use current bid/ask to ensure validity
+        # Some brokers require:
+        # - BUY_LIMIT: price <= bid (to be a maker in the bid queue)
+        # - SELL_LIMIT: price >= ask (to be a maker in the ask queue)
+        #
+        # Using the exact bid/ask ensures we're always valid
+        if leg.side == "BUY":
+            # BUY LIMIT at current bid (maker style)
+            price = round(tick.bid / tick_size) * tick_size
+            if leg.target_price != tick.bid:
+                self._logger.info(f"[PEGGED] BUY price: using current bid={price:.2f} (target was {leg.target_price:.2f})")
+        else:  # SELL
+            # SELL LIMIT at current ask (maker style)
+            price = round(tick.ask / tick_size) * tick_size
+            if leg.target_price != tick.ask:
+                self._logger.info(f"[PEGGED] SELL price: using current ask={price:.2f} (target was {leg.target_price:.2f})")
 
         # Get filling mode - use bitwise check for proper detection
         FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
