@@ -787,33 +787,74 @@ class PeggedOrderExecutor:
             return {'success': False, 'error': f'{result.retcode} - {result.comment}'}
 
     def _check_order_status(self, spread_order: SpreadOrder, mt5) -> None:
-        """Check the fill status of both legs."""
+        """Check the fill status of both legs.
+
+        CRITICAL: MT5 history_deals_get() requires a time range to work properly.
+        Without it, the function may return None even for recent fills.
+        """
+        # Get time range for deal history search (last hour should be plenty)
+        from_time = datetime.now() - timedelta(hours=1)
+        to_time = datetime.now() + timedelta(minutes=1)
+
         # Check spot leg
         if spread_order.spot_leg.status == LegStatus.OPEN:
             orders = mt5.orders_get(ticket=spread_order.spot_leg.order_ticket)
             if orders is None or len(orders) == 0:
-                # Order no longer pending - check if filled
-                deals = mt5.history_deals_get(order=spread_order.spot_leg.order_ticket)
-                if deals and len(deals) > 0:
-                    total_filled = sum(d.volume for d in deals)
-                    avg_price = sum(d.price * d.volume for d in deals) / total_filled if total_filled > 0 else 0
-                    spread_order.spot_leg.filled_qty = total_filled
-                    spread_order.spot_leg.filled_price = avg_price
-                    spread_order.spot_leg.status = LegStatus.FILLED if total_filled >= spread_order.spot_leg.quantity else LegStatus.PARTIAL
-                    self._logger.info(f"[PEGGED] Spot leg filled: qty={total_filled}, price={avg_price:.2f}")
+                # Order no longer pending - check if filled via deal history
+                # CRITICAL: Must specify time range for history_deals_get to work!
+                deals = mt5.history_deals_get(from_time, to_time, group="*")
+                if deals:
+                    # Filter deals for this specific order
+                    order_deals = [d for d in deals if d.order == spread_order.spot_leg.order_ticket]
+                    if order_deals:
+                        total_filled = sum(d.volume for d in order_deals)
+                        avg_price = sum(d.price * d.volume for d in order_deals) / total_filled if total_filled > 0 else 0
+                        spread_order.spot_leg.filled_qty = total_filled
+                        spread_order.spot_leg.filled_price = avg_price
+                        spread_order.spot_leg.status = LegStatus.FILLED if total_filled >= spread_order.spot_leg.quantity else LegStatus.PARTIAL
+                        self._logger.info(f"[PEGGED] Spot leg FILLED: qty={total_filled}, price={avg_price:.2f}")
+                    else:
+                        # No deals found - check positions as fallback
+                        positions = mt5.positions_get(symbol=spread_order.spot_leg.symbol)
+                        if positions:
+                            self._logger.info(f"[PEGGED] Spot order disappeared but found {len(positions)} position(s) for {spread_order.spot_leg.symbol}")
+                            # Assume filled if position exists and order is gone
+                            for pos in positions:
+                                if abs(pos.volume - spread_order.spot_leg.quantity) < 0.01:  # Same size
+                                    spread_order.spot_leg.filled_qty = pos.volume
+                                    spread_order.spot_leg.filled_price = pos.price_open
+                                    spread_order.spot_leg.status = LegStatus.FILLED
+                                    self._logger.info(f"[PEGGED] Spot leg FILLED (from position): qty={pos.volume}, price={pos.price_open:.2f}")
+                                    break
 
         # Check futures leg
         if spread_order.futures_leg.status == LegStatus.OPEN:
             orders = mt5.orders_get(ticket=spread_order.futures_leg.order_ticket)
             if orders is None or len(orders) == 0:
-                deals = mt5.history_deals_get(order=spread_order.futures_leg.order_ticket)
-                if deals and len(deals) > 0:
-                    total_filled = sum(d.volume for d in deals)
-                    avg_price = sum(d.price * d.volume for d in deals) / total_filled if total_filled > 0 else 0
-                    spread_order.futures_leg.filled_qty = total_filled
-                    spread_order.futures_leg.filled_price = avg_price
-                    spread_order.futures_leg.status = LegStatus.FILLED if total_filled >= spread_order.futures_leg.quantity else LegStatus.PARTIAL
-                    self._logger.info(f"[PEGGED] Futures leg filled: qty={total_filled}, price={avg_price:.2f}")
+                # Order no longer pending - check if filled via deal history
+                deals = mt5.history_deals_get(from_time, to_time, group="*")
+                if deals:
+                    # Filter deals for this specific order
+                    order_deals = [d for d in deals if d.order == spread_order.futures_leg.order_ticket]
+                    if order_deals:
+                        total_filled = sum(d.volume for d in order_deals)
+                        avg_price = sum(d.price * d.volume for d in order_deals) / total_filled if total_filled > 0 else 0
+                        spread_order.futures_leg.filled_qty = total_filled
+                        spread_order.futures_leg.filled_price = avg_price
+                        spread_order.futures_leg.status = LegStatus.FILLED if total_filled >= spread_order.futures_leg.quantity else LegStatus.PARTIAL
+                        self._logger.info(f"[PEGGED] Futures leg FILLED: qty={total_filled}, price={avg_price:.2f}")
+                    else:
+                        # No deals found - check positions as fallback
+                        positions = mt5.positions_get(symbol=spread_order.futures_leg.symbol)
+                        if positions:
+                            self._logger.info(f"[PEGGED] Futures order disappeared but found {len(positions)} position(s) for {spread_order.futures_leg.symbol}")
+                            for pos in positions:
+                                if abs(pos.volume - spread_order.futures_leg.quantity) < 0.01:
+                                    spread_order.futures_leg.filled_qty = pos.volume
+                                    spread_order.futures_leg.filled_price = pos.price_open
+                                    spread_order.futures_leg.status = LegStatus.FILLED
+                                    self._logger.info(f"[PEGGED] Futures leg FILLED (from position): qty={pos.volume}, price={pos.price_open:.2f}")
+                                    break
 
     def _amend_limit_orders(
         self,
