@@ -873,6 +873,7 @@ class AutoTrader:
         # Check if pegged limit order execution is configured
         # Note: Settings UI saves to 'order_type' field (MARKET, LIMIT, PEGGED_LIMIT)
         execution_mode = getattr(config, 'order_type', 'MARKET')
+        self._logger.info(f"[AUTO] Config order_type value: '{execution_mode}' (type: {type(execution_mode).__name__})")
         if execution_mode == 'PEGGED_LIMIT':
             self._logger.info(f"[AUTO] Using PEGGED_LIMIT execution mode")
             return self._handle_entry_signal_pegged(
@@ -1020,7 +1021,7 @@ class AutoTrader:
                 self._unlock_position()
                 return
 
-            self._logger.info(f"[AUTO] Spot order filled: ticket={spot_result.order}, price={spot_result.price}")
+            self._logger.info(f"[AUTO] Spot order filled: ticket={spot_result.order}, requested_price={spot_price_for_order}, filled_price={spot_result.price}, slippage={spot_result.price - spot_price_for_order:.2f}")
 
             # MUST select futures symbol in Market Watch BEFORE getting tick
             futures_symbol_info = mt5.symbol_info(futures_broker.symbol)
@@ -1226,7 +1227,7 @@ class AutoTrader:
                 self._unlock_position()
                 return
 
-            self._logger.info(f"[AUTO] Futures order filled: ticket={futures_result.order}, price={futures_result.price}")
+            self._logger.info(f"[AUTO] Futures order filled: ticket={futures_result.order}, requested_price={futures_price_for_order}, filled_price={futures_result.price}, slippage={futures_result.price - futures_price_for_order:.2f}")
 
             mt5.shutdown()
 
@@ -2383,6 +2384,7 @@ def api_config():
                     setattr(config, key, value)
 
         logger.info(f"[CONFIG] Active brokers - Spot: {config.active_spot_broker}, Futures: {config.active_futures_broker}")
+        logger.info(f"[CONFIG] Order type being saved: '{config.order_type}'")
 
         # Save active brokers to JSON file (workaround for database not persisting new fields)
         save_active_brokers(config.active_spot_broker, config.active_futures_broker)

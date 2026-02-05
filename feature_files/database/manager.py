@@ -87,7 +87,12 @@ class DatabaseManager:
                 paper_mode INTEGER DEFAULT 1,
                 selected_asset TEXT DEFAULT 'GOLD',
                 active_spot_broker TEXT,
-                active_futures_broker TEXT
+                active_futures_broker TEXT,
+                trading_hours_enabled INTEGER DEFAULT 0,
+                trading_start_hour INTEGER DEFAULT 8,
+                trading_start_minute INTEGER DEFAULT 0,
+                trading_end_hour INTEGER DEFAULT 17,
+                trading_end_minute INTEGER DEFAULT 0
             )
         ''')
 
@@ -311,6 +316,17 @@ class DatabaseManager:
             logger.info("Adding taker_fee_bps column to trading_config")
             cursor.execute("ALTER TABLE trading_config ADD COLUMN taker_fee_bps REAL DEFAULT 5.0")
 
+        # Trading hours filter columns
+        try:
+            cursor.execute("SELECT trading_hours_enabled FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding trading_hours columns to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN trading_hours_enabled INTEGER DEFAULT 0")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN trading_start_hour INTEGER DEFAULT 8")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN trading_start_minute INTEGER DEFAULT 0")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN trading_end_hour INTEGER DEFAULT 17")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN trading_end_minute INTEGER DEFAULT 0")
+
         conn.commit()
         logger.info(f"Database initialized: {self.db_path}")
 
@@ -365,7 +381,12 @@ class DatabaseManager:
                 taker_fee_bps=row['taker_fee_bps'] if 'taker_fee_bps' in row.keys() else 5.0,
                 algo_enabled=bool(row['algo_enabled']),
                 paper_mode=bool(row['paper_mode']),
-                selected_asset=row['selected_asset'] or 'GOLD'
+                selected_asset=row['selected_asset'] or 'GOLD',
+                trading_hours_enabled=bool(row['trading_hours_enabled']) if 'trading_hours_enabled' in row.keys() else False,
+                trading_start_hour=row['trading_start_hour'] if 'trading_start_hour' in row.keys() else 8,
+                trading_start_minute=row['trading_start_minute'] if 'trading_start_minute' in row.keys() else 0,
+                trading_end_hour=row['trading_end_hour'] if 'trading_end_hour' in row.keys() else 17,
+                trading_end_minute=row['trading_end_minute'] if 'trading_end_minute' in row.keys() else 0
             )
 
         return TradingConfig()
@@ -418,7 +439,12 @@ class DatabaseManager:
                 taker_fee_bps = ?,
                 algo_enabled = ?,
                 paper_mode = ?,
-                selected_asset = ?
+                selected_asset = ?,
+                trading_hours_enabled = ?,
+                trading_start_hour = ?,
+                trading_start_minute = ?,
+                trading_end_hour = ?,
+                trading_end_minute = ?
             WHERE id = 1
         ''', (
             config.asset_name,
@@ -462,7 +488,12 @@ class DatabaseManager:
             config.taker_fee_bps,
             int(config.algo_enabled),
             int(config.paper_mode),
-            config.selected_asset
+            config.selected_asset,
+            int(config.trading_hours_enabled),
+            config.trading_start_hour,
+            config.trading_start_minute,
+            config.trading_end_hour,
+            config.trading_end_minute
         ))
 
         conn.commit()
