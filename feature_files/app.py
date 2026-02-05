@@ -842,7 +842,102 @@ class AutoTrader:
             engine.set_position_state(True, direction)
             self._logger.info(f"[AUTO] Position LOCKED before trade execution")
 
-        # Determine trade direction
+        # Check order type - use PeggedOrderExecutor for PEGGED_LIMIT mode
+        order_type_config = getattr(config, 'order_type', 'MARKET')
+        self._logger.info(f"[AUTO] Config order_type value: '{order_type_config}' (type: {type(order_type_config).__name__})")
+
+        if order_type_config == 'PEGGED_LIMIT':
+            self._logger.info(f"[AUTO] Using PEGGED_LIMIT execution mode")
+            self._logger.info(f"[AUTO] === PEGGED LIMIT ENTRY === Executing {direction} trade")
+
+            try:
+                import MetaTrader5 as mt5
+                from pegged_executor import PeggedOrderExecutor
+
+                if not mt5.initialize():
+                    mt5_error = mt5.last_error()
+                    self._logger.error(f"[AUTO] MT5 initialization failed for pegged trade - error: {mt5_error}")
+                    self._unlock_position()
+                    return
+
+                # Get current prices for pegged execution
+                spot_tick = mt5.symbol_info_tick(spot_broker.symbol)
+                futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
+
+                if not spot_tick or not futures_tick:
+                    self._logger.error(f"[AUTO] Could not get tick data for pegged execution")
+                    mt5.shutdown()
+                    self._unlock_position()
+                    return
+
+                spot_tick_dict = {'bid': spot_tick.bid, 'ask': spot_tick.ask}
+                futures_tick_dict = {'bid': futures_tick.bid, 'ask': futures_tick.ask}
+
+                executor = PeggedOrderExecutor(config, database=database)
+
+                result = executor.execute_entry(
+                    position_type=direction,
+                    spot_broker=spot_broker,
+                    futures_broker=futures_broker,
+                    spot_tick=spot_tick_dict,
+                    futures_tick=futures_tick_dict,
+                    quantity=config.lot_size,
+                    entry_zscore=signal.zscore,
+                    signal_spread=signal.spread,
+                )
+
+                mt5.shutdown()
+
+                if result and result.is_complete:
+                    exec_spread = result.futures_leg.filled_price - result.spot_leg.filled_price
+                    self._logger.info(f"[AUTO] PEGGED trade executed successfully!")
+                    self._logger.info(f"[AUTO] Spot filled: {result.spot_leg.filled_price:.2f}, Futures filled: {result.futures_leg.filled_price:.2f}")
+                    self._logger.info(f"[AUTO] Execution spread: ${exec_spread:.2f}")
+
+                    # Log successful trade to STD filter
+                    if std_filter_result:
+                        self._log_std_filter_event(
+                            database, zscore=signal.zscore, signal_type=signal.signal_type,
+                            current_std=current_std, min_required_std=std_filter_result['min_std'],
+                            std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                            spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                            round_trip_cost=std_filter_result['round_trip_cost'],
+                            action_taken='TRADE_ENTERED', trade_id=result.trade_id if hasattr(result, 'trade_id') else None
+                        )
+
+                    # Emit trade success
+                    socketio.emit('auto_trade', {
+                        'action': 'ENTRY',
+                        'direction': direction,
+                        'spot_price': result.spot_leg.filled_price,
+                        'futures_price': result.futures_leg.filled_price,
+                        'spread': exec_spread,
+                        'zscore': signal.zscore
+                    })
+                    return
+                else:
+                    self._logger.error(f"[AUTO] PEGGED trade execution failed or incomplete")
+                    self._unlock_position()
+
+                    if std_filter_result:
+                        self._log_std_filter_event(
+                            database, zscore=signal.zscore, signal_type=signal.signal_type,
+                            current_std=current_std, min_required_std=std_filter_result['min_std'],
+                            std_ratio=std_filter_result['std_ratio'], is_profitable=std_filter_result['is_profitable'],
+                            spot_spread_cents=spot_spread_cents, futures_spread_cents=futures_spread_cents,
+                            round_trip_cost=std_filter_result['round_trip_cost'],
+                            action_taken='TRADE_FAILED', blocked_reason='Pegged execution failed'
+                        )
+                    return
+
+            except Exception as e:
+                self._logger.error(f"[AUTO] PEGGED execution error: {e}")
+                import traceback
+                traceback.print_exc()
+                self._unlock_position()
+                return
+
+        # Determine trade direction (for MARKET orders)
         # ENTRY_LONG (z-score low): Buy futures, Sell spot (expecting spread to widen)
         # ENTRY_SHORT (z-score high): Sell futures, Buy spot (expecting spread to narrow)
 
