@@ -302,6 +302,33 @@
             </div>
         </div>
 
+        <!-- Manual Trade -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-hand-index me-2"></i>Manual Trade
+            </div>
+            <div class="card-body">
+                <div class="mb-3 text-center">
+                    <small class="text-muted">Current Spread Difference</small>
+                    <div class="h4 mb-0" id="manual-spread-diff">$0.00</div>
+                    <small class="text-muted">Z-score: <span id="manual-zscore">0.00</span></small>
+                </div>
+                <div class="d-grid gap-2">
+                    <button class="btn btn-success" id="btn-manual-long" onclick="executeManualTrade('LONG')">
+                        <i class="bi bi-arrow-up-circle me-2"></i>LONG Spread
+                        <small class="d-block">Sell Spot, Buy Futures</small>
+                    </button>
+                    <button class="btn btn-danger" id="btn-manual-short" onclick="executeManualTrade('SHORT')">
+                        <i class="bi bi-arrow-down-circle me-2"></i>SHORT Spread
+                        <small class="d-block">Buy Spot, Sell Futures</small>
+                    </button>
+                </div>
+                <div class="mt-2 text-center">
+                    <small class="text-muted">Lot Size: <span id="manual-lot-size">{{ config.lot_size }}</span></small>
+                </div>
+            </div>
+        </div>
+
         <!-- Broker Status -->
         <div class="card mb-4">
             <div class="card-header">
@@ -1044,6 +1071,28 @@
             } else {
                 spreadEl.className = 'fw-bold text-warning'; // In the middle
             }
+
+            // Update manual trade spread display
+            const manualSpreadEl = document.getElementById('manual-spread-diff');
+            if (manualSpreadEl) {
+                manualSpreadEl.textContent = '$' + data.spread.toFixed(2);
+                // Color based on position
+                if (data.spread >= b.short_entry) {
+                    manualSpreadEl.className = 'h4 mb-0 text-danger';
+                } else if (data.spread <= b.long_entry) {
+                    manualSpreadEl.className = 'h4 mb-0 text-success';
+                } else {
+                    manualSpreadEl.className = 'h4 mb-0';
+                }
+            }
+        }
+
+        // Update manual trade z-score
+        if (data.zscore !== undefined) {
+            const manualZscoreEl = document.getElementById('manual-zscore');
+            if (manualZscoreEl) {
+                manualZscoreEl.textContent = data.zscore.toFixed(2);
+            }
         }
     }
 
@@ -1711,6 +1760,61 @@
         } catch (err) {
             console.error('Close trade error:', err);
             alert('Error closing trade: ' + err.message);
+        }
+    }
+
+    // Manual trade execution
+    async function executeManualTrade(direction) {
+        const spreadEl = document.getElementById('manual-spread-diff');
+        const zscoreEl = document.getElementById('manual-zscore');
+        const spread = spreadEl ? spreadEl.textContent : '$0.00';
+        const zscore = zscoreEl ? zscoreEl.textContent : '0.00';
+
+        const confirmMsg = `Execute ${direction} Spread Trade?\n\n` +
+            `Direction: ${direction}\n` +
+            `Current Spread: ${spread}\n` +
+            `Z-Score: ${zscore}\n\n` +
+            `${direction === 'LONG' ? 'SELL Spot, BUY Futures' : 'BUY Spot, SELL Futures'}\n\n` +
+            `This will execute immediately using the configured order type.`;
+
+        if (!confirm(confirmMsg)) {
+            return;
+        }
+
+        // Disable buttons during execution
+        const btnLong = document.getElementById('btn-manual-long');
+        const btnShort = document.getElementById('btn-manual-short');
+        btnLong.disabled = true;
+        btnShort.disabled = true;
+        btnLong.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Executing...';
+        btnShort.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Executing...';
+
+        try {
+            const response = await fetch('/api/manual/execute-spread', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ direction: direction })
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                alert(`${direction} spread trade executed successfully!\n\n` +
+                    `Spot: ${result.spot_price}\n` +
+                    `Futures: ${result.futures_price}\n` +
+                    `Spread: ${result.spread}`);
+                refreshTradeJournal();
+            } else {
+                alert('Trade execution failed: ' + result.error);
+            }
+        } catch (err) {
+            console.error('Manual trade error:', err);
+            alert('Error executing trade: ' + err.message);
+        } finally {
+            // Re-enable buttons
+            btnLong.disabled = false;
+            btnShort.disabled = false;
+            btnLong.innerHTML = '<i class="bi bi-arrow-up-circle me-2"></i>LONG Spread<small class="d-block">Sell Spot, Buy Futures</small>';
+            btnShort.innerHTML = '<i class="bi bi-arrow-down-circle me-2"></i>SHORT Spread<small class="d-block">Buy Spot, Sell Futures</small>';
         }
     }
 

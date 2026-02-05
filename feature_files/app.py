@@ -3049,6 +3049,124 @@ def api_manual_get_price():
         })
 
 
+@app.route('/api/manual/execute-spread', methods=['POST'])
+def api_manual_execute_spread():
+    """Execute a manual spread trade (MT5)"""
+    global auto_trader
+
+    try:
+        data = request.get_json()
+        direction = data.get('direction', 'LONG')  # LONG or SHORT
+
+        if not auto_trader:
+            return jsonify({
+                'success': False,
+                'error': 'AutoTrader not initialized'
+            })
+
+        # Get active brokers
+        database = get_db()
+        spot_broker = database.get_active_broker('SPOT')
+        futures_broker = database.get_active_broker('FUTURES')
+
+        if not spot_broker or not futures_broker:
+            return jsonify({
+                'success': False,
+                'error': 'Active spot and futures brokers not configured'
+            })
+
+        # Get current config
+        config = database.get_config()
+        if not config:
+            return jsonify({
+                'success': False,
+                'error': 'Trading config not found'
+            })
+
+        import MetaTrader5 as mt5
+        if not mt5.initialize():
+            return jsonify({
+                'success': False,
+                'error': 'Failed to initialize MT5'
+            })
+
+        try:
+            # Get current prices
+            spot_tick = mt5.symbol_info_tick(spot_broker.symbol)
+            futures_tick = mt5.symbol_info_tick(futures_broker.symbol)
+
+            if not spot_tick or not futures_tick:
+                return jsonify({
+                    'success': False,
+                    'error': 'Could not get current prices'
+                })
+
+            spot_price = (spot_tick.bid + spot_tick.ask) / 2
+            futures_price = (futures_tick.bid + futures_tick.ask) / 2
+            spread = futures_price - spot_price
+
+            # Calculate z-score if we have stats
+            zscore = 0.0
+            if hasattr(auto_trader, '_price_stats') and auto_trader._price_stats:
+                stats = auto_trader._price_stats
+                if stats.get('std', 0) > 0:
+                    zscore = (spread - stats.get('mean', 0)) / stats['std']
+
+            logger.info(f"[MANUAL] Executing {direction} spread trade: spread=${spread:.2f}, z={zscore:.2f}")
+
+            # Use pegged executor if available
+            from pegged_executor import PeggedOrderExecutor
+
+            executor = PeggedOrderExecutor(config, database=database)
+
+            spot_tick_dict = {'bid': spot_tick.bid, 'ask': spot_tick.ask}
+            futures_tick_dict = {'bid': futures_tick.bid, 'ask': futures_tick.ask}
+
+            result = executor.execute_entry(
+                position_type=direction,
+                spot_broker=spot_broker,
+                futures_broker=futures_broker,
+                spot_tick=spot_tick_dict,
+                futures_tick=futures_tick_dict,
+                quantity=config.lot_size,
+                entry_zscore=zscore,
+                signal_spread=spread,
+            )
+
+            if result and result.is_complete:
+                exec_spread = result.futures_leg.filled_price - result.spot_leg.filled_price
+
+                # Mark position as open in auto_trader
+                auto_trader._position_open = True
+                auto_trader._position_direction = 'Long Spread' if direction == 'LONG' else 'Short Spread'
+
+                return jsonify({
+                    'success': True,
+                    'direction': direction,
+                    'spot_price': f"${result.spot_leg.filled_price:.2f}",
+                    'futures_price': f"${result.futures_leg.filled_price:.2f}",
+                    'spread': f"${exec_spread:.2f}",
+                    'zscore': f"{zscore:.2f}"
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Trade execution failed or incomplete'
+                })
+
+        finally:
+            mt5.shutdown()
+
+    except Exception as e:
+        logger.error(f"Manual spread trade error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+
 # ==================== Broker Update API ====================
 
 @app.route('/api/brokers/<broker_id>/update', methods=['POST'])
