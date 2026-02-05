@@ -615,6 +615,9 @@ class AutoTrader:
         """Unlock position state after failed trade attempt"""
         self._position_open = False
         self._position_direction = None
+        # Also reset _algo_position to match
+        self._algo_position['open'] = False
+        self._algo_position['direction'] = None
         global engine
         if engine:
             engine.set_position_state(False, None)
@@ -1340,14 +1343,18 @@ class AutoTrader:
 
         self._logger.info(f"[AUTO] === PEGGED LIMIT ENTRY === Executing {direction} trade")
 
-        # CRITICAL: Lock position immediately
+        # CRITICAL: Lock position immediately to prevent duplicate signals
+        # Must set BOTH _position_open AND _algo_position['open'] because
+        # signal loop checks has_position which uses _algo_position['open']
         self._position_open = True
         self._position_direction = direction
+        self._algo_position['open'] = True
+        self._algo_position['direction'] = direction
 
         global engine
         if engine:
             engine.set_position_state(True, direction)
-            self._logger.info(f"[AUTO] Position LOCKED for pegged execution")
+            self._logger.info(f"[AUTO] Position LOCKED for pegged execution (algo_position and legacy both set)")
 
         try:
             import MetaTrader5 as mt5
