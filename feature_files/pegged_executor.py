@@ -304,8 +304,9 @@ class PeggedOrderExecutor:
         """Execute spread using pegged limit orders."""
         import MetaTrader5 as mt5
 
-        self._logger.info(f"[PEGGED] Executing spread with PEGGED LIMIT orders: {spread_order.position_type} "
-                         f"{'ENTRY' if spread_order.is_entry else 'EXIT'}")
+        self._logger.info("-" * 50)
+        self._logger.info(f"[PEGGED] Starting PEGGED LIMIT execution: {spread_order.position_type} {'ENTRY' if spread_order.is_entry else 'EXIT'}")
+        self._logger.info("-" * 50)
 
         if not mt5.initialize():
             self._logger.error("[PEGGED] MT5 initialization failed")

@@ -444,6 +444,11 @@ def parse_futures_expiry(expiry_str: Optional[str]) -> Tuple[Optional[datetime],
 
 logger = logging.getLogger(__name__)
 
+# Reduce werkzeug logging noise (suppress socket.io polling requests)
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
+logging.getLogger('engineio.server').setLevel(logging.WARNING)
+logging.getLogger('socketio.server').setLevel(logging.WARNING)
+
 # Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-broker-arb-secret-key'
@@ -870,8 +875,10 @@ class AutoTrader:
         signal_type = signal.signal_type
         direction = 'LONG' if signal_type == 'ENTRY_LONG' else 'SHORT'
 
-        self._logger.info(f"[AUTO] === FILTERS PASSED === Executing {direction} entry trade")
-        self._logger.info(f"[AUTO] Trade details: lot_size={config.lot_size}, z={signal.zscore:.2f}")
+        self._logger.info("*" * 60)
+        self._logger.info(f"[TRADE] ENTRY {direction} - FILTERS PASSED")
+        self._logger.info(f"[TRADE] Z-score: {signal.zscore:.2f}, Lot size: {config.lot_size}")
+        self._logger.info("*" * 60)
 
         # Check if pegged limit order execution is configured
         # Note: Settings UI saves to 'order_type' field (MARKET, LIMIT, PEGGED_LIMIT)
@@ -1256,7 +1263,10 @@ class AutoTrader:
             )
 
             database.add_trade(trade)
-            self._logger.info(f"[AUTO] === TRADE RECORDED (MARKET): {trade_id} ===")
+            self._logger.info("+" * 60)
+            self._logger.info(f"[TRADE] ENTRY COMPLETE (MARKET): {trade_id}")
+            self._logger.info(f"[TRADE] Spot: ${spot_result.price:.2f}, Futures: ${futures_result.price:.2f}")
+            self._logger.info("+" * 60)
 
             # Log successful trade entry to STD filter log
             if std_filter_result:
@@ -1438,7 +1448,10 @@ class AutoTrader:
             )
 
             database.add_trade(trade)
-            self._logger.info(f"[AUTO] === TRADE RECORDED (PEGGED_LIMIT): {trade_id} ===")
+            self._logger.info("+" * 60)
+            self._logger.info(f"[TRADE] ENTRY COMPLETE (PEGGED_LIMIT): {trade_id}")
+            self._logger.info(f"[TRADE] Spot: ${spot_result_price:.2f}, Futures: ${futures_result_price:.2f}")
+            self._logger.info("+" * 60)
 
             # Log STD filter event
             if std_filter_result:
@@ -1921,7 +1934,11 @@ class AutoTrader:
             ))
             conn.commit()
 
-            self._logger.info(f"[{trade_source}] Pegged trade closed: {trade_id}, Net P&L: ${net_pnl:.2f}")
+            self._logger.info("+" * 60)
+            self._logger.info(f"[TRADE] EXIT COMPLETE (PEGGED_LIMIT): {trade_id}")
+            self._logger.info(f"[TRADE] P&L: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Comm: ${commission:.2f})")
+            self._logger.info(f"[TRADE] Spot: ${spot_result_price:.2f}, Futures: ${futures_result_price:.2f}")
+            self._logger.info("+" * 60)
 
             # Emit to frontend
             socketio.emit('auto_trade', {
@@ -2121,7 +2138,11 @@ class AutoTrader:
             ))
             conn.commit()
 
-            self._logger.info(f"[{trade_source}] Trade closed: {trade_id}, Net P&L: ${net_pnl:.2f}")
+            self._logger.info("+" * 60)
+            self._logger.info(f"[TRADE] EXIT COMPLETE: {trade_id}")
+            self._logger.info(f"[TRADE] P&L: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Comm: ${commission:.2f})")
+            self._logger.info(f"[TRADE] Spot: ${spot_result.price:.2f}, Futures: ${futures_result.price:.2f}")
+            self._logger.info("+" * 60)
 
             # Emit to frontend
             socketio.emit('auto_trade', {
@@ -4792,10 +4813,10 @@ def start_price_streaming():
                 # Load active brokers from JSON file (more reliable than database)
                 spot_broker_id, futures_broker_id = load_active_brokers()
 
-                # Log every 10 seconds
+                # Log every 100 iterations (~30 seconds at 0.3s interval) to reduce noise
                 log_counter += 1
-                if log_counter % 10 == 1:
-                    logger.info(f"[PRICES] Active brokers from file - Spot: {spot_broker_id}, Futures: {futures_broker_id}")
+                if log_counter % 100 == 1:
+                    logger.info(f"[PRICES] Active brokers - Spot: {spot_broker_id}, Futures: {futures_broker_id}")
 
                 if not spot_broker_id or not futures_broker_id:
                     time.sleep(1)
@@ -5086,7 +5107,10 @@ def start_price_streaming():
                                 # Z-score high - short the spread
                                 # Pass locked stats for limit order exit calculation
                                 signal = Signal('ENTRY_SHORT', zscore, spread, locked_mean, locked_std)
+                                logger.info("=" * 60)
                                 logger.info(f"[SIGNAL] ENTRY_SHORT triggered: z={zscore:.2f} >= {entry_threshold}")
+                                logger.info(f"[SIGNAL] Spread: ${spread:.2f}, Mean: ${locked_mean:.2f}, Std: ${locked_std:.4f}")
+                                logger.info("=" * 60)
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'ENTRY_SHORT', 'zscore': zscore})
 
@@ -5094,7 +5118,10 @@ def start_price_streaming():
                                 # Z-score low - long the spread
                                 # Pass locked stats for limit order exit calculation
                                 signal = Signal('ENTRY_LONG', zscore, spread, locked_mean, locked_std)
+                                logger.info("=" * 60)
                                 logger.info(f"[SIGNAL] ENTRY_LONG triggered: z={zscore:.2f} <= -{entry_threshold}")
+                                logger.info(f"[SIGNAL] Spread: ${spread:.2f}, Mean: ${locked_mean:.2f}, Std: ${locked_std:.4f}")
+                                logger.info("=" * 60)
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': 'ENTRY_LONG', 'zscore': zscore})
 
@@ -5130,7 +5157,10 @@ def start_price_streaming():
 
                             if should_exit:
                                 signal = Signal(exit_reason, zscore, spread)
+                                logger.info("=" * 60)
                                 logger.info(f"[SIGNAL] {exit_reason} triggered: z={zscore:.2f}")
+                                logger.info(f"[SIGNAL] Spread: ${spread:.2f}, Position: {auto_trader.position_direction}")
+                                logger.info("=" * 60)
                                 auto_trader.handle_signal(signal)
                                 socketio.emit('signal', {'type': exit_reason, 'zscore': zscore})
 
