@@ -698,33 +698,83 @@ class PeggedOrderExecutor:
             return {'success': False, 'error': f'{result.retcode} - {result.comment}'}
 
     def _check_order_status(self, spread_order: SpreadOrder, mt5) -> None:
-        """Check the fill status of both legs."""
+        """Check the fill status of both legs.
+
+        Uses multiple detection methods:
+        1. Check if order still pending (orders_get)
+        2. Check deal history with time range (history_deals_get)
+        3. Check open positions as fallback (positions_get)
+        """
+        from datetime import datetime, timedelta
+
+        # Time range for deal history (last 24 hours)
+        time_from = datetime.now() - timedelta(hours=24)
+
         # Check spot leg
         if spread_order.spot_leg.status == LegStatus.OPEN:
             orders = mt5.orders_get(ticket=spread_order.spot_leg.order_ticket)
             if orders is None or len(orders) == 0:
                 # Order no longer pending - check if filled
-                deals = mt5.history_deals_get(order=spread_order.spot_leg.order_ticket)
+                self._logger.info(f"[PEGGED] Spot order {spread_order.spot_leg.order_ticket} not in pending, checking fills...")
+
+                # Method 1: Check deal history with time range
+                deals = mt5.history_deals_get(time_from, datetime.now(), order=spread_order.spot_leg.order_ticket)
                 if deals and len(deals) > 0:
                     total_filled = sum(d.volume for d in deals)
                     avg_price = sum(d.price * d.volume for d in deals) / total_filled if total_filled > 0 else 0
                     spread_order.spot_leg.filled_qty = total_filled
                     spread_order.spot_leg.filled_price = avg_price
                     spread_order.spot_leg.status = LegStatus.FILLED if total_filled >= spread_order.spot_leg.quantity else LegStatus.PARTIAL
-                    self._logger.info(f"[PEGGED] Spot leg filled: qty={total_filled}, price={avg_price:.2f}")
+                    self._logger.info(f"[PEGGED] Spot leg filled (from deals): qty={total_filled}, price={avg_price:.2f}")
+                else:
+                    # Method 2: Check if there's an open position for this symbol
+                    positions = mt5.positions_get(symbol=spread_order.spot_leg.symbol)
+                    if positions and len(positions) > 0:
+                        # Find most recent position matching our direction
+                        for pos in positions:
+                            pos_side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                            if pos_side == spread_order.spot_leg.side and abs(pos.volume - spread_order.spot_leg.quantity) < 0.001:
+                                spread_order.spot_leg.filled_qty = pos.volume
+                                spread_order.spot_leg.filled_price = pos.price_open
+                                spread_order.spot_leg.status = LegStatus.FILLED
+                                spread_order.spot_leg.position_ticket = pos.ticket
+                                self._logger.info(f"[PEGGED] Spot leg filled (from position): qty={pos.volume}, price={pos.price_open:.2f}, pos_ticket={pos.ticket}")
+                                break
+
+                    if spread_order.spot_leg.status == LegStatus.OPEN:
+                        self._logger.warning(f"[PEGGED] Spot order {spread_order.spot_leg.order_ticket} gone but no fill detected")
 
         # Check futures leg
         if spread_order.futures_leg.status == LegStatus.OPEN:
             orders = mt5.orders_get(ticket=spread_order.futures_leg.order_ticket)
             if orders is None or len(orders) == 0:
-                deals = mt5.history_deals_get(order=spread_order.futures_leg.order_ticket)
+                self._logger.info(f"[PEGGED] Futures order {spread_order.futures_leg.order_ticket} not in pending, checking fills...")
+
+                # Method 1: Check deal history with time range
+                deals = mt5.history_deals_get(time_from, datetime.now(), order=spread_order.futures_leg.order_ticket)
                 if deals and len(deals) > 0:
                     total_filled = sum(d.volume for d in deals)
                     avg_price = sum(d.price * d.volume for d in deals) / total_filled if total_filled > 0 else 0
                     spread_order.futures_leg.filled_qty = total_filled
                     spread_order.futures_leg.filled_price = avg_price
                     spread_order.futures_leg.status = LegStatus.FILLED if total_filled >= spread_order.futures_leg.quantity else LegStatus.PARTIAL
-                    self._logger.info(f"[PEGGED] Futures leg filled: qty={total_filled}, price={avg_price:.2f}")
+                    self._logger.info(f"[PEGGED] Futures leg filled (from deals): qty={total_filled}, price={avg_price:.2f}")
+                else:
+                    # Method 2: Check if there's an open position for this symbol
+                    positions = mt5.positions_get(symbol=spread_order.futures_leg.symbol)
+                    if positions and len(positions) > 0:
+                        for pos in positions:
+                            pos_side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
+                            if pos_side == spread_order.futures_leg.side and abs(pos.volume - spread_order.futures_leg.quantity) < 0.001:
+                                spread_order.futures_leg.filled_qty = pos.volume
+                                spread_order.futures_leg.filled_price = pos.price_open
+                                spread_order.futures_leg.status = LegStatus.FILLED
+                                spread_order.futures_leg.position_ticket = pos.ticket
+                                self._logger.info(f"[PEGGED] Futures leg filled (from position): qty={pos.volume}, price={pos.price_open:.2f}, pos_ticket={pos.ticket}")
+                                break
+
+                    if spread_order.futures_leg.status == LegStatus.OPEN:
+                        self._logger.warning(f"[PEGGED] Futures order {spread_order.futures_leg.order_ticket} gone but no fill detected")
 
     def _amend_limit_orders(
         self,
