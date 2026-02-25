@@ -123,6 +123,14 @@ class TradingConfig:
     active_spot_broker: Optional[str] = None
     active_futures_broker: Optional[str] = None
 
+    # Telegram Notifications
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_notify_trades: bool = True
+    telegram_notify_signals: bool = False
+    telegram_notify_errors: bool = True
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'id': self.id,
@@ -176,7 +184,13 @@ class TradingConfig:
             'paper_mode': self.paper_mode,
             'selected_asset': self.selected_asset,
             'active_spot_broker': self.active_spot_broker,
-            'active_futures_broker': self.active_futures_broker
+            'active_futures_broker': self.active_futures_broker,
+            'telegram_enabled': self.telegram_enabled,
+            'telegram_bot_token': self.telegram_bot_token,
+            'telegram_chat_id': self.telegram_chat_id,
+            'telegram_notify_trades': self.telegram_notify_trades,
+            'telegram_notify_signals': self.telegram_notify_signals,
+            'telegram_notify_errors': self.telegram_notify_errors
         }
 
 
