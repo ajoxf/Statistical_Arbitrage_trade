@@ -92,7 +92,13 @@ class DatabaseManager:
                 trading_start_hour INTEGER DEFAULT 8,
                 trading_start_minute INTEGER DEFAULT 0,
                 trading_end_hour INTEGER DEFAULT 17,
-                trading_end_minute INTEGER DEFAULT 0
+                trading_end_minute INTEGER DEFAULT 0,
+                telegram_enabled INTEGER DEFAULT 0,
+                telegram_bot_token TEXT DEFAULT '',
+                telegram_chat_id TEXT DEFAULT '',
+                telegram_notify_trades INTEGER DEFAULT 1,
+                telegram_notify_signals INTEGER DEFAULT 0,
+                telegram_notify_errors INTEGER DEFAULT 1
             )
         ''')
 
@@ -327,6 +333,18 @@ class DatabaseManager:
             cursor.execute("ALTER TABLE trading_config ADD COLUMN trading_end_hour INTEGER DEFAULT 17")
             cursor.execute("ALTER TABLE trading_config ADD COLUMN trading_end_minute INTEGER DEFAULT 0")
 
+        # Migration: Add Telegram notification columns (for existing databases)
+        try:
+            cursor.execute("SELECT telegram_enabled FROM trading_config LIMIT 1")
+        except:
+            logger.info("Adding telegram notification columns to trading_config")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN telegram_enabled INTEGER DEFAULT 0")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN telegram_bot_token TEXT DEFAULT ''")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN telegram_chat_id TEXT DEFAULT ''")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN telegram_notify_trades INTEGER DEFAULT 1")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN telegram_notify_signals INTEGER DEFAULT 0")
+            cursor.execute("ALTER TABLE trading_config ADD COLUMN telegram_notify_errors INTEGER DEFAULT 1")
+
         conn.commit()
         logger.info(f"Database initialized: {self.db_path}")
 
@@ -386,7 +404,13 @@ class DatabaseManager:
                 trading_start_hour=row['trading_start_hour'] if 'trading_start_hour' in row.keys() else 8,
                 trading_start_minute=row['trading_start_minute'] if 'trading_start_minute' in row.keys() else 0,
                 trading_end_hour=row['trading_end_hour'] if 'trading_end_hour' in row.keys() else 17,
-                trading_end_minute=row['trading_end_minute'] if 'trading_end_minute' in row.keys() else 0
+                trading_end_minute=row['trading_end_minute'] if 'trading_end_minute' in row.keys() else 0,
+                telegram_enabled=bool(row['telegram_enabled']) if 'telegram_enabled' in row.keys() else False,
+                telegram_bot_token=row['telegram_bot_token'] if 'telegram_bot_token' in row.keys() else '',
+                telegram_chat_id=row['telegram_chat_id'] if 'telegram_chat_id' in row.keys() else '',
+                telegram_notify_trades=bool(row['telegram_notify_trades']) if 'telegram_notify_trades' in row.keys() else True,
+                telegram_notify_signals=bool(row['telegram_notify_signals']) if 'telegram_notify_signals' in row.keys() else False,
+                telegram_notify_errors=bool(row['telegram_notify_errors']) if 'telegram_notify_errors' in row.keys() else True
             )
 
         return TradingConfig()
