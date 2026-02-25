@@ -636,6 +636,8 @@ def notify_trade_exit(
     if exec_mode == 'PEGGED_LIMIT' and spot_target_price is not None:
         spot_drift = exit_spot - spot_target_price if exit_spot else 0
         futures_drift = exit_futures - futures_target_price if exit_futures and futures_target_price else 0
+        # Calculate spread and z-score drift from entry to exit
+        spread_change = exit_spread - entry_spread
 
         message += (
             f"\n<b>⚡ EXECUTION</b>\n"
@@ -647,7 +649,11 @@ def notify_trade_exit(
         if spot_fill_time_ms is not None:
             message += f"├ Spot Fill Time: <code>{spot_fill_time_ms}ms</code>\n"
         if futures_fill_time_ms is not None:
-            message += f"└ Futures Fill Time: <code>{futures_fill_time_ms}ms</code>\n"
+            message += f"├ Futures Fill Time: <code>{futures_fill_time_ms}ms</code>\n"
+        message += f"├ Spread Change: <code>{'+' if spread_change >= 0 else ''}{spread_change:.2f}</code>\n"
+        if entry_zscore is not None and exit_zscore is not None:
+            zscore_change = exit_zscore - entry_zscore
+            message += f"└ Z-Score Change: <code>{'+' if zscore_change >= 0 else ''}{zscore_change:.2f}</code>\n"
 
     send_telegram_notification(message, 'trade')
 
