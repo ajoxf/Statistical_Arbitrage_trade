@@ -20,13 +20,17 @@ if getattr(sys, 'frozen', False):
     APP_DIR = Path(sys.executable).parent
     sys.path.insert(0, str(APP_DIR))
 else:
-    APP_DIR = Path(__file__).parent.parent
+    # feature_files directory contains web module and app
+    APP_DIR = Path(__file__).parent
     sys.path.insert(0, str(APP_DIR))
 
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
-    env_file = APP_DIR / '.env'
+    # Check for .env in current directory first, then APP_DIR
+    env_file = Path('.env')
+    if not env_file.exists():
+        env_file = APP_DIR / '.env'
     if env_file.exists():
         load_dotenv(env_file)
         print(f"Loaded environment from {env_file}", flush=True)
