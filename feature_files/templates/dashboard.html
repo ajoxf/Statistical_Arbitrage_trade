@@ -302,6 +302,49 @@
             </div>
         </div>
 
+        <!-- Telegram Notifications -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-telegram me-2"></i>Telegram Notifications</span>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="telegram-enabled"
+                           {% if config.telegram_enabled %}checked{% endif %}>
+                </div>
+            </div>
+            <div class="card-body" id="telegram-settings">
+                <div class="mb-2">
+                    <label class="form-label small">Bot Token</label>
+                    <input type="password" class="form-control form-control-sm" id="telegram-bot-token"
+                           value="{{ config.telegram_bot_token or '' }}" placeholder="123456:ABC-DEF...">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label small">Chat ID</label>
+                    <input type="text" class="form-control form-control-sm" id="telegram-chat-id"
+                           value="{{ config.telegram_chat_id or '' }}" placeholder="-100123456789">
+                </div>
+                <div class="mb-2">
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="checkbox" id="telegram-notify-trades"
+                               {% if config.telegram_notify_trades %}checked{% endif %}>
+                        <label class="form-check-label small" for="telegram-notify-trades">Trades</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="checkbox" id="telegram-notify-signals"
+                               {% if config.telegram_notify_signals %}checked{% endif %}>
+                        <label class="form-check-label small" for="telegram-notify-signals">Signals</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="checkbox" id="telegram-notify-errors"
+                               {% if config.telegram_notify_errors %}checked{% endif %}>
+                        <label class="form-check-label small" for="telegram-notify-errors">Errors</label>
+                    </div>
+                </div>
+                <button class="btn btn-sm btn-outline-primary w-100" onclick="saveTelegramSettings()">
+                    <i class="bi bi-save me-1"></i>Save & Test
+                </button>
+            </div>
+        </div>
+
         <!-- Manual Spread Trade -->
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -1797,6 +1840,44 @@
         if (exitInput) exitInput.disabled = isActive;
         if (directionSelect) directionSelect.disabled = isActive;
         if (overnightSelect) overnightSelect.disabled = isActive;
+    }
+
+    async function saveTelegramSettings() {
+        const enabled = document.getElementById('telegram-enabled').checked;
+        const botToken = document.getElementById('telegram-bot-token').value.trim();
+        const chatId = document.getElementById('telegram-chat-id').value.trim();
+        const notifyTrades = document.getElementById('telegram-notify-trades').checked;
+        const notifySignals = document.getElementById('telegram-notify-signals').checked;
+        const notifyErrors = document.getElementById('telegram-notify-errors').checked;
+
+        if (enabled && (!botToken || !chatId)) {
+            alert('Please enter both Bot Token and Chat ID');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/telegram/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    telegram_enabled: enabled,
+                    telegram_bot_token: botToken,
+                    telegram_chat_id: chatId,
+                    telegram_notify_trades: notifyTrades,
+                    telegram_notify_signals: notifySignals,
+                    telegram_notify_errors: notifyErrors
+                })
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                alert(data.message || 'Telegram settings saved!');
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            alert('Error saving Telegram settings: ' + error.message);
+        }
     }
 
     async function activateManualTrade() {

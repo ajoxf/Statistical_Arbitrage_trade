@@ -449,6 +449,112 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)
 logging.getLogger('engineio.server').setLevel(logging.WARNING)
 logging.getLogger('socketio.server').setLevel(logging.WARNING)
 
+
+# ==================== Telegram Notifications ====================
+
+def send_telegram_notification(message: str, notify_type: str = 'trade') -> bool:
+    """
+    Send a notification via Telegram bot.
+
+    Args:
+        message: The message to send
+        notify_type: Type of notification ('trade', 'signal', 'error')
+
+    Returns:
+        True if sent successfully, False otherwise
+    """
+    try:
+        database = get_db()
+        config = database.get_config()
+
+        if not config or not config.telegram_enabled:
+            return False
+
+        if not config.telegram_bot_token or not config.telegram_chat_id:
+            logger.warning("[TELEGRAM] Bot token or chat ID not configured")
+            return False
+
+        # Check notification type preferences
+        if notify_type == 'trade' and not config.telegram_notify_trades:
+            return False
+        elif notify_type == 'signal' and not config.telegram_notify_signals:
+            return False
+        elif notify_type == 'error' and not config.telegram_notify_errors:
+            return False
+
+        import requests
+
+        url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage"
+        payload = {
+            'chat_id': config.telegram_chat_id,
+            'text': message,
+            'parse_mode': 'HTML'
+        }
+
+        response = requests.post(url, json=payload, timeout=10)
+
+        if response.status_code == 200:
+            logger.info(f"[TELEGRAM] Notification sent: {notify_type}")
+            return True
+        else:
+            logger.error(f"[TELEGRAM] Failed to send: {response.status_code} - {response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error sending notification: {e}")
+        return False
+
+
+def notify_trade_entry(direction: str, spot_price: float, futures_price: float,
+                       spread: float, zscore: float, lot_size: float, trade_id: str):
+    """Send Telegram notification for trade entry."""
+    message = (
+        f"🟢 <b>TRADE ENTRY</b>\n\n"
+        f"<b>Direction:</b> {direction}\n"
+        f"<b>Trade ID:</b> {trade_id}\n"
+        f"<b>Lot Size:</b> {lot_size}\n\n"
+        f"<b>Spot:</b> ${spot_price:.2f}\n"
+        f"<b>Futures:</b> ${futures_price:.2f}\n"
+        f"<b>Spread:</b> ${spread:.2f}\n"
+        f"<b>Z-Score:</b> {zscore:.2f}"
+    )
+    send_telegram_notification(message, 'trade')
+
+
+def notify_trade_exit(direction: str, entry_spread: float, exit_spread: float,
+                      pnl: float, trade_id: str, exit_reason: str = 'EXIT'):
+    """Send Telegram notification for trade exit."""
+    emoji = "🟢" if pnl >= 0 else "🔴"
+    pnl_sign = "+" if pnl >= 0 else ""
+    message = (
+        f"{emoji} <b>TRADE EXIT</b>\n\n"
+        f"<b>Direction:</b> {direction}\n"
+        f"<b>Trade ID:</b> {trade_id}\n"
+        f"<b>Reason:</b> {exit_reason}\n\n"
+        f"<b>Entry Spread:</b> ${entry_spread:.2f}\n"
+        f"<b>Exit Spread:</b> ${exit_spread:.2f}\n"
+        f"<b>P&L:</b> {pnl_sign}${pnl:.2f}"
+    )
+    send_telegram_notification(message, 'trade')
+
+
+def notify_signal(signal_type: str, zscore: float, spread: float):
+    """Send Telegram notification for signal generation."""
+    emoji = "📈" if 'LONG' in signal_type else "📉" if 'SHORT' in signal_type else "⚡"
+    message = (
+        f"{emoji} <b>SIGNAL: {signal_type}</b>\n\n"
+        f"<b>Z-Score:</b> {zscore:.2f}\n"
+        f"<b>Spread:</b> ${spread:.2f}"
+    )
+    send_telegram_notification(message, 'signal')
+
+
+def notify_error(error_message: str):
+    """Send Telegram notification for errors."""
+    message = f"⚠️ <b>ERROR</b>\n\n{error_message}"
+    send_telegram_notification(message, 'error')
+
+
 # Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-broker-arb-secret-key'
@@ -1268,6 +1374,11 @@ class AutoTrader:
             self._logger.info(f"[TRADE] Spot: ${spot_result.price:.2f}, Futures: ${futures_result.price:.2f}")
             self._logger.info("+" * 60)
 
+            # Send Telegram notification
+            spread = futures_result.price - spot_result.price
+            notify_trade_entry(direction, spot_result.price, futures_result.price,
+                              spread, signal.zscore, config.lot_size, trade_id)
+
             # Log successful trade entry to STD filter log
             if std_filter_result:
                 self._log_std_filter_event(
@@ -1452,6 +1563,11 @@ class AutoTrader:
             self._logger.info(f"[TRADE] ENTRY COMPLETE (PEGGED_LIMIT): {trade_id}")
             self._logger.info(f"[TRADE] Spot: ${spot_result_price:.2f}, Futures: ${futures_result_price:.2f}")
             self._logger.info("+" * 60)
+
+            # Send Telegram notification
+            spread = futures_result_price - spot_result_price
+            notify_trade_entry(direction, spot_result_price, futures_result_price,
+                              spread, signal.zscore, config.lot_size, trade_id)
 
             # Log STD filter event
             if std_filter_result:
@@ -1940,6 +2056,11 @@ class AutoTrader:
             self._logger.info(f"[TRADE] Spot: ${spot_result_price:.2f}, Futures: ${futures_result_price:.2f}")
             self._logger.info("+" * 60)
 
+            # Send Telegram notification
+            entry_spread = entry_futures_price - entry_spot_price
+            exit_spread = futures_result_price - spot_result_price
+            notify_trade_exit(position_direction, entry_spread, exit_spread, net_pnl, trade_id, signal_type)
+
             # Emit to frontend
             socketio.emit('auto_trade', {
                 'action': 'EXIT',
@@ -2143,6 +2264,11 @@ class AutoTrader:
             self._logger.info(f"[TRADE] P&L: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Comm: ${commission:.2f})")
             self._logger.info(f"[TRADE] Spot: ${spot_result.price:.2f}, Futures: ${futures_result.price:.2f}")
             self._logger.info("+" * 60)
+
+            # Send Telegram notification
+            entry_spread = entry_futures_price - entry_spot_price
+            exit_spread = futures_result.price - spot_result.price
+            notify_trade_exit(position_direction, entry_spread, exit_spread, net_pnl, trade_id, signal_type)
 
             # Emit to frontend
             socketio.emit('auto_trade', {
@@ -3396,6 +3522,43 @@ def api_toggle_algo():
         'algo_enabled': enabled,
         'message': message
     })
+
+
+@app.route('/api/telegram/settings', methods=['POST'])
+def api_telegram_settings():
+    """Save Telegram notification settings and send a test message"""
+    database = get_db()
+    data = request.get_json()
+
+    # Update config fields
+    database.update_config_field('telegram_enabled', data.get('telegram_enabled', False))
+    database.update_config_field('telegram_bot_token', data.get('telegram_bot_token', ''))
+    database.update_config_field('telegram_chat_id', data.get('telegram_chat_id', ''))
+    database.update_config_field('telegram_notify_trades', data.get('telegram_notify_trades', True))
+    database.update_config_field('telegram_notify_signals', data.get('telegram_notify_signals', False))
+    database.update_config_field('telegram_notify_errors', data.get('telegram_notify_errors', True))
+
+    logger.info(f"[TELEGRAM] Settings updated: enabled={data.get('telegram_enabled')}")
+
+    # Send test message if enabled
+    if data.get('telegram_enabled') and data.get('telegram_bot_token') and data.get('telegram_chat_id'):
+        try:
+            import requests as req
+            url = f"https://api.telegram.org/bot{data.get('telegram_bot_token')}/sendMessage"
+            payload = {
+                'chat_id': data.get('telegram_chat_id'),
+                'text': '✅ <b>Telegram Notifications Connected!</b>\n\nYou will receive trade alerts here.',
+                'parse_mode': 'HTML'
+            }
+            response = req.post(url, json=payload, timeout=10)
+            if response.status_code == 200:
+                return jsonify({'success': True, 'message': 'Settings saved! Test message sent to Telegram.'})
+            else:
+                return jsonify({'success': True, 'message': f'Settings saved but test failed: {response.text}'})
+        except Exception as e:
+            return jsonify({'success': True, 'message': f'Settings saved but test failed: {str(e)}'})
+
+    return jsonify({'success': True, 'message': 'Telegram settings saved (disabled)'})
 
 
 @app.route('/api/manual-trade/activate', methods=['POST'])
