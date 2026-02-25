@@ -505,36 +505,150 @@ def send_telegram_notification(message: str, notify_type: str = 'trade') -> bool
         return False
 
 
-def notify_trade_entry(direction: str, spot_price: float, futures_price: float,
-                       spread: float, zscore: float, lot_size: float, trade_id: str):
-    """Send Telegram notification for trade entry."""
+def notify_trade_entry(
+    direction: str,
+    spot_price: float,
+    futures_price: float,
+    spread: float,
+    zscore: float,
+    lot_size: float,
+    trade_id: str,
+    source: str = 'ALGO',
+    exec_mode: str = 'MARKET',
+    # Execution metrics (for pegged orders)
+    spot_target_price: float = None,
+    futures_target_price: float = None,
+    spot_fill_time_ms: int = None,
+    futures_fill_time_ms: int = None,
+    initial_zscore: float = None,
+    initial_spread: float = None,
+):
+    """Send detailed Telegram notification for trade entry."""
+    spread_val = futures_price - spot_price
+
     message = (
-        f"🟢 <b>TRADE ENTRY</b>\n\n"
+        f"🟢 <b>TRADE ENTRY</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Trade ID:</b> <code>{trade_id}</code>\n"
+        f"<b>Source:</b> {source}\n"
+        f"<b>Exec Mode:</b> {exec_mode}\n"
         f"<b>Direction:</b> {direction}\n"
-        f"<b>Trade ID:</b> {trade_id}\n"
-        f"<b>Lot Size:</b> {lot_size}\n\n"
-        f"<b>Spot:</b> ${spot_price:.2f}\n"
-        f"<b>Futures:</b> ${futures_price:.2f}\n"
-        f"<b>Spread:</b> ${spread:.2f}\n"
-        f"<b>Z-Score:</b> {zscore:.2f}"
+        f"<b>Lots:</b> {lot_size}\n\n"
+        f"<b>📊 PRICES</b>\n"
+        f"├ Spot: <code>${spot_price:.2f}</code>\n"
+        f"├ Futures: <code>${futures_price:.2f}</code>\n"
+        f"├ Spread: <code>${spread_val:.2f}</code>\n"
+        f"└ Z-Score: <code>{zscore:.2f}</code>\n"
     )
+
+    # Add execution metrics for pegged orders
+    if exec_mode == 'PEGGED_LIMIT' and spot_target_price is not None:
+        spot_drift = spot_price - spot_target_price
+        futures_drift = futures_price - futures_target_price if futures_target_price else 0
+        spread_drift = spread_val - initial_spread if initial_spread else 0
+        zscore_drift = zscore - initial_zscore if initial_zscore else 0
+
+        message += (
+            f"\n<b>⚡ EXECUTION</b>\n"
+            f"├ Spot Target: <code>${spot_target_price:.2f}</code>\n"
+            f"├ Spot Fill: <code>${spot_price:.2f}</code> ({'+' if spot_drift >= 0 else ''}{spot_drift:.2f})\n"
+            f"├ Futures Target: <code>${futures_target_price:.2f}</code>\n"
+            f"├ Futures Fill: <code>${futures_price:.2f}</code> ({'+' if futures_drift >= 0 else ''}{futures_drift:.2f})\n"
+        )
+        if spot_fill_time_ms is not None:
+            message += f"├ Spot Fill Time: <code>{spot_fill_time_ms}ms</code>\n"
+        if futures_fill_time_ms is not None:
+            message += f"├ Futures Fill Time: <code>{futures_fill_time_ms}ms</code>\n"
+        if initial_spread is not None:
+            message += f"├ Spread Drift: <code>{'+' if spread_drift >= 0 else ''}{spread_drift:.2f}</code>\n"
+        if initial_zscore is not None:
+            message += f"└ Z-Score Drift: <code>{'+' if zscore_drift >= 0 else ''}{zscore_drift:.2f}</code>\n"
+
     send_telegram_notification(message, 'trade')
 
 
-def notify_trade_exit(direction: str, entry_spread: float, exit_spread: float,
-                      pnl: float, trade_id: str, exit_reason: str = 'EXIT'):
-    """Send Telegram notification for trade exit."""
-    emoji = "🟢" if pnl >= 0 else "🔴"
-    pnl_sign = "+" if pnl >= 0 else ""
+def notify_trade_exit(
+    direction: str,
+    entry_spread: float,
+    exit_spread: float,
+    trade_id: str,
+    exit_reason: str = 'EXIT',
+    source: str = 'ALGO',
+    exec_mode: str = 'MARKET',
+    lot_size: float = 0.1,
+    days_held: float = 0,
+    entry_zscore: float = None,
+    exit_zscore: float = None,
+    entry_spot: float = None,
+    entry_futures: float = None,
+    exit_spot: float = None,
+    exit_futures: float = None,
+    spot_pnl: float = 0,
+    futures_pnl: float = 0,
+    gross_pnl: float = 0,
+    swap: float = 0,
+    commission: float = 0,
+    net_pnl: float = 0,
+    # Execution metrics (for pegged orders)
+    spot_target_price: float = None,
+    futures_target_price: float = None,
+    spot_fill_time_ms: int = None,
+    futures_fill_time_ms: int = None,
+):
+    """Send detailed Telegram notification for trade exit."""
+    emoji = "🟢" if net_pnl >= 0 else "🔴"
+    pnl_sign = "+" if net_pnl >= 0 else ""
+
+    # Calculate return %
+    entry_value = abs(entry_spot or 0) * lot_size * 100  # Assuming contract_size=100
+    return_pct = (net_pnl / entry_value * 100) if entry_value > 0 else 0
+
     message = (
-        f"{emoji} <b>TRADE EXIT</b>\n\n"
+        f"{emoji} <b>TRADE EXIT</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Trade ID:</b> <code>{trade_id}</code>\n"
+        f"<b>Source:</b> {source}\n"
+        f"<b>Exec Mode:</b> {exec_mode}\n"
         f"<b>Direction:</b> {direction}\n"
-        f"<b>Trade ID:</b> {trade_id}\n"
-        f"<b>Reason:</b> {exit_reason}\n\n"
-        f"<b>Entry Spread:</b> ${entry_spread:.2f}\n"
-        f"<b>Exit Spread:</b> ${exit_spread:.2f}\n"
-        f"<b>P&L:</b> {pnl_sign}${pnl:.2f}"
+        f"<b>Exit Reason:</b> {exit_reason}\n"
+        f"<b>Days Held:</b> {days_held:.2f}\n\n"
+        f"<b>📊 ENTRY</b>\n"
+        f"├ Spot: <code>${entry_spot:.2f}</code>\n" if entry_spot else ""
+        f"├ Futures: <code>${entry_futures:.2f}</code>\n" if entry_futures else ""
+        f"├ Spread: <code>${entry_spread:.2f}</code>\n"
+        f"└ Z-Score: <code>{entry_zscore:.2f}</code>\n\n" if entry_zscore else "\n"
+        f"<b>📊 EXIT</b>\n"
+        f"├ Spot: <code>${exit_spot:.2f}</code>\n" if exit_spot else ""
+        f"├ Futures: <code>${exit_futures:.2f}</code>\n" if exit_futures else ""
+        f"├ Spread: <code>${exit_spread:.2f}</code>\n"
+        f"└ Z-Score: <code>{exit_zscore:.2f}</code>\n\n" if exit_zscore else "\n"
+        f"<b>💰 P&L BREAKDOWN</b>\n"
+        f"├ Spot P&L: <code>{'+' if spot_pnl >= 0 else ''}${spot_pnl:.2f}</code>\n"
+        f"├ Futures P&L: <code>{'+' if futures_pnl >= 0 else ''}${futures_pnl:.2f}</code>\n"
+        f"├ Gross P&L: <code>{'+' if gross_pnl >= 0 else ''}${gross_pnl:.2f}</code>\n"
+        f"├ Swap: <code>-${swap:.2f}</code>\n"
+        f"├ Commission: <code>-${commission:.2f}</code>\n"
+        f"├ <b>Net P&L: <code>{pnl_sign}${net_pnl:.2f}</code></b>\n"
+        f"└ Return: <code>{pnl_sign}{return_pct:.2f}%</code>\n"
     )
+
+    # Add execution metrics for pegged orders
+    if exec_mode == 'PEGGED_LIMIT' and spot_target_price is not None:
+        spot_drift = exit_spot - spot_target_price if exit_spot else 0
+        futures_drift = exit_futures - futures_target_price if exit_futures and futures_target_price else 0
+
+        message += (
+            f"\n<b>⚡ EXECUTION</b>\n"
+            f"├ Spot Target: <code>${spot_target_price:.2f}</code>\n"
+            f"├ Spot Fill: <code>${exit_spot:.2f}</code> ({'+' if spot_drift >= 0 else ''}{spot_drift:.2f})\n"
+            f"├ Futures Target: <code>${futures_target_price:.2f}</code>\n"
+            f"├ Futures Fill: <code>${exit_futures:.2f}</code> ({'+' if futures_drift >= 0 else ''}{futures_drift:.2f})\n"
+        )
+        if spot_fill_time_ms is not None:
+            message += f"├ Spot Fill Time: <code>{spot_fill_time_ms}ms</code>\n"
+        if futures_fill_time_ms is not None:
+            message += f"└ Futures Fill Time: <code>{futures_fill_time_ms}ms</code>\n"
+
     send_telegram_notification(message, 'trade')
 
 
@@ -1376,8 +1490,17 @@ class AutoTrader:
 
             # Send Telegram notification
             spread = futures_result.price - spot_result.price
-            notify_trade_entry(direction, spot_result.price, futures_result.price,
-                              spread, signal.zscore, config.lot_size, trade_id)
+            notify_trade_entry(
+                direction=direction,
+                spot_price=spot_result.price,
+                futures_price=futures_result.price,
+                spread=spread,
+                zscore=signal.zscore,
+                lot_size=config.lot_size,
+                trade_id=trade_id,
+                source=trade_source,
+                exec_mode='MARKET'
+            )
 
             # Log successful trade entry to STD filter log
             if std_filter_result:
@@ -1564,10 +1687,30 @@ class AutoTrader:
             self._logger.info(f"[TRADE] Spot: ${spot_result_price:.2f}, Futures: ${futures_result_price:.2f}")
             self._logger.info("+" * 60)
 
-            # Send Telegram notification
+            # Send Telegram notification with execution metrics
             spread = futures_result_price - spot_result_price
-            notify_trade_entry(direction, spot_result_price, futures_result_price,
-                              spread, signal.zscore, config.lot_size, trade_id)
+            # Calculate fill time if available
+            fill_time_ms = None
+            if spread_order.created_at:
+                fill_time_ms = int((datetime.now() - spread_order.created_at).total_seconds() * 1000)
+
+            notify_trade_entry(
+                direction=direction,
+                spot_price=spot_result_price,
+                futures_price=futures_result_price,
+                spread=spread,
+                zscore=signal.zscore,
+                lot_size=config.lot_size,
+                trade_id=trade_id,
+                source=trade_source,
+                exec_mode='PEGGED_LIMIT',
+                spot_target_price=spread_order.spot_leg.target_price,
+                futures_target_price=spread_order.futures_leg.target_price,
+                spot_fill_time_ms=fill_time_ms,
+                futures_fill_time_ms=fill_time_ms,
+                initial_zscore=signal.zscore,  # Z at signal time
+                initial_spread=signal.spread if hasattr(signal, 'spread') else None
+            )
 
             # Log STD filter event
             if std_filter_result:
@@ -2056,10 +2199,41 @@ class AutoTrader:
             self._logger.info(f"[TRADE] Spot: ${spot_result_price:.2f}, Futures: ${futures_result_price:.2f}")
             self._logger.info("+" * 60)
 
-            # Send Telegram notification
+            # Send Telegram notification with full details
             entry_spread = entry_futures_price - entry_spot_price
             exit_spread = futures_result_price - spot_result_price
-            notify_trade_exit(position_direction, entry_spread, exit_spread, net_pnl, trade_id, signal_type)
+            # Calculate fill time
+            fill_time_ms = None
+            if spread_order.created_at:
+                fill_time_ms = int((datetime.now() - spread_order.created_at).total_seconds() * 1000)
+
+            notify_trade_exit(
+                direction=position_direction,
+                entry_spread=entry_spread,
+                exit_spread=exit_spread,
+                trade_id=trade_id,
+                exit_reason=signal_type,
+                source=trade_source,
+                exec_mode='PEGGED_LIMIT',
+                lot_size=config.lot_size,
+                days_held=days_held,
+                entry_zscore=position.get('zscore'),
+                exit_zscore=signal.zscore,
+                entry_spot=entry_spot_price,
+                entry_futures=entry_futures_price,
+                exit_spot=spot_result_price,
+                exit_futures=futures_result_price,
+                spot_pnl=spot_pnl,
+                futures_pnl=futures_pnl,
+                gross_pnl=gross_pnl,
+                swap=0,  # TODO: Track swap charges
+                commission=commission,
+                net_pnl=net_pnl,
+                spot_target_price=spread_order.spot_leg.target_price,
+                futures_target_price=spread_order.futures_leg.target_price,
+                spot_fill_time_ms=fill_time_ms,
+                futures_fill_time_ms=fill_time_ms,
+            )
 
             # Emit to frontend
             socketio.emit('auto_trade', {
@@ -2265,10 +2439,32 @@ class AutoTrader:
             self._logger.info(f"[TRADE] Spot: ${spot_result.price:.2f}, Futures: ${futures_result.price:.2f}")
             self._logger.info("+" * 60)
 
-            # Send Telegram notification
+            # Send Telegram notification with full details
             entry_spread = entry_futures_price - entry_spot_price
             exit_spread = futures_result.price - spot_result.price
-            notify_trade_exit(position_direction, entry_spread, exit_spread, net_pnl, trade_id, signal_type)
+            notify_trade_exit(
+                direction=position_direction,
+                entry_spread=entry_spread,
+                exit_spread=exit_spread,
+                trade_id=trade_id,
+                exit_reason=signal_type,
+                source=trade_source,
+                exec_mode='MARKET',
+                lot_size=lot_size,
+                days_held=days_held,
+                entry_zscore=position.get('zscore'),
+                exit_zscore=signal.zscore,
+                entry_spot=entry_spot_price,
+                entry_futures=entry_futures_price,
+                exit_spot=spot_result.price,
+                exit_futures=futures_result.price,
+                spot_pnl=spot_pnl,
+                futures_pnl=futures_pnl,
+                gross_pnl=gross_pnl,
+                swap=0,  # TODO: Track swap charges
+                commission=commission,
+                net_pnl=net_pnl,
+            )
 
             # Emit to frontend
             socketio.emit('auto_trade', {
