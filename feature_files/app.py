@@ -684,6 +684,33 @@ app.config['SECRET_KEY'] = 'multi-broker-arb-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode=_async_mode, logger=False, engineio_logger=False)
 logger.info(f"SocketIO initialized with async_mode='{_async_mode}'")
 
+
+# Global error handlers for API routes - return JSON instead of HTML
+@app.errorhandler(404)
+def not_found_error(error):
+    """Return JSON for API routes, HTML for others"""
+    if request.path.startswith('/api/'):
+        return jsonify({'success': False, 'error': 'Endpoint not found'}), 404
+    return render_template('404.html') if app.debug else ('Not Found', 404)
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Return JSON for API routes, HTML for others"""
+    if request.path.startswith('/api/'):
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+    return render_template('500.html') if app.debug else ('Internal Server Error', 500)
+
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    """Catch-all exception handler for API routes"""
+    if request.path.startswith('/api/'):
+        logger.error(f"Unhandled exception in {request.path}: {str(error)}")
+        return jsonify({'success': False, 'error': str(error)}), 500
+    raise error  # Re-raise for non-API routes
+
+
 # Global instances
 db: Optional[DatabaseManager] = None
 engine: Optional[TradingEngine] = None
@@ -3729,38 +3756,46 @@ def api_toggle_algo():
 @app.route('/api/telegram/settings', methods=['POST'])
 def api_telegram_settings():
     """Save Telegram notification settings and send a test message"""
-    database = get_db()
-    data = request.get_json()
+    try:
+        database = get_db()
+        data = request.get_json()
 
-    # Update config fields
-    database.update_config_field('telegram_enabled', data.get('telegram_enabled', False))
-    database.update_config_field('telegram_bot_token', data.get('telegram_bot_token', ''))
-    database.update_config_field('telegram_chat_id', data.get('telegram_chat_id', ''))
-    database.update_config_field('telegram_notify_trades', data.get('telegram_notify_trades', True))
-    database.update_config_field('telegram_notify_signals', data.get('telegram_notify_signals', False))
-    database.update_config_field('telegram_notify_errors', data.get('telegram_notify_errors', True))
+        # Check if data was parsed correctly
+        if data is None:
+            return jsonify({'success': False, 'error': 'Invalid JSON data'}), 400
 
-    logger.info(f"[TELEGRAM] Settings updated: enabled={data.get('telegram_enabled')}")
+        # Update config fields
+        database.update_config_field('telegram_enabled', data.get('telegram_enabled', False))
+        database.update_config_field('telegram_bot_token', data.get('telegram_bot_token', ''))
+        database.update_config_field('telegram_chat_id', data.get('telegram_chat_id', ''))
+        database.update_config_field('telegram_notify_trades', data.get('telegram_notify_trades', True))
+        database.update_config_field('telegram_notify_signals', data.get('telegram_notify_signals', False))
+        database.update_config_field('telegram_notify_errors', data.get('telegram_notify_errors', True))
 
-    # Send test message if enabled
-    if data.get('telegram_enabled') and data.get('telegram_bot_token') and data.get('telegram_chat_id'):
-        try:
-            import requests as req
-            url = f"https://api.telegram.org/bot{data.get('telegram_bot_token')}/sendMessage"
-            payload = {
-                'chat_id': data.get('telegram_chat_id'),
-                'text': '✅ <b>Telegram Notifications Connected!</b>\n\nYou will receive trade alerts here.',
-                'parse_mode': 'HTML'
-            }
-            response = req.post(url, json=payload, timeout=10)
-            if response.status_code == 200:
-                return jsonify({'success': True, 'message': 'Settings saved! Test message sent to Telegram.'})
-            else:
-                return jsonify({'success': True, 'message': f'Settings saved but test failed: {response.text}'})
-        except Exception as e:
-            return jsonify({'success': True, 'message': f'Settings saved but test failed: {str(e)}'})
+        logger.info(f"[TELEGRAM] Settings updated: enabled={data.get('telegram_enabled')}")
 
-    return jsonify({'success': True, 'message': 'Telegram settings saved (disabled)'})
+        # Send test message if enabled
+        if data.get('telegram_enabled') and data.get('telegram_bot_token') and data.get('telegram_chat_id'):
+            try:
+                import requests as req
+                url = f"https://api.telegram.org/bot{data.get('telegram_bot_token')}/sendMessage"
+                payload = {
+                    'chat_id': data.get('telegram_chat_id'),
+                    'text': '✅ <b>Telegram Notifications Connected!</b>\n\nYou will receive trade alerts here.',
+                    'parse_mode': 'HTML'
+                }
+                response = req.post(url, json=payload, timeout=10)
+                if response.status_code == 200:
+                    return jsonify({'success': True, 'message': 'Settings saved! Test message sent to Telegram.'})
+                else:
+                    return jsonify({'success': True, 'message': f'Settings saved but test failed: {response.text}'})
+            except Exception as e:
+                return jsonify({'success': True, 'message': f'Settings saved but test failed: {str(e)}'})
+
+        return jsonify({'success': True, 'message': 'Telegram settings saved (disabled)'})
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error saving settings: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/manual-trade/activate', methods=['POST'])
