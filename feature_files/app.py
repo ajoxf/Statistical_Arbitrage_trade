@@ -841,10 +841,10 @@ def telegram_cmd_positions(chat_id: str):
                 f"├ Direction: <code>{trade.direction}</code>\n"
                 f"├ Lot Size: <code>{trade.lot_size or 0}</code>\n"
                 f"├ Entry Date: <code>{trade.entry_date[:16] if trade.entry_date else 'N/A'}</code>\n"
-                f"├ Entry Z-Score: <code>{trade.entry_zscore:.2f if trade.entry_zscore else 0}</code>\n"
+                f"├ Entry Z-Score: <code>{(trade.entry_zscore or 0):.2f}</code>\n"
                 f"├ <b>Entry Spread: <code>${entry_spread:.2f}</code></b>\n"
-                f"├ Spot Entry: <code>${trade.entry_spot_price:.2f if trade.entry_spot_price else 0}</code>\n"
-                f"└ Futures Entry: <code>${trade.entry_futures_price:.2f if trade.entry_futures_price else 0}</code>\n"
+                f"├ Spot Entry: <code>${(trade.entry_spot_price or 0):.2f}</code>\n"
+                f"└ Futures Entry: <code>${(trade.entry_futures_price or 0):.2f}</code>\n"
             )
 
         # Add margin info if available
@@ -858,8 +858,9 @@ def telegram_cmd_positions(chat_id: str):
 
 
 def telegram_cmd_trades(chat_id: str):
-    """Handle /trades command - show recent closed trades."""
+    """Handle /trades command - show recent closed trades with full details."""
     try:
+        from datetime import datetime
         database = get_db()
         trades = database.get_trades(status='CLOSED', limit=5)
 
@@ -867,31 +868,88 @@ def telegram_cmd_trades(chat_id: str):
             telegram_send_message(chat_id, "📋 <b>RECENT TRADES</b>\n\nNo closed trades.")
             return
 
-        message = (
-            f"📋 <b>RECENT CLOSED TRADES</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-        )
+        # Get current time for header
+        now = datetime.utcnow().strftime('%H:%M:%S')
+        message = f"<b>RECENT TRADES</b> · {now} UTC\n"
 
-        for trade in trades:
+        for i, trade in enumerate(trades):
             # Calculate spreads
-            entry_spread = 0
-            exit_spread = 0
-            if trade.entry_futures_price and trade.entry_spot_price:
-                entry_spread = trade.entry_futures_price - trade.entry_spot_price
-            if trade.exit_futures_price and trade.exit_spot_price:
-                exit_spread = trade.exit_futures_price - trade.exit_spot_price
+            entry_spread = 0.0
+            exit_spread = 0.0
+            entry_spot = trade.entry_spot_price or 0
+            entry_fut = trade.entry_futures_price or 0
+            exit_spot = trade.exit_spot_price or 0
+            exit_fut = trade.exit_futures_price or 0
 
-            pnl_emoji = "🟢" if (trade.net_pnl or 0) >= 0 else "🔴"
-            pnl_sign = "+" if (trade.net_pnl or 0) >= 0 else ""
+            if entry_fut and entry_spot:
+                entry_spread = entry_fut - entry_spot
+            if exit_fut and exit_spot:
+                exit_spread = exit_fut - exit_spot
+
+            # Calculate basis points (spread as percentage of spot price)
+            entry_bps = (entry_spread / entry_spot * 10000) if entry_spot else 0
+
+            # Determine direction label
+            direction_short = "LONG" if trade.direction == "Long Spread" else "SHORT"
+            asset = trade.asset or "BTC"
+
+            # Determine WIN/LOSS
+            net_pnl = trade.net_pnl or 0
+            result = "WIN" if net_pnl >= 0 else "LOSS"
+
+            # Calculate duration
+            duration_str = "N/A"
+            if trade.entry_date and trade.exit_date:
+                try:
+                    entry_dt = datetime.fromisoformat(trade.entry_date.replace('Z', '+00:00'))
+                    exit_dt = datetime.fromisoformat(trade.exit_date.replace('Z', '+00:00'))
+                    duration = exit_dt - entry_dt
+                    total_minutes = int(duration.total_seconds() / 60)
+                    hours = total_minutes // 60
+                    minutes = total_minutes % 60
+                    if hours > 0:
+                        duration_str = f"{hours}h {minutes}m"
+                    else:
+                        duration_str = f"{minutes}m"
+                except:
+                    if trade.days_held:
+                        hours = int(trade.days_held * 24)
+                        minutes = int((trade.days_held * 24 - hours) * 60)
+                        duration_str = f"{hours}h {minutes}m"
+
+            # Calculate return percentage
+            return_pct = trade.return_pct or 0
+            pnl_sign = "+" if net_pnl >= 0 else ""
+            pct_sign = "+" if return_pct >= 0 else ""
+
+            # Trade ID number (extract number or use index)
+            trade_num = i + 1
+            try:
+                # Try to extract number from trade_id if available
+                import re
+                match = re.search(r'(\d+)', trade.trade_id)
+                if match:
+                    trade_num = int(match.group(1))
+            except:
+                pass
 
             message += (
-                f"\n{pnl_emoji} <b>{trade.trade_id}</b>\n"
-                f"├ Direction: <code>{trade.direction}</code>\n"
-                f"├ Lot Size: <code>{trade.lot_size or 0}</code>\n"
-                f"├ Days Held: <code>{trade.days_held:.1f if trade.days_held else 0}</code>\n"
-                f"├ <b>Entry Spread: <code>${entry_spread:.2f}</code></b>\n"
-                f"├ <b>Exit Spread: <code>${exit_spread:.2f}</code></b>\n"
-                f"└ <b>Net P&L: <code>{pnl_sign}${trade.net_pnl:.2f if trade.net_pnl else 0}</code></b>\n"
+                f"\n<code>#{trade_num}   {direction_short} {asset}  {result}</code>\n"
+                f"<code>_______________________</code>\n"
+                f"<code>Exit            EXIT</code>\n"
+                f"<code>Duration        {duration_str}</code>\n"
+                f"<code>_______________________</code>\n"
+                f"<code>Spot Entry      ${entry_spot:,.4f}</code>\n"
+                f"<code>Spot Exit       ${exit_spot:,.4f}</code>\n"
+                f"<code>Fut Entry       ${entry_fut:,.4f}</code>\n"
+                f"<code>Fut Exit        ${exit_fut:,.4f}</code>\n"
+                f"<code>_______________________</code>\n"
+                f"<code>Entry Spread    {'+' if entry_spread >= 0 else ''}{entry_spread:,.4f}    ({'+' if entry_bps >= 0 else ''}{entry_bps:.2f} bps)</code>\n"
+                f"<code>Exit Spread     {'+' if exit_spread >= 0 else ''}{exit_spread:,.4f}</code>\n"
+                f"<code>Entry Z         {'+' if (trade.entry_zscore or 0) >= 0 else ''}{(trade.entry_zscore or 0):.4f}</code>\n"
+                f"<code>Exit Z          {'+' if (trade.exit_zscore or 0) >= 0 else ''}{(trade.exit_zscore or 0):.4f}</code>\n"
+                f"<code>_______________________</code>\n"
+                f"<code>Net PnL         ${pnl_sign}{net_pnl:.2f}    ({pct_sign}{return_pct:.2f}%)   {result}</code>\n"
             )
 
         telegram_send_message(chat_id, message)
@@ -1064,7 +1122,7 @@ def telegram_cmd_eod(chat_id: str):
                 direction_emoji = "📈" if trade.direction == "Long Spread" else "📉"
                 message += (
                     f"{direction_emoji} {trade.trade_id[:15]}...\n"
-                    f"   Lots: {trade.lot_size} | Entry Spread: ${entry_spread:.2f}\n"
+                    f"   Lots: {trade.lot_size or 0} | Entry Spread: ${entry_spread:.2f}\n"
                 )
         else:
             message += "No open positions\n"
@@ -1086,7 +1144,7 @@ def telegram_cmd_eod(chat_id: str):
                 message += (
                     f"{pnl_emoji} {trade.trade_id[:15]}...\n"
                     f"   Entry: ${entry_spread:.2f} → Exit: ${exit_spread:.2f}\n"
-                    f"   Lots: {trade.lot_size} | P&L: {pnl_sign}${trade.net_pnl:.2f if trade.net_pnl else 0}\n"
+                    f"   Lots: {trade.lot_size or 0} | P&L: {pnl_sign}${(trade.net_pnl or 0):.2f}\n"
                 )
         else:
             message += "No trades closed today\n"
