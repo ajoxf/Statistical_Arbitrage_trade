@@ -394,6 +394,13 @@ class PeggedOrderExecutor:
                 # Check order status
                 self._check_order_status(spread_order, mt5)
 
+                # CRITICAL: If one leg filled, immediately fill the other with market order
+                # This prevents infinite re-pegging and leg risk exposure
+                if spread_order.has_partial_fill:
+                    self._logger.warning("[PEGGED] PARTIAL FILL DETECTED - One leg filled, switching to MARKET for remaining leg")
+                    self._fill_remaining_leg_with_market(spread_order, spot_broker, futures_broker, mt5)
+                    break
+
                 # If not filled, update prices (re-peg)
                 if not spread_order.is_complete:
                     old_spot_price = spread_order.spot_leg.target_price
@@ -1022,6 +1029,90 @@ class PeggedOrderExecutor:
             )
             result = self._place_market_order_mt5(mt5, futures_broker.symbol, close_leg)
             self._logger.info(f"[PEGGED] Closed futures leg to handle leg risk: {result}")
+
+    def _fill_remaining_leg_with_market(
+        self,
+        spread_order: SpreadOrder,
+        spot_broker,
+        futures_broker,
+        mt5,
+    ) -> None:
+        """
+        Fill the remaining unfilled leg with a market order.
+
+        Called when one leg fills during pegged limit execution.
+        This prevents infinite re-pegging and reduces leg risk exposure time.
+        """
+        spot_filled = spread_order.spot_leg.status in (LegStatus.FILLED, LegStatus.PARTIAL)
+        futures_filled = spread_order.futures_leg.status in (LegStatus.FILLED, LegStatus.PARTIAL)
+
+        if spot_filled and not futures_filled:
+            # Spot filled, need to fill futures with market
+            self._logger.warning(f"[PEGGED] Spot filled, filling futures with MARKET order")
+
+            # Cancel any pending futures limit order first
+            if spread_order.futures_leg.order_ticket:
+                try:
+                    cancel_request = {
+                        "action": mt5.TRADE_ACTION_REMOVE,
+                        "order": spread_order.futures_leg.order_ticket,
+                    }
+                    result = mt5.order_send(cancel_request)
+                    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                        self._logger.info(f"[PEGGED] Cancelled pending futures limit order {spread_order.futures_leg.order_ticket}")
+                    else:
+                        self._logger.warning(f"[PEGGED] Could not cancel futures order: {result.retcode if result else 'None'}")
+                except Exception as e:
+                    self._logger.error(f"[PEGGED] Error cancelling futures order: {e}")
+
+            # Place market order for futures
+            remaining_qty = spread_order.futures_leg.quantity - spread_order.futures_leg.filled_qty
+            if remaining_qty > 0:
+                market_leg = LegOrder(
+                    symbol=futures_broker.symbol,
+                    side=spread_order.futures_leg.side,
+                    quantity=remaining_qty,
+                )
+                result = self._place_market_order_mt5(
+                    mt5, futures_broker.symbol, market_leg,
+                    spread_order.futures_leg.position_ticket
+                )
+                self._update_leg_from_result(spread_order.futures_leg, result)
+                self._logger.info(f"[PEGGED] Futures leg filled with MARKET: {result}")
+
+        elif futures_filled and not spot_filled:
+            # Futures filled, need to fill spot with market
+            self._logger.warning(f"[PEGGED] Futures filled, filling spot with MARKET order")
+
+            # Cancel any pending spot limit order first
+            if spread_order.spot_leg.order_ticket:
+                try:
+                    cancel_request = {
+                        "action": mt5.TRADE_ACTION_REMOVE,
+                        "order": spread_order.spot_leg.order_ticket,
+                    }
+                    result = mt5.order_send(cancel_request)
+                    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                        self._logger.info(f"[PEGGED] Cancelled pending spot limit order {spread_order.spot_leg.order_ticket}")
+                    else:
+                        self._logger.warning(f"[PEGGED] Could not cancel spot order: {result.retcode if result else 'None'}")
+                except Exception as e:
+                    self._logger.error(f"[PEGGED] Error cancelling spot order: {e}")
+
+            # Place market order for spot
+            remaining_qty = spread_order.spot_leg.quantity - spread_order.spot_leg.filled_qty
+            if remaining_qty > 0:
+                market_leg = LegOrder(
+                    symbol=spot_broker.symbol,
+                    side=spread_order.spot_leg.side,
+                    quantity=remaining_qty,
+                )
+                result = self._place_market_order_mt5(
+                    mt5, spot_broker.symbol, market_leg,
+                    spread_order.spot_leg.position_ticket
+                )
+                self._update_leg_from_result(spread_order.spot_leg, result)
+                self._logger.info(f"[PEGGED] Spot leg filled with MARKET: {result}")
 
     def _update_leg_from_result(self, leg: LegOrder, result: Dict[str, Any]) -> None:
         """Update leg status from order result."""
