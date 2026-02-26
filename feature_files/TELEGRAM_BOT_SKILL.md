@@ -547,12 +547,161 @@ Special characters to escape: `<`, `>`, `&`
 
 ---
 
+## Interactive Bot Commands
+
+The Telegram bot supports interactive commands that users can send to query trading status, positions, and P&L information. The bot uses long-polling to receive commands.
+
+### Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all available commands |
+| `/status` | Bot status & system overview |
+| `/positions` | Open positions with spread, lot size, entry details |
+| `/trades` | Recent closed trades with entry/exit spreads and P&L |
+| `/balance` | Account margin information (utilized & available) |
+| `/pnl` | P&L summary (today, weekly, total) |
+| `/eod` | End of day summary with all positions |
+
+### Command Response Details
+
+#### `/status` Response
+- System status (RUNNING/STOPPED)
+- Trading mode (PAPER/LIVE)
+- Asset being traded
+- Open positions count
+- Max positions allowed
+- Configured lot size
+- Win rate and total P&L
+
+#### `/positions` Response
+For each open position:
+- Trade ID
+- Direction (Long Spread/Short Spread)
+- **Lot Size**
+- Entry Date
+- Entry Z-Score
+- **Entry Spread** (futures - spot)
+- Spot Entry Price
+- Futures Entry Price
+
+#### `/trades` Response
+For each recent closed trade (last 5):
+- Trade ID
+- Direction
+- **Lot Size**
+- Days Held
+- **Entry Spread**
+- **Exit Spread**
+- **Net P&L**
+
+#### `/balance` Response
+For connected brokers:
+- Balance
+- Equity
+- **Margin Used**
+- **Free Margin (Available)**
+- Margin Utilization %
+
+#### `/pnl` Response
+- Total trades, wins, losses
+- Win rate percentage
+- Average P&L per trade
+- **Total P&L**
+- **Today's P&L**
+- **Last 7 days P&L**
+
+#### `/eod` Response (End of Day Summary)
+- Date
+- **Open positions** with lot size and entry spread
+- **Trades closed today** with entry/exit spreads and P&L
+- **Daily P&L total**
+- All-time P&L
+
+---
+
+## Scheduled End of Day Summary
+
+The bot automatically sends an EOD summary at market close time. The time is configured using the **Overnight Close Hour/Minute** settings.
+
+### Configuration
+
+The EOD summary time uses these config fields:
+- `overnight_close_hour` (default: 17)
+- `overnight_close_minute` (default: 0)
+
+### EOD Summary Contents
+
+The automatic daily summary includes:
+1. **Open Positions**
+   - Trade ID, lot size, entry spread for each open position
+
+2. **Closed Today**
+   - All trades closed that day
+   - Entry and exit spreads
+   - Lot sizes
+   - Individual P&L
+
+3. **Daily P&L**
+   - Today's net P&L (profit or loss highlighted)
+   - All-time total P&L
+
+---
+
+## Command Implementation
+
+### Polling System
+
+The bot uses long-polling to receive updates:
+
+```python
+def start_telegram_polling():
+    """Start the Telegram polling thread."""
+    global _telegram_polling_active
+
+    if _telegram_polling_active:
+        return  # Already running
+
+    polling_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
+    polling_thread.start()
+```
+
+### Command Handler
+
+```python
+def process_telegram_command(update: dict):
+    """Process a single Telegram update/command."""
+    message = update.get('message', {})
+    text = message.get('text', '')
+    chat_id = str(message.get('chat', {}).get('id', ''))
+
+    # Verify authorization
+    if chat_id != config.telegram_chat_id:
+        return  # Unauthorized
+
+    # Route to command handler
+    command = text.split()[0].lower()
+
+    if command == '/status':
+        telegram_cmd_status(chat_id)
+    elif command == '/positions':
+        telegram_cmd_positions(chat_id)
+    # ... etc
+```
+
+### Security
+
+- Only responds to commands from the configured `telegram_chat_id`
+- Unauthorized requests are logged and ignored
+- No sensitive data (tokens, passwords) is ever returned in responses
+
+---
+
 ## Future Enhancements
 
-- **Inline Keyboards**: Add buttons for quick actions (requires webhook)
-- **Bot Commands**: `/status`, `/stop`, `/close` (requires polling/webhook server)
+- **Inline Keyboards**: Add buttons for quick actions
 - **Charts**: Send chart images with trades
-- **Daily Summary**: Automated end-of-day P&L report
+- **Trade Commands**: `/close`, `/exit` to execute trades via Telegram
 
 ---
 

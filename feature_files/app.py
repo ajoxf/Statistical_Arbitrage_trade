@@ -675,6 +675,573 @@ def notify_error(error_message: str):
     send_telegram_notification(message, 'error')
 
 
+# ==================== Telegram Interactive Bot Commands ====================
+
+# Store last processed update ID for polling
+_telegram_last_update_id = 0
+_telegram_polling_active = False
+
+
+def get_telegram_updates(offset: int = 0, timeout: int = 1) -> list:
+    """
+    Poll Telegram for new messages/commands.
+
+    Args:
+        offset: Update ID offset to avoid getting same updates
+        timeout: Long polling timeout in seconds
+
+    Returns:
+        List of update objects from Telegram
+    """
+    try:
+        database = get_db()
+        config = database.get_config()
+
+        if not config or not config.telegram_enabled:
+            return []
+
+        if not config.telegram_bot_token:
+            return []
+
+        import requests
+
+        url = f"https://api.telegram.org/bot{config.telegram_bot_token}/getUpdates"
+        params = {
+            'offset': offset,
+            'timeout': timeout,
+            'allowed_updates': ['message']
+        }
+
+        response = requests.get(url, params=params, timeout=timeout + 5)
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('ok'):
+                return data.get('result', [])
+
+        return []
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error getting updates: {e}")
+        return []
+
+
+def telegram_send_message(chat_id: str, message: str) -> bool:
+    """Send a message to a specific chat."""
+    try:
+        database = get_db()
+        config = database.get_config()
+
+        if not config or not config.telegram_bot_token:
+            return False
+
+        import requests
+
+        url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage"
+        payload = {
+            'chat_id': chat_id,
+            'text': message,
+            'parse_mode': 'HTML'
+        }
+
+        response = requests.post(url, json=payload, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error sending message: {e}")
+        return False
+
+
+def telegram_cmd_help(chat_id: str):
+    """Handle /help command - list available commands."""
+    message = (
+        "📋 <b>AVAILABLE COMMANDS</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "/status - Bot status & system overview\n"
+        "/positions - Open positions with details\n"
+        "/trades - Recent closed trades\n"
+        "/balance - Account margin info\n"
+        "/pnl - P&L summary\n"
+        "/eod - End of day summary\n"
+        "/help - Show this help message\n"
+    )
+    telegram_send_message(chat_id, message)
+
+
+def telegram_cmd_status(chat_id: str):
+    """Handle /status command - show bot status and overview."""
+    try:
+        database = get_db()
+        config = database.get_config()
+
+        # Get open trades count
+        open_trades = database.get_open_trades()
+
+        # Get algo status
+        algo_status = "🟢 RUNNING" if config and config.algo_enabled else "🔴 STOPPED"
+        paper_mode = "📝 PAPER" if config and config.paper_mode else "💰 LIVE"
+
+        # Get trade stats
+        stats = database.get_trade_statistics()
+
+        message = (
+            f"📊 <b>BOT STATUS</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>System:</b> {algo_status}\n"
+            f"<b>Mode:</b> {paper_mode}\n"
+            f"<b>Asset:</b> {config.asset_name if config else 'N/A'}\n\n"
+            f"<b>📈 POSITIONS</b>\n"
+            f"├ Open: <code>{len(open_trades)}</code>\n"
+            f"├ Max Allowed: <code>{config.max_positions if config else 0}</code>\n"
+            f"└ Lot Size: <code>{config.lot_size if config else 0}</code>\n\n"
+            f"<b>📊 STATISTICS</b>\n"
+            f"├ Total Trades: <code>{stats.get('total_trades', 0)}</code>\n"
+            f"├ Win Rate: <code>{stats.get('win_rate', 0):.1f}%</code>\n"
+            f"└ Total P&L: <code>${stats.get('total_pnl', 0):.2f}</code>\n"
+        )
+
+        telegram_send_message(chat_id, message)
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error in /status: {e}")
+        telegram_send_message(chat_id, f"⚠️ Error getting status: {str(e)}")
+
+
+def telegram_cmd_positions(chat_id: str):
+    """Handle /positions command - show open positions with spread, PnL, lot size."""
+    try:
+        database = get_db()
+        config = database.get_config()
+        open_trades = database.get_open_trades()
+
+        if not open_trades:
+            telegram_send_message(chat_id, "📊 <b>OPEN POSITIONS</b>\n\nNo open positions.")
+            return
+
+        message = (
+            f"📊 <b>OPEN POSITIONS</b> ({len(open_trades)})\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+        for trade in open_trades:
+            # Calculate entry spread
+            entry_spread = 0
+            if trade.entry_futures_price and trade.entry_spot_price:
+                entry_spread = trade.entry_futures_price - trade.entry_spot_price
+
+            # Calculate unrealized P&L (would need current prices, show entry info)
+            direction_emoji = "📈" if trade.direction == "Long Spread" else "📉"
+
+            message += (
+                f"\n{direction_emoji} <b>{trade.trade_id}</b>\n"
+                f"├ Direction: <code>{trade.direction}</code>\n"
+                f"├ Lot Size: <code>{trade.lot_size or 0}</code>\n"
+                f"├ Entry Date: <code>{trade.entry_date[:16] if trade.entry_date else 'N/A'}</code>\n"
+                f"├ Entry Z-Score: <code>{trade.entry_zscore:.2f if trade.entry_zscore else 0}</code>\n"
+                f"├ <b>Entry Spread: <code>${entry_spread:.2f}</code></b>\n"
+                f"├ Spot Entry: <code>${trade.entry_spot_price:.2f if trade.entry_spot_price else 0}</code>\n"
+                f"└ Futures Entry: <code>${trade.entry_futures_price:.2f if trade.entry_futures_price else 0}</code>\n"
+            )
+
+        # Add margin info if available
+        message += f"\n<i>Use /balance for margin details</i>"
+
+        telegram_send_message(chat_id, message)
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error in /positions: {e}")
+        telegram_send_message(chat_id, f"⚠️ Error getting positions: {str(e)}")
+
+
+def telegram_cmd_trades(chat_id: str):
+    """Handle /trades command - show recent closed trades."""
+    try:
+        database = get_db()
+        trades = database.get_trades(status='CLOSED', limit=5)
+
+        if not trades:
+            telegram_send_message(chat_id, "📋 <b>RECENT TRADES</b>\n\nNo closed trades.")
+            return
+
+        message = (
+            f"📋 <b>RECENT CLOSED TRADES</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+        for trade in trades:
+            # Calculate spreads
+            entry_spread = 0
+            exit_spread = 0
+            if trade.entry_futures_price and trade.entry_spot_price:
+                entry_spread = trade.entry_futures_price - trade.entry_spot_price
+            if trade.exit_futures_price and trade.exit_spot_price:
+                exit_spread = trade.exit_futures_price - trade.exit_spot_price
+
+            pnl_emoji = "🟢" if (trade.net_pnl or 0) >= 0 else "🔴"
+            pnl_sign = "+" if (trade.net_pnl or 0) >= 0 else ""
+
+            message += (
+                f"\n{pnl_emoji} <b>{trade.trade_id}</b>\n"
+                f"├ Direction: <code>{trade.direction}</code>\n"
+                f"├ Lot Size: <code>{trade.lot_size or 0}</code>\n"
+                f"├ Days Held: <code>{trade.days_held:.1f if trade.days_held else 0}</code>\n"
+                f"├ <b>Entry Spread: <code>${entry_spread:.2f}</code></b>\n"
+                f"├ <b>Exit Spread: <code>${exit_spread:.2f}</code></b>\n"
+                f"└ <b>Net P&L: <code>{pnl_sign}${trade.net_pnl:.2f if trade.net_pnl else 0}</code></b>\n"
+            )
+
+        telegram_send_message(chat_id, message)
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error in /trades: {e}")
+        telegram_send_message(chat_id, f"⚠️ Error getting trades: {str(e)}")
+
+
+def telegram_cmd_balance(chat_id: str):
+    """Handle /balance command - show account margin information."""
+    try:
+        database = get_db()
+        config = database.get_config()
+        brokers = database.get_brokers()
+
+        message = (
+            f"💰 <b>ACCOUNT BALANCE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+        # Try to get account info from connected brokers
+        found_account = False
+
+        for broker in brokers:
+            if broker.status == 'CONNECTED':
+                found_account = True
+                message += f"\n<b>{broker.name}</b> ({broker.role})\n"
+
+                # Get account info from broker worker if available
+                from broker_worker import broker_workers
+                if broker.broker_id in broker_workers:
+                    worker = broker_workers[broker.broker_id]
+                    account_info = worker.get_last_account_info() if hasattr(worker, 'get_last_account_info') else None
+
+                    if account_info:
+                        margin_used_pct = (account_info.get('margin', 0) / account_info.get('equity', 1)) * 100 if account_info.get('equity', 0) > 0 else 0
+                        message += (
+                            f"├ Balance: <code>${account_info.get('balance', 0):.2f}</code>\n"
+                            f"├ Equity: <code>${account_info.get('equity', 0):.2f}</code>\n"
+                            f"├ <b>Margin Used: <code>${account_info.get('margin', 0):.2f}</code></b>\n"
+                            f"├ <b>Free Margin: <code>${account_info.get('free_margin', 0):.2f}</code></b>\n"
+                            f"└ Margin Utilization: <code>{margin_used_pct:.1f}%</code>\n"
+                        )
+                    else:
+                        message += f"└ Status: <code>{broker.status}</code>\n"
+                else:
+                    message += f"└ Status: <code>{broker.status}</code>\n"
+
+        if not found_account:
+            # Calculate theoretical margin from config
+            if config:
+                message += (
+                    f"\n<i>No live broker connected.</i>\n\n"
+                    f"<b>Configured Lot Size:</b> <code>{config.lot_size}</code>\n"
+                    f"<b>Contract Size:</b> <code>{config.contract_size}</code>\n"
+                )
+
+        telegram_send_message(chat_id, message)
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error in /balance: {e}")
+        telegram_send_message(chat_id, f"⚠️ Error getting balance: {str(e)}")
+
+
+def telegram_cmd_pnl(chat_id: str):
+    """Handle /pnl command - show P&L summary."""
+    try:
+        database = get_db()
+        stats = database.get_trade_statistics()
+
+        # Get recent trades for breakdown
+        closed_trades = database.get_trades(status='CLOSED', limit=100)
+
+        # Calculate daily/weekly P&L
+        from datetime import datetime, timedelta
+        today = datetime.now().date()
+        week_ago = today - timedelta(days=7)
+
+        today_pnl = 0
+        week_pnl = 0
+
+        for trade in closed_trades:
+            if trade.exit_date and trade.net_pnl:
+                try:
+                    exit_date = datetime.fromisoformat(trade.exit_date).date()
+                    if exit_date == today:
+                        today_pnl += trade.net_pnl
+                    if exit_date >= week_ago:
+                        week_pnl += trade.net_pnl
+                except:
+                    pass
+
+        total_pnl = stats.get('total_pnl', 0)
+        avg_pnl = stats.get('average_pnl', 0)
+
+        pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+        today_emoji = "🟢" if today_pnl >= 0 else "🔴"
+        week_emoji = "🟢" if week_pnl >= 0 else "🔴"
+
+        message = (
+            f"💰 <b>P&L SUMMARY</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>📊 OVERALL</b>\n"
+            f"├ Total Trades: <code>{stats.get('total_trades', 0)}</code>\n"
+            f"├ Winning: <code>{stats.get('winning_trades', 0)}</code>\n"
+            f"├ Losing: <code>{stats.get('losing_trades', 0)}</code>\n"
+            f"├ Win Rate: <code>{stats.get('win_rate', 0):.1f}%</code>\n"
+            f"├ Avg P&L/Trade: <code>${avg_pnl:.2f}</code>\n"
+            f"└ {pnl_emoji} <b>Total P&L: <code>{'+' if total_pnl >= 0 else ''}${total_pnl:.2f}</code></b>\n\n"
+            f"<b>📅 PERIOD BREAKDOWN</b>\n"
+            f"├ {today_emoji} Today: <code>{'+' if today_pnl >= 0 else ''}${today_pnl:.2f}</code>\n"
+            f"└ {week_emoji} Last 7 Days: <code>{'+' if week_pnl >= 0 else ''}${week_pnl:.2f}</code>\n"
+        )
+
+        telegram_send_message(chat_id, message)
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error in /pnl: {e}")
+        telegram_send_message(chat_id, f"⚠️ Error getting P&L: {str(e)}")
+
+
+def telegram_cmd_eod(chat_id: str):
+    """Handle /eod command - end of day summary."""
+    try:
+        database = get_db()
+        config = database.get_config()
+        stats = database.get_trade_statistics()
+
+        # Get open positions
+        open_trades = database.get_open_trades()
+
+        # Get today's closed trades
+        from datetime import datetime
+        today = datetime.now().date()
+        all_closed = database.get_trades(status='CLOSED', limit=100)
+
+        today_closed = []
+        today_pnl = 0
+        for trade in all_closed:
+            if trade.exit_date:
+                try:
+                    exit_date = datetime.fromisoformat(trade.exit_date).date()
+                    if exit_date == today:
+                        today_closed.append(trade)
+                        today_pnl += trade.net_pnl or 0
+                except:
+                    pass
+
+        today_emoji = "🟢" if today_pnl >= 0 else "🔴"
+
+        message = (
+            f"📅 <b>END OF DAY SUMMARY</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Date:</b> {today.strftime('%Y-%m-%d')}\n\n"
+        )
+
+        # Open positions section
+        message += f"<b>📊 OPEN POSITIONS</b> ({len(open_trades)})\n"
+        if open_trades:
+            total_unrealized = 0
+            for trade in open_trades:
+                entry_spread = 0
+                if trade.entry_futures_price and trade.entry_spot_price:
+                    entry_spread = trade.entry_futures_price - trade.entry_spot_price
+
+                direction_emoji = "📈" if trade.direction == "Long Spread" else "📉"
+                message += (
+                    f"{direction_emoji} {trade.trade_id[:15]}...\n"
+                    f"   Lots: {trade.lot_size} | Entry Spread: ${entry_spread:.2f}\n"
+                )
+        else:
+            message += "No open positions\n"
+
+        # Closed positions section
+        message += f"\n<b>✅ CLOSED TODAY</b> ({len(today_closed)})\n"
+        if today_closed:
+            for trade in today_closed:
+                entry_spread = 0
+                exit_spread = 0
+                if trade.entry_futures_price and trade.entry_spot_price:
+                    entry_spread = trade.entry_futures_price - trade.entry_spot_price
+                if trade.exit_futures_price and trade.exit_spot_price:
+                    exit_spread = trade.exit_futures_price - trade.exit_spot_price
+
+                pnl_emoji = "🟢" if (trade.net_pnl or 0) >= 0 else "🔴"
+                pnl_sign = "+" if (trade.net_pnl or 0) >= 0 else ""
+
+                message += (
+                    f"{pnl_emoji} {trade.trade_id[:15]}...\n"
+                    f"   Entry: ${entry_spread:.2f} → Exit: ${exit_spread:.2f}\n"
+                    f"   Lots: {trade.lot_size} | P&L: {pnl_sign}${trade.net_pnl:.2f if trade.net_pnl else 0}\n"
+                )
+        else:
+            message += "No trades closed today\n"
+
+        # Daily P&L summary
+        message += (
+            f"\n<b>💰 DAILY P&L</b>\n"
+            f"{today_emoji} <b>Today's Net: <code>{'+' if today_pnl >= 0 else ''}${today_pnl:.2f}</code></b>\n"
+            f"Total All-Time: <code>${stats.get('total_pnl', 0):.2f}</code>\n"
+        )
+
+        telegram_send_message(chat_id, message)
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error in /eod: {e}")
+        telegram_send_message(chat_id, f"⚠️ Error generating EOD summary: {str(e)}")
+
+
+def send_eod_summary():
+    """Send automatic end of day summary (called by scheduler)."""
+    try:
+        database = get_db()
+        config = database.get_config()
+
+        if not config or not config.telegram_enabled:
+            return
+
+        if not config.telegram_chat_id:
+            return
+
+        logger.info("[TELEGRAM] Sending scheduled EOD summary")
+        telegram_cmd_eod(config.telegram_chat_id)
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error sending EOD summary: {e}")
+
+
+# EOD scheduler thread
+_eod_scheduler_active = False
+
+
+def schedule_eod_summary():
+    """Start a background thread that sends EOD summary at market close."""
+    global _eod_scheduler_active
+
+    if _eod_scheduler_active:
+        return  # Already running
+
+    def eod_scheduler_loop():
+        global _eod_scheduler_active
+        _eod_scheduler_active = True
+        last_sent_date = None
+
+        while _eod_scheduler_active:
+            try:
+                from datetime import datetime
+                now = datetime.now()
+
+                # Get EOD time from config (use overnight_close_hour or default 17:00)
+                database = get_db()
+                config = database.get_config()
+
+                eod_hour = config.overnight_close_hour if config else 17
+                eod_minute = config.overnight_close_minute if config else 0
+
+                # Check if it's EOD time and we haven't sent today
+                if (now.hour == eod_hour and
+                    now.minute == eod_minute and
+                    last_sent_date != now.date()):
+
+                    send_eod_summary()
+                    last_sent_date = now.date()
+
+                time.sleep(30)  # Check every 30 seconds
+
+            except Exception as e:
+                logger.error(f"[TELEGRAM] EOD scheduler error: {e}")
+                time.sleep(60)
+
+    eod_thread = threading.Thread(target=eod_scheduler_loop, daemon=True)
+    eod_thread.start()
+    logger.info("[TELEGRAM] EOD summary scheduler started")
+
+
+def process_telegram_command(update: dict):
+    """Process a single Telegram update/command."""
+    try:
+        message = update.get('message', {})
+        text = message.get('text', '')
+        chat_id = str(message.get('chat', {}).get('id', ''))
+
+        if not text or not chat_id:
+            return
+
+        # Get configured chat ID to verify authorization
+        database = get_db()
+        config = database.get_config()
+
+        if config and config.telegram_chat_id and chat_id != config.telegram_chat_id:
+            logger.warning(f"[TELEGRAM] Unauthorized chat_id: {chat_id}")
+            return
+
+        # Parse command
+        command = text.split()[0].lower() if text.startswith('/') else None
+
+        if command == '/help' or command == '/start':
+            telegram_cmd_help(chat_id)
+        elif command == '/status':
+            telegram_cmd_status(chat_id)
+        elif command == '/positions':
+            telegram_cmd_positions(chat_id)
+        elif command == '/trades':
+            telegram_cmd_trades(chat_id)
+        elif command == '/balance':
+            telegram_cmd_balance(chat_id)
+        elif command == '/pnl':
+            telegram_cmd_pnl(chat_id)
+        elif command == '/eod':
+            telegram_cmd_eod(chat_id)
+        else:
+            # Unknown command
+            if text.startswith('/'):
+                telegram_send_message(chat_id, f"❓ Unknown command: {command}\n\nType /help for available commands.")
+
+    except Exception as e:
+        logger.error(f"[TELEGRAM] Error processing command: {e}")
+
+
+def telegram_polling_loop():
+    """Background polling loop for Telegram updates."""
+    global _telegram_last_update_id, _telegram_polling_active
+
+    _telegram_polling_active = True
+    logger.info("[TELEGRAM] Starting command polling loop")
+
+    while _telegram_polling_active:
+        try:
+            updates = get_telegram_updates(offset=_telegram_last_update_id + 1, timeout=5)
+
+            for update in updates:
+                update_id = update.get('update_id', 0)
+                if update_id > _telegram_last_update_id:
+                    _telegram_last_update_id = update_id
+                    process_telegram_command(update)
+
+            time.sleep(1)  # Small delay between polls
+
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Polling error: {e}")
+            time.sleep(5)  # Longer delay on error
+
+
+def start_telegram_polling():
+    """Start the Telegram polling thread."""
+    global _telegram_polling_active
+
+    if _telegram_polling_active:
+        return  # Already running
+
+    polling_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
+    polling_thread.start()
+    logger.info("[TELEGRAM] Command polling thread started")
+
+
+def stop_telegram_polling():
+    """Stop the Telegram polling thread."""
+    global _telegram_polling_active
+    _telegram_polling_active = False
+    logger.info("[TELEGRAM] Command polling stopped")
+
+
 # Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-broker-arb-secret-key'
@@ -2612,6 +3179,15 @@ def init_app(db_path: str = "trading.db"):
     # Engine will be initialized on first start (optional, not required for auto trading)
     engine = None
 
+    # Start Telegram bot command polling if enabled
+    config = db.get_config()
+    if config and config.telegram_enabled and config.telegram_bot_token:
+        start_telegram_polling()
+        logger.info("[APP] Telegram bot polling started")
+
+    # Schedule EOD summary (runs daily at configured time or 17:00 default)
+    schedule_eod_summary()
+
 
 def get_db() -> DatabaseManager:
     """Get database manager"""
@@ -3774,6 +4350,12 @@ def api_telegram_settings():
 
         logger.info(f"[TELEGRAM] Settings updated: enabled={data.get('telegram_enabled')}")
 
+        # Start/stop Telegram command polling based on enabled state
+        if data.get('telegram_enabled') and data.get('telegram_bot_token') and data.get('telegram_chat_id'):
+            start_telegram_polling()
+        else:
+            stop_telegram_polling()
+
         # Send test message if enabled
         if data.get('telegram_enabled') and data.get('telegram_bot_token') and data.get('telegram_chat_id'):
             try:
@@ -3781,7 +4363,18 @@ def api_telegram_settings():
                 url = f"https://api.telegram.org/bot{data.get('telegram_bot_token')}/sendMessage"
                 payload = {
                     'chat_id': data.get('telegram_chat_id'),
-                    'text': '✅ <b>Telegram Notifications Connected!</b>\n\nYou will receive trade alerts here.',
+                    'text': (
+                        '✅ <b>Telegram Bot Connected!</b>\n\n'
+                        'You will receive trade alerts here.\n\n'
+                        '📋 <b>Available Commands:</b>\n'
+                        '/status - Bot status\n'
+                        '/positions - Open positions\n'
+                        '/trades - Recent trades\n'
+                        '/balance - Account info\n'
+                        '/pnl - P&L summary\n'
+                        '/eod - End of day summary\n'
+                        '/help - All commands'
+                    ),
                     'parse_mode': 'HTML'
                 }
                 response = req.post(url, json=payload, timeout=10)
