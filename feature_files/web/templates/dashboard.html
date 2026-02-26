@@ -705,19 +705,21 @@
         spreadChart.update('none');
 
         // Update Data Collection Progress Bar
-        if (data.history_count !== undefined && data.lookback_required !== undefined) {
+        // Uses TIME-BASED progress (data_time_span_minutes) for accurate display after restart
+        if (data.lookback_minutes !== undefined) {
             const progressBar = document.getElementById('data-progress-bar');
             const progressText = document.getElementById('data-progress-text');
             const progressStatus = document.getElementById('data-progress-status');
             const progressContainer = document.getElementById('data-collection-progress');
 
-            const current = data.history_count;
-            const required = data.lookback_required;
-            const percentage = Math.min(100, (current / required) * 100);
+            // Use time-based progress if available (more accurate after restart)
+            const dataMinutes = data.data_time_span_minutes || 0;
+            const requiredMinutes = data.lookback_minutes || 90;
+            const percentage = Math.min(100, (dataMinutes / requiredMinutes) * 100);
 
             progressBar.style.width = percentage + '%';
             progressBar.setAttribute('aria-valuenow', percentage);
-            progressText.textContent = current + ' / ' + required + ' samples';
+            progressText.textContent = Math.round(dataMinutes) + ' / ' + requiredMinutes + ' min';
 
             if (data.lookback_complete) {
                 // Data collection complete

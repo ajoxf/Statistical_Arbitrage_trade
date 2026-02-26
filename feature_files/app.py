@@ -5762,6 +5762,11 @@ def start_price_streaming():
         STATS_RECALC_INTERVAL = 300  # Recalculate mean/std every 5 minutes (300 seconds)
         MIN_BOOTSTRAP_SAMPLES = 30  # Minimum DB samples needed for reliable bootstrap
 
+        # Track data collection time span (for accurate progress display)
+        # This allows progress bar to show correctly even when restarting with DB data
+        data_collection_start_time = None  # Earliest timestamp of data we have
+        db_data_time_span_minutes = 0  # How many minutes of DB data we loaded
+
         # Load config for tick_interval and spread history from database on startup
         try:
             database = get_db()
@@ -5781,10 +5786,28 @@ def start_price_streaming():
             # Load historical spreads from database
             history = database.get_price_history('ACTIVE', limit=lookback_period, max_age_hours=max_age_hours)
             if history:
-                # history is ordered DESC, reverse to get chronological order
+                # history is ordered DESC (newest first), reverse to get chronological order
+                # history format: (spread, timestamp, spot_price, futures_price)
                 spreads_from_db = [row[0] for row in reversed(history)]
                 for spread_val in spreads_from_db:
                     spread_history.append(spread_val)
+
+                # Calculate the TIME SPAN of DB data for accurate progress tracking
+                # This fixes the issue where progress shows 0% on restart despite having DB data
+                if len(history) >= 2:
+                    try:
+                        # Get oldest and newest timestamps from DB data
+                        oldest_ts = history[-1][1]  # Last item after DESC order = oldest
+                        newest_ts = history[0][1]   # First item after DESC order = newest
+                        from datetime import datetime
+                        oldest_dt = datetime.fromisoformat(oldest_ts) if isinstance(oldest_ts, str) else oldest_ts
+                        newest_dt = datetime.fromisoformat(newest_ts) if isinstance(newest_ts, str) else newest_ts
+                        db_data_time_span_minutes = (newest_dt - oldest_dt).total_seconds() / 60
+                        data_collection_start_time = oldest_dt
+                        logger.info(f"[PRICES] DB data spans {db_data_time_span_minutes:.1f} minutes (from {oldest_ts} to {newest_ts})")
+                    except Exception as e:
+                        logger.warning(f"[PRICES] Could not parse DB timestamps: {e}")
+                        db_data_time_span_minutes = len(history)  # Fallback: assume 1 min per sample
 
                 # Calculate and LOCK initial statistics if we have enough samples
                 if len(spreads_from_db) >= MIN_BOOTSTRAP_SAMPLES:
@@ -5935,8 +5958,17 @@ def start_price_streaming():
                     std_val = 0.0
                     zscore = None
                     stats_source = 'none'  # Track where stats came from
-                    lookback_complete = len(spread_history) >= lookback_ticks
                     current_time = time.time()
+
+                    # Calculate lookback_complete using TIME-BASED approach
+                    # This fixes the issue where restarting with DB data shows 0% progress
+                    # even though we have sufficient historical data
+                    lookback_minutes = lookback_period if lookback_unit == 'minutes' else lookback_period * 24 * 60
+                    total_data_minutes = db_data_time_span_minutes  # Start with DB data time span
+                    # Note: We don't add live collection time here since DB data is more accurate
+                    # The key insight: if we loaded 90 minutes of DB data, we have 90 minutes of data
+                    # regardless of how many samples that represents (DB saves every 60s, not every 0.3s)
+                    lookback_complete = total_data_minutes >= lookback_minutes or len(spread_history) >= lookback_ticks
 
                     # Check if we're in a trade (stats should be locked during trades)
                     in_trade = auto_trader and auto_trader.has_position
@@ -6264,6 +6296,9 @@ def start_price_streaming():
                         'stats_source': stats_source,  # 'none', 'bootstrap', 'live', or 'locked_trade'
                         'stats_locked': locked_mean is not None,  # True if stats are locked
                         'in_trade': in_trade,  # True if position is open (stats frozen)
+                        # Time-based progress data (fixes restart progress display)
+                        'data_time_span_minutes': total_data_minutes,
+                        'lookback_minutes': lookback_minutes,
                         # Basis Premium Data
                         'days_to_expiry': round(days_to_expiry, 1) if days_to_expiry > 0 else None,
                         'swap_charge': swap_charge,
