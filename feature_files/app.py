@@ -806,7 +806,8 @@ def telegram_cmd_status(chat_id: str):
 
         telegram_send_message(chat_id, message)
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error in /status: {e}")
+        import traceback
+        logger.error(f"[TELEGRAM] Error in /status: {e}\n{traceback.format_exc()}")
         telegram_send_message(chat_id, f"⚠️ Error getting status: {str(e)}")
 
 
@@ -851,7 +852,8 @@ def telegram_cmd_positions(chat_id: str):
 
         telegram_send_message(chat_id, message)
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error in /positions: {e}")
+        import traceback
+        logger.error(f"[TELEGRAM] Error in /positions: {e}\n{traceback.format_exc()}")
         telegram_send_message(chat_id, f"⚠️ Error getting positions: {str(e)}")
 
 
@@ -894,7 +896,8 @@ def telegram_cmd_trades(chat_id: str):
 
         telegram_send_message(chat_id, message)
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error in /trades: {e}")
+        import traceback
+        logger.error(f"[TELEGRAM] Error in /trades: {e}\n{traceback.format_exc()}")
         telegram_send_message(chat_id, f"⚠️ Error getting trades: {str(e)}")
 
 
@@ -952,7 +955,8 @@ def telegram_cmd_balance(chat_id: str):
 
         telegram_send_message(chat_id, message)
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error in /balance: {e}")
+        import traceback
+        logger.error(f"[TELEGRAM] Error in /balance: {e}\n{traceback.format_exc()}")
         telegram_send_message(chat_id, f"⚠️ Error getting balance: {str(e)}")
 
 
@@ -1008,7 +1012,8 @@ def telegram_cmd_pnl(chat_id: str):
 
         telegram_send_message(chat_id, message)
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error in /pnl: {e}")
+        import traceback
+        logger.error(f"[TELEGRAM] Error in /pnl: {e}\n{traceback.format_exc()}")
         telegram_send_message(chat_id, f"⚠️ Error getting P&L: {str(e)}")
 
 
@@ -1095,7 +1100,8 @@ def telegram_cmd_eod(chat_id: str):
 
         telegram_send_message(chat_id, message)
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error in /eod: {e}")
+        import traceback
+        logger.error(f"[TELEGRAM] Error in /eod: {e}\n{traceback.format_exc()}")
         telegram_send_message(chat_id, f"⚠️ Error generating EOD summary: {str(e)}")
 
 
@@ -1186,7 +1192,8 @@ def process_telegram_command(update: dict):
 
         # Handle /start specially - auto-register chat_id if not set or if it's /start
         if command == '/start':
-            if not config.telegram_chat_id or config.telegram_chat_id != chat_id:
+            current_chat_id = config.telegram_chat_id if config else None
+            if not current_chat_id or current_chat_id != chat_id:
                 # Auto-register this chat_id
                 database.update_config_field('telegram_chat_id', chat_id)
                 logger.info(f"[TELEGRAM] Auto-registered chat_id: {chat_id} for user: {username}")
@@ -1220,7 +1227,8 @@ def process_telegram_command(update: dict):
                 telegram_send_message(chat_id, f"❓ Unknown command: {command}\n\nType /help for available commands.")
 
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error processing command: {e}")
+        import traceback
+        logger.error(f"[TELEGRAM] Error processing command: {e}\n{traceback.format_exc()}")
 
 
 def telegram_polling_loop():
