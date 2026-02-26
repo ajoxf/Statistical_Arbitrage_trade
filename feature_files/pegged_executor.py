@@ -47,7 +47,8 @@ class LegOrder:
     side: str  # BUY or SELL
     quantity: float
     target_price: float = 0.0
-    order_ticket: int = 0  # MT5 order ticket
+    order_ticket: int = 0  # MT5 order ticket (current)
+    order_ticket_history: list = field(default_factory=list)  # All order tickets used (for re-pegged orders)
     position_ticket: int = 0  # MT5 position ticket (for closing)
     status: LegStatus = LegStatus.PENDING
     filled_qty: float = 0.0
@@ -561,6 +562,7 @@ class PeggedOrderExecutor:
 
         if spot_result['success']:
             spread_order.spot_leg.order_ticket = spot_result['order_id']
+            spread_order.spot_leg.order_ticket_history.append(spot_result['order_id'])
             spread_order.spot_leg.status = LegStatus.OPEN
             self._logger.info(f"[PEGGED] Spot limit order placed: ticket={spot_result['order_id']}, "
                              f"price={spread_order.spot_leg.target_price:.2f}")
@@ -579,6 +581,7 @@ class PeggedOrderExecutor:
 
         if futures_result['success']:
             spread_order.futures_leg.order_ticket = futures_result['order_id']
+            spread_order.futures_leg.order_ticket_history.append(futures_result['order_id'])
             spread_order.futures_leg.status = LegStatus.OPEN
             self._logger.info(f"[PEGGED] Futures limit order placed: ticket={futures_result['order_id']}, "
                              f"price={spread_order.futures_leg.target_price:.2f}")
@@ -717,15 +720,28 @@ class PeggedOrderExecutor:
                 # Order no longer pending - check if filled
                 self._logger.info(f"[PEGGED] Spot order {spread_order.spot_leg.order_ticket} not in pending, checking fills...")
 
-                # Method 1: Check deal history with time range
-                deals = mt5.history_deals_get(time_from, datetime.now(), order=spread_order.spot_leg.order_ticket)
-                if deals and len(deals) > 0:
-                    total_filled = sum(d.volume for d in deals)
-                    avg_price = sum(d.price * d.volume for d in deals) / total_filled if total_filled > 0 else 0
+                # Method 1: Check deal history for ALL order tickets in history (handles re-pegged orders)
+                all_deals = []
+                tickets_to_check = spread_order.spot_leg.order_ticket_history if spread_order.spot_leg.order_ticket_history else [spread_order.spot_leg.order_ticket]
+                for ticket in tickets_to_check:
+                    deals = mt5.history_deals_get(time_from, datetime.now(), order=ticket)
+                    if deals and len(deals) > 0:
+                        all_deals.extend(deals)
+                        self._logger.info(f"[PEGGED] Found {len(deals)} deals for spot order ticket {ticket}")
+
+                if all_deals:
+                    total_filled = sum(d.volume for d in all_deals)
+                    avg_price = sum(d.price * d.volume for d in all_deals) / total_filled if total_filled > 0 else 0
                     spread_order.spot_leg.filled_qty = total_filled
                     spread_order.spot_leg.filled_price = avg_price
                     spread_order.spot_leg.status = LegStatus.FILLED if total_filled >= spread_order.spot_leg.quantity else LegStatus.PARTIAL
-                    self._logger.info(f"[PEGGED] Spot leg filled (from deals): qty={total_filled}, price={avg_price:.2f}")
+                    # Get position_id from most recent deal for later closing
+                    latest_deal = max(all_deals, key=lambda d: getattr(d, 'time', 0))
+                    if hasattr(latest_deal, 'position_id') and latest_deal.position_id:
+                        spread_order.spot_leg.position_ticket = latest_deal.position_id
+                        self._logger.info(f"[PEGGED] Spot leg filled (from deals): qty={total_filled}, price={avg_price:.2f}, pos_id={latest_deal.position_id}")
+                    else:
+                        self._logger.info(f"[PEGGED] Spot leg filled (from deals): qty={total_filled}, price={avg_price:.2f}")
                 else:
                     # Method 2: Check if there's an open position for this symbol
                     positions = mt5.positions_get(symbol=spread_order.spot_leg.symbol)
@@ -742,7 +758,7 @@ class PeggedOrderExecutor:
                                 break
 
                     if spread_order.spot_leg.status == LegStatus.OPEN:
-                        self._logger.warning(f"[PEGGED] Spot order {spread_order.spot_leg.order_ticket} gone but no fill detected")
+                        self._logger.warning(f"[PEGGED] Spot order {spread_order.spot_leg.order_ticket} gone but no fill detected (checked tickets: {tickets_to_check})")
 
         # Check futures leg
         if spread_order.futures_leg.status == LegStatus.OPEN:
@@ -750,15 +766,28 @@ class PeggedOrderExecutor:
             if orders is None or len(orders) == 0:
                 self._logger.info(f"[PEGGED] Futures order {spread_order.futures_leg.order_ticket} not in pending, checking fills...")
 
-                # Method 1: Check deal history with time range
-                deals = mt5.history_deals_get(time_from, datetime.now(), order=spread_order.futures_leg.order_ticket)
-                if deals and len(deals) > 0:
-                    total_filled = sum(d.volume for d in deals)
-                    avg_price = sum(d.price * d.volume for d in deals) / total_filled if total_filled > 0 else 0
+                # Method 1: Check deal history for ALL order tickets in history (handles re-pegged orders)
+                all_deals = []
+                tickets_to_check = spread_order.futures_leg.order_ticket_history if spread_order.futures_leg.order_ticket_history else [spread_order.futures_leg.order_ticket]
+                for ticket in tickets_to_check:
+                    deals = mt5.history_deals_get(time_from, datetime.now(), order=ticket)
+                    if deals and len(deals) > 0:
+                        all_deals.extend(deals)
+                        self._logger.info(f"[PEGGED] Found {len(deals)} deals for futures order ticket {ticket}")
+
+                if all_deals:
+                    total_filled = sum(d.volume for d in all_deals)
+                    avg_price = sum(d.price * d.volume for d in all_deals) / total_filled if total_filled > 0 else 0
                     spread_order.futures_leg.filled_qty = total_filled
                     spread_order.futures_leg.filled_price = avg_price
                     spread_order.futures_leg.status = LegStatus.FILLED if total_filled >= spread_order.futures_leg.quantity else LegStatus.PARTIAL
-                    self._logger.info(f"[PEGGED] Futures leg filled (from deals): qty={total_filled}, price={avg_price:.2f}")
+                    # Get position_id from most recent deal for later closing
+                    latest_deal = max(all_deals, key=lambda d: getattr(d, 'time', 0))
+                    if hasattr(latest_deal, 'position_id') and latest_deal.position_id:
+                        spread_order.futures_leg.position_ticket = latest_deal.position_id
+                        self._logger.info(f"[PEGGED] Futures leg filled (from deals): qty={total_filled}, price={avg_price:.2f}, pos_id={latest_deal.position_id}")
+                    else:
+                        self._logger.info(f"[PEGGED] Futures leg filled (from deals): qty={total_filled}, price={avg_price:.2f}")
                 else:
                     # Method 2: Check if there's an open position for this symbol
                     positions = mt5.positions_get(symbol=spread_order.futures_leg.symbol)
@@ -774,7 +803,7 @@ class PeggedOrderExecutor:
                                 break
 
                     if spread_order.futures_leg.status == LegStatus.OPEN:
-                        self._logger.warning(f"[PEGGED] Futures order {spread_order.futures_leg.order_ticket} gone but no fill detected")
+                        self._logger.warning(f"[PEGGED] Futures order {spread_order.futures_leg.order_ticket} gone but no fill detected (checked tickets: {tickets_to_check})")
 
     def _amend_limit_orders(
         self,
@@ -837,6 +866,8 @@ class PeggedOrderExecutor:
                                 )
                                 if result['success']:
                                     spread_order.spot_leg.order_ticket = result['order_id']
+                                    spread_order.spot_leg.order_ticket_history.append(result['order_id'])
+                                    self._logger.info(f"[PEGGED] Spot order re-pegged: new ticket={result['order_id']}, history={spread_order.spot_leg.order_ticket_history}")
                                 else:
                                     self._logger.error(f"[PEGGED] Failed to re-peg spot order: {result['error']}")
             except Exception as e:
@@ -883,6 +914,8 @@ class PeggedOrderExecutor:
                                 )
                                 if result['success']:
                                     spread_order.futures_leg.order_ticket = result['order_id']
+                                    spread_order.futures_leg.order_ticket_history.append(result['order_id'])
+                                    self._logger.info(f"[PEGGED] Futures order re-pegged: new ticket={result['order_id']}, history={spread_order.futures_leg.order_ticket_history}")
                                 else:
                                     self._logger.error(f"[PEGGED] Failed to re-peg futures order: {result['error']}")
             except Exception as e:

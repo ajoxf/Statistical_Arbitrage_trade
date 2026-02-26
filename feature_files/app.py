@@ -2255,10 +2255,11 @@ class AutoTrader:
             # Both legs filled - record the trade
             spot_result_price = spread_order.spot_leg.filled_price
             futures_result_price = spread_order.futures_leg.filled_price
-            spot_ticket = spread_order.spot_leg.order_ticket
-            futures_ticket = spread_order.futures_leg.order_ticket
+            # Use position_ticket (MT5 position ID) for closing, not order_ticket (pending order ID)
+            spot_ticket = spread_order.spot_leg.position_ticket or spread_order.spot_leg.order_ticket
+            futures_ticket = spread_order.futures_leg.position_ticket or spread_order.futures_leg.order_ticket
 
-            self._logger.info(f"[AUTO] Pegged entry COMPLETE: spot={spot_result_price:.2f}, futures={futures_result_price:.2f}")
+            self._logger.info(f"[AUTO] Pegged entry COMPLETE: spot={spot_result_price:.2f} (pos={spot_ticket}), futures={futures_result_price:.2f} (pos={futures_ticket})")
 
             # Record trade in database
             trade_source = getattr(signal, 'source', 'ALGO')
