@@ -1374,6 +1374,7 @@ engine: Optional[TradingEngine] = None
 engine_loop: Optional[asyncio.AbstractEventLoop] = None
 multi_broker: Optional[MultiBrokerCoordinator] = None
 auto_trader: Optional['AutoTrader'] = None
+clear_spread_history_flag: bool = False  # Signal to clear in-memory chart data
 
 
 class AutoTrader:
@@ -4620,12 +4621,16 @@ def api_std_filter_stats():
 @app.route('/api/clear-data', methods=['POST'])
 def api_clear_data():
     """Clear historical data"""
+    global clear_spread_history_flag
+
     database = get_db()
     data = request.get_json()
     data_type = data.get('type', 'all')
 
     if data_type == 'prices' or data_type == 'all':
         database.clear_price_history()
+        # Signal the WebSocket loop to clear in-memory chart data
+        clear_spread_history_flag = True
 
     if data_type == 'trades' or data_type == 'all':
         database.clear_trades()
@@ -5832,7 +5837,7 @@ def start_price_streaming():
     logger.info("[PRICES] Starting price streaming thread")
 
     def stream_prices():
-        global price_streaming_active
+        global price_streaming_active, clear_spread_history_flag
         import time
         import numpy as np
         from collections import deque
@@ -6013,6 +6018,15 @@ def start_price_streaming():
                             should_collect_data = start_time_mins <= current_time_mins < end_time_mins
                         else:
                             should_collect_data = current_time_mins >= start_time_mins or current_time_mins < end_time_mins
+
+                    # Check if we need to clear in-memory data (from Clear Data button)
+                    if clear_spread_history_flag:
+                        spread_history.clear()
+                        locked_mean = None
+                        locked_std = None
+                        history_loaded = False
+                        clear_spread_history_flag = False
+                        logger.info("[PRICES] Cleared in-memory spread history and reset statistics")
 
                     # Add spread to history for z-score calculation (only during trading hours)
                     if spread != 0 and should_collect_data:
