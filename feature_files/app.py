@@ -732,6 +732,7 @@ def telegram_send_message(chat_id: str, message: str) -> bool:
         config = database.get_config()
 
         if not config or not config.telegram_bot_token:
+            logger.warning(f"[TELEGRAM] Cannot send message: bot token not configured")
             return False
 
         import requests
@@ -744,9 +745,13 @@ def telegram_send_message(chat_id: str, message: str) -> bool:
         }
 
         response = requests.post(url, json=payload, timeout=10)
-        return response.status_code == 200
+        if response.status_code != 200:
+            logger.warning(f"[TELEGRAM] sendMessage failed ({response.status_code}) to chat_id={chat_id}: {response.text}")
+            return False
+        logger.debug(f"[TELEGRAM] Message sent successfully to chat_id={chat_id}")
+        return True
     except Exception as e:
-        logger.error(f"[TELEGRAM] Error sending message: {e}")
+        logger.error(f"[TELEGRAM] Error sending message to chat_id={chat_id}: {e}")
         return False
 
 
@@ -1161,22 +1166,37 @@ def process_telegram_command(update: dict):
         message = update.get('message', {})
         text = message.get('text', '')
         chat_id = str(message.get('chat', {}).get('id', ''))
+        username = message.get('from', {}).get('username', 'unknown')
 
         if not text or not chat_id:
             return
+
+        logger.info(f"[TELEGRAM] Received command from chat_id={chat_id}, user={username}: {text}")
 
         # Get configured chat ID to verify authorization
         database = get_db()
         config = database.get_config()
 
-        if config and config.telegram_chat_id and chat_id != config.telegram_chat_id:
-            logger.warning(f"[TELEGRAM] Unauthorized chat_id: {chat_id}")
-            return
-
-        # Parse command
+        # Parse command first to check for /start
         command = text.split()[0].lower() if text.startswith('/') else None
 
-        if command == '/help' or command == '/start':
+        # Handle /start specially - auto-register chat_id if not set or if it's /start
+        if command == '/start':
+            if not config.telegram_chat_id or config.telegram_chat_id != chat_id:
+                # Auto-register this chat_id
+                database.update_config_field('telegram_chat_id', chat_id)
+                logger.info(f"[TELEGRAM] Auto-registered chat_id: {chat_id} for user: {username}")
+                telegram_send_message(chat_id, f"✅ <b>Chat ID Registered!</b>\n\nYour chat ID <code>{chat_id}</code> has been saved.\nYou will now receive trade notifications here.")
+            telegram_cmd_help(chat_id)
+            return
+
+        # For other commands, verify authorization
+        if config and config.telegram_chat_id and chat_id != config.telegram_chat_id:
+            logger.warning(f"[TELEGRAM] Unauthorized chat_id: {chat_id} (expected: {config.telegram_chat_id})")
+            telegram_send_message(chat_id, "⚠️ Unauthorized. Please send /start to register this chat.")
+            return
+
+        if command == '/help':
             telegram_cmd_help(chat_id)
         elif command == '/status':
             telegram_cmd_status(chat_id)
