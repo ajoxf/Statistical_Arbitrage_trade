@@ -918,24 +918,27 @@ def telegram_cmd_balance(chat_id: str):
                 found_account = True
                 message += f"\n<b>{broker.name}</b> ({broker.role})\n"
 
-                # Get account info from broker worker if available
-                from broker_worker import broker_workers
-                if broker.broker_id in broker_workers:
-                    worker = broker_workers[broker.broker_id]
-                    account_info = worker.get_last_account_info() if hasattr(worker, 'get_last_account_info') else None
-
-                    if account_info:
-                        margin_used_pct = (account_info.get('margin', 0) / account_info.get('equity', 1)) * 100 if account_info.get('equity', 0) > 0 else 0
-                        message += (
-                            f"├ Balance: <code>${account_info.get('balance', 0):.2f}</code>\n"
-                            f"├ Equity: <code>${account_info.get('equity', 0):.2f}</code>\n"
-                            f"├ <b>Margin Used: <code>${account_info.get('margin', 0):.2f}</code></b>\n"
-                            f"├ <b>Free Margin: <code>${account_info.get('free_margin', 0):.2f}</code></b>\n"
-                            f"└ Margin Utilization: <code>{margin_used_pct:.1f}%</code>\n"
-                        )
+                # Try to get account info directly from MT5
+                try:
+                    import MetaTrader5 as mt5
+                    if mt5.initialize():
+                        account_info = mt5.account_info()
+                        if account_info:
+                            margin_used_pct = (account_info.margin / account_info.equity) * 100 if account_info.equity > 0 else 0
+                            message += (
+                                f"├ Balance: <code>${account_info.balance:.2f}</code>\n"
+                                f"├ Equity: <code>${account_info.equity:.2f}</code>\n"
+                                f"├ <b>Margin Used: <code>${account_info.margin:.2f}</code></b>\n"
+                                f"├ <b>Free Margin: <code>${account_info.margin_free:.2f}</code></b>\n"
+                                f"└ Margin Utilization: <code>{margin_used_pct:.1f}%</code>\n"
+                            )
+                        else:
+                            message += f"└ Status: <code>{broker.status}</code>\n"
+                        mt5.shutdown()
                     else:
-                        message += f"└ Status: <code>{broker.status}</code>\n"
-                else:
+                        message += f"└ Status: <code>{broker.status}</code> (MT5 not connected)\n"
+                except Exception as e:
+                    logger.debug(f"[TELEGRAM] Could not get MT5 account info: {e}")
                     message += f"└ Status: <code>{broker.status}</code>\n"
 
         if not found_account:
