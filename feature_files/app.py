@@ -1338,7 +1338,11 @@ app.config['SECRET_KEY'] = 'multi-broker-arb-secret-key'
 
 # SocketIO for real-time updates
 # Uses eventlet/gevent for WebSocket support if available, otherwise falls back to threading (polling)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode=_async_mode, logger=False, engineio_logger=False)
+# In threading mode (Windows), disable WebSocket upgrade attempts - Werkzeug dev server cannot
+# provide raw socket access, so the upgrade always fails with RuntimeError. Polling works fine.
+_allow_ws_upgrade = _async_mode != 'threading'
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode=_async_mode, logger=False, engineio_logger=False,
+                    allow_upgrades=_allow_ws_upgrade)
 logger.info(f"SocketIO initialized with async_mode='{_async_mode}'")
 
 
