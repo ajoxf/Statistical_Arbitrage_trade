@@ -5865,6 +5865,7 @@ def start_price_streaming():
         # This allows progress bar to show correctly even when restarting with DB data
         data_collection_start_time = None  # Earliest timestamp of data we have
         db_data_time_span_minutes = 0  # How many minutes of DB data we loaded
+        live_data_start_time = None  # Wall-clock time when first live tick was received
 
         # Load config for tick_interval and spread history from database on startup
         try:
@@ -6067,14 +6068,16 @@ def start_price_streaming():
                     stats_source = 'none'  # Track where stats came from
                     current_time = time.time()
 
+                    # Record wall-clock time of the very first live tick received
+                    if live_data_start_time is None and spread != 0:
+                        live_data_start_time = time.time()
+
                     # Calculate lookback_complete using TIME-BASED approach
-                    # This fixes the issue where restarting with DB data shows 0% progress
-                    # even though we have sufficient historical data
+                    # total_data_minutes = DB historical span + live collection time since startup
+                    # This ensures the progress bar advances even when starting with no DB data
                     lookback_minutes = lookback_period if lookback_unit == 'minutes' else lookback_period * 24 * 60
-                    total_data_minutes = db_data_time_span_minutes  # Start with DB data time span
-                    # Note: We don't add live collection time here since DB data is more accurate
-                    # The key insight: if we loaded 90 minutes of DB data, we have 90 minutes of data
-                    # regardless of how many samples that represents (DB saves every 60s, not every 0.3s)
+                    live_collection_minutes = (time.time() - live_data_start_time) / 60 if live_data_start_time else 0
+                    total_data_minutes = db_data_time_span_minutes + live_collection_minutes
                     lookback_complete = total_data_minutes >= lookback_minutes or len(spread_history) >= lookback_ticks
 
                     # Check if we're in a trade (stats should be locked during trades)
