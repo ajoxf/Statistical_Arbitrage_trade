@@ -6029,6 +6029,8 @@ def start_price_streaming():
                         locked_mean = None
                         locked_std = None
                         history_loaded = False
+                        db_data_time_span_minutes = 0   # Reset DB history span
+                        live_data_start_time = None     # Reset live timer so progress restarts from 0
                         clear_spread_history_flag = False
                         logger.info("[PRICES] Cleared in-memory spread history and reset statistics")
 
