@@ -1,0 +1,886 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Multi-Broker Arbitrage{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h4 class="mb-4"><i class="bi bi-gear me-2"></i>Trading Settings</h4>
+    </div>
+</div>
+
+<form id="settings-form">
+    <div class="row g-4">
+        <!-- Signal Parameters -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-graph-up me-2"></i>Signal Parameters
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Lookback Period</label>
+                            <input type="number" class="form-control" name="lookback_period"
+                                   value="{{ config.lookback_period }}" min="1" max="10000">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Lookback Unit</label>
+                            <select class="form-select" name="lookback_unit">
+                                <option value="minutes" {% if config.lookback_unit == 'minutes' %}selected{% endif %}>Minutes</option>
+                                <option value="days" {% if config.lookback_unit == 'days' %}selected{% endif %}>Days</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Entry SD (σ)</label>
+                            <input type="number" class="form-control" name="entry_std_dev"
+                                   value="{{ config.entry_std_dev }}" step="0.1" min="0.5" max="5">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Exit SD (σ)</label>
+                            <input type="number" class="form-control" name="exit_std_dev"
+                                   value="{{ config.exit_std_dev }}" step="0.1" min="0" max="2">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Stop Loss SD (σ)</label>
+                            <input type="number" class="form-control" name="stop_loss_std_dev"
+                                   value="{{ config.stop_loss_std_dev }}" step="0.1" min="2" max="6">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Exit at Opposite SD (0=disabled)</label>
+                            <input type="number" class="form-control" name="exit_at_opposite_sd"
+                                   value="{{ config.exit_at_opposite_sd }}" step="0.1" min="0" max="5">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Risk Management -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-shield-check me-2"></i>Risk Management
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Lot Size</label>
+                            <input type="number" class="form-control" name="lot_size"
+                                   value="{{ config.lot_size }}" step="0.01" min="0.01" max="100">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Max Positions</label>
+                            <input type="number" class="form-control" name="max_positions"
+                                   value="{{ config.max_positions }}" min="1" max="10">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Min Profit/Lot ($)</label>
+                            <input type="number" class="form-control" name="min_profit_per_lot"
+                                   value="{{ config.min_profit_per_lot }}" step="1" min="0">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Max Loss/Lot ($)</label>
+                            <input type="number" class="form-control" name="max_loss_per_lot"
+                                   value="{{ config.max_loss_per_lot }}" step="1" min="0">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Time Stop (days, 0=disabled)</label>
+                            <input type="number" class="form-control" name="time_stop_loss_days"
+                                   value="{{ config.time_stop_loss_days }}" step="0.1" min="0">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Commission/Lot ($)</label>
+                            <input type="number" class="form-control" name="commission_per_lot"
+                                   value="{{ config.commission_per_lot }}" step="0.1" min="0">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hurst Exponent Filter -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-funnel me-2"></i>Hurst Exponent Filter
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="hurst_enabled"
+                                       id="hurst-enabled" {% if config.hurst_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="hurst-enabled">
+                                    Enable Hurst Filter
+                                </label>
+                            </div>
+                            <small class="text-muted">Block entries when market is trending (H > threshold)</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Hurst Threshold</label>
+                            <input type="number" class="form-control" name="hurst_threshold"
+                                   value="{{ config.hurst_threshold }}" step="0.01" min="0.3" max="0.7">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Trending Duration (min)</label>
+                            <input type="number" class="form-control" name="trending_duration_minutes"
+                                   value="{{ config.trending_duration_minutes }}" min="1" max="60">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- STD Profitability Filter -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-cash-stack me-2"></i>STD Profitability Filter
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="std_filter_enabled"
+                                       id="std-filter-enabled" {% if config.std_filter_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="std-filter-enabled">
+                                    Enable STD Filter
+                                </label>
+                            </div>
+                            <small class="text-muted">Block entries when expected profit &lt; costs</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Spot Spread ($)</label>
+                            <input type="number" class="form-control" name="spot_spread_cost"
+                                   value="{{ config.spot_spread_cost }}" step="0.01" min="0">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Futures Spread ($)</label>
+                            <input type="number" class="form-control" name="futures_spread_cost"
+                                   value="{{ config.futures_spread_cost }}" step="0.01" min="0">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Margin (x)</label>
+                            <input type="number" class="form-control" name="profit_margin"
+                                   value="{{ config.profit_margin }}" step="0.1" min="1" max="5">
+                        </div>
+                        <div class="col-12">
+                            <div id="std-profitability-status" class="alert alert-secondary mt-2 mb-0 py-2 small">
+                                <span id="std-status-text">Current STD: -- | Min Required: --</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Order Execution -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-lightning me-2"></i>Order Execution
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label">Order Type</label>
+                            <select class="form-select" name="order_type">
+                                <option value="MARKET" {% if config.order_type == 'MARKET' %}selected{% endif %}>Market Order</option>
+                                <option value="LIMIT" {% if config.order_type == 'LIMIT' %}selected{% endif %}>Limit Order</option>
+                                <option value="PEGGED_LIMIT" {% if config.order_type == 'PEGGED_LIMIT' %}selected{% endif %}>Pegged Limit</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Limit Timeout (sec)</label>
+                            <input type="number" class="form-control" name="limit_order_timeout"
+                                   value="{{ config.limit_order_timeout }}" min="10" max="300">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Peg Interval (sec)</label>
+                            <input type="number" class="form-control" name="limit_peg_interval"
+                                   value="{{ config.limit_peg_interval }}" step="0.1" min="0.5" max="10">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Tick Interval (sec)</label>
+                            <input type="number" class="form-control" name="tick_interval"
+                                   value="{{ config.tick_interval if config.tick_interval else 0.3 }}" step="0.1" min="0.1" max="2.0">
+                            <small class="text-muted">Price update rate (0.1-2.0s)</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Price Offset (bps)</label>
+                            <input type="number" class="form-control" name="limit_order_price_offset_bps"
+                                   value="{{ config.limit_order_price_offset_bps if config.limit_order_price_offset_bps else 1.0 }}" step="0.1" min="0" max="10">
+                            <small class="text-muted">Offset from bid/ask in basis points</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Pegged Timeout (sec)</label>
+                            <input type="number" class="form-control" name="limit_order_timeout_sec"
+                                   value="{{ config.limit_order_timeout_sec if config.limit_order_timeout_sec else 30 }}" min="5" max="120">
+                            <small class="text-muted">Max wait for pegged orders</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Overnight Protection -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-moon me-2"></i>Overnight Protection
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="close_before_overnight"
+                                       id="overnight-enabled" {% if config.close_before_overnight %}checked{% endif %}>
+                                <label class="form-check-label" for="overnight-enabled">
+                                    Close Before Overnight
+                                </label>
+                            </div>
+                            <small class="text-muted">Automatically close positions before market close</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Close Hour</label>
+                            <input type="number" class="form-control" name="overnight_close_hour"
+                                   value="{{ config.overnight_close_hour }}" min="0" max="23">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Close Minute</label>
+                            <input type="number" class="form-control" name="overnight_close_minute"
+                                   value="{{ config.overnight_close_minute }}" min="0" max="59">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trading Hours Filter -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-clock me-2"></i>Trading Hours Filter
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="trading_hours_enabled"
+                                       id="trading-hours-enabled" {% if config.trading_hours_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="trading-hours-enabled">
+                                    Enable Trading Hours Filter
+                                </label>
+                            </div>
+                            <small class="text-muted">Only collect data and trade during specified hours (prevents bad data outside market hours)</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Start Hour</label>
+                            <input type="number" class="form-control" name="trading_start_hour"
+                                   value="{{ config.trading_start_hour if config.trading_start_hour is not none else 8 }}" min="0" max="23">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Start Minute</label>
+                            <input type="number" class="form-control" name="trading_start_minute"
+                                   value="{{ config.trading_start_minute if config.trading_start_minute is not none else 0 }}" min="0" max="59">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">End Hour</label>
+                            <input type="number" class="form-control" name="trading_end_hour"
+                                   value="{{ config.trading_end_hour if config.trading_end_hour is not none else 17 }}" min="0" max="23">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">End Minute</label>
+                            <input type="number" class="form-control" name="trading_end_minute"
+                                   value="{{ config.trading_end_minute if config.trading_end_minute is not none else 0 }}" min="0" max="59">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Active Trading Pair -->
+        <div class="col-md-6">
+            <div class="card border-primary">
+                <div class="card-header bg-primary text-white">
+                    <i class="bi bi-arrow-left-right me-2"></i>Active Trading Pair
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Active Spot Broker</label>
+                            <select class="form-select" name="active_spot_broker" id="active-spot-broker">
+                                <option value="">-- Select Spot Broker --</option>
+                                {% for broker in spot_brokers %}
+                                <option value="{{ broker.broker_id }}"
+                                        {% if active_spot_id == broker.broker_id %}selected{% endif %}>
+                                    {{ broker.name }} ({{ broker.symbol }})
+                                </option>
+                                {% endfor %}
+                            </select>
+                            <small class="text-muted">Broker for SPOT leg</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Active Futures Broker</label>
+                            <select class="form-select" name="active_futures_broker" id="active-futures-broker">
+                                <option value="">-- Select Futures Broker --</option>
+                                {% for broker in futures_brokers %}
+                                <option value="{{ broker.broker_id }}"
+                                        {% if active_futures_id == broker.broker_id %}selected{% endif %}>
+                                    {{ broker.name }} ({{ broker.symbol }})
+                                </option>
+                                {% endfor %}
+                            </select>
+                            <small class="text-muted">Broker for FUTURES leg</small>
+                        </div>
+                        <div class="col-12">
+                            <div class="alert alert-info mb-0 mt-2">
+                                <i class="bi bi-info-circle me-2"></i>
+                                <strong>Note:</strong> Only the selected brokers will be used for price display, calculations, and trade execution.
+                                Configure brokers in the <a href="/setup">Setup</a> page first.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mode Settings -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-toggles me-2"></i>Mode Settings
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="paper_mode"
+                                       id="paper-mode" {% if config.paper_mode %}checked{% endif %}>
+                                <label class="form-check-label" for="paper-mode">
+                                    Paper Trading Mode
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mb-3">When enabled, orders are simulated without real execution</small>
+
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="algo_enabled"
+                                       id="algo-enabled" {% if config.algo_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="algo-enabled">
+                                    Algorithm Enabled
+                                </label>
+                            </div>
+                            <small class="text-muted">Enable/disable automatic trading</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Tests -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-check2-circle me-2"></i>System Tests
+                </div>
+                <div class="card-body">
+                    <p class="text-muted mb-3">Run the automated test suite to verify system functionality.</p>
+                    <button type="button" class="btn btn-info" id="run-tests-btn" onclick="runTests()">
+                        <i class="bi bi-play-circle me-2"></i>Run Unit Tests
+                    </button>
+                    <div id="test-status" class="mt-3" style="display: none;">
+                        <div class="d-flex align-items-center">
+                            <div class="spinner-border spinner-border-sm text-info me-2" role="status" id="test-spinner">
+                                <span class="visually-hidden">Running...</span>
+                            </div>
+                            <span id="test-status-text">Running tests...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Broker Order Tests -->
+        <div class="col-12">
+            <div class="card border-warning">
+                <div class="card-header bg-warning text-dark">
+                    <i class="bi bi-lightning-charge me-2"></i>Live Broker Order Tests (Connectivity Check)
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-warning mb-3">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        <strong>Warning:</strong> These tests place REAL orders on your broker account!
+                        Uses minimum lot size.
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 text-center mb-3">
+                            <p class="mb-2"><strong>Spot Test</strong></p>
+                            <button type="button" class="btn btn-success btn-sm me-1" onclick="testOrder('spot', 'buy')" id="test-spot-buy">
+                                <i class="bi bi-arrow-up"></i> Buy
+                            </button>
+                            <button type="button" class="btn btn-danger btn-sm me-1" onclick="testOrder('spot', 'sell')" id="test-spot-sell">
+                                <i class="bi bi-arrow-down"></i> Sell
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="closeByTicket('spot')" id="close-spot-btn" disabled>
+                                <i class="bi bi-x-circle"></i> Close
+                            </button>
+                            <div id="spot-test-status" class="mt-2 small"></div>
+                        </div>
+                        <div class="col-md-6 text-center mb-3">
+                            <p class="mb-2"><strong>Futures Test</strong></p>
+                            <button type="button" class="btn btn-success btn-sm me-1" onclick="testOrder('futures', 'buy')" id="test-futures-buy">
+                                <i class="bi bi-arrow-up"></i> Buy
+                            </button>
+                            <button type="button" class="btn btn-danger btn-sm me-1" onclick="testOrder('futures', 'sell')" id="test-futures-sell">
+                                <i class="bi bi-arrow-down"></i> Sell
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="closeByTicket('futures')" id="close-futures-btn" disabled>
+                                <i class="bi bi-x-circle"></i> Close
+                            </button>
+                            <div id="futures-test-status" class="mt-2 small"></div>
+                        </div>
+                    </div>
+                    <hr>
+                    <div class="row">
+                        <div class="col-md-6 text-center">
+                            <button type="button" class="btn btn-outline-primary" onclick="testRoundTrip()" id="test-roundtrip">
+                                <i class="bi bi-arrow-repeat me-1"></i>Test Round Trip (Buy & Close Both)
+                            </button>
+                            <div id="roundtrip-status" class="mt-2 small"></div>
+                        </div>
+                        <div class="col-md-6 text-center">
+                            <button type="button" class="btn btn-warning" id="test-order-btn" onclick="testBrokerOrders()">
+                                <i class="bi bi-play-fill me-1"></i>Auto Open & Close
+                            </button>
+                            <button type="button" class="btn btn-outline-warning" id="test-ticket-btn" onclick="testTicketOperations()">
+                                <i class="bi bi-ticket-detailed me-1"></i>Ticket Close Test
+                            </button>
+                            <div id="order-test-status" class="mt-3" style="display: none;">
+                                <div class="d-flex align-items-center justify-content-center">
+                                    <div class="spinner-border spinner-border-sm text-warning me-2" role="status">
+                                        <span class="visually-hidden">Testing...</span>
+                                    </div>
+                                    <span id="order-test-text">Testing orders...</span>
+                                </div>
+                            </div>
+                            <div id="order-test-result" class="mt-3"></div>
+                        </div>
+                    </div>
+                    <small class="text-muted d-block mt-3 text-center">
+                        Uses minimum lot size. Opens and closes positions to verify order execution.
+                    </small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Save Button -->
+        <div class="col-12">
+            <button type="submit" class="btn btn-primary btn-lg">
+                <i class="bi bi-check-lg me-2"></i>Save Settings
+            </button>
+            <button type="button" class="btn btn-outline-secondary btn-lg ms-2" onclick="location.reload()">
+                <i class="bi bi-arrow-counterclockwise me-2"></i>Reset
+            </button>
+        </div>
+    </div>
+</form>
+
+<!-- Test Results Modal -->
+<div class="modal fade" id="testResultsModal" tabindex="-1" aria-labelledby="testResultsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="testResultsModalLabel">
+                    <i class="bi bi-check2-circle me-2"></i>Test Results
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="test-summary" class="alert mb-3"></div>
+                <h6>Test Output:</h6>
+                <pre id="test-output" class="bg-dark text-light p-3 rounded" style="max-height: 500px; overflow-y: auto; font-size: 1.1rem; white-space: pre-wrap;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-info" onclick="runTests()">
+                    <i class="bi bi-arrow-repeat me-2"></i>Run Again
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Run Tests Function
+    async function runTests() {
+        const btn = document.getElementById('run-tests-btn');
+        const status = document.getElementById('test-status');
+        const spinner = document.getElementById('test-spinner');
+        const statusText = document.getElementById('test-status-text');
+
+        // Show loading state
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Running...';
+        status.style.display = 'block';
+        statusText.textContent = 'Running tests... This may take a minute.';
+
+        try {
+            const response = await fetch('/api/run-tests', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            const result = await response.json();
+
+            // Hide loading
+            status.style.display = 'none';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle me-2"></i>Run Tests';
+
+            if (result.success) {
+                // Show results in modal
+                const modal = new bootstrap.Modal(document.getElementById('testResultsModal'));
+                const summary = document.getElementById('test-summary');
+                const output = document.getElementById('test-output');
+
+                if (result.passed) {
+                    summary.className = 'alert alert-success';
+                    summary.innerHTML = '<i class="bi bi-check-circle-fill me-2"></i><strong>All tests passed!</strong>';
+                } else {
+                    summary.className = 'alert alert-danger';
+                    summary.innerHTML = '<i class="bi bi-x-circle-fill me-2"></i><strong>Some tests failed.</strong> See output below for details.';
+                }
+
+                output.textContent = result.output || 'No output available';
+                modal.show();
+            } else {
+                alert('Error running tests: ' + result.error);
+            }
+
+        } catch (error) {
+            status.style.display = 'none';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle me-2"></i>Run Tests';
+            alert('Error: ' + error.message);
+        }
+    }
+
+    // Track open tickets for close functionality
+    let openTickets = { spot: null, futures: null };
+
+    // Test Order Functions (individual buy/sell)
+    async function testOrder(leg, direction) {
+        const statusDiv = document.getElementById(`${leg}-test-status`);
+        const btn = document.getElementById(`test-${leg}-${direction}`);
+        const closeBtn = document.getElementById(`close-${leg}-btn`);
+
+        btn.disabled = true;
+        statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Placing order...</span>';
+
+        try {
+            const response = await fetch('/api/test-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leg: leg, direction: direction })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                statusDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message} (Ticket: ${result.ticket})</span>`;
+                // Store ticket and enable close button
+                openTickets[leg] = result.ticket;
+                if (closeBtn) {
+                    closeBtn.disabled = false;
+                    closeBtn.innerHTML = `<i class="bi bi-x-circle"></i> Close #${result.ticket}`;
+                }
+            } else {
+                statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${result.error}</span>`;
+            }
+        } catch (err) {
+            statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}</span>`;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    // Close position by ticket
+    async function closeByTicket(leg) {
+        const ticket = openTickets[leg];
+        if (!ticket) {
+            alert(`No open ${leg} ticket to close`);
+            return;
+        }
+
+        const statusDiv = document.getElementById(`${leg}-test-status`);
+        const closeBtn = document.getElementById(`close-${leg}-btn`);
+
+        closeBtn.disabled = true;
+        statusDiv.innerHTML = `<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Closing ticket ${ticket}...</span>`;
+
+        try {
+            const response = await fetch('/api/close-position', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ticket: ticket, leg: leg })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                statusDiv.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message}</span>`;
+                openTickets[leg] = null;
+                closeBtn.disabled = true;
+                closeBtn.innerHTML = `<i class="bi bi-x-circle"></i> Close`;
+            } else {
+                statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${result.error}</span>`;
+                closeBtn.disabled = false;
+            }
+        } catch (err) {
+            statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}</span>`;
+            closeBtn.disabled = false;
+        }
+    }
+
+    // Test Round Trip (buy both, then close both)
+    async function testRoundTrip() {
+        const statusDiv = document.getElementById('roundtrip-status');
+        const btn = document.getElementById('test-roundtrip');
+
+        btn.disabled = true;
+        statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 1: Opening Spot position...</span>';
+
+        try {
+            // Step 1: Buy Spot
+            let response = await fetch('/api/test-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leg: 'spot', direction: 'buy' })
+            });
+            let result = await response.json();
+            if (!result.success) {
+                statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Spot buy failed: ${result.error}</span>`;
+                btn.disabled = false;
+                return;
+            }
+            const spotTicket = result.ticket;
+
+            statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 2: Opening Futures position...</span>';
+
+            // Step 2: Buy Futures
+            response = await fetch('/api/test-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leg: 'futures', direction: 'buy' })
+            });
+            result = await response.json();
+            if (!result.success) {
+                statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Futures buy failed: ${result.error}</span>`;
+                btn.disabled = false;
+                return;
+            }
+            const futuresTicket = result.ticket;
+
+            statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 3: Closing Spot position...</span>';
+
+            // Step 3: Close Spot by ticket
+            response = await fetch('/api/close-position', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ticket: spotTicket, leg: 'spot' })
+            });
+            result = await response.json();
+            if (!result.success) {
+                statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Spot close failed: ${result.error}</span>`;
+                btn.disabled = false;
+                return;
+            }
+
+            statusDiv.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split me-1"></i>Step 4: Closing Futures position...</span>';
+
+            // Step 4: Close Futures by ticket
+            response = await fetch('/api/close-position', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ticket: futuresTicket, leg: 'futures' })
+            });
+            result = await response.json();
+            if (!result.success) {
+                statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Futures close failed: ${result.error}</span>`;
+                btn.disabled = false;
+                return;
+            }
+
+            statusDiv.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Round trip complete! All positions opened and closed by ticket.</span>';
+        } catch (err) {
+            statusDiv.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>Error: ${err.message}</span>`;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    // Test Broker Orders - Open and Close
+    async function testBrokerOrders() {
+        const btn = document.getElementById('test-order-btn');
+        const status = document.getElementById('order-test-status');
+        const statusText = document.getElementById('order-test-text');
+        const result = document.getElementById('order-test-result');
+
+        btn.disabled = true;
+        status.style.display = 'block';
+        statusText.textContent = 'Opening test position...';
+        result.innerHTML = '';
+
+        try {
+            const response = await fetch('/api/test-order-cycle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ test_type: 'open_close' })
+            });
+
+            const data = await response.json();
+
+            status.style.display = 'none';
+            btn.disabled = false;
+
+            if (data.success) {
+                result.innerHTML = `
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle-fill me-2"></i>
+                        <strong>Order Test Passed!</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>Opened ticket: <code>${data.open_ticket}</code></li>
+                            <li>Symbol: ${data.symbol}</li>
+                            <li>Volume: ${data.volume}</li>
+                            <li>Closed ticket: <code>${data.close_ticket}</code></li>
+                            <li>P&L: $${data.profit?.toFixed(2) || '0.00'}</li>
+                        </ul>
+                    </div>`;
+            } else {
+                result.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-x-circle-fill me-2"></i>
+                        <strong>Order Test Failed:</strong> ${data.error}
+                    </div>`;
+            }
+
+        } catch (error) {
+            status.style.display = 'none';
+            btn.disabled = false;
+            result.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-x-circle-fill me-2"></i>
+                    <strong>Error:</strong> ${error.message}
+                </div>`;
+        }
+    }
+
+    // Test Ticket-Based Operations
+    async function testTicketOperations() {
+        const btn = document.getElementById('test-ticket-btn');
+        const status = document.getElementById('order-test-status');
+        const statusText = document.getElementById('order-test-text');
+        const result = document.getElementById('order-test-result');
+
+        btn.disabled = true;
+        status.style.display = 'block';
+        statusText.textContent = 'Testing ticket-based operations...';
+        result.innerHTML = '';
+
+        try {
+            const response = await fetch('/api/test-order-cycle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ test_type: 'ticket_close' })
+            });
+
+            const data = await response.json();
+
+            status.style.display = 'none';
+            btn.disabled = false;
+
+            if (data.success) {
+                result.innerHTML = `
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle-fill me-2"></i>
+                        <strong>Ticket Test Passed!</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>Position opened: <code>${data.open_ticket}</code></li>
+                            <li>Found by ticket: ${data.found_by_ticket ? 'Yes' : 'No'}</li>
+                            <li>Closed by ticket: <code>${data.close_ticket}</code></li>
+                            <li>Verified closed: ${data.verified_closed ? 'Yes' : 'No'}</li>
+                        </ul>
+                    </div>`;
+            } else {
+                result.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-x-circle-fill me-2"></i>
+                        <strong>Ticket Test Failed:</strong> ${data.error}
+                    </div>`;
+            }
+
+        } catch (error) {
+            status.style.display = 'none';
+            btn.disabled = false;
+            result.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-x-circle-fill me-2"></i>
+                    <strong>Error:</strong> ${error.message}
+                </div>`;
+        }
+    }
+
+    document.getElementById('settings-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const formData = new FormData(e.target);
+        const data = {};
+
+        for (const [key, value] of formData.entries()) {
+            // Handle checkboxes
+            if (e.target.elements[key].type === 'checkbox') {
+                data[key] = e.target.elements[key].checked;
+            } else if (e.target.elements[key].type === 'number') {
+                data[key] = parseFloat(value);
+            } else {
+                data[key] = value;
+            }
+        }
+
+        // Ensure unchecked checkboxes are included
+        ['hurst_enabled', 'std_filter_enabled', 'close_before_overnight', 'trading_hours_enabled', 'paper_mode', 'algo_enabled'].forEach(name => {
+            if (!(name in data)) {
+                data[name] = false;
+            }
+        });
+
+        // DEBUG: Log what we're sending
+        console.log('=== SAVING SETTINGS ===');
+        console.log('Active Spot Broker:', data.active_spot_broker);
+        console.log('Active Futures Broker:', data.active_futures_broker);
+        console.log('Full data being sent:', JSON.stringify(data, null, 2));
+
+        const response = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        const result = await response.json();
+
+        // DEBUG: Log response
+        console.log('=== SERVER RESPONSE ===');
+        console.log('Success:', result.success);
+        console.log('Full response:', JSON.stringify(result, null, 2));
+
+        if (result.success) {
+            alert('Settings saved successfully!');
+        } else {
+            alert('Error saving settings: ' + (result.error || 'Unknown error'));
+        }
+    });
+</script>
+{% endblock %}

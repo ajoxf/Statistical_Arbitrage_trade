@@ -4635,6 +4635,12 @@ def api_clear_data():
         database.clear_price_history()
         # Signal the WebSocket loop to clear in-memory chart data
         clear_spread_history_flag = True
+        # Immediately notify frontend so progress bar resets to 0 without waiting for next tick
+        config = database.get_config()
+        lookback_period = config.lookback_period if config else 90
+        lookback_unit = config.lookback_unit if config and hasattr(config, 'lookback_unit') else 'minutes'
+        lookback_minutes = lookback_period if lookback_unit == 'minutes' else lookback_period * 24 * 60
+        socketio.emit('price_history_cleared', {'lookback_minutes': lookback_minutes})
 
     if data_type == 'trades' or data_type == 'all':
         database.clear_trades()

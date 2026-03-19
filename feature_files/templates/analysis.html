@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}Analysis - Multi-Broker Arbitrage{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col-12">
+            <h2><i class="bi bi-graph-up me-2"></i>Analysis</h2>
+            <p class="text-muted">Standard deviation touch analysis and order statistics</p>
+        </div>
+    </div>
+
+    <!-- SD Touch Statistics -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-bar-chart me-2"></i>SD Touch Statistics</h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted mb-3">How often does the spread return to mean after touching various standard deviation levels?</p>
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>SD Level</th>
+                                    <th>Total Touches</th>
+                                    <th>Reached Mean</th>
+                                    <th>Success Rate</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for level, stats in sd_stats.items() %}
+                                <tr>
+                                    <td><strong>{{ level }}</strong></td>
+                                    <td>{{ stats.total }}</td>
+                                    <td>{{ stats.reached_mean }}</td>
+                                    <td>
+                                        {% if stats.success_rate >= 70 %}
+                                        <span class="badge bg-success">{{ "%.1f"|format(stats.success_rate) }}%</span>
+                                        {% elif stats.success_rate >= 50 %}
+                                        <span class="badge bg-warning text-dark">{{ "%.1f"|format(stats.success_rate) }}%</span>
+                                        {% else %}
+                                        <span class="badge bg-secondary">{{ "%.1f"|format(stats.success_rate) }}%</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Limit Order Statistics -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i>Limit Order Statistics</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row text-center">
+                        <div class="col-6 mb-3">
+                            <h3 class="text-primary">{{ limit_stats.total_orders }}</h3>
+                            <small class="text-muted">Total Orders</small>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <h3 class="text-success">{{ limit_stats.filled_orders }}</h3>
+                            <small class="text-muted">Filled Orders</small>
+                        </div>
+                        <div class="col-6">
+                            <h3 class="text-info">{{ "%.1f"|format(limit_stats.fill_rate) }}%</h3>
+                            <small class="text-muted">Fill Rate</small>
+                        </div>
+                        <div class="col-6">
+                            <h3 class="text-warning">{{ "%.2f"|format(limit_stats.average_fill_time) }}s</h3>
+                            <small class="text-muted">Avg Fill Time</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Info -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>About This Analysis</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>SD Touch Tracking:</strong> Records when the spread touches various standard deviation levels and tracks whether it subsequently returns to the mean.</p>
+                    <p><strong>Success Rate:</strong> The percentage of times the spread returned to mean after touching that SD level.</p>
+                    <p><strong>Limit Order Stats:</strong> Performance metrics for pegged limit order execution.</p>
+                    <p class="mb-0 text-muted"><small>Data is collected while the engine is running.</small></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent SD Touches -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-list-ul me-2"></i>Recent SD Touches</h5>
+                </div>
+                <div class="card-body">
+                    {% if sd_touches %}
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Time</th>
+                                    <th>SD Level</th>
+                                    <th>Direction</th>
+                                    <th>Z-Score</th>
+                                    <th>Spread</th>
+                                    <th>Reached Mean</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for touch in sd_touches %}
+                                <tr>
+                                    <td>{{ touch.touch_date or '--' }}</td>
+                                    <td>{{ touch.touch_time or '--' }}</td>
+                                    <td><span class="badge bg-primary">{{ touch.sd_level }}</span></td>
+                                    <td>
+                                        {% if touch.direction == 'HIGH' %}
+                                        <span class="text-danger"><i class="bi bi-arrow-up"></i> High</span>
+                                        {% else %}
+                                        <span class="text-success"><i class="bi bi-arrow-down"></i> Low</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ "%.2f"|format(touch.touch_zscore) if touch.touch_zscore else '--' }}</td>
+                                    <td>${{ "%.2f"|format(touch.touch_spread) if touch.touch_spread else '--' }}</td>
+                                    <td>
+                                        {% if touch.reached_mean %}
+                                        <span class="badge bg-success"><i class="bi bi-check"></i> Yes</span>
+                                        {% else %}
+                                        <span class="badge bg-secondary">No</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <p class="text-muted text-center my-4">No SD touch events recorded yet. Data will appear once the engine is running.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
