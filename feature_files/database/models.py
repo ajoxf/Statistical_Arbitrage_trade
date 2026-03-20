@@ -117,6 +117,7 @@ class TradingConfig:
     # Mode Settings
     algo_enabled: bool = False
     paper_mode: bool = True
+    invert_signals: bool = False  # Invert trade direction: LONG executes as SHORT and vice versa
     selected_asset: str = "GOLD"
 
     # Active Broker Selection
@@ -182,6 +183,7 @@ class TradingConfig:
             'manual_trade_status': self.manual_trade_status,
             'algo_enabled': self.algo_enabled,
             'paper_mode': self.paper_mode,
+            'invert_signals': self.invert_signals,
             'selected_asset': self.selected_asset,
             'active_spot_broker': self.active_spot_broker,
             'active_futures_broker': self.active_futures_broker,

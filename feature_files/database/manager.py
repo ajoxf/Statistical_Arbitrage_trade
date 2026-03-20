@@ -85,6 +85,7 @@ class DatabaseManager:
                 taker_fee_bps REAL DEFAULT 5.0,
                 algo_enabled INTEGER DEFAULT 0,
                 paper_mode INTEGER DEFAULT 1,
+                invert_signals INTEGER DEFAULT 0,
                 selected_asset TEXT DEFAULT 'GOLD',
                 active_spot_broker TEXT,
                 active_futures_broker TEXT,
@@ -410,7 +411,8 @@ class DatabaseManager:
                 telegram_chat_id=row['telegram_chat_id'] if 'telegram_chat_id' in row.keys() else '',
                 telegram_notify_trades=bool(row['telegram_notify_trades']) if 'telegram_notify_trades' in row.keys() else True,
                 telegram_notify_signals=bool(row['telegram_notify_signals']) if 'telegram_notify_signals' in row.keys() else False,
-                telegram_notify_errors=bool(row['telegram_notify_errors']) if 'telegram_notify_errors' in row.keys() else True
+                telegram_notify_errors=bool(row['telegram_notify_errors']) if 'telegram_notify_errors' in row.keys() else True,
+                invert_signals=bool(row['invert_signals']) if 'invert_signals' in row.keys() else False
             )
 
         return TradingConfig()
@@ -463,6 +465,7 @@ class DatabaseManager:
                 taker_fee_bps = ?,
                 algo_enabled = ?,
                 paper_mode = ?,
+                invert_signals = ?,
                 selected_asset = ?,
                 trading_hours_enabled = ?,
                 trading_start_hour = ?,
@@ -512,6 +515,7 @@ class DatabaseManager:
             config.taker_fee_bps,
             int(config.algo_enabled),
             int(config.paper_mode),
+            int(config.invert_signals),
             config.selected_asset,
             int(config.trading_hours_enabled),
             config.trading_start_hour,

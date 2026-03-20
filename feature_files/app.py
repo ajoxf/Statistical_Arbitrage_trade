@@ -1900,8 +1900,9 @@ class AutoTrader:
             lot_size = config.lot_size
             self._logger.info(f"[AUTO] MT5 initialized successfully, lot_size={lot_size}")
 
-            # Execute spot leg
-            if direction == 'SHORT':
+            # Execute spot leg (invert_signals flips direction for compression strategies)
+            effective_direction = ('LONG' if direction == 'SHORT' else 'SHORT') if config.invert_signals else direction
+            if effective_direction == 'SHORT':
                 # Short spread: Buy spot
                 spot_order_type = mt5.ORDER_TYPE_BUY
                 futures_order_type = mt5.ORDER_TYPE_SELL
