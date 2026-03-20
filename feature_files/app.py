@@ -516,6 +516,8 @@ def notify_trade_entry(
     trade_id: str,
     source: str = 'ALGO',
     exec_mode: str = 'MARKET',
+    mean: float = None,
+    std: float = None,
     # Execution metrics (for pegged orders)
     spot_target_price: float = None,
     futures_target_price: float = None,
@@ -526,6 +528,17 @@ def notify_trade_entry(
 ):
     """Send detailed Telegram notification for trade entry."""
     spread_val = futures_price - spot_price
+
+    # Spread vs Mean line (most important context)
+    spread_vs_mean = ""
+    if mean is not None and std is not None:
+        deviation = spread_val - mean
+        spread_vs_mean = (
+            f"\n<b>📐 STATISTICS</b>\n"
+            f"├ Mean: <code>${mean:.2f}</code>\n"
+            f"├ Std: <code>${std:.4f}</code>\n"
+            f"└ Spread - Mean: <code>{'+' if deviation >= 0 else ''}{deviation:.2f}</code>\n"
+        )
 
     message = (
         f"🟢 <b>TRADE ENTRY</b>\n"
@@ -540,6 +553,7 @@ def notify_trade_entry(
         f"├ Futures: <code>${futures_price:.2f}</code>\n"
         f"├ Spread: <code>${spread_val:.2f}</code>\n"
         f"└ Z-Score: <code>{zscore:.2f}</code>\n"
+        f"{spread_vs_mean}"
     )
 
     # Add execution metrics for pegged orders
@@ -590,6 +604,8 @@ def notify_trade_exit(
     swap: float = 0,
     commission: float = 0,
     net_pnl: float = 0,
+    mean: float = None,
+    std: float = None,
     # Execution metrics (for pegged orders)
     spot_target_price: float = None,
     futures_target_price: float = None,
@@ -604,6 +620,19 @@ def notify_trade_exit(
     entry_value = abs(entry_spot or 0) * lot_size * 100  # Assuming contract_size=100
     return_pct = (net_pnl / entry_value * 100) if entry_value > 0 else 0
 
+    # Statistics block
+    stats_block = ""
+    if mean is not None and std is not None:
+        entry_dev = entry_spread - mean
+        exit_dev = exit_spread - mean
+        stats_block = (
+            f"<b>📐 STATISTICS</b>\n"
+            f"├ Mean: <code>${mean:.2f}</code>\n"
+            f"├ Std: <code>${std:.4f}</code>\n"
+            f"├ Entry Spread - Mean: <code>{'+' if entry_dev >= 0 else ''}{entry_dev:.2f}</code>\n"
+            f"└ Exit Spread - Mean: <code>{'+' if exit_dev >= 0 else ''}{exit_dev:.2f}</code>\n\n"
+        )
+
     message = (
         f"{emoji} <b>TRADE EXIT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -613,6 +642,7 @@ def notify_trade_exit(
         f"<b>Direction:</b> {direction}\n"
         f"<b>Exit Reason:</b> {exit_reason}\n"
         f"<b>Days Held:</b> {days_held:.2f}\n\n"
+        f"{stats_block}"
         f"<b>📊 ENTRY</b>\n"
         f"├ Spot: <code>${entry_spot:.2f}</code>\n" if entry_spot else ""
         f"├ Futures: <code>${entry_futures:.2f}</code>\n" if entry_futures else ""
@@ -659,13 +689,21 @@ def notify_trade_exit(
     send_telegram_notification(message, 'trade')
 
 
-def notify_signal(signal_type: str, zscore: float, spread: float):
+def notify_signal(signal_type: str, zscore: float, spread: float, mean: float = None, std: float = None):
     """Send Telegram notification for signal generation."""
     emoji = "📈" if 'LONG' in signal_type else "📉" if 'SHORT' in signal_type else "⚡"
+    stats_line = ""
+    if mean is not None and std is not None:
+        deviation = spread - mean
+        stats_line = (
+            f"\n<b>Mean:</b> ${mean:.2f}  |  <b>Std:</b> ${std:.4f}\n"
+            f"<b>Spread - Mean:</b> {'+' if deviation >= 0 else ''}{deviation:.2f}"
+        )
     message = (
         f"{emoji} <b>SIGNAL: {signal_type}</b>\n\n"
         f"<b>Z-Score:</b> {zscore:.2f}\n"
         f"<b>Spread:</b> ${spread:.2f}"
+        f"{stats_line}"
     )
     send_telegram_notification(message, 'signal')
 
@@ -2208,7 +2246,9 @@ class AutoTrader:
                 lot_size=config.lot_size,
                 trade_id=trade_id,
                 source=trade_source,
-                exec_mode='MARKET'
+                exec_mode='MARKET',
+                mean=getattr(signal, 'locked_mean', None),
+                std=getattr(signal, 'locked_std', None),
             )
 
             # Log successful trade entry to STD filter log
@@ -2418,6 +2458,8 @@ class AutoTrader:
                 trade_id=trade_id,
                 source=trade_source,
                 exec_mode='PEGGED_LIMIT',
+                mean=getattr(signal, 'locked_mean', None),
+                std=getattr(signal, 'locked_std', None),
                 spot_target_price=spread_order.spot_leg.target_price,
                 futures_target_price=spread_order.futures_leg.target_price,
                 spot_fill_time_ms=fill_time_ms,
@@ -2943,6 +2985,8 @@ class AutoTrader:
                 swap=0,  # TODO: Track swap charges
                 commission=commission,
                 net_pnl=net_pnl,
+                mean=position.get('locked_mean'),
+                std=position.get('locked_std'),
                 spot_target_price=spread_order.spot_leg.target_price,
                 futures_target_price=spread_order.futures_leg.target_price,
                 spot_fill_time_ms=fill_time_ms,
@@ -3178,6 +3222,8 @@ class AutoTrader:
                 swap=0,  # TODO: Track swap charges
                 commission=commission,
                 net_pnl=net_pnl,
+                mean=position.get('locked_mean'),
+                std=position.get('locked_std'),
             )
 
             # Emit to frontend
