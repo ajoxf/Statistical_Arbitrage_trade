@@ -372,6 +372,15 @@
                                 </label>
                             </div>
                             <small class="text-muted">Enable/disable automatic trading</small>
+
+                            <div class="form-check form-switch mt-3">
+                                <input class="form-check-input" type="checkbox" name="invert_signals"
+                                       id="invert-signals" {% if config.invert_signals %}checked{% endif %}>
+                                <label class="form-check-label" for="invert-signals">
+                                    Invert Signals
+                                </label>
+                            </div>
+                            <small class="text-muted">Flip trade direction: LONG executes as SHORT and vice versa</small>
                         </div>
                     </div>
                 </div>
@@ -851,7 +860,7 @@
         }
 
         // Ensure unchecked checkboxes are included
-        ['hurst_enabled', 'std_filter_enabled', 'close_before_overnight', 'trading_hours_enabled', 'paper_mode', 'algo_enabled'].forEach(name => {
+        ['hurst_enabled', 'std_filter_enabled', 'close_before_overnight', 'trading_hours_enabled', 'paper_mode', 'algo_enabled', 'invert_signals'].forEach(name => {
             if (!(name in data)) {
                 data[name] = false;
             }
