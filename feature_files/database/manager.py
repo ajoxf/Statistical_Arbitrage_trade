@@ -103,6 +103,16 @@ class DatabaseManager:
             )
         ''')
 
+        # Migrations: add columns introduced after initial schema
+        migrations = [
+            "ALTER TABLE trading_config ADD COLUMN invert_signals INTEGER DEFAULT 0",
+        ]
+        for migration in migrations:
+            try:
+                cursor.execute(migration)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
         # Brokers table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS brokers (
