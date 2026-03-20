@@ -1560,7 +1560,9 @@ class AutoTrader:
                 return
 
             # Check if algo trading is enabled
-            if not config.algo_enabled:
+            # Manual signals bypass this check - they should work regardless of algo state
+            is_manual = getattr(signal, 'source', 'ALGO') == 'MANUAL'
+            if not config.algo_enabled and not is_manual:
                 self._logger.info("[AUTO] Algo trading disabled - ABORTING")
                 return
 
@@ -1694,11 +1696,18 @@ class AutoTrader:
                             spot_price: float, futures_price: float):
         """Handle entry signal (ENTRY_LONG or ENTRY_SHORT)"""
         self._logger.info(f"[AUTO] >>> _handle_entry_signal CALLED for {signal.signal_type} <<<")
-        self._logger.info(f"[AUTO] Position state: open={self._position_open}, direction={self._position_direction}")
+        trade_source = getattr(signal, 'source', 'ALGO')
+        self._logger.info(f"[AUTO] Position state: open={self._position_open}, direction={self._position_direction}, source={trade_source}")
 
-        if self._position_open:
-            self._logger.info("[AUTO] Position already open, skipping entry signal - ABORTING")
-            return
+        # Check the correct position tracker for this signal source
+        if trade_source == 'MANUAL':
+            if self._manual_position['open']:
+                self._logger.info("[AUTO] Manual position already open, skipping entry signal - ABORTING")
+                return
+        else:
+            if self._position_open:
+                self._logger.info("[AUTO] Algo position already open, skipping entry signal - ABORTING")
+                return
 
         # Get current market data for filter checks
         current_std = None
@@ -1812,8 +1821,13 @@ class AutoTrader:
 
         # CRITICAL: Lock position immediately to prevent race conditions
         # This prevents duplicate signals from being processed while we execute
-        self._position_open = True
-        self._position_direction = direction
+        # Manual trades use _manual_position tracking; only algo trades set the legacy flag
+        if trade_source == 'MANUAL':
+            self._manual_position['open'] = True
+            self._manual_position['direction'] = direction
+        else:
+            self._position_open = True
+            self._position_direction = direction
 
         # Sync engine state immediately to stop new signals
         global engine
@@ -2279,14 +2293,18 @@ class AutoTrader:
         """
         signal_type = signal.signal_type
         direction = 'LONG' if signal_type == 'ENTRY_LONG' else 'SHORT'
+        trade_source = getattr(signal, 'source', 'ALGO')
 
-        self._logger.info(f"[AUTO] === PEGGED LIMIT ENTRY === Executing {direction} trade")
+        self._logger.info(f"[AUTO] === PEGGED LIMIT ENTRY === Executing {direction} trade (source={trade_source})")
 
         # CRITICAL: Lock position immediately to prevent duplicate signals
-        # Must set BOTH _position_open AND _algo_position['open'] because
-        # signal loop checks has_position which uses _algo_position['open']
-        self._position_open = True
-        self._position_direction = direction
+        # Manual trades lock _manual_position; algo trades lock the legacy _position_open flag
+        if trade_source == 'MANUAL':
+            self._manual_position['open'] = True
+            self._manual_position['direction'] = direction
+        else:
+            self._position_open = True
+            self._position_direction = direction
         self._algo_position['open'] = True
         self._algo_position['direction'] = direction
 
@@ -3232,6 +3250,11 @@ class AutoTrader:
                 'entry_time': None, 'spot_ticket': None, 'futures_ticket': None,
                 'locked_mean': None, 'locked_std': None
             }
+            # Manual trades set the pre-execution lock on _position_open; clear it here
+            # so future algo entries are not blocked after a manual trade completes
+            if not self._algo_position['open']:
+                self._position_open = False
+                self._position_direction = None
         else:
             self._algo_position = {
                 'open': False, 'direction': None, 'trade_id': None,
@@ -3250,7 +3273,7 @@ class AutoTrader:
             self._spot_ticket = None
             self._futures_ticket = None
             self._entry_locked_mean = None
-        self._entry_locked_std = None
+            self._entry_locked_std = None
 
         # Sync engine position state
         global engine
