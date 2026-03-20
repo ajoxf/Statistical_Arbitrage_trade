@@ -800,6 +800,7 @@ def telegram_cmd_help(chat_id: str):
         "📋 <b>AVAILABLE COMMANDS</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "/status - Bot status & system overview\n"
+        "/spread - Live spread, mean, std & z-score\n"
         "/positions - Open positions with details\n"
         "/trades - Recent closed trades\n"
         "/balance - Account margin info\n"
@@ -847,6 +848,42 @@ def telegram_cmd_status(chat_id: str):
         import traceback
         logger.error(f"[TELEGRAM] Error in /status: {e}\n{traceback.format_exc()}")
         telegram_send_message(chat_id, f"⚠️ Error getting status: {str(e)}")
+
+
+def telegram_cmd_spread(chat_id: str):
+    """Handle /spread command - show live spread, mean, std, z-score."""
+    tick = latest_tick_data
+    if not tick:
+        telegram_send_message(chat_id, "⚠️ No live data yet. Price streaming may not be active.")
+        return
+
+    spread = tick.get('spread')
+    mean = tick.get('mean')
+    std = tick.get('std')
+    zscore = tick.get('zscore')
+
+    if spread is None:
+        telegram_send_message(chat_id, "⚠️ Spread data unavailable.")
+        return
+
+    if mean is None or std is None or zscore is None:
+        message = (
+            f"📡 <b>LIVE SPREAD (no stats yet)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>Spread:</b> <code>{spread:.4f}</code>\n"
+            f"<i>Warming up — stats not yet available</i>"
+        )
+    else:
+        z_emoji = "🔴" if abs(zscore) >= 3 else "🟡" if abs(zscore) >= 2 else "🟢"
+        message = (
+            f"📡 <b>LIVE SPREAD STATS</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>Spread:</b>  <code>{spread:.4f}</code>\n"
+            f"<b>Mean:</b>    <code>{mean:.4f}</code>\n"
+            f"<b>Std Dev:</b> <code>{std:.4f}</code>\n"
+            f"{z_emoji} <b>Z-Score:</b> <code>{zscore:+.4f}</code>\n"
+        )
+    telegram_send_message(chat_id, message)
 
 
 def telegram_cmd_positions(chat_id: str):
@@ -1307,6 +1344,8 @@ def process_telegram_command(update: dict):
             telegram_cmd_help(chat_id)
         elif command == '/status':
             telegram_cmd_status(chat_id)
+        elif command == '/spread':
+            telegram_cmd_spread(chat_id)
         elif command == '/positions':
             telegram_cmd_positions(chat_id)
         elif command == '/trades':
@@ -5904,6 +5943,7 @@ def handle_request_status():
 # ==================== Background Price Streaming ====================
 
 price_streaming_active = False
+latest_tick_data = {}  # Cache of last tick: spread, mean, std, zscore
 
 def start_price_streaming():
     """Start background price streaming from active brokers"""
@@ -5917,7 +5957,7 @@ def start_price_streaming():
     logger.info("[PRICES] Starting price streaming thread")
 
     def stream_prices():
-        global price_streaming_active, clear_spread_history_flag
+        global price_streaming_active, clear_spread_history_flag, latest_tick_data
         import time
         import numpy as np
         from collections import deque
@@ -6504,6 +6544,16 @@ def start_price_streaming():
                         # Manual Spread Trade status
                         'manual_trade': manual_trade_info
                     })
+                    latest_tick_data = {
+                        'spread': spread,
+                        'mean': mean_val if zscore_ready else None,
+                        'std': std_val if zscore_ready else None,
+                        'zscore': zscore,
+                        'spot_bid': spot_bid,
+                        'spot_ask': spot_ask,
+                        'futures_bid': futures_bid,
+                        'futures_ask': futures_ask,
+                    }
 
                 time.sleep(tick_interval)  # Update interval from settings
 
@@ -6819,4 +6869,6 @@ def run_server(host: str = '0.0.0.0', port: int = 5000, debug: bool = False):
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
+    # Suppress 'Session is disconnected' KeyError tracebacks from engineio
+    logging.getLogger('engineio.server').setLevel(logging.CRITICAL)
     run_server(debug=True)
