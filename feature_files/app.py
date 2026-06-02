@@ -5394,6 +5394,339 @@ def api_test_order_cycle():
         return jsonify({'success': False, 'error': str(e)})
 
 
+# ==================== Full Order Test Suite ====================
+# Used by the Settings "Full Order Test Suite" card. Each scenario runs one
+# real round-trip (or cancel) on the active MT5 brokers at min volume.
+# Distinct magic number keeps scenario orders out of the live trade book.
+
+SCENARIO_MAGIC = 123457
+
+
+def _scenario_filling_mode(mt5, symbol_info):
+    FILLING_FOK = getattr(mt5, 'SYMBOL_FILLING_FOK', 1)
+    FILLING_IOC = getattr(mt5, 'SYMBOL_FILLING_IOC', 2)
+    if symbol_info.filling_mode & FILLING_FOK:
+        return mt5.ORDER_FILLING_FOK
+    if symbol_info.filling_mode & FILLING_IOC:
+        return mt5.ORDER_FILLING_IOC
+    return mt5.ORDER_FILLING_RETURN
+
+
+def _scenario_market_send(mt5, symbol, side, comment):
+    """Open a market position at min volume. Returns (position_ticket, error)."""
+    import time as _t
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return None, f'symbol {symbol} not found'
+    if not info.visible:
+        mt5.symbol_select(symbol, True)
+    tick = mt5.symbol_info_tick(symbol)
+    if not tick:
+        return None, 'no tick'
+    existing = {p.ticket for p in (mt5.positions_get(symbol=symbol) or [])}
+    req = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": info.volume_min,
+        "type": mt5.ORDER_TYPE_BUY if side == 'BUY' else mt5.ORDER_TYPE_SELL,
+        "price": tick.ask if side == 'BUY' else tick.bid,
+        "deviation": 20,
+        "magic": SCENARIO_MAGIC,
+        "comment": comment,
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": _scenario_filling_mode(mt5, info),
+    }
+    result = mt5.order_send(req)
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        msg = getattr(result, 'comment', 'no result')
+        code = getattr(result, 'retcode', '?')
+        return None, f'{msg} (code {code})'
+    _t.sleep(0.3)
+    for p in (mt5.positions_get(symbol=symbol) or []):
+        if p.ticket not in existing and p.magic == SCENARIO_MAGIC:
+            return p.ticket, None
+    return result.order, None
+
+
+def _scenario_limit_send(mt5, symbol, side, marketable, comment):
+    """Place a LIMIT order. marketable=True touches the opposite side so it fills;
+    False parks it far out so it stays pending for cancel tests.
+    Returns (order_ticket, error)."""
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return None, f'symbol {symbol} not found'
+    if not info.visible:
+        mt5.symbol_select(symbol, True)
+    tick = mt5.symbol_info_tick(symbol)
+    if not tick:
+        return None, 'no tick'
+    spread = max(tick.ask - tick.bid, info.point if info.point else 0.01)
+    if side == 'BUY':
+        price = tick.ask if marketable else tick.bid - 50 * spread
+        order_type = mt5.ORDER_TYPE_BUY_LIMIT
+    else:
+        price = tick.bid if marketable else tick.ask + 50 * spread
+        order_type = mt5.ORDER_TYPE_SELL_LIMIT
+    req = {
+        "action": mt5.TRADE_ACTION_PENDING,
+        "symbol": symbol,
+        "volume": info.volume_min,
+        "type": order_type,
+        "price": price,
+        "deviation": 20,
+        "magic": SCENARIO_MAGIC,
+        "comment": comment,
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": _scenario_filling_mode(mt5, info),
+    }
+    result = mt5.order_send(req)
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        msg = getattr(result, 'comment', 'no result')
+        code = getattr(result, 'retcode', '?')
+        return None, f'{msg} (code {code})'
+    return result.order, None
+
+
+def _scenario_close_position(mt5, ticket, symbol):
+    """Close a position by ticket at market. Returns (success, error)."""
+    info = mt5.symbol_info(symbol)
+    tick = mt5.symbol_info_tick(symbol)
+    positions = mt5.positions_get(ticket=int(ticket))
+    if not positions:
+        return False, f'position {ticket} not found'
+    p = positions[0]
+    if p.type == mt5.POSITION_TYPE_BUY:
+        close_type = mt5.ORDER_TYPE_SELL
+        price = tick.bid
+    else:
+        close_type = mt5.ORDER_TYPE_BUY
+        price = tick.ask
+    req = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": p.volume,
+        "type": close_type,
+        "position": int(ticket),
+        "price": price,
+        "deviation": 20,
+        "magic": SCENARIO_MAGIC,
+        "comment": "Scenario close",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": _scenario_filling_mode(mt5, info),
+    }
+    result = mt5.order_send(req)
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        msg = getattr(result, 'comment', 'no result')
+        code = getattr(result, 'retcode', '?')
+        return False, f'{msg} (code {code})'
+    return True, None
+
+
+def _scenario_cancel_pending(mt5, order_ticket):
+    """Cancel a pending order. Returns (success, error)."""
+    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(order_ticket)}
+    result = mt5.order_send(req)
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        msg = getattr(result, 'comment', 'no result')
+        code = getattr(result, 'retcode', '?')
+        return False, f'{msg} (code {code})'
+    return True, None
+
+
+def _scenario_single_leg(mt5, symbol, side, mode, variant):
+    import time as _t
+    if mode == 'MARKET':
+        ticket, err = _scenario_market_send(mt5, symbol, side, 'Scenario MKT')
+        if err:
+            return {'success': False, 'detail': f'open failed: {err}'}
+        if variant != 'quick_close':
+            _t.sleep(0.5)
+        ok, err = _scenario_close_position(mt5, ticket, symbol)
+        if not ok:
+            return {'success': False, 'detail': f'close failed: {err} (ticket {ticket})'}
+        return {'success': True, 'detail': f'opened+closed ticket {ticket}'}
+
+    # LIMIT
+    if variant == 'cancel':
+        order, err = _scenario_limit_send(mt5, symbol, side, False, 'Scenario LMT cancel')
+        if err:
+            return {'success': False, 'detail': f'place failed: {err}'}
+        _t.sleep(0.3)
+        ok, err = _scenario_cancel_pending(mt5, order)
+        if not ok:
+            return {'success': False, 'detail': f'cancel failed: {err} (order {order})'}
+        return {'success': True, 'detail': f'placed+cancelled order {order}'}
+
+    # LIMIT normal — marketable, expect fill
+    order, err = _scenario_limit_send(mt5, symbol, side, True, 'Scenario LMT')
+    if err:
+        return {'success': False, 'detail': f'place failed: {err}'}
+    deadline = _t.time() + 5.0
+    pos_ticket = None
+    while _t.time() < deadline and not pos_ticket:
+        for p in (mt5.positions_get(symbol=symbol) or []):
+            if p.magic == SCENARIO_MAGIC:
+                pos_ticket = p.ticket
+                break
+        if not pos_ticket:
+            _t.sleep(0.2)
+    if not pos_ticket:
+        _scenario_cancel_pending(mt5, order)
+        return {'success': False, 'detail': f'limit did not fill (order {order})'}
+    ok, err = _scenario_close_position(mt5, pos_ticket, symbol)
+    if not ok:
+        return {'success': False, 'detail': f'close failed: {err} (ticket {pos_ticket})'}
+    return {'success': True, 'detail': f'filled+closed ticket {pos_ticket}'}
+
+
+def _scenario_spread(mt5, spot_sym, fut_sym, spot_side, fut_side, mode, variant):
+    import time as _t
+
+    if variant in ('partial_spot', 'partial_futures'):
+        # Open one leg only, then market-close it (leg-risk recovery).
+        if variant == 'partial_spot':
+            sym, side, label = spot_sym, spot_side, 'spot'
+        else:
+            sym, side, label = fut_sym, fut_side, 'futures'
+        ticket, err = _scenario_market_send(mt5, sym, side, 'Scenario partial')
+        if err:
+            return {'success': False, 'detail': f'{label} open failed: {err}'}
+        _t.sleep(0.3)
+        ok, err = _scenario_close_position(mt5, ticket, sym)
+        if not ok:
+            return {'success': False,
+                    'detail': f'{label} recovery close failed: {err} (ticket {ticket})'}
+        return {'success': True,
+                'detail': f'{label} opened and market-closed (ticket {ticket})'}
+
+    if mode == 'MARKET':
+        t1, err = _scenario_market_send(mt5, spot_sym, spot_side, 'Scenario MKT spr/spot')
+        if err:
+            return {'success': False, 'detail': f'spot open failed: {err}'}
+        t2, err = _scenario_market_send(mt5, fut_sym, fut_side, 'Scenario MKT spr/fut')
+        if err:
+            _scenario_close_position(mt5, t1, spot_sym)
+            return {'success': False, 'detail': f'futures open failed: {err}; spot rolled back'}
+        if variant != 'quick_close':
+            _t.sleep(0.5)
+        ok1, err1 = _scenario_close_position(mt5, t1, spot_sym)
+        ok2, err2 = _scenario_close_position(mt5, t2, fut_sym)
+        if not (ok1 and ok2):
+            return {'success': False,
+                    'detail': f'close: spot={err1 or "ok"}, fut={err2 or "ok"}'}
+        return {'success': True, 'detail': f'spread {t1}/{t2} opened+closed'}
+
+    # LIMIT spread
+    if variant == 'cancel':
+        o1, err = _scenario_limit_send(mt5, spot_sym, spot_side, False, 'Scenario LMT spr/spot cancel')
+        if err:
+            return {'success': False, 'detail': f'spot place failed: {err}'}
+        o2, err = _scenario_limit_send(mt5, fut_sym, fut_side, False, 'Scenario LMT spr/fut cancel')
+        if err:
+            _scenario_cancel_pending(mt5, o1)
+            return {'success': False, 'detail': f'fut place failed: {err}; spot cancelled'}
+        _t.sleep(0.3)
+        ok1, err1 = _scenario_cancel_pending(mt5, o1)
+        ok2, err2 = _scenario_cancel_pending(mt5, o2)
+        if not (ok1 and ok2):
+            return {'success': False,
+                    'detail': f'cancel: spot={err1 or "ok"}, fut={err2 or "ok"}'}
+        return {'success': True, 'detail': 'placed+cancelled both legs'}
+
+    # LIMIT normal — marketable, expect both to fill
+    o1, err = _scenario_limit_send(mt5, spot_sym, spot_side, True, 'Scenario LMT spr/spot')
+    if err:
+        return {'success': False, 'detail': f'spot place failed: {err}'}
+    o2, err = _scenario_limit_send(mt5, fut_sym, fut_side, True, 'Scenario LMT spr/fut')
+    if err:
+        _scenario_cancel_pending(mt5, o1)
+        return {'success': False, 'detail': f'fut place failed: {err}; spot cancelled'}
+    deadline = _t.time() + 6.0
+    spot_pos = fut_pos = None
+    while _t.time() < deadline and (spot_pos is None or fut_pos is None):
+        if spot_pos is None:
+            for p in (mt5.positions_get(symbol=spot_sym) or []):
+                if p.magic == SCENARIO_MAGIC:
+                    spot_pos = p.ticket
+                    break
+        if fut_pos is None:
+            for p in (mt5.positions_get(symbol=fut_sym) or []):
+                if p.magic == SCENARIO_MAGIC:
+                    fut_pos = p.ticket
+                    break
+        if spot_pos is None or fut_pos is None:
+            _t.sleep(0.2)
+    if not spot_pos or not fut_pos:
+        if not spot_pos:
+            _scenario_cancel_pending(mt5, o1)
+        else:
+            _scenario_close_position(mt5, spot_pos, spot_sym)
+        if not fut_pos:
+            _scenario_cancel_pending(mt5, o2)
+        else:
+            _scenario_close_position(mt5, fut_pos, fut_sym)
+        return {'success': False, 'detail': f'fills incomplete: spot={spot_pos}, fut={fut_pos}'}
+    ok1, err1 = _scenario_close_position(mt5, spot_pos, spot_sym)
+    ok2, err2 = _scenario_close_position(mt5, fut_pos, fut_sym)
+    if not (ok1 and ok2):
+        return {'success': False,
+                'detail': f'close: spot={err1 or "ok"}, fut={err2 or "ok"}'}
+    return {'success': True, 'detail': f'spread {spot_pos}/{fut_pos} filled+closed'}
+
+
+@app.route('/api/scenario-test', methods=['POST'])
+def api_scenario_test():
+    """Run a single Full Order Test Suite scenario.
+
+    Body: {type, mode, variant}
+      type:    BUY_SPOT | SELL_SPOT | BUY_FUT | SELL_FUT | LONG_SPR | SHORT_SPR
+      mode:    LIMIT | MARKET
+      variant: normal | cancel | quick_close | partial_spot | partial_futures
+    """
+    try:
+        import MetaTrader5 as mt5
+        data = request.get_json() or {}
+        s_type = data.get('type', '')
+        s_mode = data.get('mode', '')
+        s_variant = data.get('variant', 'normal')
+
+        database = get_db()
+        spot_id, fut_id = load_active_brokers()
+        if not spot_id or not fut_id:
+            return jsonify({'success': False, 'detail': 'No active spot/futures brokers selected'})
+        spot_broker = database.get_broker(spot_id)
+        fut_broker = database.get_broker(fut_id)
+        if not spot_broker or not fut_broker:
+            return jsonify({'success': False, 'detail': 'Active broker not found in database'})
+        if spot_broker.broker_type != 'MT5' or fut_broker.broker_type != 'MT5':
+            return jsonify({'success': False, 'detail': 'Scenario tests require MT5 brokers on both legs'})
+
+        if not mt5.initialize():
+            return jsonify({'success': False, 'detail': 'MT5 initialize failed'})
+        try:
+            single_legs = {
+                'BUY_SPOT':  (spot_broker.symbol, 'BUY'),
+                'SELL_SPOT': (spot_broker.symbol, 'SELL'),
+                'BUY_FUT':   (fut_broker.symbol, 'BUY'),
+                'SELL_FUT':  (fut_broker.symbol, 'SELL'),
+            }
+            if s_type in single_legs:
+                sym, side = single_legs[s_type]
+                return jsonify(_scenario_single_leg(mt5, sym, side, s_mode, s_variant))
+            if s_type == 'LONG_SPR':
+                return jsonify(_scenario_spread(mt5, spot_broker.symbol, fut_broker.symbol,
+                                                'BUY', 'SELL', s_mode, s_variant))
+            if s_type == 'SHORT_SPR':
+                return jsonify(_scenario_spread(mt5, spot_broker.symbol, fut_broker.symbol,
+                                                'SELL', 'BUY', s_mode, s_variant))
+            return jsonify({'success': False, 'detail': f'Unknown scenario type: {s_type}'})
+        finally:
+            mt5.shutdown()
+    except Exception as e:
+        logger.error(f"Scenario test error: {e}")
+        return jsonify({'success': False, 'detail': str(e)})
+
+
 @app.route('/api/broker/positions')
 def api_broker_positions():
     """Get current open positions from active broker(s)"""

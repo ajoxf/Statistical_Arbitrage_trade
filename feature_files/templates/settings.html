@@ -474,6 +474,64 @@
             </div>
         </div>
 
+        <!-- Full Order Test Suite -->
+        <div class="col-12">
+            <div class="card border-info">
+                <div class="card-header bg-info text-dark">
+                    <i class="bi bi-list-check me-2"></i>Full Order Test Suite
+                </div>
+                <div class="card-body">
+                    <p class="mb-2">
+                        40 scenarios: 18 LIMIT (6 order types &times; 3 attempts) + 18 MARKET (same, forced)
+                        + 4 partial-fill recovery (one leg fills, other fails &rarr; market-close the
+                        filled leg). Click <b>Run Full Test Suite</b> to run all in sequence, or hit
+                        <b>Run</b> next to any row to execute a single scenario on demand. LIMIT scenarios
+                        are spaced ~20&nbsp;s apart; MARKET ~5&nbsp;s apart.
+                    </p>
+                    <div class="alert alert-warning small mb-3">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        Places <b>REAL orders</b> at minimum lot size on your active spot &amp; futures brokers.
+                        Magic <code>123457</code> isolates these from live trading.
+                    </div>
+                    <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
+                        <button type="button" class="btn btn-info" id="scenario-run-all"
+                                onclick="runAllScenarios()">
+                            <i class="bi bi-play-circle me-2"></i>Run Full Test Suite
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" id="scenario-stop"
+                                onclick="stopAllScenarios()" disabled>
+                            <i class="bi bi-stop-circle me-2"></i>Stop
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary"
+                                onclick="resetScenarios()">
+                            <i class="bi bi-arrow-counterclockwise me-2"></i>Reset
+                        </button>
+                        <div class="ms-auto small">
+                            <span class="badge bg-secondary"><span id="scenario-done">0</span> / 40</span>
+                            <span class="badge bg-success ms-1"><span id="scenario-pass">0</span> passed</span>
+                            <span class="badge bg-danger ms-1"><span id="scenario-fail">0</span> failed</span>
+                        </div>
+                    </div>
+                    <div class="table-responsive" style="max-height: 520px; overflow-y: auto;">
+                        <table class="table table-sm table-striped align-middle mb-0">
+                            <thead class="table-light" style="position: sticky; top: 0;">
+                                <tr>
+                                    <th style="width: 3em;">#</th>
+                                    <th>Scenario</th>
+                                    <th style="width: 5em;">Mode</th>
+                                    <th style="width: 7em;">Type</th>
+                                    <th style="width: 6em;">Status</th>
+                                    <th>Detail</th>
+                                    <th style="width: 5em;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="scenario-rows"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Save Button -->
         <div class="col-12">
             <button type="submit" class="btn btn-primary btn-lg">
@@ -882,5 +940,151 @@
             alert('Error saving settings: ' + (result.error || 'Unknown error'));
         }
     });
+
+    // ==================== Full Order Test Suite ====================
+    const SCENARIO_TYPES = [
+        { type: 'BUY_SPOT',  label: 'BUY_SPOT' },
+        { type: 'SELL_FUT',  label: 'SELL_FUTURES' },
+        { type: 'BUY_FUT',   label: 'BUY_FUTURES' },
+        { type: 'SELL_SPOT', label: 'SELL_SPOT' },
+        { type: 'LONG_SPR',  label: 'LONG_SPREAD' },
+        { type: 'SHORT_SPR', label: 'SHORT_SPREAD' },
+    ];
+
+    function buildScenarios() {
+        const out = [];
+        for (const t of SCENARIO_TYPES) {
+            out.push({ mode: 'LIMIT',  type: t.type, variant: 'normal', name: `${t.label} #1` });
+            out.push({ mode: 'LIMIT',  type: t.type, variant: 'normal', name: `${t.label} #2` });
+            out.push({ mode: 'LIMIT',  type: t.type, variant: 'cancel', name: `${t.label} #3 (cancel)` });
+        }
+        for (const t of SCENARIO_TYPES) {
+            out.push({ mode: 'MARKET', type: t.type, variant: 'normal',      name: `MKT ${t.label} #1` });
+            out.push({ mode: 'MARKET', type: t.type, variant: 'normal',      name: `MKT ${t.label} #2` });
+            out.push({ mode: 'MARKET', type: t.type, variant: 'quick_close', name: `MKT ${t.label} #3 (quick-close)` });
+        }
+        out.push({ mode: 'MARKET', type: 'LONG_SPR',  variant: 'partial_spot',     name: 'LONG_SPREAD partial: spot fills, futures fails → market-close spot' });
+        out.push({ mode: 'MARKET', type: 'LONG_SPR',  variant: 'partial_futures',  name: 'LONG_SPREAD partial: futures fills, spot fails → market-close futures' });
+        out.push({ mode: 'MARKET', type: 'SHORT_SPR', variant: 'partial_spot',     name: 'SHORT_SPREAD partial: spot fills, futures fails → market-close spot' });
+        out.push({ mode: 'MARKET', type: 'SHORT_SPR', variant: 'partial_futures',  name: 'SHORT_SPREAD partial: futures fills, spot fails → market-close futures' });
+        return out;
+    }
+
+    const SCENARIOS = buildScenarios();
+    const scenarioState = SCENARIOS.map(() => 'pending');
+    let scenarioStopRequested = false;
+    let scenarioRunningAll = false;
+
+    function scenarioStatusBadge(s) {
+        const map = {
+            pending: ['bg-secondary',         'pending'],
+            running: ['bg-warning text-dark', 'running'],
+            passed:  ['bg-success',           'passed'],
+            failed:  ['bg-danger',            'failed'],
+        };
+        const [cls, text] = map[s] || map.pending;
+        return `<span class="badge ${cls}">${text}</span>`;
+    }
+
+    function renderScenarioRows() {
+        const tbody = document.getElementById('scenario-rows');
+        if (!tbody) return;
+        tbody.innerHTML = SCENARIOS.map((s, i) => `
+            <tr id="scenario-row-${i}">
+                <td>${i + 1}</td>
+                <td class="small">${s.name}</td>
+                <td><span class="badge ${s.mode === 'LIMIT' ? 'bg-primary' : 'bg-dark'}">${s.mode}</span></td>
+                <td class="small text-muted">${s.type}</td>
+                <td id="scenario-status-${i}">${scenarioStatusBadge(scenarioState[i])}</td>
+                <td id="scenario-detail-${i}" class="small text-muted"></td>
+                <td>
+                    <button type="button" class="btn btn-sm btn-outline-info scenario-run-btn"
+                            data-idx="${i}" onclick="runSingleScenario(${i})">Run</button>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    function updateScenarioCounters() {
+        let done = 0, pass = 0, fail = 0;
+        for (const s of scenarioState) {
+            if (s === 'passed') { done++; pass++; }
+            else if (s === 'failed') { done++; fail++; }
+        }
+        document.getElementById('scenario-done').textContent = done;
+        document.getElementById('scenario-pass').textContent = pass;
+        document.getElementById('scenario-fail').textContent = fail;
+    }
+
+    function setScenarioStatus(idx, status, detail) {
+        scenarioState[idx] = status;
+        const el = document.getElementById(`scenario-status-${idx}`);
+        if (el) el.innerHTML = scenarioStatusBadge(status);
+        if (detail !== undefined) {
+            const d = document.getElementById(`scenario-detail-${idx}`);
+            if (d) d.textContent = detail;
+        }
+        updateScenarioCounters();
+    }
+
+    async function runSingleScenario(idx) {
+        const s = SCENARIOS[idx];
+        setScenarioStatus(idx, 'running', '...');
+        try {
+            const resp = await fetch('/api/scenario-test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: s.mode, type: s.type, variant: s.variant }),
+            });
+            const data = await resp.json();
+            setScenarioStatus(idx, data.success ? 'passed' : 'failed',
+                              data.detail || data.error || '');
+        } catch (e) {
+            setScenarioStatus(idx, 'failed', String(e));
+        }
+    }
+
+    function resetScenarios() {
+        for (let i = 0; i < SCENARIOS.length; i++) {
+            scenarioState[i] = 'pending';
+            const st = document.getElementById(`scenario-status-${i}`);
+            if (st) st.innerHTML = scenarioStatusBadge('pending');
+            const d = document.getElementById(`scenario-detail-${i}`);
+            if (d) d.textContent = '';
+        }
+        updateScenarioCounters();
+    }
+
+    async function runAllScenarios() {
+        if (scenarioRunningAll) return;
+        scenarioRunningAll = true;
+        scenarioStopRequested = false;
+        document.getElementById('scenario-run-all').disabled = true;
+        document.getElementById('scenario-stop').disabled = false;
+        document.querySelectorAll('.scenario-run-btn').forEach(b => { b.disabled = true; });
+        resetScenarios();
+        try {
+            for (let i = 0; i < SCENARIOS.length; i++) {
+                if (scenarioStopRequested) break;
+                await runSingleScenario(i);
+                if (i < SCENARIOS.length - 1 && !scenarioStopRequested) {
+                    const delay = SCENARIOS[i].mode === 'LIMIT' ? 20000 : 5000;
+                    await new Promise(r => setTimeout(r, delay));
+                }
+            }
+        } finally {
+            scenarioRunningAll = false;
+            document.getElementById('scenario-run-all').disabled = false;
+            document.getElementById('scenario-stop').disabled = true;
+            document.querySelectorAll('.scenario-run-btn').forEach(b => { b.disabled = false; });
+        }
+    }
+
+    function stopAllScenarios() {
+        scenarioStopRequested = true;
+        document.getElementById('scenario-stop').disabled = true;
+    }
+
+    renderScenarioRows();
 </script>
 {% endblock %}
