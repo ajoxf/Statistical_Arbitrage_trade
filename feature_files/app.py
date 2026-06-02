@@ -5412,63 +5412,193 @@ def _scenario_filling_mode(mt5, symbol_info):
     return mt5.ORDER_FILLING_RETURN
 
 
-def _scenario_market_send(mt5, symbol, side, comment):
-    """Open a market position at min volume. Returns (position_ticket, error)."""
+def _scenario_now_utc():
+    from datetime import timezone
+    return datetime.now(timezone.utc).strftime('%H:%M:%S')
+
+
+def _scenario_spread_stats(mt5, spot_sym, fut_sym):
+    """Return (spread, mu, sigma, z, digits). Any may be None if unavailable."""
+    si = mt5.symbol_info(spot_sym)
+    digits = max(2, getattr(si, 'digits', 2)) if si else 2
+    st = mt5.symbol_info_tick(spot_sym)
+    ft = mt5.symbol_info_tick(fut_sym)
+    if not st or not ft:
+        return None, None, None, None, digits
+    spread = (ft.bid + ft.ask) / 2 - (st.bid + st.ask) / 2
+    try:
+        history = get_db().get_price_history('ACTIVE', limit=200) or []
+        vals = [row[0] for row in history if row and row[0] is not None]
+    except Exception:
+        vals = []
+    if len(vals) < 5:
+        return spread, None, None, None, digits
+    import statistics
+    mu = statistics.mean(vals)
+    sigma = statistics.stdev(vals) if len(vals) >= 2 else 0.0
+    z = (spread - mu) / sigma if sigma > 0 else 0.0
+    return spread, mu, sigma, z, digits
+
+
+def _scenario_fmt_spread(label, stats):
+    if not stats or stats[0] is None:
+        return None
+    spread, mu, sigma, z, d = stats
+    parts = [f'${spread:+.{d}f}']
+    if mu is not None:
+        parts.append(f'μ=${mu:+.{d}f}')
+        parts.append(f'σ=${sigma:.{d}f}')
+        parts.append(f'z={z:+.2f}')
+    return f'{label}: ' + ' '.join(parts)
+
+
+def _scenario_fmt_action(a):
+    """Format one action dict as a single line."""
+    label = a.get('leg_label', '?')
+    kind = a.get('kind', '?')
+    when = a.get('time', '')
+    d = a.get('digits', 2)
+    if not a.get('ok', True):
+        head = f'[{label}] {kind} FAILED'
+        if when:
+            head += f' @ {when} UTC'
+        return f'{head}: {a.get("error", "?")}'
+    if kind == 'cancel':
+        base = f'cancelled @ {when} UTC'
+        if a.get('order'):
+            base += f' order {a["order"]}'
+        if a.get('reason'):
+            base += f' ({a["reason"]})'
+        return base
+    parts = [f'[{label}]', f'{kind} @ {when} UTC']
+    for k in ('bid', 'ask', 'tgt', 'fill'):
+        v = a.get(k)
+        if v is not None:
+            parts.append(f'{k}=${v:.{d}f}')
+    deltas = []
+    if a.get('fill') is not None and a.get('tgt') is not None:
+        deltas.append(f'Δtgt={a["fill"] - a["tgt"]:+.{d}f}')
+    if a.get('fill') is not None and a.get('mid') is not None:
+        deltas.append(f'Δmid={a["fill"] - a["mid"]:+.{d}f}')
+    line = ' '.join(parts)
+    if deltas:
+        line += f' ({", ".join(deltas)})'
+    return line
+
+
+def _scenario_leg_fee_bps(broker, volume, price):
+    """Per-side fee ($, bps) on this broker leg."""
+    commission = float(getattr(broker, 'commission_per_lot', 0.0) or 0.0)
+    cs = float(getattr(broker, 'contract_size', 100.0) or 100.0)
+    fee = commission * volume
+    notional = price * cs * volume
+    bps = (fee / notional) * 10000 if notional > 0 else 0.0
+    return fee, bps
+
+
+def _scenario_leg_pnl(side, open_fill, close_fill, broker, volume):
+    cs = float(getattr(broker, 'contract_size', 100.0) or 100.0)
+    diff = (close_fill - open_fill) if side == 'BUY' else (open_fill - close_fill)
+    return diff * cs * volume
+
+
+def _scenario_leg_round_trip_fee(broker, open_a, close_a):
+    """Combined ($, bps) for open+close on one leg."""
+    fo, bo = _scenario_leg_fee_bps(broker, open_a['volume'], open_a['fill'])
+    fc, bc = _scenario_leg_fee_bps(broker, open_a['volume'], close_a['fill'])
+    return (fo + fc, bo + bc)
+
+
+def _scenario_assemble(actions, open_stats, close_stats, leg_fees, gross, duration_sec):
+    lines = [_scenario_fmt_action(a) for a in actions if a]
+    so = _scenario_fmt_spread('spread@open', open_stats)
+    sc = _scenario_fmt_spread('spread@close', close_stats)
+    if so:
+        lines.append(so)
+    if sc:
+        lines.append(sc)
+    if leg_fees:
+        fee_str = '+'.join(f'${f:.3f}' for f, _ in leg_fees)
+        total = sum(f for f, _ in leg_fees)
+        bps_str = '+'.join(f'{b:.1f}' for _, b in leg_fees)
+        lines.append(f'fees: {fee_str}=${total:.3f} ({bps_str} bps)')
+    if gross is not None:
+        net = gross - sum(f for f, _ in (leg_fees or []))
+        lines.append(f'gross=${gross:+.2f} net=${net:+.2f} ({duration_sec:.1f}s)')
+    return '\n'.join(lines)
+
+
+def _scenario_open_market(mt5, symbol, side, leg_label, comment):
+    """Open a market position at min volume. Returns a rich action dict."""
     import time as _t
     info = mt5.symbol_info(symbol)
+    d = getattr(info, 'digits', 2) if info else 2
+    res = {'ok': False, 'kind': 'open', 'leg_label': leg_label, 'digits': d,
+           'side': side, 'symbol': symbol, 'time': _scenario_now_utc()}
     if info is None:
-        return None, f'symbol {symbol} not found'
+        res['error'] = f'{symbol} not found'
+        return res
     if not info.visible:
         mt5.symbol_select(symbol, True)
     tick = mt5.symbol_info_tick(symbol)
     if not tick:
-        return None, 'no tick'
+        res['error'] = 'no tick'
+        return res
+    res['bid'] = tick.bid
+    res['ask'] = tick.ask
+    res['mid'] = (tick.bid + tick.ask) / 2
+    target = tick.ask if side == 'BUY' else tick.bid
+    res['tgt'] = target
     existing = {p.ticket for p in (mt5.positions_get(symbol=symbol) or [])}
     req = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
+        "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol,
         "volume": info.volume_min,
         "type": mt5.ORDER_TYPE_BUY if side == 'BUY' else mt5.ORDER_TYPE_SELL,
-        "price": tick.ask if side == 'BUY' else tick.bid,
-        "deviation": 20,
-        "magic": SCENARIO_MAGIC,
-        "comment": comment,
-        "type_time": mt5.ORDER_TIME_GTC,
+        "price": target, "deviation": 20, "magic": SCENARIO_MAGIC,
+        "comment": comment, "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _scenario_filling_mode(mt5, info),
     }
     result = mt5.order_send(req)
     if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
         msg = getattr(result, 'comment', 'no result')
         code = getattr(result, 'retcode', '?')
-        return None, f'{msg} (code {code})'
+        res['error'] = f'{msg} (code {code})'
+        return res
+    res['ok'] = True
+    res['fill'] = result.price
+    res['volume'] = info.volume_min
     _t.sleep(0.3)
+    pos_ticket = None
     for p in (mt5.positions_get(symbol=symbol) or []):
         if p.ticket not in existing and p.magic == SCENARIO_MAGIC:
-            return p.ticket, None
-    return result.order, None
+            pos_ticket = p.ticket
+            break
+    res['ticket'] = pos_ticket if pos_ticket else result.order
+    return res
 
 
-def _scenario_limit_send(mt5, symbol, side, marketable, comment):
-    """Place a LIMIT order. marketable=True puts it at the closest legal price
-    to the market (waiting for the bid/ask to come to it); False parks it ~1%
-    away so it can safely be cancelled before any chance of filling.
-    Returns (order_ticket, error).
-
-    MT5 rules: BUY_LIMIT price must be <= bid - stops_level * point;
-               SELL_LIMIT price must be >= ask + stops_level * point.
-    """
+def _scenario_place_limit(mt5, symbol, side, marketable, leg_label, comment):
+    """Place a LIMIT order. Marketable=True parks at closest legal price;
+    False parks ~1% away for cancel tests. Returns a rich action dict."""
     info = mt5.symbol_info(symbol)
+    d = getattr(info, 'digits', 2) if info else 2
+    res = {'ok': False, 'kind': 'place', 'leg_label': leg_label, 'digits': d,
+           'side': side, 'symbol': symbol, 'time': _scenario_now_utc()}
     if info is None:
-        return None, f'symbol {symbol} not found'
+        res['error'] = f'{symbol} not found'
+        return res
     if not info.visible:
         mt5.symbol_select(symbol, True)
     tick = mt5.symbol_info_tick(symbol)
     if not tick:
-        return None, 'no tick'
+        res['error'] = 'no tick'
+        return res
+    res['bid'] = tick.bid
+    res['ask'] = tick.ask
+    res['mid'] = (tick.bid + tick.ask) / 2
     point = info.point if info.point else 0.01
     digits = getattr(info, 'digits', 5)
     stops_level = getattr(info, 'trade_stops_level', 0) or 0
-    # Closest legal distance from the touching side, with a 1-point safety buffer.
     min_dist = (stops_level + 1) * point
     if side == 'BUY':
         price = (tick.bid - min_dist) if marketable else (tick.bid * 0.99)
@@ -5477,104 +5607,31 @@ def _scenario_limit_send(mt5, symbol, side, marketable, comment):
         price = (tick.ask + min_dist) if marketable else (tick.ask * 1.01)
         order_type = mt5.ORDER_TYPE_SELL_LIMIT
     price = round(price, digits)
+    res['tgt'] = price
     req = {
-        "action": mt5.TRADE_ACTION_PENDING,
-        "symbol": symbol,
-        "volume": info.volume_min,
-        "type": order_type,
-        "price": price,
-        "deviation": 20,
-        "magic": SCENARIO_MAGIC,
-        "comment": comment,
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": _scenario_filling_mode(mt5, info),
+        "action": mt5.TRADE_ACTION_PENDING, "symbol": symbol,
+        "volume": info.volume_min, "type": order_type, "price": price,
+        "deviation": 20, "magic": SCENARIO_MAGIC, "comment": comment,
+        "type_time": mt5.ORDER_TIME_GTC, "type_filling": _scenario_filling_mode(mt5, info),
     }
     result = mt5.order_send(req)
     if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
         msg = getattr(result, 'comment', 'no result')
         code = getattr(result, 'retcode', '?')
-        return None, f'{msg} (code {code})'
-    return result.order, None
+        res['error'] = f'{msg} (code {code})'
+        return res
+    res['ok'] = True
+    res['order'] = result.order
+    res['volume'] = info.volume_min
+    return res
 
 
-def _scenario_close_position(mt5, ticket, symbol):
-    """Close a position by ticket at market. Returns (success, error)."""
-    info = mt5.symbol_info(symbol)
-    tick = mt5.symbol_info_tick(symbol)
-    positions = mt5.positions_get(ticket=int(ticket))
-    if not positions:
-        return False, f'position {ticket} not found'
-    p = positions[0]
-    if p.type == mt5.POSITION_TYPE_BUY:
-        close_type = mt5.ORDER_TYPE_SELL
-        price = tick.bid
-    else:
-        close_type = mt5.ORDER_TYPE_BUY
-        price = tick.ask
-    req = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": p.volume,
-        "type": close_type,
-        "position": int(ticket),
-        "price": price,
-        "deviation": 20,
-        "magic": SCENARIO_MAGIC,
-        "comment": "Scenario close",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": _scenario_filling_mode(mt5, info),
-    }
-    result = mt5.order_send(req)
-    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-        msg = getattr(result, 'comment', 'no result')
-        code = getattr(result, 'retcode', '?')
-        return False, f'{msg} (code {code})'
-    return True, None
-
-
-def _scenario_cancel_pending(mt5, order_ticket):
-    """Cancel a pending order. Returns (success, error)."""
-    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(order_ticket)}
-    result = mt5.order_send(req)
-    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-        msg = getattr(result, 'comment', 'no result')
-        code = getattr(result, 'retcode', '?')
-        return False, f'{msg} (code {code})'
-    return True, None
-
-
-def _scenario_single_leg(mt5, symbol, side, mode, variant):
+def _scenario_wait_limit_fill(mt5, symbol, place_action, leg_label, timeout=15.0):
+    """Wait up to `timeout` for the pending limit to become a position. On fill,
+    return ('filled', open_action_dict, pos_ticket). On no fill,
+    return ('no_fill', None, order_ticket)."""
     import time as _t
-    if mode == 'MARKET':
-        ticket, err = _scenario_market_send(mt5, symbol, side, 'Scenario MKT')
-        if err:
-            return {'success': False, 'detail': f'open failed: {err}'}
-        if variant != 'quick_close':
-            _t.sleep(0.5)
-        ok, err = _scenario_close_position(mt5, ticket, symbol)
-        if not ok:
-            return {'success': False, 'detail': f'close failed: {err} (ticket {ticket})'}
-        return {'success': True, 'detail': f'opened+closed ticket {ticket}'}
-
-    # LIMIT
-    if variant == 'cancel':
-        order, err = _scenario_limit_send(mt5, symbol, side, False, 'Scenario LMT cancel')
-        if err:
-            return {'success': False, 'detail': f'place failed: {err}'}
-        _t.sleep(0.3)
-        ok, err = _scenario_cancel_pending(mt5, order)
-        if not ok:
-            return {'success': False, 'detail': f'cancel failed: {err} (order {order})'}
-        return {'success': True, 'detail': f'placed+cancelled order {order}'}
-
-    # LIMIT normal — place at closest legal price. If the market crosses within
-    # the window, verify fill+close; otherwise cancel cleanly (still a pass —
-    # the place+cancel path was exercised). MT5 limits can only fill on actual
-    # market movement, so this is the honest test.
-    order, err = _scenario_limit_send(mt5, symbol, side, True, 'Scenario LMT')
-    if err:
-        return {'success': False, 'detail': f'place failed: {err}'}
-    deadline = _t.time() + 15.0
+    deadline = _t.time() + timeout
     pos_ticket = None
     while _t.time() < deadline and not pos_ticket:
         for p in (mt5.positions_get(symbol=symbol) or []):
@@ -5584,106 +5641,351 @@ def _scenario_single_leg(mt5, symbol, side, mode, variant):
         if not pos_ticket:
             _t.sleep(0.3)
     if not pos_ticket:
-        ok, err = _scenario_cancel_pending(mt5, order)
-        if not ok:
-            return {'success': False, 'detail': f'no fill in 15s; cancel failed: {err} (order {order})'}
-        return {'success': True, 'detail': f'placed; no fill in 15s; cancelled (order {order})'}
-    ok, err = _scenario_close_position(mt5, pos_ticket, symbol)
-    if not ok:
-        return {'success': False, 'detail': f'close failed: {err} (ticket {pos_ticket})'}
-    return {'success': True, 'detail': f'filled+closed ticket {pos_ticket}'}
+        return 'no_fill', None, place_action.get('order')
+    positions = mt5.positions_get(ticket=int(pos_ticket))
+    if positions:
+        fill_price = positions[0].price_open
+        volume = positions[0].volume
+    else:
+        fill_price = place_action.get('tgt')
+        volume = place_action.get('volume', 0.0)
+    t = mt5.symbol_info_tick(symbol)
+    open_a = {
+        'ok': True, 'kind': 'open', 'leg_label': leg_label,
+        'time': _scenario_now_utc(),
+        'bid': t.bid if t else None, 'ask': t.ask if t else None,
+        'mid': ((t.bid + t.ask) / 2) if t else None,
+        'tgt': place_action.get('tgt'), 'fill': fill_price,
+        'digits': place_action.get('digits', 2),
+        'side': place_action.get('side'),
+        'volume': volume, 'ticket': pos_ticket,
+    }
+    return 'filled', open_a, pos_ticket
 
 
-def _scenario_spread(mt5, spot_sym, fut_sym, spot_side, fut_side, mode, variant):
+def _scenario_close_position(mt5, ticket, symbol, leg_label, side):
+    """Close a position by ticket at market. Returns a rich action dict."""
+    info = mt5.symbol_info(symbol)
+    d = getattr(info, 'digits', 2) if info else 2
+    res = {'ok': False, 'kind': 'close', 'leg_label': leg_label, 'digits': d,
+           'symbol': symbol, 'ticket': ticket, 'side': side,
+           'time': _scenario_now_utc()}
+    tick = mt5.symbol_info_tick(symbol)
+    if not tick:
+        res['error'] = 'no tick'
+        return res
+    res['bid'] = tick.bid
+    res['ask'] = tick.ask
+    res['mid'] = (tick.bid + tick.ask) / 2
+    positions = mt5.positions_get(ticket=int(ticket))
+    if not positions:
+        res['error'] = f'position {ticket} not found'
+        return res
+    p = positions[0]
+    if p.type == mt5.POSITION_TYPE_BUY:
+        close_type = mt5.ORDER_TYPE_SELL
+        target = tick.bid
+    else:
+        close_type = mt5.ORDER_TYPE_BUY
+        target = tick.ask
+    res['tgt'] = target
+    res['volume'] = p.volume
+    req = {
+        "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol,
+        "volume": p.volume, "type": close_type, "position": int(ticket),
+        "price": target, "deviation": 20, "magic": SCENARIO_MAGIC,
+        "comment": "Scenario close", "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": _scenario_filling_mode(mt5, info),
+    }
+    result = mt5.order_send(req)
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        msg = getattr(result, 'comment', 'no result')
+        code = getattr(result, 'retcode', '?')
+        res['error'] = f'{msg} (code {code})'
+        return res
+    res['ok'] = True
+    res['fill'] = result.price
+    return res
+
+
+def _scenario_cancel_pending(mt5, order_ticket, leg_label='', reason=None):
+    """Cancel a pending order. Returns a rich action dict."""
+    res = {'ok': False, 'kind': 'cancel', 'leg_label': leg_label,
+           'time': _scenario_now_utc(), 'order': order_ticket}
+    if reason:
+        res['reason'] = reason
+    req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(order_ticket)}
+    result = mt5.order_send(req)
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        msg = getattr(result, 'comment', 'no result')
+        code = getattr(result, 'retcode', '?')
+        res['error'] = f'{msg} (code {code})'
+        return res
+    res['ok'] = True
+    return res
+
+
+def _scenario_single_leg(mt5, broker, side, mode, variant, leg_base,
+                         spot_broker, fut_broker):
+    """Single-leg scenario. leg_base is 'SPOT' or 'FUTURES'."""
     import time as _t
-
-    if variant in ('partial_spot', 'partial_futures'):
-        # Open one leg only, then market-close it (leg-risk recovery).
-        if variant == 'partial_spot':
-            sym, side, label = spot_sym, spot_side, 'spot'
-        else:
-            sym, side, label = fut_sym, fut_side, 'futures'
-        ticket, err = _scenario_market_send(mt5, sym, side, 'Scenario partial')
-        if err:
-            return {'success': False, 'detail': f'{label} open failed: {err}'}
-        _t.sleep(0.3)
-        ok, err = _scenario_close_position(mt5, ticket, sym)
-        if not ok:
-            return {'success': False,
-                    'detail': f'{label} recovery close failed: {err} (ticket {ticket})'}
-        return {'success': True,
-                'detail': f'{label} opened and market-closed (ticket {ticket})'}
+    symbol = broker.symbol
+    leg_label = f'{leg_base} {side}'
+    actions = []
 
     if mode == 'MARKET':
-        t1, err = _scenario_market_send(mt5, spot_sym, spot_side, 'Scenario MKT spr/spot')
-        if err:
-            return {'success': False, 'detail': f'spot open failed: {err}'}
-        t2, err = _scenario_market_send(mt5, fut_sym, fut_side, 'Scenario MKT spr/fut')
-        if err:
-            _scenario_close_position(mt5, t1, spot_sym)
-            return {'success': False, 'detail': f'futures open failed: {err}; spot rolled back'}
+        open_stats = _scenario_spread_stats(mt5, spot_broker.symbol, fut_broker.symbol)
+        t0 = _t.time()
+        open_a = _scenario_open_market(mt5, symbol, side, leg_label, 'Scenario MKT')
+        actions.append(open_a)
+        if not open_a['ok']:
+            return {'success': False,
+                    'detail': _scenario_assemble(actions, open_stats, None, [], None, 0)}
         if variant != 'quick_close':
             _t.sleep(0.5)
-        ok1, err1 = _scenario_close_position(mt5, t1, spot_sym)
-        ok2, err2 = _scenario_close_position(mt5, t2, fut_sym)
-        if not (ok1 and ok2):
+        close_a = _scenario_close_position(mt5, open_a['ticket'], symbol, leg_label, side)
+        actions.append(close_a)
+        close_stats = _scenario_spread_stats(mt5, spot_broker.symbol, fut_broker.symbol)
+        duration = _t.time() - t0
+        if not close_a['ok']:
             return {'success': False,
-                    'detail': f'close: spot={err1 or "ok"}, fut={err2 or "ok"}'}
-        return {'success': True, 'detail': f'spread {t1}/{t2} opened+closed'}
+                    'detail': _scenario_assemble(actions, open_stats, close_stats, [], None, duration)}
+        gross = _scenario_leg_pnl(side, open_a['fill'], close_a['fill'], broker, open_a['volume'])
+        leg_fees = [
+            _scenario_leg_fee_bps(broker, open_a['volume'], open_a['fill']),
+            _scenario_leg_fee_bps(broker, open_a['volume'], close_a['fill']),
+        ]
+        return {'success': True,
+                'detail': _scenario_assemble(actions, open_stats, close_stats, leg_fees, gross, duration)}
 
-    # LIMIT spread
+    # LIMIT cancel variant
     if variant == 'cancel':
-        o1, err = _scenario_limit_send(mt5, spot_sym, spot_side, False, 'Scenario LMT spr/spot cancel')
-        if err:
-            return {'success': False, 'detail': f'spot place failed: {err}'}
-        o2, err = _scenario_limit_send(mt5, fut_sym, fut_side, False, 'Scenario LMT spr/fut cancel')
-        if err:
-            _scenario_cancel_pending(mt5, o1)
-            return {'success': False, 'detail': f'fut place failed: {err}; spot cancelled'}
-        _t.sleep(0.3)
-        ok1, err1 = _scenario_cancel_pending(mt5, o1)
-        ok2, err2 = _scenario_cancel_pending(mt5, o2)
-        if not (ok1 and ok2):
+        place_a = _scenario_place_limit(mt5, symbol, side, False, leg_label, 'Scenario LMT cancel')
+        actions.append(place_a)
+        if not place_a['ok']:
             return {'success': False,
-                    'detail': f'cancel: spot={err1 or "ok"}, fut={err2 or "ok"}'}
-        return {'success': True, 'detail': 'placed+cancelled both legs'}
+                    'detail': _scenario_assemble(actions, None, None, [], None, 0)}
+        _t.sleep(0.3)
+        cancel_a = _scenario_cancel_pending(mt5, place_a['order'], leg_label)
+        actions.append(cancel_a)
+        return {'success': cancel_a['ok'],
+                'detail': _scenario_assemble(actions, None, None, [], None, 0)}
 
-    # LIMIT normal — wait up to 15 s. Close whichever leg fills; cancel whichever
-    # doesn't. A mixed outcome is reported but cleaned up so no position lingers.
-    o1, err = _scenario_limit_send(mt5, spot_sym, spot_side, True, 'Scenario LMT spr/spot')
-    if err:
-        return {'success': False, 'detail': f'spot place failed: {err}'}
-    o2, err = _scenario_limit_send(mt5, fut_sym, fut_side, True, 'Scenario LMT spr/fut')
-    if err:
-        _scenario_cancel_pending(mt5, o1)
-        return {'success': False, 'detail': f'fut place failed: {err}; spot cancelled'}
+    # LIMIT normal
+    open_stats = _scenario_spread_stats(mt5, spot_broker.symbol, fut_broker.symbol)
+    t0 = _t.time()
+    place_a = _scenario_place_limit(mt5, symbol, side, True, leg_label, 'Scenario LMT')
+    if not place_a['ok']:
+        actions.append(place_a)
+        return {'success': False,
+                'detail': _scenario_assemble(actions, open_stats, None, [], None, 0)}
+    status, open_a, order_tk = _scenario_wait_limit_fill(mt5, symbol, place_a, leg_label)
+    if status == 'no_fill':
+        actions.append(place_a)
+        cancel_a = _scenario_cancel_pending(mt5, order_tk, leg_label, reason='no fill in 15s')
+        actions.append(cancel_a)
+        return {'success': cancel_a['ok'],
+                'detail': _scenario_assemble(actions, open_stats, None, [], None, _t.time() - t0)}
+    actions.append(open_a)
+    close_a = _scenario_close_position(mt5, open_a['ticket'], symbol, leg_label, side)
+    actions.append(close_a)
+    close_stats = _scenario_spread_stats(mt5, spot_broker.symbol, fut_broker.symbol)
+    duration = _t.time() - t0
+    if not close_a['ok']:
+        return {'success': False,
+                'detail': _scenario_assemble(actions, open_stats, close_stats, [], None, duration)}
+    gross = _scenario_leg_pnl(side, open_a['fill'], close_a['fill'], broker, open_a['volume'])
+    leg_fees = [
+        _scenario_leg_fee_bps(broker, open_a['volume'], open_a['fill']),
+        _scenario_leg_fee_bps(broker, open_a['volume'], close_a['fill']),
+    ]
+    return {'success': True,
+            'detail': _scenario_assemble(actions, open_stats, close_stats, leg_fees, gross, duration)}
+
+
+def _scenario_spread(mt5, spot_broker, fut_broker, spot_side, fut_side, mode, variant):
+    """Spread (two-leg) scenario."""
+    import time as _t
+    spot_sym = spot_broker.symbol
+    fut_sym = fut_broker.symbol
+    spot_lbl = f'SPOT {spot_side}'
+    fut_lbl = f'FUTURES {fut_side}'
+    actions = []
+
+    if variant in ('partial_spot', 'partial_futures'):
+        if variant == 'partial_spot':
+            sym, side, broker, lbl = spot_sym, spot_side, spot_broker, spot_lbl
+        else:
+            sym, side, broker, lbl = fut_sym, fut_side, fut_broker, fut_lbl
+        open_stats = _scenario_spread_stats(mt5, spot_sym, fut_sym)
+        t0 = _t.time()
+        open_a = _scenario_open_market(mt5, sym, side, lbl, 'Scenario partial')
+        actions.append(open_a)
+        if not open_a['ok']:
+            return {'success': False,
+                    'detail': _scenario_assemble(actions, open_stats, None, [], None, 0)}
+        _t.sleep(0.3)
+        close_a = _scenario_close_position(mt5, open_a['ticket'], sym, lbl, side)
+        close_a['kind'] = 'recovery close'
+        actions.append(close_a)
+        close_stats = _scenario_spread_stats(mt5, spot_sym, fut_sym)
+        duration = _t.time() - t0
+        if not close_a['ok']:
+            return {'success': False,
+                    'detail': _scenario_assemble(actions, open_stats, close_stats, [], None, duration)}
+        gross = _scenario_leg_pnl(side, open_a['fill'], close_a['fill'], broker, open_a['volume'])
+        leg_fees = [
+            _scenario_leg_fee_bps(broker, open_a['volume'], open_a['fill']),
+            _scenario_leg_fee_bps(broker, open_a['volume'], close_a['fill']),
+        ]
+        return {'success': True,
+                'detail': _scenario_assemble(actions, open_stats, close_stats, leg_fees, gross, duration)}
+
+    if mode == 'MARKET':
+        open_stats = _scenario_spread_stats(mt5, spot_sym, fut_sym)
+        t0 = _t.time()
+        sp_open = _scenario_open_market(mt5, spot_sym, spot_side, spot_lbl, 'Scenario MKT spr/spot')
+        actions.append(sp_open)
+        if not sp_open['ok']:
+            return {'success': False,
+                    'detail': _scenario_assemble(actions, open_stats, None, [], None, 0)}
+        ft_open = _scenario_open_market(mt5, fut_sym, fut_side, fut_lbl, 'Scenario MKT spr/fut')
+        actions.append(ft_open)
+        if not ft_open['ok']:
+            actions.append(_scenario_close_position(mt5, sp_open['ticket'], spot_sym,
+                                                   f'{spot_lbl} rollback', spot_side))
+            return {'success': False,
+                    'detail': _scenario_assemble(actions, open_stats, None, [], None, _t.time() - t0)}
+        if variant != 'quick_close':
+            _t.sleep(0.5)
+        sp_close = _scenario_close_position(mt5, sp_open['ticket'], spot_sym, spot_lbl, spot_side)
+        actions.append(sp_close)
+        ft_close = _scenario_close_position(mt5, ft_open['ticket'], fut_sym, fut_lbl, fut_side)
+        actions.append(ft_close)
+        close_stats = _scenario_spread_stats(mt5, spot_sym, fut_sym)
+        duration = _t.time() - t0
+        if not (sp_close['ok'] and ft_close['ok']):
+            return {'success': False,
+                    'detail': _scenario_assemble(actions, open_stats, close_stats, [], None, duration)}
+        gross = (_scenario_leg_pnl(spot_side, sp_open['fill'], sp_close['fill'], spot_broker, sp_open['volume'])
+                 + _scenario_leg_pnl(fut_side, ft_open['fill'], ft_close['fill'], fut_broker, ft_open['volume']))
+        leg_fees = [
+            _scenario_leg_round_trip_fee(spot_broker, sp_open, sp_close),
+            _scenario_leg_round_trip_fee(fut_broker, ft_open, ft_close),
+        ]
+        return {'success': True,
+                'detail': _scenario_assemble(actions, open_stats, close_stats, leg_fees, gross, duration)}
+
+    # LIMIT cancel
+    if variant == 'cancel':
+        sp_place = _scenario_place_limit(mt5, spot_sym, spot_side, False, spot_lbl, 'Scenario LMT spr/spot cancel')
+        actions.append(sp_place)
+        if not sp_place['ok']:
+            return {'success': False,
+                    'detail': _scenario_assemble(actions, None, None, [], None, 0)}
+        ft_place = _scenario_place_limit(mt5, fut_sym, fut_side, False, fut_lbl, 'Scenario LMT spr/fut cancel')
+        actions.append(ft_place)
+        if not ft_place['ok']:
+            actions.append(_scenario_cancel_pending(mt5, sp_place['order'], spot_lbl, reason='rollback'))
+            return {'success': False,
+                    'detail': _scenario_assemble(actions, None, None, [], None, 0)}
+        _t.sleep(0.3)
+        actions.append(_scenario_cancel_pending(mt5, sp_place['order'], spot_lbl))
+        actions.append(_scenario_cancel_pending(mt5, ft_place['order'], fut_lbl))
+        ok = all(a.get('ok', True) for a in actions)
+        return {'success': ok,
+                'detail': _scenario_assemble(actions, None, None, [], None, 0)}
+
+    # LIMIT normal
+    open_stats = _scenario_spread_stats(mt5, spot_sym, fut_sym)
+    t0 = _t.time()
+    sp_place = _scenario_place_limit(mt5, spot_sym, spot_side, True, spot_lbl, 'Scenario LMT spr/spot')
+    if not sp_place['ok']:
+        actions.append(sp_place)
+        return {'success': False,
+                'detail': _scenario_assemble(actions, open_stats, None, [], None, 0)}
+    ft_place = _scenario_place_limit(mt5, fut_sym, fut_side, True, fut_lbl, 'Scenario LMT spr/fut')
+    if not ft_place['ok']:
+        actions.append(sp_place)
+        actions.append(ft_place)
+        actions.append(_scenario_cancel_pending(mt5, sp_place['order'], spot_lbl, reason='rollback'))
+        return {'success': False,
+                'detail': _scenario_assemble(actions, open_stats, None, [], None, 0)}
+    # Wait for both legs' fills in parallel
     deadline = _t.time() + 15.0
-    spot_pos = fut_pos = None
-    while _t.time() < deadline and (spot_pos is None or fut_pos is None):
-        if spot_pos is None:
+    sp_pos = ft_pos = None
+    while _t.time() < deadline and (sp_pos is None or ft_pos is None):
+        if sp_pos is None:
             for p in (mt5.positions_get(symbol=spot_sym) or []):
                 if p.magic == SCENARIO_MAGIC:
-                    spot_pos = p.ticket
+                    sp_pos = p.ticket
                     break
-        if fut_pos is None:
+        if ft_pos is None:
             for p in (mt5.positions_get(symbol=fut_sym) or []):
                 if p.magic == SCENARIO_MAGIC:
-                    fut_pos = p.ticket
+                    ft_pos = p.ticket
                     break
-        if spot_pos is None or fut_pos is None:
+        if sp_pos is None or ft_pos is None:
             _t.sleep(0.3)
 
-    def _leg_cleanup(pos, order, sym):
-        if pos:
-            ok, err = _scenario_close_position(mt5, pos, sym)
-            return f'closed {pos}' if ok else f'close failed: {err}', ok
-        ok, err = _scenario_cancel_pending(mt5, order)
-        return ('cancelled (no fill)' if ok else f'cancel failed: {err}'), ok
+    def _leg_open_from_position(pos_ticket, place_a, sym, lbl):
+        positions = mt5.positions_get(ticket=int(pos_ticket))
+        if positions:
+            fill = positions[0].price_open
+            vol = positions[0].volume
+        else:
+            fill = place_a['tgt']
+            vol = place_a.get('volume', 0)
+        t = mt5.symbol_info_tick(sym)
+        return {
+            'ok': True, 'kind': 'open', 'leg_label': lbl,
+            'time': _scenario_now_utc(),
+            'bid': t.bid if t else None, 'ask': t.ask if t else None,
+            'mid': ((t.bid + t.ask) / 2) if t else None,
+            'tgt': place_a['tgt'], 'fill': fill,
+            'digits': place_a.get('digits', 2),
+            'volume': vol, 'ticket': pos_ticket,
+            'side': place_a.get('side'),
+        }
 
-    spot_msg, spot_ok = _leg_cleanup(spot_pos, o1, spot_sym)
-    fut_msg, fut_ok = _leg_cleanup(fut_pos, o2, fut_sym)
-    return {'success': spot_ok and fut_ok,
-            'detail': f'spot: {spot_msg}; fut: {fut_msg}'}
+    sp_open = ft_open = None
+    if sp_pos:
+        sp_open = _leg_open_from_position(sp_pos, sp_place, spot_sym, spot_lbl)
+        actions.append(sp_open)
+    else:
+        actions.append(sp_place)
+        actions.append(_scenario_cancel_pending(mt5, sp_place['order'], spot_lbl,
+                                                reason='no fill in 15s'))
+    if ft_pos:
+        ft_open = _leg_open_from_position(ft_pos, ft_place, fut_sym, fut_lbl)
+        actions.append(ft_open)
+    else:
+        actions.append(ft_place)
+        actions.append(_scenario_cancel_pending(mt5, ft_place['order'], fut_lbl,
+                                                reason='no fill in 15s'))
+
+    sp_close = ft_close = None
+    if sp_pos:
+        sp_close = _scenario_close_position(mt5, sp_pos, spot_sym, spot_lbl, spot_side)
+        actions.append(sp_close)
+    if ft_pos:
+        ft_close = _scenario_close_position(mt5, ft_pos, fut_sym, fut_lbl, fut_side)
+        actions.append(ft_close)
+    close_stats = _scenario_spread_stats(mt5, spot_sym, fut_sym)
+    duration = _t.time() - t0
+
+    leg_fees = []
+    gross = None
+    if sp_open and sp_close and sp_close['ok'] and ft_open and ft_close and ft_close['ok']:
+        gross = (_scenario_leg_pnl(spot_side, sp_open['fill'], sp_close['fill'], spot_broker, sp_open['volume'])
+                 + _scenario_leg_pnl(fut_side, ft_open['fill'], ft_close['fill'], fut_broker, ft_open['volume']))
+        leg_fees = [
+            _scenario_leg_round_trip_fee(spot_broker, sp_open, sp_close),
+            _scenario_leg_round_trip_fee(fut_broker, ft_open, ft_close),
+        ]
+    ok = all(a.get('ok', True) for a in actions)
+    return {'success': ok,
+            'detail': _scenario_assemble(actions, open_stats, close_stats, leg_fees, gross, duration)}
 
 
 @app.route('/api/scenario-test', methods=['POST'])
@@ -5717,19 +6019,20 @@ def api_scenario_test():
             return jsonify({'success': False, 'detail': 'MT5 initialize failed'})
         try:
             single_legs = {
-                'BUY_SPOT':  (spot_broker.symbol, 'BUY'),
-                'SELL_SPOT': (spot_broker.symbol, 'SELL'),
-                'BUY_FUT':   (fut_broker.symbol, 'BUY'),
-                'SELL_FUT':  (fut_broker.symbol, 'SELL'),
+                'BUY_SPOT':  (spot_broker, 'BUY',  'SPOT'),
+                'SELL_SPOT': (spot_broker, 'SELL', 'SPOT'),
+                'BUY_FUT':   (fut_broker,  'BUY',  'FUTURES'),
+                'SELL_FUT':  (fut_broker,  'SELL', 'FUTURES'),
             }
             if s_type in single_legs:
-                sym, side = single_legs[s_type]
-                return jsonify(_scenario_single_leg(mt5, sym, side, s_mode, s_variant))
+                broker, side, leg_base = single_legs[s_type]
+                return jsonify(_scenario_single_leg(mt5, broker, side, s_mode, s_variant,
+                                                    leg_base, spot_broker, fut_broker))
             if s_type == 'LONG_SPR':
-                return jsonify(_scenario_spread(mt5, spot_broker.symbol, fut_broker.symbol,
+                return jsonify(_scenario_spread(mt5, spot_broker, fut_broker,
                                                 'BUY', 'SELL', s_mode, s_variant))
             if s_type == 'SHORT_SPR':
-                return jsonify(_scenario_spread(mt5, spot_broker.symbol, fut_broker.symbol,
+                return jsonify(_scenario_spread(mt5, spot_broker, fut_broker,
                                                 'SELL', 'BUY', s_mode, s_variant))
             return jsonify({'success': False, 'detail': f'Unknown scenario type: {s_type}'})
         finally:
