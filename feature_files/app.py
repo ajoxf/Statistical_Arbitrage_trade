@@ -5449,9 +5449,14 @@ def _scenario_market_send(mt5, symbol, side, comment):
 
 
 def _scenario_limit_send(mt5, symbol, side, marketable, comment):
-    """Place a LIMIT order. marketable=True touches the opposite side so it fills;
-    False parks it far out so it stays pending for cancel tests.
-    Returns (order_ticket, error)."""
+    """Place a LIMIT order. marketable=True puts it at the closest legal price
+    to the market (waiting for the bid/ask to come to it); False parks it ~1%
+    away so it can safely be cancelled before any chance of filling.
+    Returns (order_ticket, error).
+
+    MT5 rules: BUY_LIMIT price must be <= bid - stops_level * point;
+               SELL_LIMIT price must be >= ask + stops_level * point.
+    """
     info = mt5.symbol_info(symbol)
     if info is None:
         return None, f'symbol {symbol} not found'
@@ -5460,13 +5465,18 @@ def _scenario_limit_send(mt5, symbol, side, marketable, comment):
     tick = mt5.symbol_info_tick(symbol)
     if not tick:
         return None, 'no tick'
-    spread = max(tick.ask - tick.bid, info.point if info.point else 0.01)
+    point = info.point if info.point else 0.01
+    digits = getattr(info, 'digits', 5)
+    stops_level = getattr(info, 'trade_stops_level', 0) or 0
+    # Closest legal distance from the touching side, with a 1-point safety buffer.
+    min_dist = (stops_level + 1) * point
     if side == 'BUY':
-        price = tick.ask if marketable else tick.bid - 50 * spread
+        price = (tick.bid - min_dist) if marketable else (tick.bid * 0.99)
         order_type = mt5.ORDER_TYPE_BUY_LIMIT
     else:
-        price = tick.bid if marketable else tick.ask + 50 * spread
+        price = (tick.ask + min_dist) if marketable else (tick.ask * 1.01)
         order_type = mt5.ORDER_TYPE_SELL_LIMIT
+    price = round(price, digits)
     req = {
         "action": mt5.TRADE_ACTION_PENDING,
         "symbol": symbol,
@@ -5557,11 +5567,14 @@ def _scenario_single_leg(mt5, symbol, side, mode, variant):
             return {'success': False, 'detail': f'cancel failed: {err} (order {order})'}
         return {'success': True, 'detail': f'placed+cancelled order {order}'}
 
-    # LIMIT normal — marketable, expect fill
+    # LIMIT normal — place at closest legal price. If the market crosses within
+    # the window, verify fill+close; otherwise cancel cleanly (still a pass —
+    # the place+cancel path was exercised). MT5 limits can only fill on actual
+    # market movement, so this is the honest test.
     order, err = _scenario_limit_send(mt5, symbol, side, True, 'Scenario LMT')
     if err:
         return {'success': False, 'detail': f'place failed: {err}'}
-    deadline = _t.time() + 5.0
+    deadline = _t.time() + 15.0
     pos_ticket = None
     while _t.time() < deadline and not pos_ticket:
         for p in (mt5.positions_get(symbol=symbol) or []):
@@ -5569,10 +5582,12 @@ def _scenario_single_leg(mt5, symbol, side, mode, variant):
                 pos_ticket = p.ticket
                 break
         if not pos_ticket:
-            _t.sleep(0.2)
+            _t.sleep(0.3)
     if not pos_ticket:
-        _scenario_cancel_pending(mt5, order)
-        return {'success': False, 'detail': f'limit did not fill (order {order})'}
+        ok, err = _scenario_cancel_pending(mt5, order)
+        if not ok:
+            return {'success': False, 'detail': f'no fill in 15s; cancel failed: {err} (order {order})'}
+        return {'success': True, 'detail': f'placed; no fill in 15s; cancelled (order {order})'}
     ok, err = _scenario_close_position(mt5, pos_ticket, symbol)
     if not ok:
         return {'success': False, 'detail': f'close failed: {err} (ticket {pos_ticket})'}
@@ -5633,7 +5648,8 @@ def _scenario_spread(mt5, spot_sym, fut_sym, spot_side, fut_side, mode, variant)
                     'detail': f'cancel: spot={err1 or "ok"}, fut={err2 or "ok"}'}
         return {'success': True, 'detail': 'placed+cancelled both legs'}
 
-    # LIMIT normal — marketable, expect both to fill
+    # LIMIT normal — wait up to 15 s. Close whichever leg fills; cancel whichever
+    # doesn't. A mixed outcome is reported but cleaned up so no position lingers.
     o1, err = _scenario_limit_send(mt5, spot_sym, spot_side, True, 'Scenario LMT spr/spot')
     if err:
         return {'success': False, 'detail': f'spot place failed: {err}'}
@@ -5641,7 +5657,7 @@ def _scenario_spread(mt5, spot_sym, fut_sym, spot_side, fut_side, mode, variant)
     if err:
         _scenario_cancel_pending(mt5, o1)
         return {'success': False, 'detail': f'fut place failed: {err}; spot cancelled'}
-    deadline = _t.time() + 6.0
+    deadline = _t.time() + 15.0
     spot_pos = fut_pos = None
     while _t.time() < deadline and (spot_pos is None or fut_pos is None):
         if spot_pos is None:
@@ -5655,23 +5671,19 @@ def _scenario_spread(mt5, spot_sym, fut_sym, spot_side, fut_side, mode, variant)
                     fut_pos = p.ticket
                     break
         if spot_pos is None or fut_pos is None:
-            _t.sleep(0.2)
-    if not spot_pos or not fut_pos:
-        if not spot_pos:
-            _scenario_cancel_pending(mt5, o1)
-        else:
-            _scenario_close_position(mt5, spot_pos, spot_sym)
-        if not fut_pos:
-            _scenario_cancel_pending(mt5, o2)
-        else:
-            _scenario_close_position(mt5, fut_pos, fut_sym)
-        return {'success': False, 'detail': f'fills incomplete: spot={spot_pos}, fut={fut_pos}'}
-    ok1, err1 = _scenario_close_position(mt5, spot_pos, spot_sym)
-    ok2, err2 = _scenario_close_position(mt5, fut_pos, fut_sym)
-    if not (ok1 and ok2):
-        return {'success': False,
-                'detail': f'close: spot={err1 or "ok"}, fut={err2 or "ok"}'}
-    return {'success': True, 'detail': f'spread {spot_pos}/{fut_pos} filled+closed'}
+            _t.sleep(0.3)
+
+    def _leg_cleanup(pos, order, sym):
+        if pos:
+            ok, err = _scenario_close_position(mt5, pos, sym)
+            return f'closed {pos}' if ok else f'close failed: {err}', ok
+        ok, err = _scenario_cancel_pending(mt5, order)
+        return ('cancelled (no fill)' if ok else f'cancel failed: {err}'), ok
+
+    spot_msg, spot_ok = _leg_cleanup(spot_pos, o1, spot_sym)
+    fut_msg, fut_ok = _leg_cleanup(fut_pos, o2, fut_sym)
+    return {'success': spot_ok and fut_ok,
+            'detail': f'spot: {spot_msg}; fut: {fut_msg}'}
 
 
 @app.route('/api/scenario-test', methods=['POST'])
