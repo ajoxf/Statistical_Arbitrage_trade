@@ -1348,7 +1348,7 @@ def not_found_error(error):
     """Return JSON for API routes, HTML for others"""
     if request.path.startswith('/api/'):
         return jsonify({'success': False, 'error': 'Endpoint not found'}), 404
-    return render_template('404.html') if app.debug else ('Not Found', 404)
+    return ('Not Found', 404)
 
 
 @app.errorhandler(500)
@@ -1356,7 +1356,7 @@ def internal_error(error):
     """Return JSON for API routes, HTML for others"""
     if request.path.startswith('/api/'):
         return jsonify({'success': False, 'error': 'Internal server error'}), 500
-    return render_template('500.html') if app.debug else ('Internal Server Error', 500)
+    return ('Internal Server Error', 500)
 
 
 @app.errorhandler(Exception)
