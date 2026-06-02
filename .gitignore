@@ -50,3 +50,5 @@ Thumbs.db
 
 # Trading specific
 active_brokers.json
+.encryption_key
+.encryption_salt
