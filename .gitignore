@@ -1,0 +1,18 @@
+# Secrets — never commit credentials
+.env
+
+# Runtime artifacts
+*.db
+*.log
+algo_trading.db
+algo_trading_system.log
+
+# Local config with real account details (commit config.example.json instead)
+config.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

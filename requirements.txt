@@ -1,0 +1,9 @@
+# Runtime (MetaTrader5 is Windows-only; install on the trading machine)
+MetaTrader5
+pandas
+numpy
+pytz
+python-dotenv
+
+# Development / testing (run anywhere, MT5 not required — tests use a fake broker)
+pytest

@@ -1,0 +1,63 @@
+{
+  "accounts": {
+    "account_a": {
+      "terminal_path": "C:\\Program Files\\Broker A MT5\\terminal64.exe",
+      "login": 12345678,
+      "password_env": "MT5_PASSWORD_A",
+      "server": "BrokerA-Live"
+    },
+    "account_b": {
+      "terminal_path": "C:\\Program Files\\Broker B MT5\\terminal64.exe",
+      "login": 87654321,
+      "password_env": "MT5_PASSWORD_B",
+      "server": "BrokerB-Live"
+    }
+  },
+  "leg_accounts": {
+    "spot": "account_a",
+    "futures": "account_b"
+  },
+  "signal_thresholds": {
+    "PREMIUM_ENTRY": 20.0,
+    "PREMIUM_EXIT": 5.0,
+    "DISCOUNT_ENTRY": -15.0,
+    "DISCOUNT_EXIT": -5.0
+  },
+  "risk_limits": {
+    "MAX_POSITIONS_PER_ASSET": 3,
+    "MAX_LOT_SIZE": 1.0,
+    "MAX_DAILY_TRADES": 20,
+    "STOP_LOSS_PCT": 5.0,
+    "MAX_EXPOSURE_USD": 100000
+  },
+  "execution": {
+    "SLIPPAGE_TOLERANCE": 1.0,
+    "ORDER_TIMEOUT": 30,
+    "MIN_TIME_BETWEEN_SIGNALS": 180,
+    "RETRY_ATTEMPTS": 3
+  },
+  "assets": {
+    "GOLD": {
+      "name": "GOLD",
+      "spot_symbols": ["XAUUSD_", "XAUUSD", "GOLD"],
+      "futures_symbols": ["GC1225", "XAUUSD.f", "GCZ4"],
+      "futures_expiry": "2026-11-25",
+      "risk_free_rate": 0.0425,
+      "multiplier": 1.0,
+      "lot_size": 100,
+      "swap_charge": 45.0,
+      "enabled": true
+    },
+    "SILVER": {
+      "name": "SILVER",
+      "spot_symbols": ["XAGUSD_", "XAGUSD", "SILVER"],
+      "futures_symbols": ["SI1225", "XAGUSD.f", "SIU4"],
+      "futures_expiry": "2026-11-25",
+      "risk_free_rate": 0.0425,
+      "multiplier": 1.0,
+      "lot_size": 5000,
+      "swap_charge": 30.0,
+      "enabled": true
+    }
+  }
+}
