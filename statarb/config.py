@@ -22,12 +22,17 @@ class AccountConfig:
     """One MT5 account/terminal."""
 
     def __init__(self, name, terminal_path=None, login=None,
-                 password_env="", server=None):
+                 password_env="", server=None, endpoint=None):
         self.name = name
         self.terminal_path = terminal_path
         self.login = int(login) if login else None
         self.password_env = password_env
         self.server = server
+        # host:port where this account's leg runner listens. Accounts
+        # with an endpoint are driven by a separate process (required
+        # for two simultaneous MT5 connections); without one, the
+        # coordinator connects to the terminal in-process.
+        self.endpoint = endpoint
 
     @property
     def password(self) -> Optional[str]:
@@ -83,6 +88,13 @@ class AlgoTradingConfig:
             'MIN_TIME_BETWEEN_SIGNALS': 180,
             'RETRY_ATTEMPTS': 3,
         }
+        self.TRADING = {
+            'CLIP_LOTS': 1.0,          # lots per entry (per leg)
+            'SLICE_LOTS': 0.0,         # child-order size; 0 = no slicing
+            'DAILY_LOT_TARGET': 0.0,   # throughput target/day (NOT a cap)
+            'HEDGE_RATIO': 1.0,        # futures lots per spot lot
+            'POLL_INTERVAL_SEC': 0.5,
+        }
         self.ASSETS = copy.deepcopy(DEFAULT_ASSETS)
         # Attaches to whatever terminal is already running when no
         # path/login is configured (legacy single-account behavior).
@@ -100,7 +112,8 @@ class AlgoTradingConfig:
 
         for key, attr in [('signal_thresholds', 'SIGNAL_THRESHOLDS'),
                           ('risk_limits', 'RISK_LIMITS'),
-                          ('execution', 'EXECUTION')]:
+                          ('execution', 'EXECUTION'),
+                          ('trading', 'TRADING')]:
             if key in raw:
                 getattr(cfg, attr).update(raw[key])
 

@@ -35,7 +35,7 @@ def test_daily_trade_limit(config, data_logger):
     rm = RiskManager(config)
     pm = PositionManager(data_logger)
     for _ in range(config.RISK_LIMITS['MAX_DAILY_TRADES']):
-        rm.daily_trades.append(datetime.now())
+        rm.daily_trades.append((datetime.now(), 'GOLD', 1.0))
     ok, reason = rm.validate_new_position('GOLD', SignalType.SELL_BASIS,
                                           1.0, pm)
     assert not ok and "Daily trade limit" in reason
@@ -58,3 +58,23 @@ def test_stop_loss_buy_basis_on_deepening_discount(config):
     assert hit and action == "STOP_LOSS"
     hit, _ = rm.check_position_risk(pos, -22.0)
     assert not hit
+
+
+def test_lot_target_tracks_but_never_rejects(config, data_logger):
+    """DAILY_LOT_TARGET is a throughput target, NOT a cap."""
+    config.TRADING['DAILY_LOT_TARGET'] = 500.0
+    config.TRADING['CLIP_LOTS'] = 50.0
+    config.RISK_LIMITS['MAX_LOT_SIZE'] = 50.0
+    config.EXECUTION['MIN_TIME_BETWEEN_SIGNALS'] = 0
+
+    rm = RiskManager(config)
+    pm = PositionManager(data_logger)
+
+    for _ in range(12):  # 600 lots — beyond the 500 target
+        ok, reason = rm.validate_new_position('GOLD', SignalType.SELL_BASIS,
+                                              50.0, pm)
+        assert ok, f"target must not reject: {reason}"
+        rm.record_trade('GOLD', lots=50.0)
+
+    assert rm.lots_traded_today('GOLD') == 600.0
+    assert rm.lots_traded_today('SILVER') == 0.0

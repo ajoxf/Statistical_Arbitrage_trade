@@ -25,12 +25,13 @@ class OrderResult:
     """Outcome of a market order, decoupled from mt5 result objects."""
 
     def __init__(self, success, requested_price=None, executed_price=None,
-                 ticket=None, error=None):
+                 ticket=None, error=None, volume=0.0):
         self.success = success
         self.requested_price = requested_price
         self.executed_price = executed_price
         self.ticket = ticket
         self.error = error
+        self.volume = volume  # filled volume (IOC may partially fill)
 
 
 class BrokerSession:
@@ -130,7 +131,9 @@ class BrokerSession:
                     error=f"Order failed: {result.retcode} - {result.comment}")
 
             return OrderResult(True, requested_price=price,
-                               executed_price=result.price, ticket=result.order)
+                               executed_price=result.price,
+                               ticket=result.order,
+                               volume=getattr(result, 'volume', volume))
 
         except Exception as e:
             logging.error("Order exception on %s: %s", symbol, e)

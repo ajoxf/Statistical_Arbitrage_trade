@@ -9,8 +9,19 @@ from .models import SignalType
 class RiskManager:
     def __init__(self, config):
         self.config = config
-        self.daily_trades = deque(maxlen=1000)
+        self.daily_trades = deque(maxlen=1000)   # (timestamp, asset, lots)
         self.last_signal_time = {}
+
+    def lots_traded_today(self, asset):
+        """Entry lots done today — progress toward DAILY_LOT_TARGET.
+
+        The target is throughput to aim for, NOT a cap: nothing is
+        rejected for exceeding it. Hard limits are MAX_DAILY_TRADES,
+        MAX_LOT_SIZE and MAX_POSITIONS_PER_ASSET.
+        """
+        today = datetime.now().date()
+        return sum(lots for ts, a, lots in self.daily_trades
+                   if a == asset and ts.date() == today)
 
     def validate_new_position(self, asset, signal_type, lot_size,
                               position_manager):
@@ -23,7 +34,7 @@ class RiskManager:
                            f"{self.config.RISK_LIMITS['MAX_LOT_SIZE']}")
 
         today = datetime.now().date()
-        today_trades = [t for t in self.daily_trades if t.date() == today]
+        today_trades = [t for t in self.daily_trades if t[0].date() == today]
         if len(today_trades) >= self.config.RISK_LIMITS['MAX_DAILY_TRADES']:
             return False, "Daily trade limit reached"
 
@@ -34,8 +45,8 @@ class RiskManager:
 
         return True, "OK"
 
-    def record_trade(self, asset):
-        self.daily_trades.append(datetime.now())
+    def record_trade(self, asset, lots=0.0):
+        self.daily_trades.append((datetime.now(), asset, lots))
         self.last_signal_time[asset] = datetime.now()
 
     def check_position_risk(self, position, current_premium):

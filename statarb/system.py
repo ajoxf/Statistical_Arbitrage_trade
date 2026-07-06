@@ -1,7 +1,6 @@
 """Main trading system: wiring, market data, signal processing, loop."""
 
 import logging
-import math
 import sys
 import time
 from datetime import datetime, time as dt_time
@@ -11,6 +10,7 @@ import pytz
 from .broker import BrokerSession
 from .database import DataLogger
 from .execution import OrderManager
+from .marketdata import calculate_swap_basis, compute_market_data
 from .models import SignalType, TradingSession
 from .performance import PerformanceTracker
 from .positions import PositionManager
@@ -128,82 +128,20 @@ class AlgorithmicTradingSystem:
     # ------------------------------------------------------------------
 
     def calculate_swap_basis(self, asset_key, spot_price, time_to_expiry):
-        config = self.config.ASSETS[asset_key]
-        position_value = spot_price * config['lot_size']
-        daily_swap_rate = config['swap_charge'] / position_value
-        annual_swap_rate = daily_swap_rate * 365
-
-        swap_futures_price = spot_price * math.exp(
-            annual_swap_rate * time_to_expiry)
-        swap_basis = swap_futures_price - spot_price
-        return swap_futures_price, swap_basis, annual_swap_rate
+        return calculate_swap_basis(self.config.ASSETS[asset_key],
+                                    spot_price, time_to_expiry)
 
     def get_market_data(self, asset_key):
         if asset_key not in self.active_assets:
             return None
         try:
             asset = self.active_assets[asset_key]
-            config = asset['config']
-
             spot_tick = self.broker.symbol_tick(asset['spot_symbol'])
             futures_tick = self.broker.symbol_tick(asset['futures_symbol'])
             if not spot_tick or not futures_tick:
                 return None
-
-            multiplier = config.get('multiplier', 1.0)
-
-            spot_price = (spot_tick.last if spot_tick.last > 0
-                          else (spot_tick.bid + spot_tick.ask) / 2)
-            futures_price = (futures_tick.last if futures_tick.last > 0
-                             else (futures_tick.bid + futures_tick.ask) / 2
-                             ) * multiplier
-
-            spot_spread = (spot_tick.ask - spot_tick.bid) * 100
-            futures_spread = (futures_tick.ask - futures_tick.bid) * 100
-
-            actual_basis = futures_price - spot_price
-
-            time_to_expiry = (
-                config['futures_expiry'] - datetime.now()
-            ).total_seconds() / (365.25 * 24 * 3600)
-            days_to_expiry = time_to_expiry * 365.25
-
-            if time_to_expiry > 0:
-                swap_futures_price, swap_basis, annual_swap_rate = \
-                    self.calculate_swap_basis(asset_key, spot_price,
-                                              time_to_expiry)
-                if abs(swap_basis) > 0.001:
-                    swap_premium_pct = ((actual_basis - swap_basis)
-                                        / abs(swap_basis)) * 100
-                else:
-                    swap_premium_pct = (actual_basis / spot_price) * 100
-                swap_diff = actual_basis - swap_basis
-            else:
-                swap_futures_price = futures_price
-                swap_basis = swap_premium_pct = swap_diff = 0
-                annual_swap_rate = days_to_expiry = 0
-
-            return {
-                'asset_name': config['name'],
-                'timestamp': datetime.now(),
-                'spot_price': spot_price,
-                'futures_price': futures_price,
-                'swap_futures_price': swap_futures_price,
-                'spot_bid': spot_tick.bid,
-                'spot_ask': spot_tick.ask,
-                'futures_bid': futures_tick.bid * multiplier,
-                'futures_ask': futures_tick.ask * multiplier,
-                'spot_spread': spot_spread,
-                'futures_spread': futures_spread,
-                'spread_unit': '¢',
-                'actual_basis': actual_basis,
-                'swap_basis': swap_basis,
-                'swap_premium_pct': swap_premium_pct,
-                'swap_diff': swap_diff,
-                'annual_swap_rate': annual_swap_rate,
-                'time_to_expiry': time_to_expiry,
-                'days_to_expiry': days_to_expiry,
-            }
+            return compute_market_data(asset['config'], spot_tick,
+                                       futures_tick)
         except Exception as e:
             logging.error("Error getting market data for %s: %s", asset_key, e)
             return None

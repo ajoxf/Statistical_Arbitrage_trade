@@ -4,18 +4,27 @@
       "terminal_path": "C:\\Program Files\\Broker A MT5\\terminal64.exe",
       "login": 12345678,
       "password_env": "MT5_PASSWORD_A",
-      "server": "BrokerA-Live"
+      "server": "BrokerA-Live",
+      "endpoint": "127.0.0.1:9101"
     },
     "account_b": {
       "terminal_path": "C:\\Program Files\\Broker B MT5\\terminal64.exe",
       "login": 87654321,
       "password_env": "MT5_PASSWORD_B",
-      "server": "BrokerB-Live"
+      "server": "BrokerB-Live",
+      "endpoint": "127.0.0.1:9102"
     }
   },
   "leg_accounts": {
     "spot": "account_a",
     "futures": "account_b"
+  },
+  "trading": {
+    "CLIP_LOTS": 50.0,
+    "SLICE_LOTS": 10.0,
+    "DAILY_LOT_TARGET": 500.0,
+    "HEDGE_RATIO": 1.0,
+    "POLL_INTERVAL_SEC": 0.5
   },
   "signal_thresholds": {
     "PREMIUM_ENTRY": 20.0,
@@ -25,10 +34,10 @@
   },
   "risk_limits": {
     "MAX_POSITIONS_PER_ASSET": 3,
-    "MAX_LOT_SIZE": 1.0,
+    "MAX_LOT_SIZE": 50.0,
     "MAX_DAILY_TRADES": 20,
     "STOP_LOSS_PCT": 5.0,
-    "MAX_EXPOSURE_USD": 100000
+    "MAX_EXPOSURE_USD": 200000000
   },
   "execution": {
     "SLIPPAGE_TOLERANCE": 1.0,
