@@ -17,6 +17,12 @@ class FakeBroker:
 
     def __init__(self, fail_symbols=None, price=100.0):
         self.orders = []          # (symbol, side_value, volume)
+        self.pending = []         # (symbol, side_value, volume, price)
+        self.modifies = []        # (ticket, new_price)
+        self.closed_tickets = []  # (symbol, ticket, volume)
+        self.fill_states = {}     # ticket -> state
+        self.pending_fill_after = {}   # symbol -> polls until fill
+        self.live_positions = []       # for positions_by_magic
         self.fail_symbols = set(fail_symbols or [])
         self.price = price
         self.next_ticket = 1000
@@ -28,9 +34,74 @@ class FakeBroker:
             return OrderResult(False, error="forced failure")
         self.orders.append((symbol, side.value, volume))
         self.next_ticket += 1
+        self.fill_states[self.next_ticket] = {
+            'filled': volume, 'price': self.price,
+            'position_tickets': [self.next_ticket], 'open': False}
         return OrderResult(True, requested_price=self.price,
                            executed_price=self.price,
                            ticket=self.next_ticket, volume=volume)
+
+    # --- pending-order simulation (limit path) ---
+
+    def place_pending_limit(self, symbol, side, volume, price, comment=""):
+        if symbol in self.fail_symbols:
+            return {'ok': False, 'ticket': None, 'error': 'forced failure'}
+        self.next_ticket += 1
+        # pending_fill_after: how many order_fill_state polls until the
+        # resting order fills (default: fills on first poll)
+        polls = self.pending_fill_after.get(symbol, 1)
+        self.fill_states[self.next_ticket] = {
+            'filled': 0.0, 'price': None, 'position_tickets': [],
+            'open': True, 'volume': volume, 'limit_price': price,
+            'polls_left': polls}
+        self.pending.append((symbol, side.value, volume, price))
+        return {'ok': True, 'ticket': self.next_ticket, 'error': None}
+
+    def modify_pending(self, ticket, price):
+        state = self.fill_states.get(ticket)
+        if not state or not state['open']:
+            return {'ok': False, 'error': 'order not open'}
+        state['limit_price'] = price
+        self.modifies.append((ticket, price))
+        return {'ok': True, 'error': None}
+
+    def cancel_pending(self, ticket):
+        state = self.order_fill_state(ticket)
+        live = self.fill_states.get(ticket)
+        if live:
+            live['open'] = False
+        state['cancelled'] = True
+        return state
+
+    def order_fill_state(self, ticket):
+        state = self.fill_states.get(ticket)
+        if state is None:
+            return {'ok': False, 'filled_volume': 0.0, 'price': None,
+                    'position_tickets': [], 'still_open': False,
+                    'error': 'unknown ticket'}
+        if state['open'] and state.get('polls_left') is not None:
+            state['polls_left'] -= 1
+            if state['polls_left'] <= 0:
+                state['filled'] = state['volume']
+                state['price'] = state['limit_price']
+                state['position_tickets'] = [ticket]
+                state['open'] = False
+        return {'ok': True, 'filled_volume': state['filled'],
+                'price': state['price'],
+                'position_tickets': list(state['position_tickets']),
+                'still_open': state['open'], 'error': None}
+
+    def close_position_ticket(self, symbol, ticket, volume, entry_side,
+                              slippage_points=1.0, comment=""):
+        if symbol in self.fail_symbols:
+            return OrderResult(False, error="forced failure")
+        self.closed_tickets.append((symbol, ticket, volume))
+        return OrderResult(True, executed_price=self.price,
+                           ticket=ticket, volume=volume)
+
+    def positions_by_magic(self, symbol=None):
+        return [p for p in self.live_positions
+                if symbol is None or p['symbol'] == symbol]
 
     # --- methods used by LocalLeg / LegServer ---
 

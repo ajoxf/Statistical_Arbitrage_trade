@@ -81,12 +81,67 @@ class AlgoTradingConfig:
             'MAX_DAILY_TRADES': 20,
             'STOP_LOSS_PCT': 5.0,
             'MAX_EXPOSURE_USD': 100000,
+            # Circuit breakers
+            'DAILY_MAX_LOSS_USD': 0.0,   # 0 = off
+            'LOSS_STREAK_REDUCE': 3,     # cut size after N straight losses
+            'STREAK_SIZE_CUT': 0.2,      # -20% clip size
+            'LOSS_STREAK_PAUSE': 6,      # halt entries after N straight
         }
         self.EXECUTION = {
             'SLIPPAGE_TOLERANCE': 1.0,
             'ORDER_TIMEOUT': 30,
             'MIN_TIME_BETWEEN_SIGNALS': 180,
             'RETRY_ATTEMPTS': 3,
+            # Limit-first execution (saves the spread when it fills):
+            # rest at the peg -> re-peg via order-modify -> on timeout
+            # cancel, verify fills, cross the remainder at market.
+            'ENTRY_STYLE': 'market',        # 'limit' or 'market'
+            'PEG_OFFSET_POINTS': 0.0,       # improve peg by N points
+            'REPEG_INTERVAL_SEC': 2.0,      # re-peg cadence while resting
+            'LIMIT_TIMEOUT_SEC': 15.0,      # patience: first (spot) leg
+            'HEDGE_TIMEOUT_SEC': 4.0,       # patience: hedge leg (short —
+                                            # unhedged time is real risk)
+            'EXIT_TIMEOUT_SEC': 15.0,       # patience: non-urgent closes
+            'ON_TIMEOUT': 'cross',          # 'cross' (market) or 'abort'
+            'ORDER_POLL_SEC': 0.5,
+            # Keep a partially-hedged position only if the matched size
+            # is at least this fraction of the intended clip.
+            'MIN_MATCHED_FRACTION': 0.4,
+        }
+        self.SIGNALS = {
+            'USE_Z_SIGNALS': True,     # z-score on swap_diff (fixed
+                                       # premium thresholds when False)
+            'ENTRY_Z': 3.0,
+            'EXIT_Z': 0.5,
+            'STOP_Z': 4.5,             # entry ceiling AND stop backstop
+            'LOOKBACK_SEC': 7200,
+            'STATS_INTERVAL_SEC': 300, # freeze mu/sigma between refreshes
+            'MIN_SAMPLES': 300,        # warm-up before any signal
+            'TREND_FILTER': True,      # rising S -> SHORT-only, etc.
+            'TREND_WINDOW_SEC': 900,
+            'ENTRY_COOLDOWN_SEC': 60,
+            'STOP_COOLDOWN_SEC': 300,
+        }
+        self.COSTS = {
+            'COMMISSION_PER_LOT_SPOT': 0.0,   # round-turn, per lot
+            'COMMISSION_PER_LOT_FUT': 0.0,    # round-turn, per lot
+            'SPREAD_COST_FACTOR': 1.0,        # <1 once limit fills prove out
+            'MIN_EDGE_MULTIPLE': 1.5,         # capture must be >= this x cost
+            'TARGET_FRACTION': 0.5,           # fraction of |z|*sigma targeted
+        }
+        self.RECONCILE = {
+            'SYNC_INTERVAL_SEC': 20,
+            'STRIKES': 3,            # consecutive mismatches before acting
+        }
+        self.EXITS = {
+            'USE_SIGMA_TARGET': True,   # TP = TARGET_FRACTION*|z|*sigma*oz
+            'TP_USD_PER_LOT': 0.0,      # fallback TP when sigma target off
+            'COST_FLOOR_MULT': 1.2,     # TP never below this x round-trip cost
+            'STOP_USD_PER_LOT': 30.0,   # catastrophe stop (~30c/oz on gold)
+            'RR': 0.3,                  # stop also capped at TP/RR
+            'GATE_FLOOR_USD': 0.0,      # reversion exit needs net >= this
+            'MAX_HOLD_HALF_LIVES': 4.0,
+            'MAX_HOLD_FALLBACK_MIN': 240,
         }
         self.TRADING = {
             'CLIP_LOTS': 1.0,          # lots per entry (per leg)
@@ -113,7 +168,11 @@ class AlgoTradingConfig:
         for key, attr in [('signal_thresholds', 'SIGNAL_THRESHOLDS'),
                           ('risk_limits', 'RISK_LIMITS'),
                           ('execution', 'EXECUTION'),
-                          ('trading', 'TRADING')]:
+                          ('trading', 'TRADING'),
+                          ('signals', 'SIGNALS'),
+                          ('costs', 'COSTS'),
+                          ('exits', 'EXITS'),
+                          ('reconcile', 'RECONCILE')]:
             if key in raw:
                 getattr(cfg, attr).update(raw[key])
 

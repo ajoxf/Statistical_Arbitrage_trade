@@ -62,13 +62,47 @@ class LocalLeg:
         result = self.broker.send_market_order(
             symbol, OrderSide(side), volume,
             slippage_points=slippage_points, comment=comment)
+        position_tickets = []
+        if result.success and result.ticket:
+            # Resolve which position(s) the fill created (hedging mode)
+            state = self.broker.order_fill_state(result.ticket)
+            position_tickets = state.get('position_tickets') or [result.ticket]
         return {
             'ok': result.success,
             'filled_volume': result.volume if result.success else 0.0,
             'price': result.executed_price,
             'ticket': result.ticket,
+            'position_tickets': position_tickets,
             'error': result.error,
         }
+
+    def place_limit(self, symbol, side, volume, price, comment=""):
+        return self.broker.place_pending_limit(
+            symbol, OrderSide(side), volume, price, comment=comment)
+
+    def modify_order(self, ticket, price):
+        return self.broker.modify_pending(ticket, price)
+
+    def cancel_order(self, ticket):
+        return self.broker.cancel_pending(ticket)
+
+    def order_state(self, ticket):
+        return self.broker.order_fill_state(ticket)
+
+    def close_ticket(self, symbol, ticket, volume, entry_side,
+                     slippage_points=1.0, comment=""):
+        result = self.broker.close_position_ticket(
+            symbol, ticket, volume, OrderSide(entry_side),
+            slippage_points=slippage_points, comment=comment)
+        return {
+            'ok': result.success,
+            'filled_volume': result.volume if result.success else 0.0,
+            'price': result.executed_price,
+            'error': result.error,
+        }
+
+    def positions(self, symbol=None):
+        return self.broker.positions_by_magic(symbol)
 
 
 class RemoteLeg:
@@ -139,5 +173,46 @@ class RemoteLeg:
         })
         if not reply:
             return {'ok': False, 'filled_volume': 0.0, 'price': None,
-                    'ticket': None, 'error': 'IPC failure during order'}
+                    'ticket': None, 'position_tickets': [],
+                    'error': 'IPC failure during order'}
         return reply
+
+    def place_limit(self, symbol, side, volume, price, comment=""):
+        reply = self._request({
+            'cmd': 'place_limit', 'symbol': symbol, 'side': side,
+            'volume': volume, 'price': price, 'comment': comment,
+        })
+        return reply or {'ok': False, 'ticket': None, 'error': 'IPC failure'}
+
+    def modify_order(self, ticket, price):
+        reply = self._request({'cmd': 'modify_order', 'ticket': ticket,
+                               'price': price})
+        return reply or {'ok': False, 'error': 'IPC failure'}
+
+    def cancel_order(self, ticket):
+        reply = self._request({'cmd': 'cancel_order', 'ticket': ticket})
+        return reply or {'ok': False, 'cancelled': False, 'filled_volume': 0.0,
+                         'price': None, 'position_tickets': [],
+                         'still_open': True, 'error': 'IPC failure'}
+
+    def order_state(self, ticket):
+        reply = self._request({'cmd': 'order_state', 'ticket': ticket})
+        return reply or {'ok': False, 'filled_volume': 0.0, 'price': None,
+                         'position_tickets': [], 'still_open': True,
+                         'error': 'IPC failure'}
+
+    def close_ticket(self, symbol, ticket, volume, entry_side,
+                     slippage_points=1.0, comment=""):
+        reply = self._request({
+            'cmd': 'close_ticket', 'symbol': symbol, 'ticket': ticket,
+            'volume': volume, 'entry_side': entry_side,
+            'slippage_points': slippage_points, 'comment': comment,
+        })
+        return reply or {'ok': False, 'filled_volume': 0.0, 'price': None,
+                         'error': 'IPC failure during close'}
+
+    def positions(self, symbol=None):
+        reply = self._request({'cmd': 'positions', 'symbol': symbol})
+        if reply and reply.get('ok'):
+            return reply['positions']
+        return None    # None = unknown (IPC failure), NOT "flat"

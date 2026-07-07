@@ -80,7 +80,7 @@ class OrderManager:
             logging.info("Trade pair executed: %s %s", asset, signal_type.value)
         return success, spot_trade, futures_trade
 
-    def execute_close_pair(self, position):
+    def execute_close_pair(self, position, reason=None):
         """Close a basis position by reversing both entry legs."""
         close_spot = Trade(position.spot_trade.symbol,
                            position.spot_trade.side.opposite,

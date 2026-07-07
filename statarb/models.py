@@ -51,6 +51,9 @@ class Trade:
         self.requested_price = price
         self.executed_price = None
         self.order_ticket = None
+        # MT5 position tickets created by the fills. Hedging-mode
+        # accounts REQUIRE closes to target these tickets.
+        self.position_tickets = []
         self.status = "PENDING"
         self.timestamp = datetime.now()
         self.execution_time = None
@@ -74,3 +77,55 @@ class Position:
         self.realized_pnl = 0.0
         self.close_time = None
         self.close_reason = None
+        self.exit_plan = None      # frozen dollar levels (exits.py)
+
+    # -- crash-safe persistence -----------------------------------------
+
+    @staticmethod
+    def _trade_to_dict(trade):
+        return {
+            'trade_id': trade.trade_id, 'symbol': trade.symbol,
+            'side': trade.side.value, 'lot_size': trade.lot_size,
+            'executed_price': trade.executed_price,
+            'order_ticket': trade.order_ticket,
+            'position_tickets': list(trade.position_tickets),
+            'status': trade.status,
+        }
+
+    @staticmethod
+    def _trade_from_dict(d):
+        trade = Trade(d['symbol'], OrderSide(d['side']), d['lot_size'])
+        trade.trade_id = d['trade_id']
+        trade.executed_price = d['executed_price']
+        trade.order_ticket = d['order_ticket']
+        trade.position_tickets = list(d.get('position_tickets') or [])
+        trade.status = d['status']
+        return trade
+
+    def to_dict(self):
+        return {
+            'position_id': self.position_id,
+            'asset': self.asset,
+            'signal_type': self.signal_type.value,
+            'entry_time': self.entry_time.isoformat(),
+            'entry_premium': self.entry_premium,
+            'status': self.status.value,
+            'unrealized_pnl': self.unrealized_pnl,
+            'exit_plan': self.exit_plan,
+            'spot_trade': self._trade_to_dict(self.spot_trade),
+            'futures_trade': self._trade_to_dict(self.futures_trade),
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        position = cls(d['position_id'], d['asset'],
+                       SignalType(d['signal_type']),
+                       cls._trade_from_dict(d['spot_trade']),
+                       cls._trade_from_dict(d['futures_trade']))
+        position.entry_time = datetime.fromisoformat(d['entry_time'])
+        position.entry_premium = d['entry_premium']
+        position.current_premium = d['entry_premium']
+        position.status = PositionStatus(d['status'])
+        position.unrealized_pnl = d.get('unrealized_pnl', 0.0)
+        position.exit_plan = d.get('exit_plan')
+        return position

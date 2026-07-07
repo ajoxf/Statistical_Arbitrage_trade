@@ -1,38 +1,48 @@
 """Cross-account pair execution for large clips.
 
-Executes each basis trade as: spot clip on the spot leg's account,
-then a futures hedge on the futures leg's account sized to what the
-spot actually FILLED (IOC orders can partially fill at 50-lot size).
+Execution ladder per child order (limit-first — a limit fill saves
+paying the spread, worth ~hundreds of dollars per 10-lot child):
+1. Rest a limit at the peg (buy at bid / sell at ask, RETURN filling
+   so partials keep working).
+2. Re-peg via order-MODIFY when the market drifts — one round trip,
+   no cancel/replace window.
+3. On timeout: cancel and ALWAYS re-read fills (a "cancelled" order
+   can carry partials), then cross the remainder at market
+   (ON_TIMEOUT='cross') or give up on the remainder ('abort').
+Stops and unwinds never rest — straight to market.
 
-Policies:
-- Clips are sliced into child orders (TRADING.SLICE_LOTS) so a single
-  IOC sweep doesn't punch through the book.
-- If a slice partially fills, slicing stops — don't chase liquidity.
-- If the futures hedge fills nothing, the spot fill is fully unwound.
-- If the hedge partially fills, the unmatched spot excess is unwound
-  and the position is kept at the matched size.
-- Any unwind failure logs CRITICAL — that is unhedged exposure and
-  needs manual intervention.
+Hedge policy (unchanged from the market-only version):
+- futures hedge is sized to the actual spot FILL;
+- hedge fills nothing -> unwind all spot;
+- hedge partial -> unwind unmatched spot excess, keep matched size —
+  but only if matched >= MIN_MATCHED_FRACTION of the intended clip
+  (a runt position pays full costs for a fraction of the edge);
+- failed unwind logs CRITICAL (unhedged exposure).
 
-Presents the same interface PositionManager expects
-(execute_trade_pair / execute_close_pair), so position lifecycle code
-is shared with the single-account path.
+Hedging-mode accounts: fills record their MT5 position tickets and
+closes target those tickets (a plain opposite order would OPEN a
+second position instead of closing).
 """
 
 import logging
 import math
+import time as time_mod
 import uuid
 
 from .models import OrderSide, SignalType, Trade
 
 EPS = 1e-9
+URGENT_REASONS = {'STOP_LOSS', 'DOLLAR_STOP', 'Z_STOP', 'SYSTEM_SHUTDOWN'}
 
 
 class PairExecutor:
-    def __init__(self, config, spot_leg, futures_leg):
+    def __init__(self, config, spot_leg, futures_leg,
+                 clock=time_mod.time, sleep=time_mod.sleep):
         self.config = config
         self.spot_leg = spot_leg
         self.futures_leg = futures_leg
+        self.clock = clock
+        self.sleep = sleep
         self._meta_cache = {}
 
     # ------------------------------------------------------------------
@@ -45,7 +55,8 @@ class PairExecutor:
             meta = leg.ensure_symbol(symbol)
             if not meta or not meta.get('ok'):
                 meta = {'ok': False, 'volume_min': 0.01,
-                        'volume_max': 1000.0, 'volume_step': 0.01}
+                        'volume_max': 1000.0, 'volume_step': 0.01,
+                        'point': 0.01}
             self._meta_cache[key] = meta
         return self._meta_cache[key]
 
@@ -56,18 +67,110 @@ class PairExecutor:
         return math.floor(volume / step + EPS) * step
 
     # ------------------------------------------------------------------
+    # Child-order execution (one slice)
+    # ------------------------------------------------------------------
+
+    def _peg_price(self, leg, symbol, side, meta):
+        tick = leg.tick(symbol)
+        if not tick:
+            return None
+        offset = self.config.EXECUTION.get('PEG_OFFSET_POINTS', 0.0) \
+            * meta.get('point', 0.01)
+        if side is OrderSide.BUY:
+            return tick['bid'] + offset       # passive side for a buyer
+        return tick['ask'] - offset           # passive side for a seller
+
+    def _market_child(self, leg, symbol, side, volume, comment):
+        result = leg.order(
+            symbol, side.value, volume,
+            slippage_points=self.config.EXECUTION['SLIPPAGE_TOLERANCE'],
+            comment=comment)
+        return {
+            'filled': float(result.get('filled_volume') or 0.0),
+            'price': result.get('price'),
+            'tickets': list(result.get('position_tickets') or []),
+            'ok': bool(result.get('ok')),
+            'error': result.get('error'),
+        }
+
+    def _limit_child(self, leg, symbol, side, volume, comment, timeout):
+        """Rest at peg, re-peg via modify, escalate on timeout."""
+        execution = self.config.EXECUTION
+        meta = self._meta(leg, symbol)
+        poll = execution.get('ORDER_POLL_SEC', 0.5)
+        repeg_every = execution.get('REPEG_INTERVAL_SEC', 2.0)
+        point = meta.get('point', 0.01)
+
+        price = self._peg_price(leg, symbol, side, meta)
+        if price is None:
+            return self._market_child(leg, symbol, side, volume, comment)
+
+        placed = leg.place_limit(symbol, side.value, volume, price,
+                                 comment=comment)
+        if not placed.get('ok'):
+            logging.warning("[%s] limit rejected (%s) — falling back to "
+                            "market", leg.name, placed.get('error'))
+            return self._market_child(leg, symbol, side, volume, comment)
+
+        ticket = placed['ticket']
+        deadline = self.clock() + timeout
+        last_repeg = self.clock()
+
+        while self.clock() < deadline:
+            self.sleep(poll)
+            state = leg.order_state(ticket)
+            filled = float(state.get('filled_volume') or 0.0)
+
+            if filled >= volume - EPS or not state.get('still_open', True):
+                return {'filled': filled, 'price': state.get('price'),
+                        'tickets': list(state.get('position_tickets') or []),
+                        'ok': filled > EPS, 'error': state.get('error')}
+
+            if self.clock() - last_repeg >= repeg_every:
+                new_price = self._peg_price(leg, symbol, side, meta)
+                if new_price is not None and abs(new_price - price) > point / 2:
+                    modified = leg.modify_order(ticket, new_price)
+                    if modified.get('ok'):
+                        price = new_price
+                    # modify can fail because the order just filled —
+                    # the next order_state poll picks that up
+                last_repeg = self.clock()
+
+        # Timeout: cancel, then trust only the re-read fill state
+        cancelled = leg.cancel_order(ticket)
+        filled = float(cancelled.get('filled_volume') or 0.0)
+        vwap = cancelled.get('price')
+        tickets = list(cancelled.get('position_tickets') or [])
+        remaining = volume - filled
+
+        if remaining > EPS and execution.get('ON_TIMEOUT', 'cross') == 'cross':
+            crossed = self._market_child(leg, symbol, side, remaining, comment)
+            got = crossed['filled']
+            if got > EPS:
+                total = filled + got
+                notional = ((vwap or 0.0) * filled
+                            + (crossed['price'] or 0.0) * got)
+                vwap = notional / total
+                filled = total
+                tickets.extend(crossed['tickets'])
+
+        return {'filled': filled, 'price': vwap, 'tickets': tickets,
+                'ok': filled > EPS,
+                'error': None if filled > EPS else 'no fill before timeout'}
+
+    # ------------------------------------------------------------------
     # Sliced sending
     # ------------------------------------------------------------------
 
-    def _send_sliced(self, leg, symbol, side, total_lots, comment):
-        """Send total_lots as child orders; returns (filled, vwap, tickets)."""
+    def _send_sliced(self, leg, symbol, side, total_lots, comment,
+                     style='market', timeout=None):
         meta = self._meta(leg, symbol)
         step = meta.get('volume_step') or 0.01
         vmax = meta.get('volume_max') or total_lots
 
         slice_lots = self.config.TRADING.get('SLICE_LOTS') or total_lots
         slice_lots = min(slice_lots, vmax)
-        slippage = self.config.EXECUTION['SLIPPAGE_TOLERANCE']
+        timeout = timeout or self.config.EXECUTION.get('LIMIT_TIMEOUT_SEC', 15)
 
         remaining = total_lots
         filled = 0.0
@@ -79,17 +182,20 @@ class PairExecutor:
             if volume <= 0:
                 break
 
-            result = leg.order(symbol, side.value, volume,
-                               slippage_points=slippage, comment=comment)
-            got = float(result.get('filled_volume') or 0.0)
+            if style == 'limit':
+                result = self._limit_child(leg, symbol, side, volume,
+                                           comment, timeout)
+            else:
+                result = self._market_child(leg, symbol, side, volume,
+                                            comment)
 
-            if got > 0:
+            got = result['filled']
+            if got > EPS:
                 filled += got
-                notional += got * float(result.get('price') or 0.0)
-                if result.get('ticket') is not None:
-                    tickets.append(result['ticket'])
+                notional += got * float(result['price'] or 0.0)
+                tickets.extend(result['tickets'])
 
-            if not result.get('ok'):
+            if not result['ok']:
                 logging.warning("[%s] %s %s %.2f lots failed: %s",
                                 leg.name, side.value, symbol, volume,
                                 result.get('error'))
@@ -107,11 +213,11 @@ class PairExecutor:
         return filled, vwap, tickets
 
     def _unwind(self, leg, symbol, entry_side, lots, comment):
-        """Reverse an entry fill; CRITICAL on failure (unhedged exposure)."""
+        """Reverse an entry fill AT MARKET; CRITICAL on failure."""
         if lots <= EPS:
             return True
         filled, _, _ = self._send_sliced(
-            leg, symbol, entry_side.opposite, lots, comment)
+            leg, symbol, entry_side.opposite, lots, comment, style='market')
         if filled < lots - EPS:
             logging.critical(
                 "UNHEDGED EXPOSURE on [%s]: tried to unwind %.2f lots of "
@@ -122,7 +228,7 @@ class PairExecutor:
         return True
 
     # ------------------------------------------------------------------
-    # Pair entry / close (PositionManager-compatible interface)
+    # Pair entry (PositionManager-compatible interface)
     # ------------------------------------------------------------------
 
     def execute_trade_pair(self, asset, signal_type, lot_size,
@@ -134,28 +240,34 @@ class PairExecutor:
         else:
             raise ValueError(f"Invalid signal type for opening: {signal_type}")
 
+        execution = self.config.EXECUTION
+        entry_style = execution.get('ENTRY_STYLE', 'market')
         comment = f"BASIS_ARB_{uuid.uuid4().hex[:8]}"
         spot_trade = Trade(spot_symbol, spot_side, 0.0)
         futures_trade = Trade(futures_symbol, futures_side, 0.0)
 
-        # Leg 1: spot clip
+        # Leg 1: spot clip — patient (no position at risk while resting)
         spot_filled, spot_vwap, spot_tickets = self._send_sliced(
-            self.spot_leg, spot_symbol, spot_side, lot_size, comment)
+            self.spot_leg, spot_symbol, spot_side, lot_size, comment,
+            style=entry_style,
+            timeout=execution.get('LIMIT_TIMEOUT_SEC', 15))
 
         if spot_filled <= EPS:
             spot_trade.status = futures_trade.status = "ERROR"
             spot_trade.error_message = "Spot leg filled nothing"
             return False, spot_trade, futures_trade
 
-        # Leg 2: futures hedge sized to the actual spot fill
+        # Leg 2: futures hedge — short patience, every second unhedged
+        # is naked exposure; timeout crosses the spread
         hedge_ratio = self.config.TRADING.get('HEDGE_RATIO', 1.0)
         fut_step = self._meta(self.futures_leg,
                               futures_symbol).get('volume_step') or 0.01
         hedge_target = self._round_step(spot_filled * hedge_ratio, fut_step)
 
         fut_filled, fut_vwap, fut_tickets = self._send_sliced(
-            self.futures_leg, futures_symbol, futures_side,
-            hedge_target, comment)
+            self.futures_leg, futures_symbol, futures_side, hedge_target,
+            comment, style=entry_style,
+            timeout=execution.get('HEDGE_TIMEOUT_SEC', 4))
 
         if fut_filled <= EPS:
             logging.error("Futures hedge filled nothing — unwinding %.2f "
@@ -171,6 +283,24 @@ class PairExecutor:
                                    spot_symbol).get('volume_step') or 0.01
             matched_spot = self._round_step(fut_filled / hedge_ratio,
                                             spot_step)
+            min_fraction = execution.get('MIN_MATCHED_FRACTION', 0.0)
+
+            if matched_spot < lot_size * min_fraction - EPS:
+                # Matched piece too small to be worth its costs —
+                # unwind EVERYTHING on both legs and fail the entry
+                logging.warning(
+                    "Matched size %.2f < %.0f%% of %.2f clip — unwinding "
+                    "both legs", matched_spot, min_fraction * 100, lot_size)
+                self._unwind(self.spot_leg, spot_symbol, spot_side,
+                             spot_filled, comment)
+                self._unwind(self.futures_leg, futures_symbol, futures_side,
+                             fut_filled, comment)
+                spot_trade.status = futures_trade.status = "ERROR"
+                futures_trade.error_message = (
+                    f"Matched {matched_spot:.2f} below "
+                    f"{min_fraction:.0%} of clip")
+                return False, spot_trade, futures_trade
+
             excess = spot_filled - matched_spot
             logging.warning(
                 "Hedge partial: futures %.2f/%.2f — unwinding %.2f excess "
@@ -183,11 +313,13 @@ class PairExecutor:
         spot_trade.lot_size = spot_filled
         spot_trade.executed_price = spot_vwap
         spot_trade.order_ticket = spot_tickets[0] if spot_tickets else None
+        spot_trade.position_tickets = spot_tickets
         spot_trade.status = "EXECUTED"
 
         futures_trade.lot_size = fut_filled
         futures_trade.executed_price = fut_vwap
         futures_trade.order_ticket = fut_tickets[0] if fut_tickets else None
+        futures_trade.position_tickets = fut_tickets
         futures_trade.status = "EXECUTED"
 
         logging.info("Pair executed: %s %s — spot %.2f @ %.2f [%s], "
@@ -197,7 +329,43 @@ class PairExecutor:
                      self.futures_leg.name)
         return True, spot_trade, futures_trade
 
-    def execute_close_pair(self, position):
+    # ------------------------------------------------------------------
+    # Pair close
+    # ------------------------------------------------------------------
+
+    def _close_leg(self, leg, trade, comment, urgent):
+        """Close one leg. Tickets recorded -> close each by ticket
+        (hedging-mode correct); none recorded -> opposite market order
+        (netting fallback)."""
+        if trade.position_tickets:
+            filled = 0.0
+            notional = 0.0
+            per_ticket = trade.lot_size / len(trade.position_tickets)
+            for ticket in trade.position_tickets:
+                result = leg.close_ticket(
+                    trade.symbol, ticket, per_ticket, trade.side.value,
+                    slippage_points=self.config.EXECUTION['SLIPPAGE_TOLERANCE'],
+                    comment=comment)
+                if result.get('ok'):
+                    got = float(result.get('filled_volume') or per_ticket)
+                    filled += got
+                    notional += got * float(result.get('price') or 0.0)
+                else:
+                    logging.error("Close ticket %s on [%s] failed: %s",
+                                  ticket, leg.name, result.get('error'))
+            vwap = notional / filled if filled > EPS else None
+            return filled, vwap
+
+        style = 'market' if urgent else \
+            self.config.EXECUTION.get('ENTRY_STYLE', 'market')
+        filled, vwap, _ = self._send_sliced(
+            leg, trade.symbol, trade.side.opposite, trade.lot_size,
+            comment, style=style,
+            timeout=self.config.EXECUTION.get('EXIT_TIMEOUT_SEC', 15))
+        return filled, vwap
+
+    def execute_close_pair(self, position, reason=None):
+        urgent = (reason or '').upper() in URGENT_REASONS
         comment = f"BASIS_ARB_CX_{uuid.uuid4().hex[:6]}"
 
         close_spot = Trade(position.spot_trade.symbol,
@@ -207,25 +375,18 @@ class PairExecutor:
                               position.futures_trade.side.opposite,
                               position.futures_trade.lot_size)
 
-        spot_filled, spot_vwap, spot_tickets = self._send_sliced(
-            self.spot_leg, close_spot.symbol, close_spot.side,
-            close_spot.lot_size, comment)
-        fut_filled, fut_vwap, fut_tickets = self._send_sliced(
-            self.futures_leg, close_futures.symbol, close_futures.side,
-            close_futures.lot_size, comment)
+        spot_filled, spot_vwap = self._close_leg(
+            self.spot_leg, position.spot_trade, comment, urgent)
+        fut_filled, fut_vwap = self._close_leg(
+            self.futures_leg, position.futures_trade, comment, urgent)
 
         spot_ok = spot_filled >= close_spot.lot_size - EPS
         fut_ok = fut_filled >= close_futures.lot_size - EPS
 
-        for trade, filled, vwap, tickets, ok in [
-                (close_spot, spot_filled, spot_vwap, spot_tickets, spot_ok),
-                (close_futures, fut_filled, fut_vwap, fut_tickets, fut_ok)]:
-            trade.executed_price = vwap
-            trade.order_ticket = tickets[0] if tickets else None
-            trade.status = "EXECUTED" if ok else "ERROR"
-            if not ok:
-                trade.error_message = (
-                    f"Close incomplete: {filled:.2f}/{trade.lot_size:.2f}")
+        close_spot.executed_price = spot_vwap
+        close_spot.status = "EXECUTED" if spot_ok else "ERROR"
+        close_futures.executed_price = fut_vwap
+        close_futures.status = "EXECUTED" if fut_ok else "ERROR"
 
         if not (spot_ok and fut_ok):
             logging.critical(

@@ -92,6 +92,172 @@ class BrokerSession:
     def symbol_tick(self, symbol):
         return mt5.symbol_info_tick(symbol) if mt5 else None
 
+    def positions_by_magic(self, symbol=None):
+        """Open positions created by THIS system (magic-scoped) —
+        never touches manual or third-party positions."""
+        if mt5 is None:
+            return []
+        raw = (mt5.positions_get(symbol=symbol) if symbol
+               else mt5.positions_get()) or ()
+        out = []
+        for p in raw:
+            if p.magic != MAGIC_NUMBER:
+                continue
+            out.append({
+                'ticket': p.ticket,
+                'symbol': p.symbol,
+                'side': ('BUY' if p.type == mt5.POSITION_TYPE_BUY
+                         else 'SELL'),
+                'volume': p.volume,
+                'price_open': p.price_open,
+            })
+        return out
+
+    def account_is_hedging(self):
+        """True when the account holds one position per order (hedging
+        mode) rather than netting per symbol."""
+        if mt5 is None:
+            return False
+        info = mt5.account_info()
+        return bool(info) and info.margin_mode == \
+            mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING
+
+    def symbol_filling_modes(self, symbol):
+        """Which type_filling values this symbol allows (broker-dependent)."""
+        info = self.symbol_info(symbol)
+        if not info:
+            return []
+        mask = getattr(info, 'filling_mode', 0)
+        modes = []
+        if mask & 1:
+            modes.append('FOK')
+        if mask & 2:
+            modes.append('IOC')
+        modes.append('RETURN')  # always available for pending orders
+        return modes
+
+    def place_pending_limit(self, symbol, side, volume, price, comment=""):
+        """Rest a limit order (RETURN filling: partials stay working)."""
+        try:
+            request = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": symbol,
+                "volume": volume,
+                "type": (mt5.ORDER_TYPE_BUY_LIMIT if side is OrderSide.BUY
+                         else mt5.ORDER_TYPE_SELL_LIMIT),
+                "price": price,
+                "magic": MAGIC_NUMBER,
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_RETURN,
+            }
+            result = mt5.order_send(request)
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                error = (mt5.last_error() if result is None
+                         else f"{result.retcode} - {result.comment}")
+                return {'ok': False, 'ticket': None, 'error': str(error)}
+            return {'ok': True, 'ticket': result.order, 'error': None}
+        except Exception as e:
+            return {'ok': False, 'ticket': None, 'error': str(e)}
+
+    def modify_pending(self, ticket, price):
+        """Re-peg a resting limit in place — no cancel/replace round trip."""
+        try:
+            result = mt5.order_send({
+                "action": mt5.TRADE_ACTION_MODIFY,
+                "order": ticket,
+                "price": price,
+            })
+            ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+            return {'ok': ok,
+                    'error': None if ok else
+                    (str(mt5.last_error()) if result is None
+                     else f"{result.retcode} - {result.comment}")}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def cancel_pending(self, ticket):
+        """Remove a resting order, then ALWAYS report what filled first —
+        a 'cancelled' order can carry partial fills."""
+        try:
+            result = mt5.order_send({
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": ticket,
+            })
+            state = self.order_fill_state(ticket)
+            state['cancelled'] = (result is not None and
+                                  result.retcode == mt5.TRADE_RETCODE_DONE)
+            return state
+        except Exception as e:
+            state = self.order_fill_state(ticket)
+            state['cancelled'] = False
+            state['error'] = str(e)
+            return state
+
+    def order_fill_state(self, ticket):
+        """Filled volume / VWAP / position tickets for an order, from the
+        deal history (works for pending and market orders alike)."""
+        filled = 0.0
+        notional = 0.0
+        position_tickets = []
+        try:
+            deals = mt5.history_deals_get(ticket=ticket) or ()
+            for deal in deals:
+                if deal.order != ticket:
+                    continue
+                filled += deal.volume
+                notional += deal.volume * deal.price
+                if deal.position_id and deal.position_id not in position_tickets:
+                    position_tickets.append(deal.position_id)
+            still_open = bool(mt5.orders_get(ticket=ticket))
+        except Exception as e:
+            return {'ok': False, 'filled_volume': filled, 'price': None,
+                    'position_tickets': position_tickets,
+                    'still_open': False, 'error': str(e)}
+        vwap = notional / filled if filled > 0 else None
+        return {'ok': True, 'filled_volume': filled, 'price': vwap,
+                'position_tickets': position_tickets,
+                'still_open': still_open, 'error': None}
+
+    def close_position_ticket(self, symbol, ticket, volume, entry_side,
+                              slippage_points=1.0, comment=""):
+        """Close a specific position by ticket. REQUIRED on hedging-mode
+        accounts, where a plain opposite order would open a second
+        position instead of closing this one."""
+        try:
+            tick = self.symbol_tick(symbol)
+            info = self.symbol_info(symbol)
+            if not tick or not info:
+                return OrderResult(False, error=f"No market data for {symbol}")
+            close_side = entry_side.opposite
+            price = tick.ask if close_side is OrderSide.BUY else tick.bid
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": (mt5.ORDER_TYPE_BUY if close_side is OrderSide.BUY
+                         else mt5.ORDER_TYPE_SELL),
+                "position": ticket,
+                "price": price,
+                "deviation": int(slippage_points / info.point),
+                "magic": MAGIC_NUMBER,
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            result = mt5.order_send(request)
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                error = (mt5.last_error() if result is None
+                         else f"{result.retcode} - {result.comment}")
+                return OrderResult(False, requested_price=price,
+                                   error=f"Close failed: {error}")
+            return OrderResult(True, requested_price=price,
+                               executed_price=result.price,
+                               ticket=result.order,
+                               volume=getattr(result, 'volume', volume))
+        except Exception as e:
+            return OrderResult(False, error=f"Close error: {e}")
+
     def send_market_order(self, symbol, side, volume,
                           slippage_points=1.0, comment=""):
         """Send an IOC market order; returns OrderResult."""

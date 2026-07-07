@@ -51,6 +51,25 @@ class LegServer:
                     msg['symbol'], msg['side'], msg['volume'],
                     slippage_points=msg.get('slippage_points', 1.0),
                     comment=msg.get('comment', ''))
+            if cmd == 'place_limit':
+                return self.leg.place_limit(
+                    msg['symbol'], msg['side'], msg['volume'], msg['price'],
+                    comment=msg.get('comment', ''))
+            if cmd == 'modify_order':
+                return self.leg.modify_order(msg['ticket'], msg['price'])
+            if cmd == 'cancel_order':
+                return self.leg.cancel_order(msg['ticket'])
+            if cmd == 'order_state':
+                return self.leg.order_state(msg['ticket'])
+            if cmd == 'positions':
+                return {'ok': True,
+                        'positions': self.leg.positions(msg.get('symbol'))}
+            if cmd == 'close_ticket':
+                return self.leg.close_ticket(
+                    msg['symbol'], msg['ticket'], msg['volume'],
+                    msg['entry_side'],
+                    slippage_points=msg.get('slippage_points', 1.0),
+                    comment=msg.get('comment', ''))
             return {'ok': False, 'error': f'Unknown command: {cmd}'}
         except Exception as e:
             logging.error("Error handling %s: %s", cmd, e)

@@ -6,13 +6,31 @@ vs futures, with signals driven by real swap-cost analysis.
 ## How it works
 
 - Computes the **swap-implied basis** (what carry actually costs you)
-  and compares it to the **market basis** (futures − spot).
-- When the market premium is rich (default > +20%): **SELL BASIS**
-  (buy spot, sell futures). When at a deep discount (< −15%):
-  **BUY BASIS** (sell spot, buy futures). Exits when the premium
-  normalizes, with stop-loss and position/trade limits throughout.
-- PAPER mode simulates; LIVE mode places real IOC market orders with
-  hedge-leg protection (if the second leg fails, the first is unwound).
+  and z-scores the gap between it and the market basis (`swap_diff`)
+  over a rolling window with a **frozen anchor** (μ/σ refresh every
+  `STATS_INTERVAL_SEC`, so the mean doesn't chase the spread).
+- **Entries** need every gate to pass: warm stats, `|z| ≥ ENTRY_Z`,
+  below the entry ceiling (`STOP_Z`), trend filter (never fight a
+  running spread), cooldowns and the z-reset gate after stops, and the
+  **edge filter** — expected capture must clear 1.5× round-trip cost.
+- **Exits act on dollars, not z** — levels frozen at entry from actual
+  fills: dollar stop (ungated) > σ-fraction take-profit with a cost
+  floor > gated reversion exit (never books a losing "profit-take") >
+  max-hold at 4× measured half-life (only in profit) > z-stop backstop.
+- **Execution is limit-first**: child orders rest at the peg, re-peg
+  via order-modify as the market drifts, and cross the spread only on
+  timeout. Stops always go straight to market. The futures hedge is
+  sized to the actual spot fill; runt positions below 40% of the clip
+  are fully unwound.
+- **Self-healing**: positions persist to SQLite (crash-safe ordering),
+  restarts recover and reconcile against the broker before trading,
+  and a 20s reconciler auto-closes orphans / clears ghosts on a
+  3-strike rule with an untracked-close ledger.
+- **Circuit breakers**: daily-loss halt, −20% size after 3 straight
+  losses, full pause after 6.
+- PAPER mode runs the identical lifecycle through simulated fills at
+  the touch; LIVE routes to the brokers. Accounts in **hedging mode**
+  are closed by position ticket (never by opposite market order).
 
 ## Setup
 

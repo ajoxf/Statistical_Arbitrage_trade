@@ -37,13 +37,60 @@
     "MAX_LOT_SIZE": 50.0,
     "MAX_DAILY_TRADES": 20,
     "STOP_LOSS_PCT": 5.0,
-    "MAX_EXPOSURE_USD": 200000000
+    "MAX_EXPOSURE_USD": 200000000,
+    "DAILY_MAX_LOSS_USD": 25000,
+    "LOSS_STREAK_REDUCE": 3,
+    "STREAK_SIZE_CUT": 0.2,
+    "LOSS_STREAK_PAUSE": 6
   },
   "execution": {
     "SLIPPAGE_TOLERANCE": 1.0,
     "ORDER_TIMEOUT": 30,
     "MIN_TIME_BETWEEN_SIGNALS": 180,
-    "RETRY_ATTEMPTS": 3
+    "RETRY_ATTEMPTS": 3,
+    "ENTRY_STYLE": "limit",
+    "PEG_OFFSET_POINTS": 0.0,
+    "REPEG_INTERVAL_SEC": 2.0,
+    "LIMIT_TIMEOUT_SEC": 15.0,
+    "HEDGE_TIMEOUT_SEC": 4.0,
+    "EXIT_TIMEOUT_SEC": 15.0,
+    "ON_TIMEOUT": "cross",
+    "ORDER_POLL_SEC": 0.5,
+    "MIN_MATCHED_FRACTION": 0.4
+  },
+  "signals": {
+    "USE_Z_SIGNALS": true,
+    "ENTRY_Z": 3.0,
+    "EXIT_Z": 0.5,
+    "STOP_Z": 4.5,
+    "LOOKBACK_SEC": 7200,
+    "STATS_INTERVAL_SEC": 300,
+    "MIN_SAMPLES": 300,
+    "TREND_FILTER": true,
+    "TREND_WINDOW_SEC": 900,
+    "ENTRY_COOLDOWN_SEC": 60,
+    "STOP_COOLDOWN_SEC": 300
+  },
+  "costs": {
+    "COMMISSION_PER_LOT_SPOT": 0.0,
+    "COMMISSION_PER_LOT_FUT": 0.0,
+    "SPREAD_COST_FACTOR": 1.0,
+    "MIN_EDGE_MULTIPLE": 1.5,
+    "TARGET_FRACTION": 0.5
+  },
+  "exits": {
+    "USE_SIGMA_TARGET": true,
+    "TP_USD_PER_LOT": 0.0,
+    "COST_FLOOR_MULT": 1.2,
+    "STOP_USD_PER_LOT": 30.0,
+    "RR": 0.3,
+    "GATE_FLOOR_USD": 0.0,
+    "MAX_HOLD_HALF_LIVES": 4.0,
+    "MAX_HOLD_FALLBACK_MIN": 240
+  },
+  "reconcile": {
+    "SYNC_INTERVAL_SEC": 20,
+    "STRIKES": 3
   },
   "assets": {
     "GOLD": {

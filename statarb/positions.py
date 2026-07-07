@@ -26,6 +26,7 @@ class PositionManager:
         self.data_logger.log_position(position)
         self.data_logger.log_trade(spot_trade, position_id)
         self.data_logger.log_trade(futures_trade, position_id)
+        self.data_logger.save_position_state(position)
 
         logging.info("Position created: %s - %s %s at %.2f%%",
                      position_id, asset, signal_type.value, entry_premium)
@@ -59,7 +60,31 @@ class PositionManager:
         position.unrealized_pnl = spot_pnl + futures_pnl
         self.data_logger.log_position(position)
 
-    def close_position(self, position_id, close_reason, order_manager):
+    @staticmethod
+    def realized_pnl_from_fills(position, close_spot, close_futures,
+                                contract_size=1.0):
+        """Per-leg P&L from actual entry and exit fills — matches the
+        broker to the cent. Falls back to the last mark when a close
+        price is missing."""
+        entry_spot = position.spot_trade.executed_price
+        entry_fut = position.futures_trade.executed_price
+        exit_spot = close_spot.executed_price if close_spot else None
+        exit_fut = close_futures.executed_price if close_futures else None
+        if None in (entry_spot, entry_fut, exit_spot, exit_fut):
+            return position.unrealized_pnl
+
+        spot_units = position.spot_trade.lot_size * contract_size
+        fut_units = position.futures_trade.lot_size * contract_size
+
+        if position.signal_type == SignalType.SELL_BASIS:
+            # Long spot, short futures
+            return (exit_spot - entry_spot) * spot_units \
+                + (entry_fut - exit_fut) * fut_units
+        return (entry_spot - exit_spot) * spot_units \
+            + (exit_fut - entry_fut) * fut_units
+
+    def close_position(self, position_id, close_reason, order_manager,
+                       contract_size=1.0):
         if position_id not in self.positions:
             return False
 
@@ -68,33 +93,52 @@ class PositionManager:
             return False
 
         position.status = PositionStatus.CLOSING
+        self.data_logger.save_position_state(position)
         try:
             success, close_spot, close_futures = \
-                order_manager.execute_close_pair(position)
+                order_manager.execute_close_pair(position, reason=close_reason)
 
             if success:
+                # Mark closed and persist ONLY after exit orders succeeded
                 position.status = PositionStatus.CLOSED
                 position.close_time = datetime.now()
                 position.close_reason = close_reason
-                position.realized_pnl = position.unrealized_pnl
+                position.realized_pnl = self.realized_pnl_from_fills(
+                    position, close_spot, close_futures, contract_size)
                 position.unrealized_pnl = 0.0
 
                 self.data_logger.log_trade(close_spot, position_id)
                 self.data_logger.log_trade(close_futures, position_id)
                 self.data_logger.log_position(position)
+                self.data_logger.clear_position_state(position_id)
 
                 logging.info("Position closed: %s - %s - P&L: $%.2f",
                              position_id, close_reason, position.realized_pnl)
                 return True
 
             position.status = PositionStatus.ERROR
+            self.data_logger.save_position_state(position)
             logging.error("Failed to close position: %s", position_id)
             return False
 
         except Exception as e:
             position.status = PositionStatus.ERROR
+            self.data_logger.save_position_state(position)
             logging.error("Error closing position %s: %s", position_id, e)
             return False
+
+    def restore_position(self, position):
+        """Re-attach a position recovered from the DB after a restart."""
+        self.positions[position.position_id] = position
+        try:
+            number = int(position.position_id.split('_')[-1])
+            self.position_counter = max(self.position_counter, number)
+        except ValueError:
+            pass
+        logging.info("Recovered position %s from DB (%s %s, %.2f lots)",
+                     position.position_id, position.asset,
+                     position.signal_type.value,
+                     position.spot_trade.lot_size)
 
     def get_active_positions(self):
         return {pid: p for pid, p in self.positions.items()

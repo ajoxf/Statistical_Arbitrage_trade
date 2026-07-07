@@ -1,13 +1,10 @@
-"""Coordinator: fuses prices from both legs' accounts and routes each
-leg's orders to its own account.
+"""Coordinator: fuses prices from both legs' accounts, runs the
+z-score strategy, and routes each leg's orders to its own account.
 
 Topology comes from config:
 - spot and futures on DIFFERENT accounts → each account runs a leg
-  runner process (endpoint in config); the coordinator talks to both
-  over localhost TCP. This is the only way to stream two MT5 accounts
-  simultaneously (one MT5 connection per process).
-- both legs on the SAME account → the coordinator connects to that
-  one terminal in-process; no leg runners needed.
+  runner process (endpoint in config); coordinator talks TCP to both.
+- both legs on the SAME account → coordinator connects in-process.
 
     python run_coordinator.py --config config.json --mode paper
 """
@@ -22,14 +19,75 @@ from types import SimpleNamespace
 from .broker import BrokerSession
 from .config import AlgoTradingConfig
 from .database import DataLogger
+from .exits import ExitLadder
 from .legs import LocalLeg, RemoteLeg
 from .marketdata import compute_market_data
-from .models import SignalType
+from .models import Position, SignalType, Trade, OrderSide
 from .pair_executor import PairExecutor
 from .performance import PerformanceTracker
 from .positions import PositionManager
+from .reconcile import Reconciler
 from .risk import RiskManager
-from .signals import SignalGenerator
+from .signals import SignalGenerator, ZSignalGenerator
+from .spread import SpreadStats
+
+
+class PaperExecutor:
+    """Simulated fills at the current touch — the whole position
+    lifecycle (entries, exit ladder, reviews, breakers) runs
+    identically to LIVE, no orders leave the machine."""
+
+    def __init__(self, spot_leg, futures_leg):
+        self.spot_leg = spot_leg
+        self.futures_leg = futures_leg
+
+    def _fill(self, leg, symbol, side):
+        tick = leg.tick(symbol)
+        if not tick:
+            return None
+        return tick['ask'] if side is OrderSide.BUY else tick['bid']
+
+    def execute_trade_pair(self, asset, signal_type, lot_size,
+                           spot_symbol, futures_symbol):
+        if signal_type == SignalType.SELL_BASIS:
+            spot_side, fut_side = OrderSide.BUY, OrderSide.SELL
+        elif signal_type == SignalType.BUY_BASIS:
+            spot_side, fut_side = OrderSide.SELL, OrderSide.BUY
+        else:
+            raise ValueError(f"Invalid signal type: {signal_type}")
+
+        spot_trade = Trade(spot_symbol, spot_side, lot_size)
+        fut_trade = Trade(futures_symbol, fut_side, lot_size)
+        spot_trade.executed_price = self._fill(self.spot_leg, spot_symbol,
+                                               spot_side)
+        fut_trade.executed_price = self._fill(self.futures_leg,
+                                              futures_symbol, fut_side)
+        if spot_trade.executed_price is None \
+                or fut_trade.executed_price is None:
+            spot_trade.status = fut_trade.status = "ERROR"
+            return False, spot_trade, fut_trade
+        spot_trade.status = fut_trade.status = "EXECUTED"
+        logging.info("PAPER pair: %s %s — spot %.2f @ %.2f, fut %.2f @ %.2f",
+                     asset, signal_type.value, lot_size,
+                     spot_trade.executed_price, lot_size,
+                     fut_trade.executed_price)
+        return True, spot_trade, fut_trade
+
+    def execute_close_pair(self, position, reason=None):
+        close_spot = Trade(position.spot_trade.symbol,
+                           position.spot_trade.side.opposite,
+                           position.spot_trade.lot_size)
+        close_fut = Trade(position.futures_trade.symbol,
+                          position.futures_trade.side.opposite,
+                          position.futures_trade.lot_size)
+        close_spot.executed_price = self._fill(
+            self.spot_leg, close_spot.symbol, close_spot.side)
+        close_fut.executed_price = self._fill(
+            self.futures_leg, close_fut.symbol, close_fut.side)
+        ok = close_spot.executed_price is not None \
+            and close_fut.executed_price is not None
+        close_spot.status = close_fut.status = "EXECUTED" if ok else "ERROR"
+        return ok, close_spot, close_fut
 
 
 class Coordinator:
@@ -41,20 +99,30 @@ class Coordinator:
         self.spot_leg, self.futures_leg = self._resolve_legs()
 
         self.data_logger = DataLogger()
-        self.pair_executor = PairExecutor(config, self.spot_leg,
-                                          self.futures_leg)
+        if trading_mode == "LIVE":
+            self.executor = PairExecutor(config, self.spot_leg,
+                                         self.futures_leg)
+        else:
+            self.executor = PaperExecutor(self.spot_leg, self.futures_leg)
         self.position_manager = PositionManager(self.data_logger)
         self.risk_manager = RiskManager(config)
-        self.signal_generator = SignalGenerator(config)
         self.performance_tracker = PerformanceTracker()
+        self.exit_ladder = ExitLadder(config)
+
+        self.use_z = config.SIGNALS.get('USE_Z_SIGNALS', True)
+        self.z_gen = ZSignalGenerator(config, clock=time.time)
+        self.legacy_gen = SignalGenerator(config)
+        self.stats = {}                # asset -> SpreadStats
+        self.reconciler = None         # built in start()
 
         self.active_assets = {}
         self.last_signals = {}
         self.last_data = {}
 
         logging.info("Coordinator initialized: spot on [%s], futures on "
-                     "[%s], mode %s", self.spot_leg.name,
-                     self.futures_leg.name, trading_mode)
+                     "[%s], mode %s, signals %s", self.spot_leg.name,
+                     self.futures_leg.name, trading_mode,
+                     'z-score' if self.use_z else 'fixed premium')
 
     def _resolve_legs(self):
         spot_name = self.config.leg_accounts.get('spot', 'default')
@@ -82,13 +150,18 @@ class Coordinator:
 
         return legs[spot_acct.name], legs[fut_acct.name]
 
+    def _each_leg(self):
+        seen = {}
+        for leg in (self.spot_leg, self.futures_leg):
+            seen[id(leg)] = leg
+        return seen.values()
+
     # ------------------------------------------------------------------
     # Startup
     # ------------------------------------------------------------------
 
     def start(self):
-        for leg in {id(self.spot_leg): self.spot_leg,
-                    id(self.futures_leg): self.futures_leg}.values():
+        for leg in self._each_leg():
             if not leg.connect():
                 logging.error("Could not connect leg '%s'", leg.name)
                 return False
@@ -99,7 +172,33 @@ class Coordinator:
                              account.get('server'), account.get('equity'))
 
         self.config.validate_expiries()
-        return self._setup_symbols()
+        if not self._setup_symbols():
+            return False
+
+        for asset_key in self.active_assets:
+            self.stats[asset_key] = SpreadStats(self.config.SIGNALS,
+                                                clock=time.time)
+
+        self.reconciler = Reconciler(
+            self.config, self.position_manager, self.data_logger,
+            self.risk_manager,
+            {'spot': self.spot_leg, 'futures': self.futures_leg},
+            clock=time.time)
+
+        if self.trading_mode == "LIVE":
+            self._recover_positions()
+            self.reconciler.check()   # reconcile BEFORE acting
+        return True
+
+    def _recover_positions(self):
+        """Rebuild open positions from the DB after a restart."""
+        for state in self.data_logger.load_open_position_states():
+            try:
+                position = Position.from_dict(state)
+            except (KeyError, ValueError) as e:
+                logging.error("Could not recover position state: %s", e)
+                continue
+            self.position_manager.restore_position(position)
 
     def _setup_symbols(self):
         for asset_key, asset_cfg in self.config.ASSETS.items():
@@ -166,82 +265,135 @@ class Coordinator:
     # Trading
     # ------------------------------------------------------------------
 
-    def process_signals(self, all_market_data):
-        for asset_key, market_data in all_market_data.items():
-            active = self.position_manager.get_positions_for_asset(asset_key)
-            contract_size = self.config.ASSETS[asset_key]['lot_size']
+    def process_asset(self, asset_key, market_data):
+        contract_size = self.config.ASSETS[asset_key]['lot_size']
+        stats = self.stats.get(asset_key)
+        z = None
+        if stats is not None:
+            stats.update(market_data['swap_diff'])
+            z = stats.z
+            self.z_gen.update(asset_key, z)
 
-            for position_id, position in list(active.items()):
-                self.position_manager.update_position_pnl(
-                    position_id, market_data['spot_price'],
-                    market_data['futures_price'],
-                    market_data['swap_premium_pct'],
-                    contract_size=contract_size)
+        active = self.position_manager.get_positions_for_asset(asset_key)
 
-                hit, action = self.risk_manager.check_position_risk(
-                    position, market_data['swap_premium_pct'])
-                if hit and self.trading_mode == "LIVE":
-                    if self.position_manager.close_position(
-                            position_id, action, self.pair_executor):
-                        self.performance_tracker.update_with_closed_position(
-                            position)
-                elif hit:
-                    logging.info("PAPER: %s would trigger %s", position_id,
-                                 action)
+        # -- exits first (risk before opportunity) --
+        for position_id, position in list(active.items()):
+            self.position_manager.update_position_pnl(
+                position_id, market_data['spot_price'],
+                market_data['futures_price'],
+                market_data['swap_premium_pct'],
+                contract_size=contract_size)
 
-            signal = self.signal_generator.generate_signal(
-                asset_key, market_data, active)
-            self.last_signals[asset_key] = signal
-            self.data_logger.log_market_data(asset_key, market_data, signal)
+            reason = self._exit_reason(position, z, market_data)
+            if reason:
+                self._close(position_id, position, reason, contract_size, z)
 
-            if signal in (SignalType.SELL_BASIS, SignalType.BUY_BASIS):
-                self._enter(asset_key, signal, market_data)
-            elif isinstance(signal, tuple):
-                position_id, _ = signal
-                position = self.position_manager.positions.get(position_id)
-                if self.trading_mode == "LIVE":
-                    if position and self.position_manager.close_position(
-                            position_id, "SIGNAL_EXIT", self.pair_executor):
-                        self.performance_tracker.update_with_closed_position(
-                            position)
-                else:
-                    logging.info("PAPER: would close %s (signal exit)",
-                                 position_id)
+        # -- entries --
+        active = self.position_manager.get_positions_for_asset(asset_key)
+        signal = self._entry_signal(asset_key, stats, market_data, active,
+                                    contract_size)
+        self.last_signals[asset_key] = signal or SignalType.NO_SIGNAL
+        self.data_logger.log_market_data(asset_key, market_data,
+                                         self.last_signals[asset_key])
+        if signal:
+            self._enter(asset_key, signal, market_data, stats, contract_size)
 
-    def _enter(self, asset_key, signal_type, market_data):
-        clip = self.config.TRADING.get('CLIP_LOTS', 1.0)
+    def _exit_reason(self, position, z, market_data):
+        if self.use_z and position.exit_plan:
+            age = (datetime.now() - position.entry_time).total_seconds()
+            return self.exit_ladder.evaluate(
+                position, position.exit_plan, z,
+                position.unrealized_pnl, age)
+        # Legacy premium-based paths
+        hit, action = self.risk_manager.check_position_risk(
+            position, market_data['swap_premium_pct'])
+        if hit:
+            return action
+        signal = self.legacy_gen.generate_signal(
+            position.asset, market_data,
+            {position.position_id: position})
+        if isinstance(signal, tuple):
+            return "SIGNAL_EXIT"
+        return None
+
+    def _entry_signal(self, asset_key, stats, market_data, active,
+                      contract_size):
+        clip = self._clip_lots()
+        if self.use_z:
+            if stats is None:
+                return None
+            return self.z_gen.entry_signal(asset_key, stats, market_data,
+                                           active, clip, contract_size)
+        signal = self.legacy_gen.generate_signal(asset_key, market_data,
+                                                 active)
+        return signal if signal in (SignalType.SELL_BASIS,
+                                    SignalType.BUY_BASIS) else None
+
+    def _clip_lots(self):
+        return self.config.TRADING.get('CLIP_LOTS', 1.0) \
+            * self.risk_manager.size_multiplier()
+
+    def _enter(self, asset_key, signal_type, market_data, stats,
+               contract_size):
+        clip = self._clip_lots()
 
         valid, reason = self.risk_manager.validate_new_position(
             asset_key, signal_type, clip, self.position_manager)
         if not valid:
-            logging.info("Signal rejected for %s: %s", asset_key, reason)
+            logging.info("Entry rejected for %s: %s", asset_key, reason)
             return
+
+        # Exit plan is computed BEFORE entering — a trade whose cost
+        # floor exceeds plausible reversion is refused outright
+        plan = None
+        if self.use_z and stats is not None:
+            plan = self.exit_ladder.build_plan(
+                clip, contract_size, stats.z, stats.sigma,
+                stats.half_life_sec, market_data)
+            if plan is None:
+                return
 
         asset = self.active_assets[asset_key]
-
-        if self.trading_mode != "LIVE":
-            logging.info("PAPER TRADE: %s %s %.0f lots at premium %.2f%%",
-                         asset_key, signal_type.value, clip,
-                         market_data['swap_premium_pct'])
-            self.risk_manager.record_trade(asset_key, lots=clip)
-            return
-
         success, spot_trade, futures_trade = \
-            self.pair_executor.execute_trade_pair(
+            self.executor.execute_trade_pair(
                 asset_key, signal_type, clip,
                 asset['spot_symbol'], asset['futures_symbol'])
-
-        if success:
-            position = self.position_manager.create_position(
-                asset_key, signal_type, spot_trade, futures_trade,
-                market_data['swap_premium_pct'])
-            self.risk_manager.record_trade(asset_key,
-                                           lots=spot_trade.lot_size)
-            logging.info("Position opened: %s (%.2f lots)",
-                         position.position_id, spot_trade.lot_size)
-        else:
+        if not success:
             logging.error("Pair entry failed for %s %s", asset_key,
                           signal_type.value)
+            return
+
+        position = self.position_manager.create_position(
+            asset_key, signal_type, spot_trade, futures_trade,
+            market_data['swap_premium_pct'])
+        if plan and spot_trade.lot_size and clip:
+            # Rescale dollar levels if we filled less than the clip
+            scale = spot_trade.lot_size / clip
+            for key in ('tp_usd', 'stop_usd', 'rt_cost_usd'):
+                if plan.get(key):
+                    plan[key] *= scale
+        position.exit_plan = plan
+        self.data_logger.save_position_state(position)
+        self.risk_manager.record_trade(asset_key, lots=spot_trade.lot_size)
+        logging.info("Position opened: %s (%.2f lots, %s)",
+                     position.position_id, spot_trade.lot_size,
+                     self.trading_mode)
+
+    def _close(self, position_id, position, reason, contract_size, z):
+        contract = contract_size
+        closed = self.position_manager.close_position(
+            position_id, reason, self.executor, contract_size=contract)
+        if not closed:
+            return
+        self.performance_tracker.update_with_closed_position(position)
+        self.risk_manager.on_position_closed(position.realized_pnl)
+        self.z_gen.notify_close(position.asset, reason,
+                                position.signal_type)
+        self.data_logger.log_trade_review(position, exit_z=z)
+        logging.info("Closed %s: %s — realized $%.2f (streak %d, day $%.0f)",
+                     position_id, reason, position.realized_pnl,
+                     self.risk_manager.consecutive_losses,
+                     self.risk_manager.daily_realized_pnl)
 
     # ------------------------------------------------------------------
     # Status
@@ -249,19 +401,22 @@ class Coordinator:
 
     def log_status(self, all_market_data):
         target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
+        halted, why = self.risk_manager.halted()
         for asset_key, md in all_market_data.items():
+            stats = self.stats.get(asset_key)
+            z = stats.z if stats else None
             done = self.risk_manager.lots_traded_today(asset_key)
             progress = (f" | today {done:.0f}/{target:.0f} lots"
                         if target else "")
-            signal = self.last_signals.get(asset_key, SignalType.NO_SIGNAL)
-            signal_str = (signal.value if hasattr(signal, 'value')
-                          else f"EXIT {signal[0]}")
+            state = f" | HALTED: {why}" if halted else ""
+            z_str = f"{z:+.2f}" if z is not None else "warm-up"
             logging.info(
-                "%s spot %.2f | fut %.2f | basis %.2f | swap %.2f | "
-                "premium %+.2f%% | %s%s",
+                "%s spot %.2f | fut %.2f | swap_diff %+.2f | z %s | "
+                "%s%s%s",
                 asset_key, md['spot_price'], md['futures_price'],
-                md['actual_basis'], md['swap_basis'],
-                md['swap_premium_pct'], signal_str, progress)
+                md['swap_diff'], z_str,
+                getattr(self.last_signals.get(asset_key), 'value',
+                        'NO_SIGNAL'), progress, state)
 
     # ------------------------------------------------------------------
     # Loop
@@ -283,8 +438,9 @@ class Coordinator:
                 if all_market_data:
                     consecutive_errors = 0
                     self.last_data = all_market_data
-                    self.process_signals(all_market_data)
-                    if loop_count % 20 == 1:   # status every ~10s
+                    for asset_key, md in all_market_data.items():
+                        self.process_asset(asset_key, md)
+                    if loop_count % 20 == 1:
                         self.log_status(all_market_data)
                 else:
                     consecutive_errors += 1
@@ -296,6 +452,10 @@ class Coordinator:
                     if consecutive_errors >= 40:
                         self._reconnect_legs()
                         consecutive_errors = 0
+
+                if self.reconciler and self.trading_mode == "LIVE" \
+                        and self.reconciler.due():
+                    self.reconciler.check()
 
                 time.sleep(max(poll - (time.time() - started), 0.05))
 
@@ -310,8 +470,7 @@ class Coordinator:
 
     def _reconnect_legs(self):
         logging.warning("Reconnecting legs...")
-        for leg in {id(self.spot_leg): self.spot_leg,
-                    id(self.futures_leg): self.futures_leg}.values():
+        for leg in self._each_leg():
             if not leg.ping():
                 leg.close()
                 leg.connect()
@@ -322,12 +481,13 @@ class Coordinator:
         if active and self.trading_mode == "LIVE":
             logging.info("Closing %d active positions on shutdown",
                          len(active))
-            for position_id in list(active):
-                self.position_manager.close_position(
-                    position_id, "SYSTEM_SHUTDOWN", self.pair_executor)
+            for position_id, position in list(active.items()):
+                contract = self.config.ASSETS.get(
+                    position.asset, {}).get('lot_size', 1.0)
+                self._close(position_id, position, "SYSTEM_SHUTDOWN",
+                            contract, None)
 
-        for leg in {id(self.spot_leg): self.spot_leg,
-                    id(self.futures_leg): self.futures_leg}.values():
+        for leg in self._each_leg():
             leg.close()
 
         m = self.performance_tracker.get_metrics()
