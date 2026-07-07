@@ -57,6 +57,11 @@ statarb/
   costs.py              round-trip cost model + edge filter
   exits.py              ExitLadder — dollar levels frozen at entry
   reconcile.py          orphan close / ghost clear, 3-strike, ledger
+  notify.py             Telegram alerts + /status /positions /pnl
+                        (background thread, never blocks the loop;
+                        token/chat from .env only)
+  webapp.py             read-only Flask dashboard (own process, reads
+                        SQLite + runtime_status.json)
   marketdata.py         basis/swap math shared by both loops
   models.py             enums, Trade (+position_tickets), Position (+to/from_dict)
   execution.py          OrderManager — single-account entry/close pairs
@@ -137,9 +142,9 @@ That branch ran REAL orders; its commit log paid for these rules:
 - `main` = this system (fast-forwarded 2026-07).
 - `claude/limit-orders-trade-exits-q0quM` (June): older parallel
   system (adapters/, feature_files/ web app, Telegram bot, OKX).
-  Superseded for trading logic — its MT5 lessons are ported (above);
-  the web dashboard/Telegram/OKX adapter remain UNPORTED and are the
-  only reasons to keep it.
+  Fully superseded 2026-07: MT5 lessons, Telegram notifications and
+  the web dashboard are all ported to this system. Only the OKX
+  adapter remains unported — the sole reason to keep that branch.
 - Other `claude/*` branches: session artifacts, superseded.
 
 ## Bugs already found and fixed (2026-07) — don't reintroduce

@@ -5,5 +5,8 @@ numpy
 pytz
 python-dotenv
 
+# Web dashboard (run_dashboard.py) — optional, read-only process
+flask
+
 # Development / testing (run anywhere, MT5 not required — tests use a fake broker)
 pytest

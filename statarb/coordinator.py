@@ -10,7 +10,9 @@ Topology comes from config:
 """
 
 import argparse
+import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime
@@ -23,6 +25,7 @@ from .exits import ExitLadder
 from .legs import LocalLeg, RemoteLeg
 from .marketdata import compute_market_data
 from .models import Position, SignalType, Trade, OrderSide
+from .notify import TelegramNotifier
 from .pair_executor import PairExecutor
 from .performance import PerformanceTracker
 from .positions import PositionManager
@@ -115,6 +118,11 @@ class Coordinator:
         self.stats = {}                # asset -> SpreadStats
         self.reconciler = None         # built in start()
 
+        self.notifier = TelegramNotifier(config)
+        self.notifier.command_handler = self._telegram_command
+        self._was_halted = False
+        self.status_path = 'runtime_status.json'
+
         self.active_assets = {}
         self.last_signals = {}
         self.last_data = {}
@@ -188,6 +196,10 @@ class Coordinator:
         if self.trading_mode == "LIVE":
             self._recover_positions()
             self.reconciler.check()   # reconcile BEFORE acting
+
+        self.notifier.notify_startup(
+            self.trading_mode, self.spot_leg.name, self.futures_leg.name,
+            list(self.active_assets))
         return True
 
     def _recover_positions(self):
@@ -375,6 +387,8 @@ class Coordinator:
         position.exit_plan = plan
         self.data_logger.save_position_state(position)
         self.risk_manager.record_trade(asset_key, lots=spot_trade.lot_size)
+        self.notifier.notify_trade_opened(
+            position, market_data, z=stats.z if stats else None)
         logging.info("Position opened: %s (%.2f lots, %s)",
                      position.position_id, spot_trade.lot_size,
                      self.trading_mode)
@@ -390,6 +404,13 @@ class Coordinator:
         self.z_gen.notify_close(position.asset, reason,
                                 position.signal_type)
         self.data_logger.log_trade_review(position, exit_z=z)
+        self.notifier.notify_trade_closed(position, exit_z=z)
+
+        halted, why = self.risk_manager.halted()
+        if halted and not self._was_halted:
+            self.notifier.notify_breaker(why)
+        self._was_halted = halted
+
         logging.info("Closed %s: %s — realized $%.2f (streak %d, day $%.0f)",
                      position_id, reason, position.realized_pnl,
                      self.risk_manager.consecutive_losses,
@@ -399,7 +420,82 @@ class Coordinator:
     # Status
     # ------------------------------------------------------------------
 
+    def _position_snapshot(self):
+        rows = []
+        for position in self.position_manager.get_active_positions().values():
+            age = datetime.now() - position.entry_time
+            rows.append({
+                'position_id': position.position_id,
+                'asset': position.asset,
+                'signal_type': position.signal_type.value,
+                'lots': position.spot_trade.lot_size,
+                'entry_premium': position.entry_premium,
+                'unrealized_pnl': position.unrealized_pnl,
+                'age': f"{age.total_seconds() / 3600:.1f}h",
+            })
+        return rows
+
+    def _write_runtime_status(self, all_market_data):
+        """Refresh runtime_status.json for the read-only dashboard.
+        Atomic replace so the dashboard never reads a half-written file."""
+        halted, why = self.risk_manager.halted()
+        target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
+        payload = {
+            'mode': self.trading_mode,
+            'updated': datetime.now().strftime('%H:%M:%S'),
+            'halted': halted,
+            'halt_reason': why,
+            'daily_pnl': self.risk_manager.daily_realized_pnl,
+            'assets': [{
+                'asset': asset_key,
+                'z': (self.stats[asset_key].z
+                      if asset_key in self.stats else None),
+                'basis': md['actual_basis'],
+                'lots_today': self.risk_manager.lots_traded_today(asset_key),
+                'lot_target': target,
+            } for asset_key, md in all_market_data.items()],
+            'positions': self._position_snapshot(),
+        }
+        try:
+            tmp = self.status_path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(payload, f)
+            os.replace(tmp, self.status_path)
+        except OSError as e:
+            logging.debug("Could not write runtime status: %s", e)
+
+    def _telegram_command(self, command):
+        if command == '/status':
+            halted, why = self.risk_manager.halted()
+            lines = [f"Mode: {self.trading_mode}"
+                     + (f" | HALTED: {why}" if halted else "")]
+            for asset_key, md in self.last_data.items():
+                stats = self.stats.get(asset_key)
+                z = stats.z if stats else None
+                lines.append(
+                    f"{asset_key}: basis {md['actual_basis']:.2f}, "
+                    f"z {'warm-up' if z is None else f'{z:+.2f}'}, "
+                    f"{self.risk_manager.lots_traded_today(asset_key):.0f} "
+                    f"lots today")
+            return "\n".join(lines)
+        if command == '/positions':
+            rows = self._position_snapshot()
+            if not rows:
+                return "No open positions"
+            return "\n".join(
+                f"{r['position_id']} {r['asset']} {r['signal_type']} "
+                f"{r['lots']:.0f} lots, P&L ${r['unrealized_pnl']:,.0f}, "
+                f"age {r['age']}" for r in rows)
+        if command == '/pnl':
+            m = self.performance_tracker.get_metrics()
+            return (f"Day: ${self.risk_manager.daily_realized_pnl:,.0f} | "
+                    f"Total: ${m['total_pnl']:,.0f} | "
+                    f"Trades: {m['total_trades']} | "
+                    f"Win rate: {m['win_rate']:.1f}%")
+        return None
+
     def log_status(self, all_market_data):
+        self._write_runtime_status(all_market_data)
         target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
         halted, why = self.risk_manager.halted()
         for asset_key, md in all_market_data.items():
@@ -455,7 +551,9 @@ class Coordinator:
 
                 if self.reconciler and self.trading_mode == "LIVE" \
                         and self.reconciler.due():
-                    self.reconciler.check()
+                    for action, leg_name, detail in self.reconciler.check():
+                        self.notifier.notify_reconcile(action, leg_name,
+                                                       str(detail))
 
                 time.sleep(max(poll - (time.time() - started), 0.05))
 
@@ -491,6 +589,8 @@ class Coordinator:
             leg.close()
 
         m = self.performance_tracker.get_metrics()
+        self.notifier.notify_shutdown(m)
+        self.notifier.stop()
         logging.info("FINAL: P&L $%.0f | trades %d | win rate %.1f%% | "
                      "max drawdown $%.0f", m['total_pnl'],
                      m['total_trades'], m['win_rate'], m['max_drawdown'])

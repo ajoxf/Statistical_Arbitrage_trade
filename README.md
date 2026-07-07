@@ -112,12 +112,37 @@ exceeding it. Hard limits are `MAX_LOT_SIZE`, `MAX_DAILY_TRADES`, and
 lot if the two brokers' contract sizes differ — verify it against both
 brokers' specs before going live.
 
+## Telegram notifications & commands
+
+Create a bot via @BotFather, put `TELEGRAM_BOT_TOKEN` (and optionally
+`TELEGRAM_CHAT_ID`) in `.env`, then send `/start` to the bot — the
+chat id auto-registers. You'll get entry/exit alerts with fills and
+the frozen exit plan, circuit-breaker halts, reconciler actions, and
+startup/shutdown summaries. Commands: `/status`, `/positions`,
+`/pnl`. Sends run on a background thread — Telegram can never block
+or crash the trading loop. Leave the token blank to disable.
+
+## Web dashboard (read-only)
+
+```bash
+python run_dashboard.py --db algo_trading.db --port 8080
+```
+
+A separate process (safe to run against LIVE) serving live status
+(z-scores, lot-target progress, breaker state), open positions with
+unrealized P&L, closed-trade reviews (entry/exit z, exit reason), and
+the untracked-close ledger at http://127.0.0.1:8080. It reads the
+SQLite DB plus `runtime_status.json`, which the coordinator refreshes
+every ~10s.
+
 ## Project layout
 
 ```
 main.py              single-account entry point (legacy flow)
 run_leg.py           leg runner — one per MT5 account
 run_coordinator.py   coordinator — signals, pairing, routing
+run_watchdog.py      relaunches the coordinator on crash
+run_dashboard.py     read-only web dashboard (own process)
 statarb/             trading package (broker, legs, pair_executor, ...)
 tests/               pytest suite with fakes (no MT5 needed)
 legacy/              original single-file version (superseded)

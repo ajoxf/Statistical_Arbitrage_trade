@@ -133,6 +133,16 @@ class AlgoTradingConfig:
             'SYNC_INTERVAL_SEC': 20,
             'STRIKES': 3,            # consecutive mismatches before acting
         }
+        # Token/chat id come from .env (TELEGRAM_BOT_TOKEN,
+        # TELEGRAM_CHAT_ID) — these flags only gate what gets sent
+        self.TELEGRAM = {
+            'ENABLED': True,
+            'NOTIFY_TRADES': True,
+            'NOTIFY_SIGNALS': True,
+            'NOTIFY_ERRORS': True,
+            'NOTIFY_SYSTEM': True,
+            'COMMANDS': True,        # /status /positions /pnl
+        }
         self.EXITS = {
             'USE_SIGMA_TARGET': True,   # TP = TARGET_FRACTION*|z|*sigma*oz
             'TP_USD_PER_LOT': 0.0,      # fallback TP when sigma target off
@@ -172,7 +182,8 @@ class AlgoTradingConfig:
                           ('signals', 'SIGNALS'),
                           ('costs', 'COSTS'),
                           ('exits', 'EXITS'),
-                          ('reconcile', 'RECONCILE')]:
+                          ('reconcile', 'RECONCILE'),
+                          ('telegram', 'TELEGRAM')]:
             if key in raw:
                 getattr(cfg, attr).update(raw[key])
 
