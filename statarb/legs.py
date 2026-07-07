@@ -49,6 +49,8 @@ class LocalLeg:
             'volume_max': getattr(info, 'volume_max', 1000.0),
             'volume_step': getattr(info, 'volume_step', 0.01),
             'point': getattr(info, 'point', 0.01),
+            'tick_size': (getattr(info, 'trade_tick_size', 0)
+                          or getattr(info, 'point', 0.01)),
         }
 
     def tick(self, symbol):
@@ -76,9 +78,14 @@ class LocalLeg:
             'error': result.error,
         }
 
-    def place_limit(self, symbol, side, volume, price, comment=""):
+    def place_limit(self, symbol, side, volume, price, comment="",
+                    position_ticket=None):
         return self.broker.place_pending_limit(
-            symbol, OrderSide(side), volume, price, comment=comment)
+            symbol, OrderSide(side), volume, price, comment=comment,
+            position_ticket=position_ticket)
+
+    def pending_orders(self, symbol=None):
+        return self.broker.pending_orders_by_magic(symbol)
 
     def modify_order(self, ticket, price):
         return self.broker.modify_pending(ticket, price)
@@ -177,12 +184,20 @@ class RemoteLeg:
                     'error': 'IPC failure during order'}
         return reply
 
-    def place_limit(self, symbol, side, volume, price, comment=""):
+    def place_limit(self, symbol, side, volume, price, comment="",
+                    position_ticket=None):
         reply = self._request({
             'cmd': 'place_limit', 'symbol': symbol, 'side': side,
             'volume': volume, 'price': price, 'comment': comment,
+            'position_ticket': position_ticket,
         })
         return reply or {'ok': False, 'ticket': None, 'error': 'IPC failure'}
+
+    def pending_orders(self, symbol=None):
+        reply = self._request({'cmd': 'pending_orders', 'symbol': symbol})
+        if reply and reply.get('ok'):
+            return reply['orders']
+        return None    # None = unknown (IPC failure), NOT "no orders"
 
     def modify_order(self, ticket, price):
         reply = self._request({'cmd': 'modify_order', 'ticket': ticket,

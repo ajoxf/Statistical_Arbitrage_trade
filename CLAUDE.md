@@ -106,6 +106,42 @@ legacy/                 original monolith, superseded — do not extend
 - Parameters (ENTRY_Z 3.0, STOP_Z 4.5, etc.) are STRUCTURE defaults —
   recalibrate against recorded gold basis data before LIVE.
 
+## Live-tested MT5 lessons (ported 2026-07 from the June
+## `claude/limit-orders-trade-exits-q0quM` branch) — don't reintroduce
+
+That branch ran REAL orders; its commit log paid for these rules:
+
+- Orphan pending orders accumulate after timeouts/failed cancels and
+  eventually fill as untracked naked positions. Sweep ALL of our
+  pending orders on both symbols before every new pair execution
+  (`PairExecutor.sweep_stale_orders`).
+- Invalid Price (10015): limit prices MUST come from a fresh tick,
+  be rounded to `trade_tick_size`, and sit strictly inside the book
+  (BUY_LIMIT < ask, SELL_LIMIT > bid) — clamp to bid/ask when an
+  offset would cross.
+- Some brokers reject RETURN filling on pending orders — choose the
+  filling mode from `symbol_info.filling_mode` bitmask (FOK=1, IOC=2,
+  else RETURN).
+- Deal history lags briefly after a cancel: a zero-fill read right
+  after TRADE_ACTION_REMOVE must be re-read before being believed.
+- A pending limit with `position=<ticket>` CLOSES that position when
+  it executes — non-urgent hedging-mode exits go limit-first (spread
+  saved on every exit), escalating to a market ticket-close on
+  timeout. Stops still never rest.
+- Their cancel-and-replace re-peg needed order_ticket_history to
+  track fills across replaced tickets; our MODIFY-based re-peg keeps
+  one ticket for the order's life — do not regress to cancel/replace.
+
+## Repo branch map (2026-07)
+
+- `main` = this system (fast-forwarded 2026-07).
+- `claude/limit-orders-trade-exits-q0quM` (June): older parallel
+  system (adapters/, feature_files/ web app, Telegram bot, OKX).
+  Superseded for trading logic — its MT5 lessons are ported (above);
+  the web dashboard/Telegram/OKX adapter remain UNPORTED and are the
+  only reasons to keep it.
+- Other `claude/*` branches: session artifacts, superseded.
+
 ## Bugs already found and fixed (2026-07) — don't reintroduce
 
 - Legacy `close_position` routed closes through the entry path with

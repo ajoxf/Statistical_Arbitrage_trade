@@ -71,14 +71,24 @@ class PairExecutor:
     # ------------------------------------------------------------------
 
     def _peg_price(self, leg, symbol, side, meta):
+        """Peg price from a FRESH tick, rounded to tick size and kept
+        strictly inside the book — brokers reject a BUY_LIMIT at/above
+        the ask with Invalid Price 10015 (live-tested 2026-06)."""
         tick = leg.tick(symbol)
         if not tick:
             return None
         offset = self.config.EXECUTION.get('PEG_OFFSET_POINTS', 0.0) \
             * meta.get('point', 0.01)
         if side is OrderSide.BUY:
-            return tick['bid'] + offset       # passive side for a buyer
-        return tick['ask'] - offset           # passive side for a seller
+            price = tick['bid'] + offset      # passive side for a buyer
+            if price >= tick['ask']:
+                price = tick['bid']           # never cross into the ask
+        else:
+            price = tick['ask'] - offset      # passive side for a seller
+            if price <= tick['bid']:
+                price = tick['ask']
+        tick_size = meta.get('tick_size') or meta.get('point', 0.01) or 0.01
+        return round(round(price / tick_size) * tick_size, 10)
 
     def _market_child(self, leg, symbol, side, volume, comment):
         result = leg.order(
@@ -93,8 +103,13 @@ class PairExecutor:
             'error': result.get('error'),
         }
 
-    def _limit_child(self, leg, symbol, side, volume, comment, timeout):
-        """Rest at peg, re-peg via modify, escalate on timeout."""
+    def _limit_child(self, leg, symbol, side, volume, comment, timeout,
+                     position_ticket=None, escalate=None):
+        """Rest at peg, re-peg via modify, escalate on timeout.
+
+        position_ticket makes the limit a CLOSING order for that
+        position (hedging mode). escalate overrides the timeout
+        fallback (default: cross at market)."""
         execution = self.config.EXECUTION
         meta = self._meta(leg, symbol)
         poll = execution.get('ORDER_POLL_SEC', 0.5)
@@ -106,7 +121,8 @@ class PairExecutor:
             return self._market_child(leg, symbol, side, volume, comment)
 
         placed = leg.place_limit(symbol, side.value, volume, price,
-                                 comment=comment)
+                                 comment=comment,
+                                 position_ticket=position_ticket)
         if not placed.get('ok'):
             logging.warning("[%s] limit rejected (%s) — falling back to "
                             "market", leg.name, placed.get('error'))
@@ -144,7 +160,11 @@ class PairExecutor:
         remaining = volume - filled
 
         if remaining > EPS and execution.get('ON_TIMEOUT', 'cross') == 'cross':
-            crossed = self._market_child(leg, symbol, side, remaining, comment)
+            if escalate is None:
+                crossed = self._market_child(leg, symbol, side, remaining,
+                                             comment)
+            else:
+                crossed = escalate(remaining)
             got = crossed['filled']
             if got > EPS:
                 total = filled + got
@@ -157,6 +177,38 @@ class PairExecutor:
         return {'filled': filled, 'price': vwap, 'tickets': tickets,
                 'ok': filled > EPS,
                 'error': None if filled > EPS else 'no fill before timeout'}
+
+    # ------------------------------------------------------------------
+    # Stale-order sweep
+    # ------------------------------------------------------------------
+
+    def sweep_stale_orders(self, targets):
+        """Cancel ALL of our leftover pending orders on these symbols
+        before a new execution. Orphan pendings accumulate after
+        timeouts and failed cancels; left alone they eventually fill
+        and become untracked naked positions (live-tested 2026-06).
+
+        targets: iterable of (leg, symbol)."""
+        seen = set()
+        for leg, symbol in targets:
+            key = (leg.name, symbol)
+            if key in seen:
+                continue
+            seen.add(key)
+            orders = leg.pending_orders(symbol)
+            if not orders:
+                continue
+            logging.warning("[%s] %d stale pending order(s) on %s — "
+                            "cancelling before new execution",
+                            leg.name, len(orders), symbol)
+            for order in orders:
+                state = leg.cancel_order(order['ticket'])
+                leaked = float(state.get('filled_volume') or 0.0)
+                if leaked > EPS:
+                    logging.critical(
+                        "[%s] stale order %s on %s had FILLED %.2f lots — "
+                        "reconciler will pick the position up as an orphan",
+                        leg.name, order['ticket'], symbol, leaked)
 
     # ------------------------------------------------------------------
     # Sliced sending
@@ -246,6 +298,9 @@ class PairExecutor:
         spot_trade = Trade(spot_symbol, spot_side, 0.0)
         futures_trade = Trade(futures_symbol, futures_side, 0.0)
 
+        self.sweep_stale_orders([(self.spot_leg, spot_symbol),
+                                 (self.futures_leg, futures_symbol)])
+
         # Leg 1: spot clip — patient (no position at risk while resting)
         spot_filled, spot_vwap, spot_tickets = self._send_sliced(
             self.spot_leg, spot_symbol, spot_side, lot_size, comment,
@@ -333,26 +388,53 @@ class PairExecutor:
     # Pair close
     # ------------------------------------------------------------------
 
+    def _market_close_ticket(self, leg, trade, ticket, volume, comment):
+        result = leg.close_ticket(
+            trade.symbol, ticket, volume, trade.side.value,
+            slippage_points=self.config.EXECUTION['SLIPPAGE_TOLERANCE'],
+            comment=comment)
+        if not result.get('ok'):
+            logging.error("Close ticket %s on [%s] failed: %s",
+                          ticket, leg.name, result.get('error'))
+            return {'filled': 0.0, 'price': None, 'tickets': [],
+                    'ok': False, 'error': result.get('error')}
+        got = float(result.get('filled_volume') or volume)
+        return {'filled': got, 'price': result.get('price'), 'tickets': [],
+                'ok': True, 'error': None}
+
     def _close_leg(self, leg, trade, comment, urgent):
         """Close one leg. Tickets recorded -> close each by ticket
         (hedging-mode correct); none recorded -> opposite market order
-        (netting fallback)."""
+        (netting fallback).
+
+        Non-urgent ticket closes go limit-first: a pending limit with
+        position=ticket closes the position when it executes, saving
+        the spread on every exit; timeout escalates to a market close
+        of the remainder. Urgent closes (stops) never rest."""
         if trade.position_tickets:
+            style = 'market' if urgent else \
+                self.config.EXECUTION.get('ENTRY_STYLE', 'market')
+            timeout = self.config.EXECUTION.get('EXIT_TIMEOUT_SEC', 15)
+            close_side = trade.side.opposite
             filled = 0.0
             notional = 0.0
             per_ticket = trade.lot_size / len(trade.position_tickets)
+
             for ticket in trade.position_tickets:
-                result = leg.close_ticket(
-                    trade.symbol, ticket, per_ticket, trade.side.value,
-                    slippage_points=self.config.EXECUTION['SLIPPAGE_TOLERANCE'],
-                    comment=comment)
-                if result.get('ok'):
-                    got = float(result.get('filled_volume') or per_ticket)
-                    filled += got
-                    notional += got * float(result.get('price') or 0.0)
+                if style == 'limit':
+                    result = self._limit_child(
+                        leg, trade.symbol, close_side, per_ticket, comment,
+                        timeout, position_ticket=ticket,
+                        escalate=lambda remaining, t=ticket:
+                            self._market_close_ticket(leg, trade, t,
+                                                      remaining, comment))
                 else:
-                    logging.error("Close ticket %s on [%s] failed: %s",
-                                  ticket, leg.name, result.get('error'))
+                    result = self._market_close_ticket(leg, trade, ticket,
+                                                       per_ticket, comment)
+                got = result['filled']
+                if got > EPS:
+                    filled += got
+                    notional += got * float(result['price'] or 0.0)
             vwap = notional / filled if filled > EPS else None
             return filled, vwap
 

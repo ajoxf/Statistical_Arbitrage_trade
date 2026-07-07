@@ -21,7 +21,10 @@ class FakeLeg:
 
     def ensure_symbol(self, symbol):
         return {'ok': True, 'volume_min': 0.01, 'volume_max': 100.0,
-                'volume_step': 0.01}
+                'volume_step': 0.01, 'tick_size': 0.01}
+
+    def pending_orders(self, symbol=None):
+        return []
 
     def order(self, symbol, side, volume, slippage_points=1.0, comment=""):
         if symbol in self.fail_symbols:

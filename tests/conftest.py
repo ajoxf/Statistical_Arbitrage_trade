@@ -43,7 +43,8 @@ class FakeBroker:
 
     # --- pending-order simulation (limit path) ---
 
-    def place_pending_limit(self, symbol, side, volume, price, comment=""):
+    def place_pending_limit(self, symbol, side, volume, price, comment="",
+                            position_ticket=None):
         if symbol in self.fail_symbols:
             return {'ok': False, 'ticket': None, 'error': 'forced failure'}
         self.next_ticket += 1
@@ -103,6 +104,9 @@ class FakeBroker:
         return [p for p in self.live_positions
                 if symbol is None or p['symbol'] == symbol]
 
+    def pending_orders_by_magic(self, symbol=None):
+        return []
+
     # --- methods used by LocalLeg / LegServer ---
 
     def initialize(self):
@@ -122,7 +126,8 @@ class FakeBroker:
         if symbol in self.fail_symbols:
             return None
         return SimpleNamespace(visible=True, point=0.01, volume_min=0.01,
-                               volume_max=200.0, volume_step=0.01)
+                               volume_max=200.0, volume_step=0.01,
+                               trade_tick_size=0.01)
 
     def symbol_tick(self, symbol):
         if symbol in self.fail_symbols:

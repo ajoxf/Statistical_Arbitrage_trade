@@ -9,6 +9,7 @@ config) so each such process can be pointed at its own terminal.
 """
 
 import logging
+import time
 from datetime import datetime
 
 from .models import OrderSide
@@ -136,9 +137,33 @@ class BrokerSession:
         modes.append('RETURN')  # always available for pending orders
         return modes
 
-    def place_pending_limit(self, symbol, side, volume, price, comment=""):
-        """Rest a limit order (RETURN filling: partials stay working)."""
+    def _pending_filling_mode(self, symbol):
+        """Pick a filling mode the broker actually accepts for pending
+        orders. RETURN is the default, but some brokers only allow
+        FOK/IOC (flags in symbol_info.filling_mode) and reject RETURN
+        with 'Unsupported filling mode' — live-tested 2026-06."""
+        info = self.symbol_info(symbol)
+        mask = getattr(info, 'filling_mode', 0) if info else 0
+        if mask & 1:
+            return mt5.ORDER_FILLING_FOK
+        if mask & 2:
+            return mt5.ORDER_FILLING_IOC
+        return mt5.ORDER_FILLING_RETURN
+
+    def place_pending_limit(self, symbol, side, volume, price, comment="",
+                            position_ticket=None):
+        """Rest a limit order. With position_ticket, the limit CLOSES
+        that position when it executes (hedging-mode limit exits).
+
+        Price must be rounded to trade_tick_size and inside the book
+        (BUY_LIMIT strictly below ask) or brokers reject with
+        Invalid Price (10015) — live-tested 2026-06."""
         try:
+            info = self.symbol_info(symbol)
+            tick_size = getattr(info, 'trade_tick_size', 0) or \
+                getattr(info, 'point', 0.01) or 0.01
+            price = round(round(price / tick_size) * tick_size, 10)
+
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
                 "symbol": symbol,
@@ -149,8 +174,10 @@ class BrokerSession:
                 "magic": MAGIC_NUMBER,
                 "comment": comment,
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_RETURN,
+                "type_filling": self._pending_filling_mode(symbol),
             }
+            if position_ticket:
+                request["position"] = int(position_ticket)
             result = mt5.order_send(request)
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                 error = (mt5.last_error() if result is None
@@ -159,6 +186,19 @@ class BrokerSession:
             return {'ok': True, 'ticket': result.order, 'error': None}
         except Exception as e:
             return {'ok': False, 'ticket': None, 'error': str(e)}
+
+    def pending_orders_by_magic(self, symbol=None):
+        """Pending orders created by THIS system. Used to sweep stale
+        orders before a new execution — orphan pendings accumulate
+        after timeouts and failed cancels (live-tested 2026-06)."""
+        if mt5 is None:
+            return []
+        raw = (mt5.orders_get(symbol=symbol) if symbol
+               else mt5.orders_get()) or ()
+        return [{'ticket': o.ticket, 'symbol': o.symbol,
+                 'volume': getattr(o, 'volume_current', 0.0),
+                 'price': getattr(o, 'price_open', 0.0)}
+                for o in raw if o.magic == MAGIC_NUMBER]
 
     def modify_pending(self, ticket, price):
         """Re-peg a resting limit in place — no cancel/replace round trip."""
@@ -178,13 +218,18 @@ class BrokerSession:
 
     def cancel_pending(self, ticket):
         """Remove a resting order, then ALWAYS report what filled first —
-        a 'cancelled' order can carry partial fills."""
+        a 'cancelled' order can carry partial fills, and the deal
+        history can lag briefly after a cancel (live-tested 2026-06),
+        so a zero-fill result is re-read once."""
         try:
             result = mt5.order_send({
                 "action": mt5.TRADE_ACTION_REMOVE,
                 "order": ticket,
             })
             state = self.order_fill_state(ticket)
+            if state['filled_volume'] == 0 and not state['still_open']:
+                time.sleep(0.05)   # deal history lag after cancel
+                state = self.order_fill_state(ticket)
             state['cancelled'] = (result is not None and
                                   result.retcode == mt5.TRADE_RETCODE_DONE)
             return state

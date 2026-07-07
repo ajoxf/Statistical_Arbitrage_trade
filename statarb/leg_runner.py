@@ -54,7 +54,11 @@ class LegServer:
             if cmd == 'place_limit':
                 return self.leg.place_limit(
                     msg['symbol'], msg['side'], msg['volume'], msg['price'],
-                    comment=msg.get('comment', ''))
+                    comment=msg.get('comment', ''),
+                    position_ticket=msg.get('position_ticket'))
+            if cmd == 'pending_orders':
+                return {'ok': True,
+                        'orders': self.leg.pending_orders(msg.get('symbol'))}
             if cmd == 'modify_order':
                 return self.leg.modify_order(msg['ticket'], msg['price'])
             if cmd == 'cancel_order':
