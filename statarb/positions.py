@@ -58,6 +58,19 @@ class PositionManager:
             futures_pnl = (current_futures_price - position.futures_trade.executed_price) * fut_units
 
         position.unrealized_pnl = spot_pnl + futures_pnl
+
+        # Lifecycle extremes with timing — tunes TP/gate/max-hold from
+        # the measured peak distribution instead of opinion
+        age_min = (datetime.now() - position.entry_time).total_seconds() / 60
+        if position.peak_pnl is None \
+                or position.unrealized_pnl > position.peak_pnl:
+            position.peak_pnl = position.unrealized_pnl
+            position.peak_min = age_min
+        if position.trough_pnl is None \
+                or position.unrealized_pnl < position.trough_pnl:
+            position.trough_pnl = position.unrealized_pnl
+            position.trough_min = age_min
+
         self.data_logger.log_position(position)
 
     @staticmethod

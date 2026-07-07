@@ -105,6 +105,53 @@ def test_circuit_breaker_daily_loss_halt(config, data_logger):
 # ---------------------------------------------------------------------------
 
 
+def test_lifecycle_extremes_tracked_with_timing(data_logger):
+    """Peak/trough net P&L with minutes-after-entry — the data that
+    tunes TP/gate/max-hold from measurements instead of opinion."""
+    pm = PositionManager(data_logger)
+    spot = filled_trade('XAUUSD', OrderSide.BUY, 50.0, 3300.0)
+    fut = filled_trade('GC1225', OrderSide.SELL, 50.0, 3320.0)
+    position = pm.create_position('GOLD', SignalType.SELL_BASIS,
+                                  spot, fut, 25.0)
+
+    # Mark 1: +$5,000 (spot +1)
+    pm.update_position_pnl(position.position_id, 3301.0, 3320.0, 20.0,
+                           contract_size=100)
+    # Mark 2: -$10,000 (spot -2)
+    pm.update_position_pnl(position.position_id, 3298.0, 3320.0, 20.0,
+                           contract_size=100)
+    # Mark 3: +$2,500 — must NOT displace the earlier peak
+    pm.update_position_pnl(position.position_id, 3300.5, 3320.0, 20.0,
+                           contract_size=100)
+
+    assert position.peak_pnl == pytest.approx(5000.0)
+    assert position.trough_pnl == pytest.approx(-10000.0)
+    assert position.peak_min is not None and position.peak_min < 1.0
+    assert position.trough_min is not None
+
+    # Round-trips through the crash-safe state (restart keeps the data)
+    recovered = Position.from_dict(position.to_dict())
+    assert recovered.peak_pnl == pytest.approx(5000.0)
+    assert recovered.trough_pnl == pytest.approx(-10000.0)
+
+    # And lands in the trade_review table with the outcome tag
+    position.close_reason = 'DOLLAR_STOP'
+    position.z_reverted = True
+    from datetime import datetime
+    position.close_time = datetime.now()
+    data_logger.log_trade_review(position, exit_z=0.2,
+                                 outcome='STOPPED_AFTER_FULL_REVERSION')
+    import sqlite3
+    conn = sqlite3.connect(data_logger.db_path)
+    row = conn.execute(
+        "SELECT peak_pnl, peak_min, trough_pnl, outcome FROM trade_review "
+        "WHERE position_id=?", (position.position_id,)).fetchone()
+    conn.close()
+    assert row[0] == pytest.approx(5000.0)
+    assert row[2] == pytest.approx(-10000.0)
+    assert row[3] == 'STOPPED_AFTER_FULL_REVERSION'
+
+
 def test_paper_mode_full_close_path_end_to_end(tmp_path):
     """Open -> mark -> close entirely through the PaperExecutor: the
     same lifecycle code as LIVE, fills at the simulated touch."""

@@ -83,10 +83,11 @@ class ZSignalGenerator:
         if z is None or abs(z) < cfg['ENTRY_Z']:
             return None
 
-        if abs(z) >= cfg['STOP_Z']:
-            logging.info("%s: |z|=%.2f beyond entry ceiling %.2f — "
-                         "refusing to enter on top of the stop",
-                         asset, abs(z), cfg['STOP_Z'])
+        ceiling = cfg.get('MAX_ENTRY_Z', cfg['STOP_Z'])
+        if abs(z) >= ceiling:
+            logging.info("%s: |z|=%.2f beyond entry ceiling %.2f — a z "
+                         "this stretched is a momentum spike mid-flight, "
+                         "not a better entry", asset, abs(z), ceiling)
             return None
 
         # Basis rich (z>0): sell it. Basis cheap (z<0): buy it.

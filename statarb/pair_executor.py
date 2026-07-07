@@ -280,6 +280,34 @@ class PairExecutor:
         return True
 
     # ------------------------------------------------------------------
+    # Atomic pre-checks
+    # ------------------------------------------------------------------
+
+    def _precheck_pair(self, lot_size, spot_symbol, futures_symbol):
+        """Validate both legs up front. Returns an error string or None."""
+        spot_meta = self._meta(self.spot_leg, spot_symbol)
+        fut_meta = self._meta(self.futures_leg, futures_symbol)
+        if not spot_meta.get('ok'):
+            return f"spot symbol {spot_symbol} unavailable on " \
+                   f"[{self.spot_leg.name}]"
+        if not fut_meta.get('ok'):
+            return f"futures symbol {futures_symbol} unavailable on " \
+                   f"[{self.futures_leg.name}]"
+
+        hedge_ratio = self.config.TRADING.get('HEDGE_RATIO', 1.0)
+        slice_lots = self.config.TRADING.get('SLICE_LOTS') or lot_size
+        spot_child = min(slice_lots, lot_size)
+        fut_child = min(slice_lots, lot_size) * hedge_ratio
+
+        if spot_child < spot_meta.get('volume_min', 0) - EPS:
+            return (f"spot child order {spot_child:.2f} below minimum "
+                    f"{spot_meta['volume_min']:.2f} on {spot_symbol}")
+        if fut_child < fut_meta.get('volume_min', 0) - EPS:
+            return (f"futures child order {fut_child:.2f} below minimum "
+                    f"{fut_meta['volume_min']:.2f} on {futures_symbol}")
+        return None
+
+    # ------------------------------------------------------------------
     # Pair entry (PositionManager-compatible interface)
     # ------------------------------------------------------------------
 
@@ -300,6 +328,17 @@ class PairExecutor:
 
         self.sweep_stale_orders([(self.spot_leg, spot_symbol),
                                  (self.futures_leg, futures_symbol)])
+
+        # Atomic pre-checks: BOTH legs validated before placing EITHER
+        # order — a leg that fails minimums after the other filled is
+        # an instant naked position
+        precheck_error = self._precheck_pair(lot_size, spot_symbol,
+                                             futures_symbol)
+        if precheck_error:
+            logging.error("Entry refused (pre-check): %s", precheck_error)
+            spot_trade.status = futures_trade.status = "ERROR"
+            spot_trade.error_message = precheck_error
+            return False, spot_trade, futures_trade
 
         # Leg 1: spot clip — patient (no position at risk while resting)
         spot_filled, spot_vwap, spot_tickets = self._send_sliced(

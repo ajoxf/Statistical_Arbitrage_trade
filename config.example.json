@@ -62,6 +62,7 @@
     "USE_Z_SIGNALS": true,
     "ENTRY_Z": 3.0,
     "EXIT_Z": 0.5,
+    "MAX_ENTRY_Z": 4.5,
     "STOP_Z": 4.5,
     "LOOKBACK_SEC": 7200,
     "STATS_INTERVAL_SEC": 300,
@@ -80,13 +81,20 @@
   },
   "exits": {
     "USE_SIGMA_TARGET": true,
+    "TP_CAPITAL_PCT": 0.0,
     "TP_USD_PER_LOT": 0.0,
     "COST_FLOOR_MULT": 1.2,
     "STOP_USD_PER_LOT": 30.0,
+    "STOP_CAPITAL_PCT": 0.0,
     "RR": 0.3,
+    "LEVERAGE": 0.0,
+    "M2M_BUFFER_PCT": 0.0,
     "GATE_FLOOR_USD": 0.0,
     "MAX_HOLD_HALF_LIVES": 4.0,
-    "MAX_HOLD_FALLBACK_MIN": 240
+    "MAX_HOLD_FALLBACK_MIN": 240,
+    "MAX_HOLD_PROGRESS_SUPPRESS": 0.5,
+    "HARD_TIME_STOP_MULT": 3.0,
+    "Z_STOP_EXIT_ENABLED": false
   },
   "reconcile": {
     "SYNC_INTERVAL_SEC": 20,

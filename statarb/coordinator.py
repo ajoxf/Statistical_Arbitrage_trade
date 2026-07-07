@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from .broker import BrokerSession
 from .config import AlgoTradingConfig
 from .database import DataLogger
-from .exits import ExitLadder
+from .exits import ExitLadder, outcome_tag
 from .legs import LocalLeg, RemoteLeg
 from .marketdata import compute_market_data
 from .models import Position, SignalType, Trade, OrderSide
@@ -289,7 +289,11 @@ class Coordinator:
         active = self.position_manager.get_positions_for_asset(asset_key)
 
         # -- exits first (risk before opportunity) --
+        z_home = (z is not None
+                  and abs(z) <= self.config.SIGNALS['EXIT_Z'])
         for position_id, position in list(active.items()):
+            if z_home:
+                position.z_reverted = True   # for the outcome tag
             self.position_manager.update_position_pnl(
                 position_id, market_data['spot_price'],
                 market_data['futures_price'],
@@ -403,17 +407,25 @@ class Coordinator:
         self.risk_manager.on_position_closed(position.realized_pnl)
         self.z_gen.notify_close(position.asset, reason,
                                 position.signal_type)
-        self.data_logger.log_trade_review(position, exit_z=z)
-        self.notifier.notify_trade_closed(position, exit_z=z)
+        tag = outcome_tag(reason, position.z_reverted)
+        self.data_logger.log_trade_review(position, exit_z=z, outcome=tag)
+        self.notifier.notify_trade_closed(position, exit_z=z, outcome=tag)
 
         halted, why = self.risk_manager.halted()
         if halted and not self._was_halted:
             self.notifier.notify_breaker(why)
         self._was_halted = halted
 
-        logging.info("Closed %s: %s — realized $%.2f (streak %d, day $%.0f)",
-                     position_id, reason, position.realized_pnl,
-                     self.risk_manager.consecutive_losses,
+        extremes = ""
+        if position.peak_pnl is not None:
+            extremes = (f" | peak/trough ${position.peak_pnl:+,.2f} "
+                        f"({position.peak_min:.0f}m) / "
+                        f"${position.trough_pnl:+,.2f} "
+                        f"({position.trough_min:.0f}m)")
+        logging.info("Closed %s: %s [%s] — realized $%.2f%s "
+                     "(streak %d, day $%.0f)",
+                     position_id, reason, tag, position.realized_pnl,
+                     extremes, self.risk_manager.consecutive_losses,
                      self.risk_manager.daily_realized_pnl)
 
     # ------------------------------------------------------------------

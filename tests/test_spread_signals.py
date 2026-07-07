@@ -25,7 +25,7 @@ def market_data(spread_dollars=0.30):
 @pytest.fixture
 def sig_config(config):
     config.SIGNALS.update({
-        'ENTRY_Z': 2.0, 'EXIT_Z': 0.5, 'STOP_Z': 4.0,
+        'ENTRY_Z': 2.0, 'EXIT_Z': 0.5, 'STOP_Z': 4.0, 'MAX_ENTRY_Z': 4.0,
         'LOOKBACK_SEC': 10000, 'STATS_INTERVAL_SEC': 5,
         'MIN_SAMPLES': 50, 'TREND_WINDOW_SEC': 100,
         'TREND_FILTER': False,
@@ -119,10 +119,26 @@ def test_entry_fires_and_direction(sig_config):
 
 def test_entry_ceiling_refuses_on_top_of_stop(sig_config):
     clock = FakeClock()
-    stats = stretched_stats(sig_config, clock, z_target=4.2)   # > STOP_Z=4.0
+    stats = stretched_stats(sig_config, clock, z_target=4.2)  # > ceiling 4.0
     gen = ZSignalGenerator(sig_config, clock=clock)
     assert gen.entry_signal('GOLD', stats, market_data(), {},
                             50.0, 100) is None
+
+
+def test_entry_ceiling_independent_of_z_stop(sig_config):
+    # MAX_ENTRY_Z is its own knob: ceiling 3.5 refuses z=3.8 even
+    # though the z-stop threshold sits far away at 4.5
+    sig_config.SIGNALS['MAX_ENTRY_Z'] = 3.5
+    sig_config.SIGNALS['STOP_Z'] = 4.5
+    clock = FakeClock()
+    stats = stretched_stats(sig_config, clock, z_target=3.8)
+    gen = ZSignalGenerator(sig_config, clock=clock)
+    assert gen.entry_signal('GOLD', stats, market_data(), {},
+                            50.0, 100) is None
+    # ... while z=3.0 inside the band still enters
+    stats_ok = stretched_stats(sig_config, FakeClock(), z_target=3.0)
+    assert gen.entry_signal('GOLD', stats_ok, market_data(), {},
+                            50.0, 100) is not None
 
 
 def test_trend_filter_blocks_fighting_the_tape(sig_config):

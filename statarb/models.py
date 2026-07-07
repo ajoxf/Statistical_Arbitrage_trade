@@ -78,6 +78,13 @@ class Position:
         self.close_time = None
         self.close_reason = None
         self.exit_plan = None      # frozen dollar levels (exits.py)
+        # Lifecycle extremes — the raw data that tunes TP/gate/max-hold
+        # from measurements instead of opinion (peak distribution)
+        self.peak_pnl = None
+        self.peak_min = None       # minutes after entry
+        self.trough_pnl = None
+        self.trough_min = None
+        self.z_reverted = False    # z entered the exit band during hold
 
     # -- crash-safe persistence -----------------------------------------
 
@@ -112,6 +119,11 @@ class Position:
             'status': self.status.value,
             'unrealized_pnl': self.unrealized_pnl,
             'exit_plan': self.exit_plan,
+            'peak_pnl': self.peak_pnl,
+            'peak_min': self.peak_min,
+            'trough_pnl': self.trough_pnl,
+            'trough_min': self.trough_min,
+            'z_reverted': self.z_reverted,
             'spot_trade': self._trade_to_dict(self.spot_trade),
             'futures_trade': self._trade_to_dict(self.futures_trade),
         }
@@ -128,4 +140,9 @@ class Position:
         position.status = PositionStatus(d['status'])
         position.unrealized_pnl = d.get('unrealized_pnl', 0.0)
         position.exit_plan = d.get('exit_plan')
+        position.peak_pnl = d.get('peak_pnl')
+        position.peak_min = d.get('peak_min')
+        position.trough_pnl = d.get('trough_pnl')
+        position.trough_min = d.get('trough_min')
+        position.z_reverted = d.get('z_reverted', False)
         return position

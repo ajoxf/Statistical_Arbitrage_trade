@@ -12,16 +12,19 @@ from statarb.positions import PositionManager
 class FakeLeg:
     """Leg with finite liquidity per symbol."""
 
-    def __init__(self, name, liquidity=None, fail_symbols=None, price=100.0):
+    def __init__(self, name, liquidity=None, fail_symbols=None, price=100.0,
+                 volume_min=0.01):
         self.name = name
         self.liquidity = dict(liquidity or {})   # symbol -> lots available
         self.fail_symbols = set(fail_symbols or [])
         self.price = price
+        self.volume_min = volume_min
         self.orders = []                         # (symbol, side, req, filled)
 
     def ensure_symbol(self, symbol):
-        return {'ok': True, 'volume_min': 0.01, 'volume_max': 100.0,
-                'volume_step': 0.01, 'tick_size': 0.01}
+        return {'ok': True, 'volume_min': self.volume_min,
+                'volume_max': 100.0, 'volume_step': 0.01,
+                'tick_size': 0.01}
 
     def pending_orders(self, symbol=None):
         return []
@@ -162,6 +165,22 @@ def test_incomplete_close_marks_error(clip_config, data_logger):
 
     assert not pm.close_position(position.position_id, "SIGNAL_EXIT", px)
     assert position.status == PositionStatus.ERROR
+
+
+def test_atomic_precheck_refuses_before_any_order(clip_config):
+    """A leg that fails minimums after the other filled is an instant
+    naked position — BOTH legs are validated before EITHER order."""
+    spot = FakeLeg('account_a')
+    fut = FakeLeg('account_b', volume_min=20.0)   # child = 10 < min 20
+    px = PairExecutor(clip_config, spot, fut)
+
+    ok, spot_trade, fut_trade = px.execute_trade_pair(
+        'GOLD', SignalType.SELL_BASIS, 50.0, 'XAUUSD', 'GC1225')
+
+    assert not ok
+    assert spot.orders == []                      # spot NEVER placed
+    assert fut.orders == []
+    assert 'minimum' in (spot_trade.error_message or '')
 
 
 def test_no_slicing_when_disabled(clip_config):

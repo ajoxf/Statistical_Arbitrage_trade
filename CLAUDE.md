@@ -77,16 +77,38 @@ tests/                  70 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
-## Strategy (decided 2026-07, replaces fixed premium thresholds)
+## Strategy (decided 2026-07; spec v2 applied 2026-07)
 
 - Entries: z-score on swap_diff (basis minus swap-implied basis — the
   carry-detrended spread). ALL gates must pass: warm stats, |z| >=
-  ENTRY_Z, |z| < STOP_Z (entry ceiling), trend filter, cooldowns,
+  ENTRY_Z, |z| < MAX_ENTRY_Z (entry ceiling — its OWN knob, always
+  active, keep the band >= 1 sigma wide; a z at 5+ is a momentum
+  spike, their extreme entries went 0-for-3), trend filter, cooldowns,
   z-reset after stops, edge filter (capture >= 1.5x round-trip cost).
+- Atomic pre-checks: BOTH legs' symbol minimums verified before
+  placing EITHER order (PairExecutor._precheck_pair).
 - Exits: DOLLAR levels frozen at entry from actual fills. Priority:
-  DOLLAR_STOP (ungated) > TAKE_PROFIT (sigma-fraction, cost floor) >
-  gated reversion exit (never book a losing "profit-take"; fail-open)
-  > MAX_HOLD (4x half-life, only in profit) > Z_STOP backstop.
+  DOLLAR_STOP (ungated; tighter of TP/RR, %-capital when LEVERAGE
+  set, per-lot) > TAKE_PROFIT (sigma-fraction > %-capital > fixed $,
+  cost floor) > gated reversion exit — the gate DEFERS to max-hold:
+  floor decays to break-even past 1x max-hold, releases entirely past
+  2x (deadlock fix: gate+max-hold+unreachable TP once held a fully
+  reverted trade at +$1.19 over 2 cents, then bled to -$4.46) >
+  MAX_HOLD (4x half-life, profit only, suppressed while z-progress
+  >= 50% toward an EXISTING TP) > TIME_STOP hard clock at 3x max-hold
+  regardless of P&L (the sideways loser's only exit) > Z_STOP,
+  DEMOTED: off by default while a dollar stop is armed, auto-re-
+  enabled when none is (a trade must always have a stop), would-have-
+  fired occasions LOGGED for design scoring.
+- Exit-path completeness rule: every (P&L, z, time) state must have a
+  reachable exit — regression-tested in tests/test_exits.py.
+- Tuning is data-driven: per-trade peak/trough net P&L with minutes-
+  after-entry persist to trade_review; set the TP near the 60-70th
+  percentile of peaks, max-hold near the median peak-minute of
+  winners; verify measured win rate clears stop/(target+stop).
+- Every close gets a deterministic outcome tag: TARGET_HIT /
+  REVERSION_BANKED / TIME_EXIT / STOPPED_IN_TREND /
+  STOPPED_AFTER_FULL_REVERSION (z came home, price never paid).
 - Execution: limit-first (rest at peg, re-peg via TRADE_ACTION_MODIFY,
   timeout -> cancel+verify fills -> cross). Stops/unwinds ALWAYS
   market. Hedge leg gets short patience (HEDGE_TIMEOUT_SEC).

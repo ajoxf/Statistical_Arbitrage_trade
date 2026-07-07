@@ -94,6 +94,16 @@ class DataLogger:
                 closed TEXT
             )
         ''')
+        # Lifecycle extremes + outcome tag (added later — upgrade in place)
+        for column, col_type in [('peak_pnl', 'REAL'), ('peak_min', 'REAL'),
+                                 ('trough_pnl', 'REAL'),
+                                 ('trough_min', 'REAL'),
+                                 ('outcome', 'TEXT')]:
+            try:
+                cursor.execute(f'ALTER TABLE trade_review '
+                               f'ADD COLUMN {column} {col_type}')
+            except sqlite3.OperationalError:
+                pass    # column already exists
         conn.commit()
         conn.close()
 
@@ -135,12 +145,12 @@ class DataLogger:
         conn.close()
 
     def log_trade_review(self, position, exit_z=None, capture_target=None,
-                         cost_est=None):
+                         cost_est=None, outcome=None):
         conn = sqlite3.connect(self.db_path)
         plan = position.exit_plan or {}
         conn.execute('''
             INSERT OR REPLACE INTO trade_review VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             position.position_id, position.asset,
             plan.get('entry_z'), exit_z, plan.get('entry_sigma'),
@@ -151,6 +161,9 @@ class DataLogger:
             position.spot_trade.lot_size if position.spot_trade else None,
             position.entry_time.isoformat(),
             position.close_time.isoformat() if position.close_time else None,
+            position.peak_pnl, position.peak_min,
+            position.trough_pnl, position.trough_min,
+            outcome,
         ))
         conn.commit()
         conn.close()

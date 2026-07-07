@@ -186,7 +186,7 @@ class TelegramNotifier:
                 f"<code>{plan.get('max_hold_sec', 0) / 60:.0f}min</code>")
         self._send(message, 'trade')
 
-    def notify_trade_closed(self, position, exit_z=None):
+    def notify_trade_closed(self, position, exit_z=None, outcome=None):
         pnl = position.realized_pnl
         emoji = "🟢" if pnl >= 0 else "🔴"
         sign = "+" if pnl >= 0 else ""
@@ -200,9 +200,17 @@ class TelegramNotifier:
             f"<b>ID:</b> <code>{position.position_id}</code>  "
             f"<b>{position.asset}</b> {position.signal_type.value}\n"
             f"<b>Reason:</b> {position.close_reason}  "
-            f"<b>Held:</b> {held_str}\n\n"
-            f"<b>💰 Net P&L: <code>{sign}${pnl:,.2f}</code></b>"
+            f"<b>Held:</b> {held_str}\n"
         )
+        if outcome:
+            message += f"<b>Outcome:</b> {outcome}\n"
+        message += f"\n<b>💰 Net P&L: <code>{sign}${pnl:,.2f}</code></b>"
+        if position.peak_pnl is not None:
+            message += (
+                f"\nPeak/Trough: <code>${position.peak_pnl:+,.2f}</code> "
+                f"({position.peak_min:.0f}m) / "
+                f"<code>${position.trough_pnl:+,.2f}</code> "
+                f"({position.trough_min:.0f}m)")
         if plan.get('entry_z') is not None:
             message += f"\nEntry z: <code>{plan['entry_z']:.2f}</code>"
         if exit_z is not None:

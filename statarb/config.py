@@ -113,7 +113,10 @@ class AlgoTradingConfig:
                                        # premium thresholds when False)
             'ENTRY_Z': 3.0,
             'EXIT_Z': 0.5,
-            'STOP_Z': 4.5,             # entry ceiling AND stop backstop
+            'MAX_ENTRY_Z': 4.5,        # entry ceiling — ALWAYS active;
+                                       # entries live in [ENTRY_Z, this).
+                                       # Keep the band >= 1 sigma wide.
+            'STOP_Z': 4.5,             # z-stop threshold (see EXITS)
             'LOOKBACK_SEC': 7200,
             'STATS_INTERVAL_SEC': 300, # freeze mu/sigma between refreshes
             'MIN_SAMPLES': 300,        # warm-up before any signal
@@ -144,14 +147,35 @@ class AlgoTradingConfig:
             'COMMANDS': True,        # /status /positions /pnl
         }
         self.EXITS = {
+            # Take-profit precedence: sigma-fraction > %-of-capital > fixed $
             'USE_SIGMA_TARGET': True,   # TP = TARGET_FRACTION*|z|*sigma*oz
-            'TP_USD_PER_LOT': 0.0,      # fallback TP when sigma target off
+            'TP_CAPITAL_PCT': 0.0,      # TP = pct of capital_at_risk (0=off)
+            'TP_USD_PER_LOT': 0.0,      # fixed-$ fallback
             'COST_FLOOR_MULT': 1.2,     # TP never below this x round-trip cost
+            # Stop = the TIGHTER of all armed forms
             'STOP_USD_PER_LOT': 30.0,   # catastrophe stop (~30c/oz on gold)
+            'STOP_CAPITAL_PCT': 0.0,    # pct of capital_at_risk (0=off)
             'RR': 0.3,                  # stop also capped at TP/RR
-            'GATE_FLOOR_USD': 0.0,      # reversion exit needs net >= this
+            'LEVERAGE': 0.0,            # enables %-capital forms; capital =
+                                        # total notional / leverage
+            'M2M_BUFFER_PCT': 0.0,      # margin buffer on capital_at_risk
+            # Reversion gate: floor decays to break-even past 1x max-hold,
+            # releases entirely past 2x (deadlock fix — a fully reverted
+            # trade must always have an exit)
+            'GATE_FLOOR_USD': 0.0,
             'MAX_HOLD_HALF_LIVES': 4.0,
             'MAX_HOLD_FALLBACK_MIN': 240,
+            # Suppress MAX_HOLD while z-progress toward home >= this,
+            # ONLY when a TP exists (never wait for a TP that is off)
+            'MAX_HOLD_PROGRESS_SUPPRESS': 0.5,
+            # Hard time-stop: close ANY trade at this x max-hold
+            # regardless of P&L (0 = off). Covers the sideways loser
+            # that has no other clock.
+            'HARD_TIME_STOP_MULT': 3.0,
+            # z-stop demoted to entry-ceiling duty: in-trade risk is
+            # DOLLARS. Fail-safe: auto-re-enabled whenever no dollar
+            # stop is armed; would-have-fired occasions are logged.
+            'Z_STOP_EXIT_ENABLED': False,
         }
         self.TRADING = {
             'CLIP_LOTS': 1.0,          # lots per entry (per leg)
