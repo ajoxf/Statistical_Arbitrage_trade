@@ -109,6 +109,8 @@ class Coordinator:
         self._control_mtime = 0
         self._last_close_ts = 0
         self._last_open_ts = 0
+        self._last_test_ts = 0
+        self._test_results = None
         self.algo_enabled = True       # entries only; exits ALWAYS run
 
         self.spot_leg, self.futures_leg = self._resolve_legs()
@@ -312,6 +314,11 @@ class Coordinator:
         for position_id, position in list(active.items()):
             if z_home:
                 position.z_reverted = True   # for the outcome tag
+            if z is not None:                # z path for the exit report
+                position.z_min = z if position.z_min is None \
+                    else min(position.z_min, z)
+                position.z_max = z if position.z_max is None \
+                    else max(position.z_max, z)
             self.position_manager.update_position_pnl(
                 position_id, market_data['spot_price'],
                 market_data['futures_price'],
@@ -454,7 +461,9 @@ class Coordinator:
         self.risk_manager.record_trade(asset_key, lots=spot_trade.lot_size)
         self.notifier.notify_trade_opened(
             position, market_data,
-            z=stats.z if stats and stats.warm else None)
+            z=stats.z if stats and stats.warm else None,
+            contract_size=contract_size,
+            is_paper=self.trading_mode != 'LIVE')
         logging.info("Position opened: %s (%.2f lots, %s%s)",
                      position.position_id, spot_trade.lot_size,
                      self.trading_mode, ", MANUAL" if manual else "")
@@ -479,7 +488,10 @@ class Coordinator:
         self.data_logger.log_trade_review(position, exit_z=z, outcome=tag,
                                           exit_spread=spread,
                                           notional=notional)
-        self.notifier.notify_trade_closed(position, exit_z=z, outcome=tag)
+        self.notifier.notify_trade_closed(
+            position, exit_z=z, outcome=tag, exit_spread=spread,
+            contract_size=contract_size,
+            is_paper=self.trading_mode != 'LIVE')
         self.shadow.start(position, contract_size)
 
         halted, why = self.risk_manager.halted()
@@ -599,6 +611,114 @@ class Coordinator:
                               open_cmd.get('direction', ''),
                               open_cmd.get('lots'))
 
+        test_cmd = control.get('test') or {}
+        ts = test_cmd.get('ts', 0)
+        if test_cmd.get('kind') and ts > self._last_test_ts:
+            self._last_test_ts = ts
+            self._run_tests(test_cmd['kind'])
+
+    # ------------------------------------------------------------------
+    # MT5 connectivity & order tests (round trips, real orders)
+    # ------------------------------------------------------------------
+
+    def _run_tests(self, kind):
+        """UI-triggered self-test. 'connectivity': ping/account/symbol/
+        tick per leg. 'orders': ALSO places REAL minimum-volume orders —
+        a far-away limit (place -> verify resting -> cancel -> verify
+        gone) and a market round trip (open -> close by ticket).
+        Order tests require algo OFF and a flat book."""
+        results = []
+
+        def add(leg_name, check, ok, detail=""):
+            results.append({'leg': leg_name, 'check': check,
+                            'ok': bool(ok), 'detail': str(detail)[:140]})
+            logging.info("[TEST] [%s] %s: %s %s", leg_name, check,
+                         'PASS' if ok else 'FAIL', detail)
+
+        if kind == 'orders' and (self.algo_enabled or
+                                 self.position_manager
+                                 .get_active_positions()):
+            add('-', 'preconditions', False,
+                'Order tests need the algo STOPPED and a flat book')
+            self._test_results = {'kind': kind, 'results': results,
+                                  'ts': datetime.now().strftime('%H:%M:%S')}
+            return
+
+        role_map = [('spot', self.spot_leg, 'spot_symbol'),
+                    ('futures', self.futures_leg, 'futures_symbol')]
+        seen = set()
+        for role, leg, symbol_key in role_map:
+            if id(leg) in seen:
+                continue
+            seen.add(id(leg))
+            add(leg.name, 'connection ping', leg.ping())
+            info = leg.account_info()
+            add(leg.name, 'account info', bool(info),
+                info and f"login {info.get('login')} "
+                         f"equity ${info.get('equity', 0):,.0f}")
+            for r2, leg2, sym_key2 in role_map:
+                if leg2 is not leg:
+                    continue
+                for asset_key, asset in self.active_assets.items():
+                    symbol = asset[sym_key2]
+                    meta = leg.ensure_symbol(symbol)
+                    add(leg.name, f'symbol {symbol}', meta.get('ok'),
+                        f"min {meta.get('volume_min')} "
+                        f"step {meta.get('volume_step')}")
+                    tick = leg.tick(symbol)
+                    add(leg.name, f'tick {symbol}', bool(tick),
+                        tick and f"bid {tick['bid']} ask {tick['ask']}")
+                    if kind == 'orders' and meta.get('ok') and tick:
+                        self._order_test(leg, symbol, meta, tick, add)
+
+        self._test_results = {'kind': kind, 'results': results,
+                              'ts': datetime.now().strftime('%H:%M:%S')}
+        passed = sum(1 for r in results if r['ok'])
+        self.notifier.notify_error(
+            f"Self-test '{kind}': {passed}/{len(results)} checks passed") \
+            if passed < len(results) else None
+
+    def _order_test(self, leg, symbol, meta, tick, add):
+        volume = meta.get('volume_min') or 0.01
+        # 1. Resting limit far below the market: place -> verify -> cancel
+        far_price = tick['bid'] * 0.98
+        placed = leg.place_limit(symbol, 'BUY', volume, far_price,
+                                 comment='ORDER_TEST')
+        add(leg.name, f'limit place {symbol}', placed.get('ok'),
+            placed.get('ticket') or placed.get('error'))
+        if placed.get('ok'):
+            state = leg.order_state(placed['ticket'])
+            add(leg.name, f'limit resting {symbol}',
+                state.get('still_open'), 'order visible as pending')
+            cancelled = leg.cancel_order(placed['ticket'])
+            add(leg.name, f'limit cancel {symbol}',
+                cancelled.get('cancelled')
+                and not cancelled.get('filled_volume'),
+                'cancelled clean, no fills leaked')
+        # 2. Market round trip at minimum volume: open -> close by ticket
+        opened = leg.order(symbol, 'BUY', volume, comment='ORDER_TEST')
+        add(leg.name, f'market open {symbol}', opened.get('ok'),
+            f"filled {opened.get('filled_volume')} "
+            f"@ {opened.get('price')}")
+        if opened.get('ok'):
+            tickets = opened.get('position_tickets') or []
+            if tickets:
+                closed = leg.close_ticket(
+                    symbol, tickets[0],
+                    opened.get('filled_volume') or volume, 'BUY',
+                    comment='ORDER_TEST')
+                add(leg.name, f'round trip close {symbol}',
+                    closed.get('ok'),
+                    f"closed by ticket {tickets[0]} "
+                    f"@ {closed.get('price')}")
+            else:
+                reversed_order = leg.order(symbol, 'SELL',
+                                           opened.get('filled_volume')
+                                           or volume,
+                                           comment='ORDER_TEST')
+                add(leg.name, f'round trip close {symbol}',
+                    reversed_order.get('ok'), 'netting-mode reverse')
+
     def _manual_open(self, asset_key, direction, lots=None):
         """Manual spread trade from the web UI: bypasses SIGNAL gates
         (z, trend, cooldowns, edge filter) but NEVER risk limits or
@@ -667,6 +787,7 @@ class Coordinator:
             'positions': self._position_snapshot(),
             'shadow': {'active': len(self.shadow.active),
                        'tracking': self.shadow.snapshot()},
+            'test_results': self._test_results,
         }
         try:
             tmp = self.status_path + '.tmp'
@@ -676,35 +797,218 @@ class Coordinator:
         except OSError as e:
             logging.debug("Could not write runtime status: %s", e)
 
+    # -- Telegram command handlers (W3 command set, MT5-adapted) --------
+
     def _telegram_command(self, command):
-        if command == '/status':
-            halted, why = self.risk_manager.halted()
-            lines = [f"Mode: {self.trading_mode}"
-                     + (f" | HALTED: {why}" if halted else "")]
-            for asset_key, md in self.last_data.items():
-                stats = self.stats.get(asset_key)
-                z = stats.z if stats else None
-                lines.append(
-                    f"{asset_key}: basis {md['actual_basis']:.2f}, "
-                    f"z {'warm-up' if z is None else f'{z:+.2f}'}, "
-                    f"{self.risk_manager.lots_traded_today(asset_key):.0f} "
-                    f"lots today")
-            return "\n".join(lines)
-        if command == '/positions':
-            rows = self._position_snapshot()
-            if not rows:
-                return "No open positions"
-            return "\n".join(
-                f"{r['position_id']} {r['asset']} {r['signal_type']} "
-                f"{r['lots']:.0f} lots, P&L ${r['unrealized_pnl']:,.0f}, "
-                f"age {r['age']}" for r in rows)
-        if command == '/pnl':
-            m = self.performance_tracker.get_metrics()
-            return (f"Day: ${self.risk_manager.daily_realized_pnl:,.0f} | "
-                    f"Total: ${m['total_pnl']:,.0f} | "
-                    f"Trades: {m['total_trades']} | "
-                    f"Win rate: {m['win_rate']:.1f}%")
-        return None
+        parts = command.split()
+        name, args = parts[0], parts[1:]
+        handlers = {
+            '/status': self._cmd_status, '/dashboard': self._cmd_dashboard,
+            '/positions': self._cmd_positions, '/trades': self._cmd_trades,
+            '/balance': self._cmd_balance, '/pnl': self._cmd_pnl,
+            '/stats': self._cmd_stats, '/shadow': self._cmd_shadow,
+            '/eod': self._cmd_eod, '/settings': self._cmd_settings,
+            '/pause': self._cmd_pause, '/resume': self._cmd_resume,
+            '/closeall': self._cmd_closeall,
+        }
+        if name == '/set':
+            return self._cmd_set(args)
+        handler = handlers.get(name)
+        return handler() if handler else None
+
+    def _cmd_status(self):
+        halted, why = self.risk_manager.halted()
+        lines = [f"Mode: <b>{self.trading_mode}</b> | Algo: "
+                 f"{'ON' if self.algo_enabled else 'OFF'}"
+                 + (f" | 🛑 HALTED: {why}" if halted else "")]
+        for asset_key, md in self.last_data.items():
+            stats = self.stats.get(asset_key)
+            z = stats.z if stats else None
+            lines.append(
+                f"{asset_key}: basis {md['actual_basis']:.2f} | "
+                f"swap_diff {md['swap_diff']:+.2f} | "
+                f"z {'warm-up' if z is None else f'{z:+.2f}'} | "
+                f"{self.risk_manager.lots_traded_today(asset_key):.0f} "
+                f"lots today")
+        return "\n".join(lines)
+
+    def _cmd_dashboard(self):
+        sections = [self._cmd_status(), "", self._cmd_positions(), "",
+                    self._cmd_pnl()]
+        shadow = len(self.shadow.active)
+        if shadow:
+            sections += ["", f"Shadow tracking: {shadow} live"]
+        return "\n".join(sections)
+
+    def _cmd_positions(self):
+        rows = self._position_snapshot()
+        if not rows:
+            return "No open positions"
+        out = []
+        for r in rows:
+            levels = r.get('levels') or {}
+            line = (f"<b>{r['position_id']}</b> {r['asset']} "
+                    f"{r['signal_type']} {r['lots']:.1f} lots\n"
+                    f"  gross ${r['unrealized_pnl']:+,.0f} | "
+                    f"net ${r['net_pnl']:+,.0f} | age {r['age']}")
+            if levels:
+                line += (f"\n  BE {levels.get('be', 0):+.3f} | "
+                         f"TP {levels.get('tp') or 0:+.3f} | "
+                         f"SL {levels.get('sl') or 0:+.3f}")
+            if r.get('max_hold_sec'):
+                line += (f"\n  hold {r['age_sec'] / 60:.0f}m of "
+                         f"{r['max_hold_sec'] / 60:.0f}m max")
+            out.append(line)
+        return "\n".join(out)
+
+    def _cmd_trades(self):
+        rows = self.data_logger.recent_reviews(5)
+        if not rows:
+            return "No closed trades yet"
+        out = ["<b>RECENT TRADES</b>"]
+        for r in rows:
+            pnl = r.get('realized_pnl') or 0
+            out.append(
+                f"{'🟢' if pnl >= 0 else '🔴'} {r['position_id']} "
+                f"{r['asset']} ${pnl:+,.0f} | {r.get('exit_reason', '')} | "
+                f"{r.get('outcome') or ''}\n"
+                f"  z {r.get('entry_z') or 0:+.2f}→"
+                f"{r.get('exit_z') or 0:+.2f} | "
+                f"peak ${r.get('peak_pnl') or 0:+,.0f} "
+                f"({r.get('peak_min') or 0:.0f}m)")
+        return "\n".join(out)
+
+    def _cmd_balance(self):
+        out = ["<b>ACCOUNTS</b>"]
+        for leg in self._each_leg():
+            info = leg.account_info()
+            if info:
+                out.append(f"[{leg.name}] {info.get('server')} login "
+                           f"{info.get('login')}\n"
+                           f"  balance ${info.get('balance', 0):,.2f} | "
+                           f"equity ${info.get('equity', 0):,.2f}")
+            else:
+                out.append(f"[{leg.name}] ⚠️ no account info")
+        return "\n".join(out)
+
+    def _cmd_pnl(self):
+        m = self.performance_tracker.get_metrics()
+        return (f"<b>P&L</b>\nDay: ${self.risk_manager.daily_realized_pnl:+,.0f}"
+                f" | Total: ${m['total_pnl']:+,.0f}\n"
+                f"Trades: {m['total_trades']} | Win rate: "
+                f"{m['win_rate']:.1f}% | Max DD: ${m['max_drawdown']:,.0f}\n"
+                f"Loss streak: {self.risk_manager.consecutive_losses}")
+
+    def _cmd_stats(self):
+        rows = self.data_logger.recent_reviews(200)
+        pnls = [r['realized_pnl'] for r in rows
+                if r.get('realized_pnl') is not None]
+        if not pnls:
+            return "No closed trades yet"
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        avg_win = sum(wins) / len(wins) if wins else 0
+        avg_loss = sum(losses) / len(losses) if losses else 0
+        gross_loss = -sum(losses)
+        rr = avg_win / abs(avg_loss) if avg_loss else 0
+        peak = dd = run = 0.0
+        for p in reversed(pnls):
+            run += p
+            peak = max(peak, run)
+            dd = max(dd, peak - run)
+        return (f"<b>EDGE STATS</b> ({len(pnls)} trades)\n"
+                f"Win rate: {100 * len(wins) / len(pnls):.1f}% | "
+                f"PF: {(sum(wins) / gross_loss) if gross_loss else 0:.2f}\n"
+                f"Avg win ${avg_win:+,.0f} | avg loss ${avg_loss:+,.0f} | "
+                f"R:R {rr:.2f}\n"
+                f"Break-even WR: {100 / (1 + rr) if rr else 0:.1f}%\n"
+                f"Expectancy: ${sum(pnls) / len(pnls):+,.0f}/trade | "
+                f"Max DD: ${dd:,.0f}")
+
+    def _cmd_shadow(self):
+        rows = self.data_logger.recent_shadows(10)
+        live = self.shadow.snapshot()
+        out = [f"<b>WHAT-IF-HELD</b>  ({len(rows)} completed · "
+               f"{len(live)} live)"]
+        for s in live:
+            out.append(f"⏳ {s['position_id']} exited as "
+                       f"{s['exit_reason']}: now ${s['net'] or 0:+,.0f} "
+                       f"({s['minutes']:.0f}m/{s['horizon_min']:.0f}m)")
+        for r in rows[:5]:
+            out.append(f"{r['position_id']} exited "
+                       f"${r.get('exit_pnl') or 0:+,.0f} → held would be "
+                       f"${r.get('what_if_net') or 0:+,.0f}: "
+                       f"<b>{(r.get('verdict') or '').replace('_', ' ')}</b>")
+        return "\n".join(out) if len(out) > 1 else "No shadows yet"
+
+    def _cmd_eod(self):
+        target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
+        lines = ["<b>END-OF-DAY REPORT</b>", self._cmd_pnl(), ""]
+        for asset_key in self.active_assets:
+            done = self.risk_manager.lots_traded_today(asset_key)
+            lines.append(f"{asset_key}: {done:.0f}"
+                         + (f"/{target:.0f}" if target else "")
+                         + " lots today")
+        lines += ["", self._cmd_trades()]
+        return "\n".join(lines)
+
+    def _cmd_settings(self):
+        out = ["<b>SETTINGS</b> (live values)"]
+        for section in ('SIGNALS', 'EXITS', 'COSTS', 'TRADING'):
+            values = getattr(self.config, section)
+            out.append(f"<b>{section}</b>: " + ", ".join(
+                f"{k}={v}" for k, v in values.items()))
+        return "\n".join(out)
+
+    def _cmd_set(self, args):
+        if len(args) != 2:
+            return "Usage: /set KEY value  (e.g. /set ENTRY_Z 2.5)"
+        key, raw_value = args[0].upper(), args[1]
+        for section in ('SIGNALS', 'EXITS', 'COSTS', 'TRADING',
+                        'RISK_LIMITS', 'EXECUTION'):
+            values = getattr(self.config, section)
+            if key in values:
+                if section == 'TRADING' and key == 'HEDGE_RATIO':
+                    return "β is structural — change it in the web UI " \
+                           "with a flat book + restart"
+                old = values[key]
+                try:
+                    if isinstance(old, bool):
+                        new = raw_value.lower() in ('1', 'true', 'on', 'yes')
+                    elif isinstance(old, str):
+                        new = raw_value
+                    else:
+                        new = float(raw_value)
+                except ValueError:
+                    return f"Bad value for {key}: {raw_value}"
+                values[key] = new
+                logging.warning("Telegram /set %s.%s: %s -> %s "
+                                "(runtime only)", section, key, old, new)
+                return (f"{section}.{key}: {old} → {new}\n"
+                        f"⚠️ runtime only — save in the web UI to persist. "
+                        f"Applies to the OPEN trade immediately.")
+        return f"Unknown setting: {key}"
+
+    def _cmd_pause(self):
+        self.algo_enabled = False
+        return "⏸ Entries PAUSED (exits keep running)"
+
+    def _cmd_resume(self):
+        self.algo_enabled = True
+        return "▶️ Entries RESUMED"
+
+    def _cmd_closeall(self):
+        active = self.position_manager.get_active_positions()
+        if not active:
+            return "Nothing to close"
+        count = 0
+        for position_id, position in list(active.items()):
+            contract = self.config.ASSETS.get(
+                position.asset, {}).get('lot_size', 1.0)
+            self._close(position_id, position, "MANUAL_CLOSE", contract,
+                        None)
+            count += 1
+        return f"🚨 CLOSEALL: {count} position(s) sent to market close"
 
     def log_status(self, all_market_data):
         self._write_runtime_status(all_market_data)
@@ -817,6 +1121,9 @@ def main():
         description="Basis trading coordinator (multi-account)")
     parser.add_argument('--config', required=True, help='Path to config JSON')
     parser.add_argument('--mode', choices=['paper', 'live'], default='paper')
+    parser.add_argument('--yes', action='store_true',
+                        help='Skip the LIVE confirmation prompt (used by '
+                             'the launcher; the UI mode toggle is consent)')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -836,7 +1143,9 @@ def main():
         clip = config.TRADING.get('CLIP_LOTS', 1.0)
         target = config.TRADING.get('DAILY_LOT_TARGET', 0)
         print(f"Clip size: {clip} lots/leg | Daily target: {target} lots")
-        if input("Type 'START' to begin live trading: ").strip().upper() != "START":
+        if not args.yes and input(
+                "Type 'START' to begin live trading: "
+                ).strip().upper() != "START":
             print("Cancelled")
             sys.exit(0)
 

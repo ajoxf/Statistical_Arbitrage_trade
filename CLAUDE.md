@@ -33,6 +33,10 @@ routing each leg's order to its own account.
 ## Architecture (as of 2026-07, z-score strategy build)
 
 ```
+start.py / start.bat    ONE-command launcher: spawns leg runners per
+                        topology + coordinator (+ --yes for live) +
+                        dashboard, watchdog-restarts children.
+                        Non-technical operator entry point.
 main.py                 single-account entry point (legacy flow)
 run_leg.py              leg runner: one process per MT5 account
 run_coordinator.py      coordinator: fuses legs, signals, routes orders
@@ -186,9 +190,22 @@ Web control panel (statarb/webapp.py, own process, file-bridge only):
   break-even WR, max DD, P70 peak, median peak-minute), outcome-tag
   counts, excursions table (peak/trough $ @ minutes, capture %),
   trade journal, untracked-close ledger.
-- Coordinator control.json: {'algo_enabled', 'close': {...}} — algo
-  off stops ENTRIES only; exits always run. MANUAL_CLOSE is urgent
-  (market, by ticket).
+- Coordinator control.json: {'algo_enabled', 'close': {...},
+  'open': {...} (Manual Spread Trade — bypasses signal gates only,
+  never risk/breakers), 'test': {...} (MT5 self-tests: connectivity,
+  and order round-trips with REAL min-volume orders — requires algo
+  off + flat book)} — algo off stops ENTRIES only; exits always run.
+  MANUAL_CLOSE is urgent (market, by ticket).
+- Secrets are UI-managed (owner: operator never edits files): the
+  settings page writes passwords/Telegram token to .env via
+  update_env_file; config.json NEVER holds a password. trading_mode
+  (paper|live) is a config.json top-level read by start.py.
+- Telegram is at W3 detail (owner: "exactly as in W3"): entry with
+  full exit geometry rows, exit with per-leg prices, spread change,
+  gross/fees/net, ANALYSIS block (outcome sentence, stop type,
+  peak/trough@min, capture %, hold xmax, z path with range); commands
+  /dashboard /status /positions /trades /balance /pnl /stats /shadow
+  /eod /settings /set /pause /resume /closeall (+menu registration).
 - SD-touch distribution (z crossings of ±1/2/3 sigma -> sd_touches
   table, chart+table on Analysis) and the shadow "what-if-held"
   tracker (statarb/shadow.py: after every close, marks the position

@@ -33,8 +33,12 @@ def closed_position(pnl=1234.56, reason="TAKE_PROFIT"):
     position.exit_plan = {'entry_z': 3.1, 'entry_sigma': 2.0,
                           'tp_usd': 15000.0, 'stop_usd': 1500.0,
                           'max_hold_sec': 2400, 'gate_floor_usd': 0.0,
-                          'rt_cost_usd': 3000.0}
-    from datetime import datetime, timedelta
+                          'rt_cost_usd': 3000.0, 'entry_spread': 20.0,
+                          'half_life_sec': 600,
+                          'levels': {'entry_spread': 20.0, 'be': 19.4,
+                                     'ex': 19.4, 'tp': 16.4, 'sl': 20.3,
+                                     'favorable': 'down'}}
+    from datetime import timedelta
     position.close_time = position.entry_time + timedelta(hours=2)
     return position
 
@@ -71,10 +75,11 @@ def test_trade_closed_message_delivered_and_formatted(config):
 
     assert wait_for(lambda: transport.sent_texts())
     text = transport.sent_texts()[0]
-    assert 'POS_0007' in text
-    assert '+$1,234.56' in text
+    assert 'TRADE EXIT' in text
+    assert '$+1,234.56' in text                  # gross P&L row
     assert 'TAKE_PROFIT' in text
-    assert '3.10' in text and '0.40' in text     # entry z -> exit z
+    assert '+3.10 → +0.40' in text               # z path
+    assert 'TARGET HIT' not in text              # no outcome passed here
     notifier.stop()
 
 
@@ -88,7 +93,9 @@ def test_trade_opened_message_includes_exit_plan(config):
     assert wait_for(lambda: transport.sent_texts())
     text = transport.sent_texts()[0]
     assert 'TRADE ENTRY' in text
-    assert '$15,000' in text and '$1,500' in text   # TP and stop levels
+    assert 'EXIT GEOMETRY' in text
+    assert '+$15,000' in text and '-$1,500' in text  # TP and stop dollars
+    assert 'Breakeven' in text                       # fees -> BE move
     notifier.stop()
 
 

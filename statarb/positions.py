@@ -119,6 +119,8 @@ class PositionManager:
                 position.realized_pnl = self.realized_pnl_from_fills(
                     position, close_spot, close_futures, contract_size)
                 position.unrealized_pnl = 0.0
+                position.exit_spot_price = close_spot.executed_price
+                position.exit_fut_price = close_futures.executed_price
 
                 self.data_logger.log_trade(close_spot, position_id)
                 self.data_logger.log_trade(close_futures, position_id)

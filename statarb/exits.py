@@ -126,6 +126,7 @@ class ExitLadder:
             'entry_sigma': sigma,
             'rt_cost_usd': rt_cost,
             'capital_at_risk': capital,
+            'half_life_sec': half_life_sec,
         }
         # Print the RESOLVED levels, not the configs — a cost floor can
         # silently pin a %-target higher at the operating size

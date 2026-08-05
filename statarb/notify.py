@@ -122,19 +122,63 @@ class TelegramNotifier:
                 chat = str((message.get('chat') or {}).get('id', ''))
                 if not text.startswith('/'):
                     continue
-                if text.split('@')[0] == '/start' and chat:
+                if text.split('@')[0].split()[0] == '/start' and chat:
                     # Auto-register: users never find the chat id by hand
                     self.chat_id = self.chat_id or chat
-                    self._send("✅ Bot connected. Commands: /status "
-                               "/positions /pnl /help", 'system')
+                    self.register_command_menu()
+                    self._send("✅ Bot connected.\n" + self.HELP_TEXT,
+                               'system')
                     continue
                 if chat and chat != str(self.chat_id):
                     continue          # ignore strangers
                 self._handle_command(text.split('@')[0])
 
+    HELP_TEXT = "\n".join([
+        "<b>COMMANDS</b>",
+        f"<code>{'/dashboard':<13}</code>full system snapshot",
+        f"<code>{'/ping':<13}</code>alive check (always responds)",
+        f"<code>{'/status':<13}</code>engine & algo state",
+        f"<code>{'/positions':<13}</code>open positions + levels",
+        f"<code>{'/trades':<13}</code>recent closed trades",
+        f"<code>{'/balance':<13}</code>account balances (both legs)",
+        f"<code>{'/pnl':<13}</code>P&L summary",
+        f"<code>{'/stats':<13}</code>edge stats + max drawdown",
+        f"<code>{'/shadow':<13}</code>what-if-held: did exits revert?",
+        f"<code>{'/eod':<13}</code>end-of-day report",
+        f"<code>{'/settings':<13}</code>show tunable settings",
+        f"<code>{'/set k v':<13}</code>change a setting live",
+        f"<code>{'/pause':<13}</code>halt new entries",
+        f"<code>{'/resume':<13}</code>re-enable new entries",
+        f"<code>{'/closeall':<13}</code>emergency: close all positions",
+    ])
+
+    COMMAND_MENU = [
+        ('dashboard', 'Full system snapshot'), ('status', 'Engine state'),
+        ('positions', 'Open positions'), ('trades', 'Recent trades'),
+        ('balance', 'Account balances'), ('pnl', 'P&L summary'),
+        ('stats', 'Edge stats'), ('shadow', 'What-if-held'),
+        ('eod', 'End-of-day report'), ('settings', 'Show settings'),
+        ('pause', 'Halt entries'), ('resume', 'Enable entries'),
+        ('closeall', 'Close all positions'), ('help', 'Command list'),
+    ]
+
+    def register_command_menu(self):
+        """Best-effort: register the Telegram '/' command menu."""
+        if not self.enabled:
+            return
+        try:
+            self._api('setMyCommands', {'commands': json.dumps(
+                [{'command': c, 'description': d}
+                 for c, d in self.COMMAND_MENU])})
+        except Exception as e:
+            logging.debug("setMyCommands failed: %s", e)
+
     def _handle_command(self, command):
-        if command == '/help':
-            self._send("Commands: /status /positions /pnl /help", 'system')
+        if command in ('/help', '/menu'):
+            self._send(self.HELP_TEXT, 'system')
+            return
+        if command == '/ping':
+            self._send("pong 🏓 — bot thread alive", 'system')
             return
         if self.command_handler is None:
             self._send("Engine not attached yet", 'system')
@@ -147,75 +191,208 @@ class TelegramNotifier:
             self._send(reply, 'system')
 
     # ------------------------------------------------------------------
-    # Message builders (formats ported from the June app)
+    # Message builders (formats ported 1:1 from W3 telegram_bot.py,
+    # adapted to MT5 fields: lots, contract sizes, swap_diff spread)
     # ------------------------------------------------------------------
+
+    OUTCOME_LINES = {
+        'TARGET_HIT': "TARGET HIT — banked on P&L, no z needed",
+        'REVERSION_BANKED': "REVERSION BANKED — z came home, gate satisfied",
+        'TIME_EXIT': "TIME EXIT — cut by the clock (max-hold/time-stop)",
+        'STOPPED_IN_TREND':
+            "STOPPED IN TREND — z never reverted, divergence was real",
+        'STOPPED_AFTER_FULL_REVERSION':
+            "STOPPED AFTER FULL REVERSION — z came home but price never "
+            "recovered BE (mean drift; edge was spent)",
+    }
+
+    @staticmethod
+    def _row(label, value):
+        return f"<code>{label:<13}</code>{value}"
 
     def notify_startup(self, mode, spot_leg, futures_leg, assets):
         self._send(
             f"🚀 <b>COORDINATOR STARTED</b>\n"
             f"Mode: <b>{mode}</b>\n"
             f"Spot leg: {spot_leg} | Futures leg: {futures_leg}\n"
-            f"Assets: {', '.join(assets) or 'none'}", 'system')
+            f"Assets: {', '.join(assets) or 'none'}\n"
+            f"Menu: /help", 'system')
 
-    def notify_trade_opened(self, position, market_data, z=None):
+    def notify_trade_opened(self, position, market_data, z=None,
+                            contract_size=1.0, is_paper=False):
         plan = position.exit_plan or {}
-        spot = position.spot_trade
-        fut = position.futures_trade
-        message = (
-            f"🟢 <b>TRADE ENTRY</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>ID:</b> <code>{position.position_id}</code>  "
-            f"<b>{position.asset}</b> {position.signal_type.value}\n"
-            f"<b>Lots:</b> {spot.lot_size:.2f} spot / "
-            f"{fut.lot_size:.2f} futures\n\n"
-            f"<b>📊 FILLS</b>\n"
-            f"├ Spot: <code>${spot.executed_price:.2f}</code>\n"
-            f"├ Futures: <code>${fut.executed_price:.2f}</code>\n"
-            f"└ Basis: <code>${market_data['actual_basis']:.2f}</code>"
-        )
-        if z is not None:
-            message += f"  (z=<code>{z:.2f}</code>)"
-        if plan:
-            message += "\n\n<b>🎯 EXIT PLAN</b>\n"
-            tp = plan.get('tp_usd')
-            if tp:
-                message += f"├ TP: <code>${tp:,.0f}</code>\n"
-            message += (
-                f"├ Stop: <code>-${plan.get('stop_usd', 0):,.0f}</code>\n"
-                f"└ Max hold: "
-                f"<code>{plan.get('max_hold_sec', 0) / 60:.0f}min</code>")
-        self._send(message, 'trade')
+        levels = plan.get('levels') or {}
+        spot, fut = position.spot_trade, position.futures_trade
+        R = self._row
+        oz = spot.lot_size * contract_size
+        notional = ((spot.executed_price or 0)
+                    + (fut.executed_price or 0)) * oz
+        spread = plan.get('entry_spread')
+        if spread is None:
+            spread = market_data.get('swap_diff',
+                                     market_data.get('actual_basis'))
+        fees = plan.get('rt_cost_usd', 0.0)
 
-    def notify_trade_closed(self, position, exit_z=None, outcome=None):
-        pnl = position.realized_pnl
-        emoji = "🟢" if pnl >= 0 else "🔴"
-        sign = "+" if pnl >= 0 else ""
-        held = position.close_time - position.entry_time \
-            if position.close_time else None
-        held_str = (f"{held.total_seconds() / 3600:.1f}h" if held else "?")
+        rows = [
+            R("ID", f"<code>{position.position_id}</code>"),
+            R("Entry Time",
+              position.entry_time.strftime('%Y-%m-%d %H:%M:%S')),
+            "",
+            R("Lots", f"{spot.lot_size:.2f} spot / {fut.lot_size:.2f} fut"),
+            R("Notional", f"${notional:,.0f}"),
+            "",
+            R("Spot Entry", f"${spot.executed_price:,.2f}"),
+            R("Fut Entry", f"${fut.executed_price:,.2f}"),
+        ]
+        if spread is not None:
+            rows.append(R("Spread", f"{spread:+.4f}"))
+        rows += ["", R("Z-score", f"{z:+.4f}" if z is not None
+                       else "manual / warm-up")]
+        if plan.get('entry_sigma'):
+            rows.append(R("Spread SD", f"{plan['entry_sigma']:.4f}"))
+        if plan.get('entry_mu') is not None:
+            rows.append(R("Spread Mean", f"{plan['entry_mu']:+.4f}"))
+        if plan.get('half_life_sec'):
+            rows.append(R("Half-Life",
+                          f"{plan['half_life_sec'] / 60:.1f} min"))
+
+        if levels:
+            arrow = "↓ favorable" if levels.get('favorable') == 'down' \
+                else "↑ favorable"
+            rows += ["", f"<b>EXIT GEOMETRY</b>  ({arrow})",
+                     R("BE", f"{levels['be']:+.4f}  ($0 net)")]
+            if levels.get('ex') is not None:
+                rows.append(R("EX", f"{levels['ex']:+.4f}  (gate "
+                              f"+${plan.get('gate_floor_usd', 0):,.0f})"))
+            if levels.get('tp') is not None:
+                rows.append(R("TP", f"{levels['tp']:+.4f}  "
+                              f"(+${plan.get('tp_usd') or 0:,.0f})"))
+            if levels.get('sl') is not None:
+                rows.append(R("SL", f"{levels['sl']:+.4f}  "
+                              f"(-${plan.get('stop_usd', 0):,.0f} gross)"))
+            if plan.get('max_hold_sec'):
+                rows.append(R("Max Hold",
+                              f"{plan['max_hold_sec'] / 60:.0f} min"))
+        if plan.get('capital_at_risk'):
+            rows.append(R("Capital",
+                          f"${plan['capital_at_risk']:,.0f} at risk"))
+        breakeven_move = fees / oz if oz else 0
+        rows += ["", R("Est. Fees", f"-${fees:,.2f}  (round-trip)"),
+                 R("Breakeven", f"{breakeven_move:+.4f} spread move")]
+        if plan.get('source') == 'MANUAL':
+            rows.append(R("Source", "MANUAL (web UI)"))
+
+        parts = [f"<b>TRADE ENTRY  ·  {position.signal_type.value}  ·  "
+                 f"{position.asset}</b>", "\n".join(rows)]
+        if is_paper:
+            parts.append("<i>Paper Trading</i>")
+        self._send("\n".join(parts), 'trade')
+
+    def notify_trade_closed(self, position, exit_z=None, outcome=None,
+                            exit_spread=None, contract_size=1.0,
+                            is_paper=False):
         plan = position.exit_plan or {}
-        message = (
-            f"{emoji} <b>TRADE EXIT</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>ID:</b> <code>{position.position_id}</code>  "
-            f"<b>{position.asset}</b> {position.signal_type.value}\n"
-            f"<b>Reason:</b> {position.close_reason}  "
-            f"<b>Held:</b> {held_str}\n"
-        )
+        spot, fut = position.spot_trade, position.futures_trade
+        R = self._row
+        gross = position.realized_pnl or 0.0
+        fees = plan.get('rt_cost_usd', 0.0)
+        net = gross - fees
+        oz = spot.lot_size * contract_size
+        notional = ((spot.executed_price or 0)
+                    + (fut.executed_price or 0)) * oz
+        net_pct = (net / notional * 100) if notional else 0.0
+        result = "PROFIT" if net >= 0 else "LOSS"
+
+        duration = "—"
+        exit_time = "—"
+        held_min = None
+        if position.close_time:
+            exit_time = position.close_time.strftime('%Y-%m-%d %H:%M:%S')
+            seconds = int((position.close_time
+                           - position.entry_time).total_seconds())
+            held_min = seconds / 60
+            duration = (f"{seconds // 60}m {seconds % 60}s"
+                        if seconds < 3600 else
+                        f"{seconds // 3600}h {(seconds % 3600) // 60}m")
+
+        rows = [R("Reason", position.close_reason or "EXIT"),
+                R("Duration", duration),
+                R("Exit Time", exit_time), ""]
+        if spot.executed_price:
+            rows.append(R("Spot Entry", f"${spot.executed_price:,.2f}"))
+        if position.exit_spot_price:
+            rows.append(R("Spot Exit",
+                          f"${position.exit_spot_price:,.2f}"))
+        if fut.executed_price:
+            rows.append(R("Fut Entry", f"${fut.executed_price:,.2f}"))
+        if position.exit_fut_price:
+            rows.append(R("Fut Exit", f"${position.exit_fut_price:,.2f}"))
+        entry_spread = plan.get('entry_spread')
+        entry_z = plan.get('entry_z')
+        if entry_spread is not None:
+            z_note = f"  (Z: {entry_z:+.4f})" if entry_z is not None else ""
+            rows += ["", R("Entry Spread", f"{entry_spread:+.4f}{z_note}")]
+        if exit_spread is not None:
+            z_note = f"  (Z: {exit_z:+.4f})" if exit_z is not None else ""
+            rows.append(R("Exit Spread", f"{exit_spread:+.4f}{z_note}"))
+        if entry_spread is not None and exit_spread is not None:
+            direction_sign = -1 if position.signal_type.value == \
+                'SELL_BASIS' else 1
+            change = direction_sign * (exit_spread - entry_spread)
+            rows.append(R("Spread Chg", f"{change:+.4f} (favorable +)"))
+        rows += ["",
+                 R("Gross PnL", f"${gross:+,.2f}"),
+                 R("Est. Fees", f"-${fees:,.2f}  (round-trip)"),
+                 R("Net PnL", f"${net:+,.2f}  ({net_pct:+.3f}%)")]
+
+        # ── Crisp lifecycle analysis: exact numbers, rule-based verdict ──
+        rows += ["", "<b>ANALYSIS</b>"]
         if outcome:
-            message += f"<b>Outcome:</b> {outcome}\n"
-        message += f"\n<b>💰 Net P&L: <code>{sign}${pnl:,.2f}</code></b>"
+            rows.append(R("Outcome",
+                          self.OUTCOME_LINES.get(outcome, outcome)))
+        reason_u = (position.close_reason or "").upper()
+        if reason_u == 'DOLLAR_STOP' and plan.get('stop_usd'):
+            rows.append(R("Stop type", f"DOLLAR stop — gross ≤ "
+                          f"-${plan['stop_usd']:,.0f} (capital cap)"))
+        elif reason_u == 'Z_STOP':
+            note = f"z-stop (|z| ≥ {self.config.SIGNALS['STOP_Z']:g})"
+            if plan.get('stop_usd'):
+                note += (f" — dollar stop -${plan['stop_usd']:,.0f} NOT "
+                         f"reached (gross ${gross:+,.2f})")
+            rows.append(R("Stop type", note))
         if position.peak_pnl is not None:
-            message += (
-                f"\nPeak/Trough: <code>${position.peak_pnl:+,.2f}</code> "
-                f"({position.peak_min:.0f}m) / "
-                f"<code>${position.trough_pnl:+,.2f}</code> "
-                f"({position.trough_min:.0f}m)")
-        if plan.get('entry_z') is not None:
-            message += f"\nEntry z: <code>{plan['entry_z']:.2f}</code>"
-        if exit_z is not None:
-            message += f" → Exit z: <code>{exit_z:.2f}</code>"
-        self._send(message, 'trade')
+            pk = f"+${position.peak_pnl:,.2f}"
+            if position.peak_min is not None:
+                pk += f" ({position.peak_min:.0f}m)"
+            tr = f"{position.trough_pnl:+,.2f}"
+            if position.trough_min is not None:
+                tr += f" ({position.trough_min:.0f}m)"
+            rows.append(R("Peak/Trough", f"{pk} / {tr}"))
+        if entry_z and plan.get('entry_sigma') and oz:
+            available = abs(entry_z) * plan['entry_sigma'] * oz
+            if available > 0:
+                rows.append(R("Capture", f"gross ${gross:+,.2f} of "
+                              f"${available:,.2f} avail "
+                              f"({gross / available * 100:+.0f}%)"))
+        if held_min is not None:
+            hold = f"{held_min:.0f}m"
+            if plan.get('max_hold_sec'):
+                max_hold_min = plan['max_hold_sec'] / 60
+                hold += (f"  (max {max_hold_min:.0f}m "
+                         f"×{held_min / max_hold_min:.1f})")
+            rows.append(R("Hold", hold))
+        if entry_z is not None and exit_z is not None:
+            z_path = f"{entry_z:+.2f} → {exit_z:+.2f}"
+            if position.z_min is not None and position.z_max is not None:
+                z_path += (f"  (range {position.z_min:+.2f}…"
+                           f"{position.z_max:+.2f})")
+            rows.append(R("Z path", z_path))
+
+        parts = [f"<b>TRADE EXIT  ·  {position.signal_type.value}  ·  "
+                 f"{position.asset}  ·  {result}</b>", "\n".join(rows)]
+        if is_paper:
+            parts.append("<i>Paper Trading</i>")
+        self._send("\n".join(parts), 'trade')
 
     def notify_breaker(self, reason):
         self._send(f"🛑 <b>CIRCUIT BREAKER</b>\n"

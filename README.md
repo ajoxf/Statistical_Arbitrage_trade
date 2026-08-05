@@ -47,13 +47,25 @@ environment variable (`password_env`) read from `.env`.
 **Keep `futures_expiry` current.** An expired contract date zeroes
 the swap basis and disables signals (the system warns at startup).
 
-## Run
+## Run — ONE program
 
-```bash
-python main.py                    # interactive prompts
-python main.py --mode paper       # skip the mode prompt
-python main.py --config my.json --mode live
+```bat
+python start.py        (or double-click start.bat on Windows)
 ```
+
+That's the whole operation. The launcher creates config.json/.env on
+first run, starts the leg runner(s) your topology needs, starts the
+coordinator (paper/live per the UI setting), opens the control panel
+at http://127.0.0.1:8080, and restarts anything that crashes.
+EVERYTHING is configured in the browser — brokers, logins, passwords
+(stored into the local .env by the UI), thresholds, paper/live —
+no file editing, ever. The dashboard also has MT5 self-tests:
+a connectivity check and an order round-trip test (real minimum-
+volume orders: far limit place→cancel, market open→close by ticket).
+
+(Advanced/manual: `run_leg.py`, `run_coordinator.py`,
+`run_dashboard.py`, and the legacy single-account `main.py` still
+work individually.)
 
 ## Test (no MT5 required)
 

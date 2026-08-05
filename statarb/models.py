@@ -85,6 +85,10 @@ class Position:
         self.trough_pnl = None
         self.trough_min = None
         self.z_reverted = False    # z entered the exit band during hold
+        self.z_min = None          # z range during the hold (z path)
+        self.z_max = None
+        self.exit_spot_price = None
+        self.exit_fut_price = None
 
     # -- crash-safe persistence -----------------------------------------
 
@@ -124,6 +128,8 @@ class Position:
             'trough_pnl': self.trough_pnl,
             'trough_min': self.trough_min,
             'z_reverted': self.z_reverted,
+            'z_min': self.z_min,
+            'z_max': self.z_max,
             'spot_trade': self._trade_to_dict(self.spot_trade),
             'futures_trade': self._trade_to_dict(self.futures_trade),
         }
@@ -145,4 +151,6 @@ class Position:
         position.trough_pnl = d.get('trough_pnl')
         position.trough_min = d.get('trough_min')
         position.z_reverted = d.get('z_reverted', False)
+        position.z_min = d.get('z_min')
+        position.z_max = d.get('z_max')
         return position

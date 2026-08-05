@@ -168,6 +168,21 @@ class DataLogger:
         conn.commit()
         conn.close()
 
+    def _query(self, sql, args=()):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+        conn.close()
+        return rows
+
+    def recent_reviews(self, limit=10):
+        return self._query("SELECT * FROM trade_review "
+                           "ORDER BY closed DESC LIMIT ?", (limit,))
+
+    def recent_shadows(self, limit=10):
+        return self._query("SELECT * FROM shadow_trades "
+                           "ORDER BY completed DESC LIMIT ?", (limit,))
+
     # -- crash-safe position state ---------------------------------------
 
     def save_position_state(self, position):

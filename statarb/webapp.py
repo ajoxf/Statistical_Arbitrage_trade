@@ -93,6 +93,18 @@ DASHBOARD = """
 <button id="toggle" class="gray" style="margin:0;float:right"></button></h1>
 <div id="assets"></div>
 <div id="poscards"></div>
+<h2>MT5 self-tests</h2>
+<div class="card">
+ <button class="gray" style="margin:0" onclick="runTest('connectivity')">
+  Connectivity test</button>
+ <button class="warn" style="margin:0 0 0 8px" onclick="runTest('orders')">
+  Order round-trip test</button>
+ <span class="note" style="margin-left:10px">Connectivity: ping, account,
+ symbols, ticks per leg. Order test places REAL minimum-volume orders
+ (far limit place→cancel + market open→close by ticket) — algo must be
+ stopped and the book flat.</span>
+ <table id="testResults" style="margin-top:10px"></table>
+</div>
 <h2>Manual spread trade</h2>
 <div class="card"><div class="row">
  <div><label>Asset</label><select id="m_asset"></select></div>
@@ -136,7 +148,26 @@ async function refresh(){
   if(!ma.options.length&&(S.assets||[]).length)
    ma.innerHTML=S.assets.map(a=>`<option>${a.asset}</option>`).join('');
   renderCards(S.positions||[]);
+  renderTests(S.test_results);
  }catch(e){}
+}
+function renderTests(t){
+ const el=document.getElementById('testResults');
+ if(!t){el.innerHTML='';return}
+ el.innerHTML=`<tr><th colspan=4>${t.kind} test @ ${t.ts}</th></tr>`+
+  '<tr><th>Leg</th><th>Check</th><th>Result</th><th>Detail</th></tr>'+
+  t.results.map(r=>`<tr><td>${r.leg}</td><td>${r.check}</td>
+   <td class="${r.ok?'pos':'neg'}">${r.ok?'PASS':'FAIL'}</td>
+   <td>${r.detail||''}</td></tr>`).join('');
+}
+async function runTest(kind){
+ if(kind=='orders'&&!confirm('This places REAL minimum-volume orders '+
+  'on the connected MT5 accounts (far limit place/cancel + market '+
+  'open/close). Algo must be stopped and book flat. Continue?'))return;
+ await fetch('api/engine/test',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({kind})});
+ msg('Test requested — results appear below within ~5s');
 }
 function renderCards(ps){
  const el=document.getElementById('poscards');
@@ -333,7 +364,7 @@ function msg(t,ok=true){const m=document.getElementById('msg');
  m.style.display='block';setTimeout(()=>m.style.display='none',4000)}
 async function save(){
  const f=document.getElementById('cfg');
- const data={sections:{},accounts:{},leg_accounts:{}};
+ const data={sections:{},accounts:{},leg_accounts:{},secrets:{}};
  for(const el of f.querySelectorAll('[data-sec]')){
   const s=el.dataset.sec,k=el.dataset.key;
   data.sections[s]=data.sections[s]||{};
@@ -345,6 +376,11 @@ async function save(){
   data.accounts[a][k]=el.value||null;}
  data.leg_accounts.spot=document.getElementById('leg_spot').value;
  data.leg_accounts.futures=document.getElementById('leg_fut').value;
+ data.trading_mode=document.getElementById('trading_mode').value;
+ const tk=document.getElementById('tg_token').value,
+       tc=document.getElementById('tg_chat').value;
+ if(tk)data.secrets.TELEGRAM_BOT_TOKEN=tk;
+ if(tc)data.secrets.TELEGRAM_CHAT_ID=tc;
  const r=await fetch('api/config',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
  const j=await r.json();
@@ -502,8 +538,28 @@ load();
 # App factory
 # ---------------------------------------------------------------------------
 
+def update_env_file(path, updates):
+    """Merge key=value pairs into a .env file, preserving other lines.
+    This is how the UI stores secrets — they never touch config.json."""
+    lines = []
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = [line.rstrip('\n') for line in f]
+    keys = set(updates)
+    kept = [line for line in lines
+            if line.split('=', 1)[0].strip() not in keys]
+    kept += [f"{key}={value}" for key, value in updates.items()]
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write("\n".join(kept) + "\n")
+    os.replace(tmp, path)
+    for key, value in updates.items():
+        os.environ[key] = value      # visible to this process immediately
+
+
 def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
-               config_path="config.json", control_path="control.json"):
+               config_path="config.json", control_path="control.json",
+               env_path=".env"):
     if Flask is None:
         raise RuntimeError("Flask not installed — pip install flask")
     app = Flask(__name__)
@@ -560,12 +616,23 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         raw = load_config_raw()
         from .config import AlgoTradingConfig
         defaults = AlgoTradingConfig()
+        mode = raw.get('trading_mode', 'paper')
         body = ["<h1>Settings</h1>",
                 "<div class='note'>Saved settings hot-reload into the "
                 "running coordinator within ~10s. Structural fields "
-                "(accounts, legs, symbols, hedge ratio β) are refused "
-                "while running or in a trade — flat the book and restart "
-                "for those.</div>", "<form id='cfg'>"]
+                "(accounts, legs, symbols, hedge ratio β) and the "
+                "trading mode need a restart of the launcher. Passwords "
+                "are stored in the local .env file, never in config or "
+                "git.</div>", "<form id='cfg'>",
+                "<h2>Trading mode</h2><div class='card'><div class='row'>",
+                "<div><label>Mode (restart to apply)</label>"
+                "<select id='trading_mode'>"
+                f"<option {'selected' if mode == 'paper' else ''}>paper"
+                "</option>"
+                f"<option {'selected' if mode == 'live' else ''}>live"
+                "</option></select></div></div>"
+                "<div class='note'>LIVE trades real money on the "
+                "configured accounts.</div></div>"]
 
         # Broker / leg topology
         body.append("<h2>Brokers & legs (MT5)</h2><div class='card'>")
@@ -576,13 +643,16 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             for key, label in [('terminal_path', 'MT5 terminal path'),
                                ('login', 'Login'),
                                ('server', 'Server'),
-                               ('password_env', 'Password env var (.env)'),
                                ('endpoint',
                                 'Leg-runner endpoint (blank = in-process)')]:
                 value = acct.get(key) or ''
                 body.append(
                     f"<div><label>{label}</label><input data-acct='{name}' "
                     f"data-key='{key}' value='{value}'></div>")
+            body.append(
+                f"<div><label>MT5 password (blank = unchanged)</label>"
+                f"<input type='password' data-acct='{name}' "
+                f"data-key='_password' placeholder='stored in .env'></div>")
             body.append("</div><hr style='border-color:#21262d'>")
         legs = raw.get('leg_accounts', {})
         options = ''.join(f"<option value='{n}'>{n}</option>"
@@ -636,6 +706,16 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                         f"data-kind='num' value='{value}'></div>")
             body.append("</div></div>")
 
+        body.append(
+            "<h2>Telegram secrets</h2><div class='card'><div class='row'>"
+            "<div><label>Bot token (blank = unchanged)</label>"
+            "<input type='password' id='tg_token' "
+            "placeholder='stored in .env'></div>"
+            "<div><label>Chat ID (blank = unchanged / auto via /start)"
+            "</label><input id='tg_chat' placeholder='stored in .env'>"
+            "</div></div>"
+            "<div class='note'>Create a bot with @BotFather, paste the "
+            "token, save, then send /start to the bot.</div></div>")
         body.append("</form><button onclick='save()'>Save settings</button>"
                     + SETTINGS_JS)
         return page(''.join(body), 's')
@@ -783,6 +863,14 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                                 'ts': time.time()}})
         return jsonify({'ok': True})
 
+    @app.route('/api/engine/test', methods=['POST'])
+    def api_test():
+        kind = (request.get_json(silent=True) or {}).get('kind')
+        if kind not in ('connectivity', 'orders'):
+            return jsonify({'error': 'kind must be connectivity|orders'}), 400
+        write_control({'test': {'kind': kind, 'ts': time.time()}})
+        return jsonify({'ok': True})
+
     @app.route('/api/config', methods=['GET', 'POST'])
     def api_config():
         if request.method == 'GET':
@@ -816,6 +904,35 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             raw.setdefault(key, {})
             raw[key].update(values)   # back-fill: partial saves can't
                                       # zero fields not on the form
+
+        # Secrets go to .env ONLY — passwords never touch config.json
+        env_updates = dict(payload.get('secrets') or {})
+        if payload.get('accounts'):
+            for name, acct in payload['accounts'].items():
+                password = (acct or {}).pop('_password', None)
+                if password:
+                    var = (acct.get('password_env')
+                           or (raw.get('accounts', {}).get(name, {})
+                               or {}).get('password_env')
+                           or f"MT5_PASSWORD_{name.upper()}")
+                    acct['password_env'] = var
+                    env_updates[var] = password
+                elif not acct.get('password_env'):
+                    existing = (raw.get('accounts', {}).get(name, {})
+                                or {}).get('password_env')
+                    if existing:
+                        acct['password_env'] = existing
+        if env_updates:
+            update_env_file(env_path, env_updates)
+            note = ('Saved (secrets written to .env). Restart the '
+                    'launcher for credential changes to take effect.')
+
+        if payload.get('trading_mode') in ('paper', 'live'):
+            if payload['trading_mode'] != raw.get('trading_mode', 'paper'):
+                note = ('Saved. Trading-mode change takes effect when the '
+                        'launcher is restarted.')
+            raw['trading_mode'] = payload['trading_mode']
+
         if payload.get('accounts'):
             changed = payload['accounts'] != raw.get('accounts')
             raw['accounts'] = payload['accounts']
