@@ -31,6 +31,7 @@ from .performance import PerformanceTracker
 from .positions import PositionManager
 from .reconcile import Reconciler
 from .risk import RiskManager
+from .shadow import ShadowTracker
 from .signals import SignalGenerator, ZSignalGenerator
 from .spread import SpreadStats
 
@@ -132,6 +133,8 @@ class Coordinator:
         self.notifier.command_handler = self._telegram_command
         self._was_halted = False
         self.status_path = 'runtime_status.json'
+        self.shadow = ShadowTracker(self.data_logger)
+        self._last_z = {}          # asset -> z (for SD-touch detection)
 
         self.active_assets = {}
         self.last_signals = {}
@@ -296,6 +299,10 @@ class Coordinator:
             z = stats.z
             self.z_gen.update(asset_key, z)
 
+        self._detect_sd_touches(asset_key, z, market_data['swap_diff'])
+        self.shadow.update(asset_key, market_data['spot_price'],
+                           market_data['futures_price'])
+
         active = self.position_manager.get_positions_for_asset(asset_key)
 
         # -- exits first (risk before opportunity) --
@@ -361,6 +368,22 @@ class Coordinator:
                                                  active)
         return signal if signal in (SignalType.SELL_BASIS,
                                     SignalType.BUY_BASIS) else None
+
+    def _detect_sd_touches(self, asset_key, z, spread):
+        """Record z crossings of integer sigma levels (SD-touch
+        distribution — how often does the spread stretch to each
+        level? Feeds threshold calibration)."""
+        previous = self._last_z.get(asset_key)
+        self._last_z[asset_key] = z
+        if previous is None or z is None:
+            return
+        for level in (-3, -2, -1, 1, 2, 3):
+            if previous < level <= z:
+                self.data_logger.log_sd_touch(asset_key, level, 'UP',
+                                              z, spread)
+            elif previous > level >= z:
+                self.data_logger.log_sd_touch(asset_key, level, 'DOWN',
+                                              z, spread)
 
     def _clip_lots(self):
         return self.config.TRADING.get('CLIP_LOTS', 1.0) \
@@ -435,6 +458,7 @@ class Coordinator:
         tag = outcome_tag(reason, position.z_reverted)
         self.data_logger.log_trade_review(position, exit_z=z, outcome=tag)
         self.notifier.notify_trade_closed(position, exit_z=z, outcome=tag)
+        self.shadow.start(position, contract_size)
 
         halted, why = self.risk_manager.halted()
         if halted and not self._was_halted:
@@ -566,6 +590,8 @@ class Coordinator:
                 'lot_target': target,
             } for asset_key, md in all_market_data.items()],
             'positions': self._position_snapshot(),
+            'shadow': {'active': len(self.shadow.active),
+                       'tracking': self.shadow.snapshot()},
         }
         try:
             tmp = self.status_path + '.tmp'

@@ -108,6 +108,55 @@ class DataLogger:
                                f'ADD COLUMN {column} {col_type}')
             except sqlite3.OperationalError:
                 pass    # column already exists
+        # SD-touch distribution (z crossing integer sigma levels)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sd_touches (
+                timestamp TEXT,
+                asset TEXT,
+                sd_level INTEGER,
+                direction TEXT,
+                zscore REAL,
+                spread REAL
+            )
+        ''')
+        # Shadow what-if-held results
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS shadow_trades (
+                position_id TEXT PRIMARY KEY,
+                asset TEXT,
+                exit_reason TEXT,
+                exit_pnl REAL,
+                what_if_net REAL,
+                peak REAL,
+                trough REAL,
+                hit_be_min REAL,
+                hit_tp_min REAL,
+                horizon_min REAL,
+                verdict TEXT,
+                completed TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    def log_sd_touch(self, asset, sd_level, direction, zscore, spread):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute('INSERT INTO sd_touches VALUES (?, ?, ?, ?, ?, ?)',
+                     (datetime.now().isoformat(), asset, sd_level,
+                      direction, zscore, spread))
+        conn.commit()
+        conn.close()
+
+    def log_shadow(self, shadow):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute('''
+            INSERT OR REPLACE INTO shadow_trades VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (shadow['position_id'], shadow['asset'],
+              shadow['exit_reason'], shadow['exit_pnl'], shadow['net'],
+              shadow['peak'], shadow['trough'], shadow['hit_be_min'],
+              shadow['hit_tp_min'], shadow['horizon_sec'] / 60,
+              shadow['verdict'], datetime.now().isoformat()))
         conn.commit()
         conn.close()
 

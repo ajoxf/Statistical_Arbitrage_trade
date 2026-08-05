@@ -333,6 +333,12 @@ ANALYSIS = """
 <h2>Outcomes</h2><div class="grid" id="tiles1"></div>
 <h2>Edge quality</h2><div class="grid" id="tiles2"></div>
 <h2>Outcome tags</h2><div id="tags"></div>
+<h2>Shadow "what-if-held" <span id="shadowbadge" class="badge"></span></h2>
+<div id="shadowagg"></div><table id="shadow"></table>
+<h2>SD-touch distribution</h2>
+<div style="display:grid;grid-template-columns:280px 1fr;gap:10px">
+<canvas id="sdChart" height="150"></canvas>
+<table id="sdTouches"></table></div>
 <h2>Excursions (MAE / MFE) — peak & trough with timing</h2>
 <table id="exc"></table>
 <h2>Trade journal</h2><table id="journal"></table>
@@ -381,6 +387,41 @@ async function load(){
    <td class="${cls(r.realized_pnl)}">$${fmt(r.realized_pnl,0)}</td>
    <td>${r.exit_reason||''}</td><td>${(r.opened||'').slice(5,16)}</td>
    <td>${(r.closed||'').slice(5,16)}</td></tr>`).join('');
+ const sh=await (await fetch('api/shadow')).json();
+ document.getElementById('shadowbadge').textContent=
+  `${sh.count} completed · ${sh.active} live`;
+ const a=sh.aggregates;
+ document.getElementById('shadowagg').innerHTML=a?
+  `<span class="badge">revert→target ${fmt(a.revert_target_rate,0)}%</span>
+   <span class="badge">revert→BE ${fmt(a.revert_be_rate,0)}%</span>
+   <span class="badge">median target ${fmt(a.median_target_min,0)}m</span>
+   <span class="badge">median BE ${fmt(a.median_be_min,0)}m</span>
+   <span class="badge">avg peak $${fmt(a.avg_peak_usd,0)}</span>`
+  :'<span class="note">Aggregates appear after 5 completed shadows</span>';
+ const live=sh.tracking.map(t=>`<tr><td>${t.position_id} <span class="badge on">LIVE</span></td>
+  <td>${t.exit_reason||''}</td><td>${fmt(t.minutes,0)}m/${fmt(t.horizon_min,0)}m</td>
+  <td class="${cls(t.net)}">$${fmt(t.net,0)}</td><td>—</td><td>—</td>
+  <td class="pos">${fmt(t.peak,0)}</td><td>—</td></tr>`).join('');
+ document.getElementById('shadow').innerHTML=
+  '<tr><th>Trade</th><th>Exited as</th><th>What-if held</th><th>Net now/final</th>'+
+  '<th>Back to BE</th><th>Hit TP</th><th>Peak</th><th>Verdict</th></tr>'+live+
+  sh.completed.map(r=>`<tr><td>${r.position_id}</td>
+   <td>${r.exit_reason||''} ($${fmt(r.exit_pnl,0)})</td>
+   <td>${fmt(r.horizon_min,0)}m</td>
+   <td class="${cls(r.what_if_net)}">$${fmt(r.what_if_net,0)}</td>
+   <td>${r.hit_be_min==null?'—':fmt(r.hit_be_min,0)+'m'}</td>
+   <td>${r.hit_tp_min==null?'—':fmt(r.hit_tp_min,0)+'m'}</td>
+   <td class="pos">${fmt(r.peak,0)}</td>
+   <td>${(r.verdict||'').replaceAll('_',' ')}</td></tr>`).join('');
+ const sd=await (await fetch('api/sd-touches')).json();
+ drawSdChart(sd.buckets||{});
+ document.getElementById('sdTouches').innerHTML=
+  '<tr><th>Time</th><th>Asset</th><th>SD level</th><th>Dir</th>'+
+  '<th>z</th><th>Spread</th></tr>'+
+  (sd.touches||[]).map(r=>`<tr><td>${(r.timestamp||'').slice(5,19)}</td>
+   <td>${r.asset}</td><td>${r.sd_level>0?'+':''}${r.sd_level}</td>
+   <td>${r.direction}</td><td>${fmt(r.zscore,2)}</td>
+   <td>${fmt(r.spread,4)}</td></tr>`).join('');
  const u=await (await fetch('api/untracked')).json();
  document.getElementById('untracked').innerHTML=
   '<tr><th>Time</th><th>Leg</th><th>Symbol</th><th>Ticket</th>'+
@@ -388,6 +429,20 @@ async function load(){
   u.map(r=>`<tr><td>${(r.timestamp||'').slice(0,19)}</td><td>${r.leg}</td>
    <td>${r.symbol}</td><td>${r.ticket}</td><td>${fmt(r.volume)}</td>
    <td>${r.note||''}</td></tr>`).join('');
+}
+function drawSdChart(buckets){
+ const c=document.getElementById('sdChart'),x=c.getContext('2d');
+ const W=c.width=c.clientWidth,H=c.height;x.clearRect(0,0,W,H);
+ const levels=[-3,-2,-1,1,2,3];
+ const mx=Math.max(1,...levels.map(l=>buckets[l]||0));
+ const bw=W/levels.length;
+ levels.forEach((l,i)=>{
+  const v=buckets[l]||0,h=(H-24)*v/mx;
+  x.fillStyle=l>0?'#3fb950':'#f85149';
+  x.fillRect(i*bw+6,H-16-h,bw-12,h);
+  x.fillStyle='#8b949e';x.font='11px sans-serif';x.textAlign='center';
+  x.fillText((l>0?'+':'')+l+'σ',i*bw+bw/2,H-4);
+  if(v)x.fillText(v,i*bw+bw/2,H-20-h);});
 }
 load();
 </script>"""
@@ -556,6 +611,46 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     def api_untracked():
         return jsonify(query(
             "SELECT * FROM untracked_closes ORDER BY timestamp DESC LIMIT 50"))
+
+    @app.route('/api/sd-touches')
+    def api_sd_touches():
+        asset = request.args.get('asset')
+        where = "WHERE asset=?" if asset else ""
+        args = (asset,) if asset else ()
+        rows = query(f"SELECT * FROM sd_touches {where} "
+                     f"ORDER BY timestamp DESC LIMIT 500", args)
+        buckets = {}
+        for r in rows:
+            buckets[r['sd_level']] = buckets.get(r['sd_level'], 0) + 1
+        return jsonify({'touches': rows[:50], 'buckets': buckets})
+
+    @app.route('/api/shadow')
+    def api_shadow():
+        rows = query("SELECT * FROM shadow_trades "
+                     "ORDER BY completed DESC LIMIT 50")
+        status = runtime_status().get('shadow', {})
+        aggregates = None
+        if len(rows) >= 5:      # W3 rule: aggregates are noise below 5
+            target = [r for r in rows if r['verdict'] == 'REVERTED_TO_TARGET']
+            be = [r for r in rows
+                  if r['verdict'] == 'REVERTED_TO_BREAK_EVEN']
+            def median(vals):
+                vals = sorted(v for v in vals if v is not None)
+                return vals[len(vals) // 2] if vals else None
+            aggregates = {
+                'revert_target_rate': 100 * len(target) / len(rows),
+                'revert_be_rate': 100 * (len(target) + len(be)) / len(rows),
+                'median_target_min': median([r['hit_tp_min']
+                                             for r in target]),
+                'median_be_min': median([r['hit_be_min']
+                                         for r in target + be]),
+                'avg_peak_usd': (sum(r['peak'] or 0 for r in rows)
+                                 / len(rows)),
+            }
+        return jsonify({'completed': rows, 'count': len(rows),
+                        'active': status.get('active', 0),
+                        'tracking': status.get('tracking', []),
+                        'aggregates': aggregates})
 
     @app.route('/api/market')
     def api_market():

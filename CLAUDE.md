@@ -189,11 +189,16 @@ Web control panel (statarb/webapp.py, own process, file-bridge only):
 - Coordinator control.json: {'algo_enabled', 'close': {...}} — algo
   off stops ENTRIES only; exits always run. MANUAL_CLOSE is urgent
   (market, by ticket).
+- SD-touch distribution (z crossings of ±1/2/3 sigma -> sd_touches
+  table, chart+table on Analysis) and the shadow "what-if-held"
+  tracker (statarb/shadow.py: after every close, marks the position
+  virtually until TP/horizon; verdicts REVERTED_TO_TARGET /
+  REVERTED_TO_BREAK_EVEN / KEPT_BLEEDING; aggregates suppressed
+  below 5 completed) — both ported 2026-08.
 Reversibility: tag v1-engine-baseline = pre-port engine; main stays
 there until the owner approves this work. NOT yet ported from W3:
-SD-touch chart/table, shadow "what-if-held" tracker, Hurst/velocity/
-trailing optional exits, auto-tuner, AI monitor, per-leg maker/taker
-fee split, backtest suite.
+Hurst/velocity/trailing optional exits, auto-tuner, AI monitor,
+per-leg maker/taker fee split, backtest suite.
 
 ## Repo branch map (2026-07)
 
