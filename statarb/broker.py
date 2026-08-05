@@ -43,31 +43,75 @@ class BrokerSession:
         self.connected = False
 
     def initialize(self):
+        """Connect this process to one MT5 terminal.
+
+        Attempts, in order (first success wins):
+        1. path + credentials — launch/attach a SPECIFIC terminal
+           installation (needed when two brokers run side by side);
+        2. credentials only — attach to the terminal that is ALREADY
+           OPEN and log into this account;
+        3. bare attach — use whatever terminal is open and logged in.
+
+        The fallbacks matter: launching terminal64.exe from Python is
+        brittle (wrong path, portable mode, auto-login disabled),
+        while attaching to a terminal the operator already opened is
+        the pattern that works reliably in practice.
+        """
         if mt5 is None:
             logging.error(
                 "MetaTrader5 package not installed (Windows-only). "
                 "Install it on the trading machine.")
             return False
 
-        kwargs = {}
-        if self.account.terminal_path:
-            kwargs['path'] = self.account.terminal_path
+        credentials = {}
         if self.account.login:
-            kwargs['login'] = self.account.login
-            kwargs['password'] = self.account.password or ""
-            kwargs['server'] = self.account.server or ""
+            credentials = {'login': self.account.login,
+                           'password': self.account.password or "",
+                           'server': self.account.server or ""}
 
-        if not mt5.initialize(**kwargs):
-            logging.error("MT5 initialization failed for account '%s': %s",
-                          self.account.name, mt5.last_error())
-            return False
+        attempts = []
+        if self.account.terminal_path:
+            attempts.append(("terminal path + credentials",
+                             dict(credentials,
+                                  path=self.account.terminal_path)))
+        if credentials:
+            attempts.append(("running terminal + credentials",
+                             dict(credentials)))
+        attempts.append(("running terminal (already logged in)", {}))
 
-        self.connected = True
-        info = mt5.account_info()
-        if info:
-            logging.info("Connected [%s]: %s / %s (login %s)",
-                         self.account.name, info.server, info.name, info.login)
-        return True
+        for label, kwargs in attempts:
+            try:
+                ok = mt5.initialize(**kwargs)
+            except Exception as e:                      # bad path types etc
+                logging.debug("MT5 initialize(%s) raised: %s", label, e)
+                ok = False
+            if ok:
+                self.connected = True
+                info = mt5.account_info()
+                if info:
+                    logging.info("Connected [%s] via %s: %s / %s (login %s)",
+                                 self.account.name, label, info.server,
+                                 info.name, info.login)
+                    if self.account.login and info.login != self.account.login:
+                        logging.warning(
+                            "[%s] terminal is logged into %s but config "
+                            "expects %s — check the account mapping",
+                            self.account.name, info.login,
+                            self.account.login)
+                else:
+                    logging.info("Connected [%s] via %s",
+                                 self.account.name, label)
+                return True
+            logging.debug("MT5 initialize failed (%s) for '%s': %s",
+                          label, self.account.name, mt5.last_error())
+
+        logging.error(
+            "MT5 connection failed for account '%s': %s. Fix ONE of: "
+            "open the MT5 terminal for this account and log in (then a "
+            "blank terminal path is fine), or set the correct path to "
+            "terminal64.exe in Settings, or check login/server/password.",
+            self.account.name, mt5.last_error())
+        return False
 
     def shutdown(self):
         if mt5 is not None:

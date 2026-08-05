@@ -1,23 +1,24 @@
 {
+  "trading_mode": "paper",
   "accounts": {
     "account_a": {
-      "terminal_path": "C:\\Program Files\\Broker A MT5\\terminal64.exe",
-      "login": 12345678,
-      "password_env": "MT5_PASSWORD_A",
-      "server": "BrokerA-Live",
-      "endpoint": "127.0.0.1:9101"
+      "terminal_path": "",
+      "login": null,
+      "password_env": "MT5_PASSWORD_ACCOUNT_A",
+      "server": "",
+      "endpoint": ""
     },
     "account_b": {
-      "terminal_path": "C:\\Program Files\\Broker B MT5\\terminal64.exe",
-      "login": 87654321,
-      "password_env": "MT5_PASSWORD_B",
-      "server": "BrokerB-Live",
-      "endpoint": "127.0.0.1:9102"
+      "terminal_path": "",
+      "login": null,
+      "password_env": "MT5_PASSWORD_ACCOUNT_B",
+      "server": "",
+      "endpoint": ""
     }
   },
   "leg_accounts": {
     "spot": "account_a",
-    "futures": "account_b"
+    "futures": "account_a"
   },
   "trading": {
     "CLIP_LOTS": 50.0,

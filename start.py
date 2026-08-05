@@ -30,15 +30,40 @@ import webbrowser
 DASHBOARD_PORT = 8080
 
 
+BANNER = """
+============================================================
+  NEXUS — first run
+------------------------------------------------------------
+  Open your MT5 terminal(s) and LOG IN before trading.
+  With one terminal open, the engine attaches to it directly.
+  For two brokers at once, set each account's terminal path,
+  login/server/password and a leg-runner endpoint in the web
+  UI (Brokers page), then restart this launcher.
+============================================================
+"""
+
+
 def ensure_files():
-    if not os.path.exists('config.json'):
+    fresh = not os.path.exists('config.json')
+    if fresh:
         shutil.copyfile('config.example.json', 'config.json')
-        print("Created config.json from template — set your brokers in "
-              "the web UI (Settings page)")
+        print(BANNER)
     if not os.path.exists('.env'):
         with open('.env', 'w', encoding='utf-8') as f:
             f.write("# Managed by the web UI (Settings page) — "
                     "you never need to edit this file.\n")
+    return fresh
+
+
+def unconfigured_accounts(raw_config):
+    """Accounts a leg points at that can neither launch a terminal nor
+    log in — they can only attach to an already-open terminal."""
+    accounts = raw_config.get('accounts', {})
+    legs = raw_config.get('leg_accounts', {})
+    used = {legs.get('spot'), legs.get('futures')} - {None}
+    return sorted(name for name in used
+                  if not (accounts.get(name) or {}).get('terminal_path')
+                  and not (accounts.get(name) or {}).get('login'))
 
 
 def plan_leg_runners(raw_config):
@@ -59,6 +84,7 @@ class Child:
         self.cmd = cmd
         self.proc = None
         self.backoff = 2
+        self.restarts = 0
 
     def spawn(self):
         print(f"[launcher] starting {self.name}: {' '.join(self.cmd)}")
@@ -76,20 +102,39 @@ class Child:
                 self.proc.kill()
 
 
+MAX_RESTARTS = 5
+
+
 def monitor(children, stop_event):
     """Relaunch dead children with backoff — the coordinator recovers
-    its positions from the DB and reconciles before trading again."""
+    its positions from the DB and reconciles before trading again.
+
+    A child that keeps dying is almost always a configuration problem
+    (wrong terminal path, bad login). After MAX_RESTARTS we stop
+    retrying and say so, instead of flooding the console forever —
+    the web UI stays up so the operator can fix the settings."""
+    for child in children:
+        child.restarts = 0
     while not stop_event.is_set():
         for child in children:
-            if child.proc is not None and not child.alive():
-                print(f"[launcher] {child.name} exited "
-                      f"(code {child.proc.returncode}) — restart in "
-                      f"{child.backoff}s")
-                stop_event.wait(child.backoff)
-                if stop_event.is_set():
-                    return
-                child.backoff = min(child.backoff * 2, 60)
-                child.spawn()
+            if child.proc is None or child.alive():
+                continue
+            if child.restarts >= MAX_RESTARTS:
+                if child.restarts == MAX_RESTARTS:
+                    print(f"[launcher] {child.name} keeps failing — giving "
+                          f"up after {MAX_RESTARTS} tries. Fix the settings "
+                          f"in the web UI, then restart the launcher.")
+                    child.restarts += 1     # log once
+                continue
+            print(f"[launcher] {child.name} exited "
+                  f"(code {child.proc.returncode}) — restart in "
+                  f"{child.backoff}s")
+            stop_event.wait(child.backoff)
+            if stop_event.is_set():
+                return
+            child.backoff = min(child.backoff * 2, 60)
+            child.restarts += 1
+            child.spawn()
         stop_event.wait(2)
 
 
@@ -98,6 +143,13 @@ def main():
     with open('config.json', 'r', encoding='utf-8') as f:
         raw = json.load(f)
     mode = raw.get('trading_mode', 'paper')
+
+    pending = unconfigured_accounts(raw)
+    if pending:
+        print(f"[launcher] note: account(s) {', '.join(pending)} have no "
+              f"terminal path or login — the engine will attach to the "
+              f"MT5 terminal you already have open. Configure them in the "
+              f"web UI to target specific terminals.")
 
     children = []
     for account in plan_leg_runners(raw):
