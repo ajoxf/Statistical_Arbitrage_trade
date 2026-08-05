@@ -94,10 +94,20 @@ class PaperExecutor:
 
 
 class Coordinator:
-    def __init__(self, config, trading_mode="PAPER"):
+    def __init__(self, config, trading_mode="PAPER", config_path=None):
         self.config = config
         self.trading_mode = trading_mode
         self.is_running = False
+
+        # Web-UI bridge: settings hot-reload + start/stop + manual close
+        self.config_path = config_path
+        self._config_mtime = (os.path.getmtime(config_path)
+                              if config_path and os.path.exists(config_path)
+                              else 0)
+        self.control_path = 'control.json'
+        self._control_mtime = 0
+        self._last_close_ts = 0
+        self.algo_enabled = True       # entries only; exits ALWAYS run
 
         self.spot_leg, self.futures_leg = self._resolve_legs()
 
@@ -304,13 +314,19 @@ class Coordinator:
             if reason:
                 self._close(position_id, position, reason, contract_size, z)
 
-        # -- entries --
+        # -- entries (only while the algo is enabled; exits above
+        # always run — stopping the algo never abandons a position) --
+        if not self.algo_enabled:
+            self.last_signals[asset_key] = SignalType.NO_SIGNAL
+            self.data_logger.log_market_data(asset_key, market_data,
+                                             SignalType.NO_SIGNAL, z=z)
+            return
         active = self.position_manager.get_positions_for_asset(asset_key)
         signal = self._entry_signal(asset_key, stats, market_data, active,
                                     contract_size)
         self.last_signals[asset_key] = signal or SignalType.NO_SIGNAL
         self.data_logger.log_market_data(asset_key, market_data,
-                                         self.last_signals[asset_key])
+                                         self.last_signals[asset_key], z=z)
         if signal:
             self._enter(asset_key, signal, market_data, stats, contract_size)
 
@@ -319,7 +335,8 @@ class Coordinator:
             age = (datetime.now() - position.entry_time).total_seconds()
             return self.exit_ladder.evaluate(
                 position, position.exit_plan, z,
-                position.unrealized_pnl, age)
+                position.unrealized_pnl, age,
+                spread=market_data.get('swap_diff'))
         # Legacy premium-based paths
         hit, action = self.risk_manager.check_position_risk(
             position, market_data['swap_premium_pct'])
@@ -388,6 +405,14 @@ class Coordinator:
             for key in ('tp_usd', 'stop_usd', 'rt_cost_usd'):
                 if plan.get(key):
                     plan[key] *= scale
+            # Freeze the display/exit anchors: entry spread, the mean
+            # at entry (for spread-mode exits), and the BE/EX/TP/SL
+            # SPREAD levels for the in-position card
+            plan['entry_mu'] = stats.mu if stats else None
+            plan['entry_spread'] = market_data['swap_diff']
+            plan['levels'] = self.exit_ladder.spread_levels(
+                plan, market_data['swap_diff'],
+                spot_trade.lot_size * contract_size, signal_type)
         position.exit_plan = plan
         self.data_logger.save_position_state(position)
         self.risk_manager.record_trade(asset_key, lots=spot_trade.lot_size)
@@ -436,6 +461,7 @@ class Coordinator:
         rows = []
         for position in self.position_manager.get_active_positions().values():
             age = datetime.now() - position.entry_time
+            plan = position.exit_plan or {}
             rows.append({
                 'position_id': position.position_id,
                 'asset': position.asset,
@@ -443,9 +469,81 @@ class Coordinator:
                 'lots': position.spot_trade.lot_size,
                 'entry_premium': position.entry_premium,
                 'unrealized_pnl': position.unrealized_pnl,
+                'net_pnl': (position.unrealized_pnl
+                            - plan.get('rt_cost_usd', 0.0)),
                 'age': f"{age.total_seconds() / 3600:.1f}h",
+                'age_sec': age.total_seconds(),
+                'entry_spot': position.spot_trade.executed_price,
+                'entry_fut': position.futures_trade.executed_price,
+                'entry_z': plan.get('entry_z'),
+                'tp_usd': plan.get('tp_usd'),
+                'stop_usd': plan.get('stop_usd'),
+                'rt_cost_usd': plan.get('rt_cost_usd'),
+                'max_hold_sec': plan.get('max_hold_sec'),
+                'levels': plan.get('levels'),
+                'peak_pnl': position.peak_pnl,
+                'trough_pnl': position.trough_pnl,
             })
         return rows
+
+    # ------------------------------------------------------------------
+    # Web-UI bridge
+    # ------------------------------------------------------------------
+
+    def _maybe_reload_config(self):
+        """Hot-apply settings saved by the web UI (config.json mtime)."""
+        if not self.config_path:
+            return
+        try:
+            mtime = os.path.getmtime(self.config_path)
+        except OSError:
+            return
+        if mtime == self._config_mtime:
+            return
+        self._config_mtime = mtime
+        try:
+            fresh = AlgoTradingConfig.from_file(self.config_path)
+        except (ValueError, OSError, KeyError) as e:
+            logging.error("Config reload failed (keeping current): %s", e)
+            return
+        positions_open = bool(self.position_manager.get_active_positions())
+        self.config.hot_apply(fresh, positions_open=positions_open)
+
+    def _read_control(self):
+        """control.json: {'algo_enabled': bool, 'close': {'position_id',
+        'ts'}} written by the web UI."""
+        try:
+            mtime = os.path.getmtime(self.control_path)
+        except OSError:
+            return
+        if mtime == self._control_mtime:
+            return
+        self._control_mtime = mtime
+        try:
+            with open(self.control_path, 'r', encoding='utf-8') as f:
+                control = json.load(f)
+        except (OSError, ValueError):
+            return
+
+        enabled = bool(control.get('algo_enabled', True))
+        if enabled != self.algo_enabled:
+            self.algo_enabled = enabled
+            logging.warning("Algo %s via web UI (exits keep running)",
+                            "ENABLED" if enabled else "DISABLED")
+
+        close = control.get('close') or {}
+        ts = close.get('ts', 0)
+        if close.get('position_id') and ts > self._last_close_ts:
+            self._last_close_ts = ts
+            position_id = close['position_id']
+            position = self.position_manager.positions.get(position_id)
+            if position:
+                logging.warning("MANUAL CLOSE requested via web UI: %s",
+                                position_id)
+                contract = self.config.ASSETS.get(
+                    position.asset, {}).get('lot_size', 1.0)
+                self._close(position_id, position, "MANUAL_CLOSE",
+                            contract, None)
 
     def _write_runtime_status(self, all_market_data):
         """Refresh runtime_status.json for the read-only dashboard.
@@ -455,6 +553,7 @@ class Coordinator:
         payload = {
             'mode': self.trading_mode,
             'updated': datetime.now().strftime('%H:%M:%S'),
+            'algo_enabled': self.algo_enabled,
             'halted': halted,
             'halt_reason': why,
             'daily_pnl': self.risk_manager.daily_realized_pnl,
@@ -561,6 +660,10 @@ class Coordinator:
                         self._reconnect_legs()
                         consecutive_errors = 0
 
+                self._read_control()
+                if loop_count % 20 == 0:      # ~10s
+                    self._maybe_reload_config()
+
                 if self.reconciler and self.trading_mode == "LIVE" \
                         and self.reconciler.due():
                     for action, leg_name, detail in self.reconciler.check():
@@ -636,7 +739,8 @@ def main():
             print("Cancelled")
             sys.exit(0)
 
-    coordinator = Coordinator(config, trading_mode=mode)
+    coordinator = Coordinator(config, trading_mode=mode,
+                              config_path=args.config)
     if not coordinator.start():
         print("Startup failed — are the leg runners started and logged in?")
         sys.exit(1)

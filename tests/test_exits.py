@@ -1,9 +1,17 @@
-"""Exit ladder: frozen dollar levels, priority order, gating rules."""
+"""Exit ladder: frozen dollar levels, BE-aware net targets, priority
+order, gating rules, spread levels, exit modes, time stops.
+
+Plans in these tests carry rt_cost_usd = $3,000 (the 0.30 spread on
+both legs at 50 lots), so NET = GROSS - 3000: a take-profit of
+$15,000 net requires $18,000 gross — "profit on top of break-even".
+"""
 
 import pytest
 
-from statarb.exits import ExitLadder
+from statarb.exits import ExitLadder, outcome_tag
 from statarb.models import Position, SignalType, Trade, OrderSide
+
+FEES = 3000.0    # round-trip cost baked into plans built from market_data()
 
 
 def market_data(spread_dollars=0.30):
@@ -21,12 +29,18 @@ def make_position(signal_type=SignalType.SELL_BASIS):
 
 @pytest.fixture
 def exit_config(config):
-    config.SIGNALS.update({'EXIT_Z': 0.5, 'STOP_Z': 4.0})
+    config.SIGNALS.update({'EXIT_Z': 0.5, 'STOP_Z': 4.0,
+                           'EXIT_MODE': 'zscore'})
     config.COSTS.update({'TARGET_FRACTION': 0.5, 'SPREAD_COST_FACTOR': 1.0})
     config.EXITS.update({
         'USE_SIGMA_TARGET': True, 'COST_FLOOR_MULT': 1.2,
         'STOP_USD_PER_LOT': 30.0, 'RR': 0.3, 'GATE_FLOOR_USD': 0.0,
         'MAX_HOLD_HALF_LIVES': 4.0, 'MAX_HOLD_FALLBACK_MIN': 240,
+        'MAX_HOLD_PROGRESS_SUPPRESS': 0.5,
+        'HARD_TIME_STOP_MULT': 3.0,
+        'HARD_MAX_HOLD_MIN': 0.0,      # isolated in its own test
+        'Z_STOP_EXIT_ENABLED': False,
+        'LEVERAGE': 0.0, 'TP_CAPITAL_PCT': 0.0, 'STOP_CAPITAL_PCT': 0.0,
     })
     return config
 
@@ -40,75 +54,108 @@ def build(exit_config, entry_z=3.0, sigma=2.0, half_life=600):
 
 def test_plan_sigma_target_and_stop(exit_config):
     _, plan = build(exit_config)
-    # TP = 0.5 * 3 * 2 * 5000 = $15,000 (above the cost floor)
-    assert plan['tp_usd'] == pytest.approx(15000)
-    # Stop candidates: per-lot 30*50 = 1500; TP/RR = 50k -> tighter wins
-    assert plan['stop_usd'] == pytest.approx(1500)
+    assert plan['tp_usd'] == pytest.approx(15000)   # 0.5 * 3 * 2 * 5000
+    assert plan['stop_usd'] == pytest.approx(1500)  # per-lot 30*50 binds
     assert plan['max_hold_sec'] == pytest.approx(2400)
+    assert plan['rt_cost_usd'] == pytest.approx(FEES)
 
 
 def test_stop_rr_side_can_bind(exit_config):
-    exit_config.EXITS['STOP_USD_PER_LOT'] = 1000.0   # cap now loose
-    _, plan = build(exit_config)
-    # TP/RR = 15000/0.3 = 50k vs per-lot 50k -> equal; tighten RR
+    exit_config.EXITS['STOP_USD_PER_LOT'] = 1000.0
     exit_config.EXITS['RR'] = 0.9
     _, plan = build(exit_config)
     assert plan['stop_usd'] == pytest.approx(15000 / 0.9)
 
 
-def test_cost_floor_raises_tiny_target(exit_config):
-    # sigma small -> raw TP $375 < floor 1.2 x cost ($3,600)
+def test_cost_floor_blocks_unwinnable_entry(exit_config):
     _, plan = build(exit_config, entry_z=3.0, sigma=0.05)
-    assert plan is None or plan['tp_usd'] >= 3600
-    # With this sigma, plausible reversion = 3*0.05*5000 = $750 < floor
-    # -> the entry must be BLOCKED (plan None)
     assert plan is None
 
 
-def test_dollar_stop_fires_first_and_ungated(exit_config):
+def test_capital_pct_forms_bind_when_leverage_set(exit_config):
+    exit_config.EXITS.update({'LEVERAGE': 100.0, 'USE_SIGMA_TARGET': False,
+                              'TP_CAPITAL_PCT': 0.5,
+                              'STOP_CAPITAL_PCT': 0.3,
+                              'COST_FLOOR_MULT': 0.0, 'RR': 0.0})
+    ladder, plan = build(exit_config)
+    assert plan['capital_at_risk'] == pytest.approx(331000, rel=0.001)
+    assert plan['tp_usd'] == pytest.approx(1655, rel=0.001)
+    assert plan['stop_usd'] == pytest.approx(993, rel=0.001)
+
+
+# ---------------------------------------------------------------------------
+# Ladder evaluation — gross in, break-even aware
+# ---------------------------------------------------------------------------
+
+
+def test_dollar_stop_fires_first_on_gross_and_ungated(exit_config):
     ladder, plan = build(exit_config)
     position = make_position()
-    # z back inside the exit band AND huge loss: stop wins, not reversion
-    reason = ladder.evaluate(position, plan, z=0.1, net_pnl=-2000,
-                             age_sec=10)
-    assert reason == 'DOLLAR_STOP'
-
-
-def test_take_profit_on_money_alone(exit_config):
-    ladder, plan = build(exit_config)
-    position = make_position()
-    # z still far from home — TP fires on P&L alone
-    reason = ladder.evaluate(position, plan, z=2.5, net_pnl=15500,
-                             age_sec=10)
-    assert reason == 'TAKE_PROFIT'
-
-
-def test_reversion_exit_gated_never_books_a_loss(exit_config):
-    ladder, plan = build(exit_config)
-    position = make_position()
-    # z home but net below the gate floor -> HOLD
-    assert ladder.evaluate(position, plan, z=0.2, net_pnl=-50,
+    # z home AND huge gross loss: stop wins, not reversion
+    assert ladder.evaluate(position, plan, z=0.1, gross_pnl=-2000,
+                           age_sec=10) == 'DOLLAR_STOP'
+    # Stop means SPREAD distance: gross -1400 is inside the line even
+    # though net (-4400) is far past it
+    assert ladder.evaluate(position, plan, z=2.0, gross_pnl=-1400,
                            age_sec=10) is None
-    # net at/above floor -> exit
-    assert ladder.evaluate(position, plan, z=0.2, net_pnl=25,
+
+
+def test_take_profit_is_profit_on_top_of_breakeven(exit_config):
+    ladder, plan = build(exit_config)
+    position = make_position()
+    # Gross $15.5k = net $12.5k < target $15k -> HOLD
+    assert ladder.evaluate(position, plan, z=2.5, gross_pnl=15500,
+                           age_sec=10) is None
+    # Gross $18.1k = net $15.1k >= target -> TP (z still far from home)
+    assert ladder.evaluate(position, plan, z=2.5, gross_pnl=18100,
+                           age_sec=10) == 'TAKE_PROFIT'
+
+
+def test_reversion_exit_gated_at_breakeven(exit_config):
+    ladder, plan = build(exit_config)
+    position = make_position()
+    # z home but gross below break-even (net < 0) -> HOLD
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES - 100,
+                           age_sec=10) is None
+    # At/above break-even -> exit
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES + 50,
                            age_sec=10) == 'REVERSION_EXIT'
 
 
 def test_reversion_fails_open_without_pnl(exit_config):
     ladder, plan = build(exit_config)
-    position = make_position()
-    assert ladder.evaluate(position, plan, z=0.2, net_pnl=None,
+    assert ladder.evaluate(make_position(), plan, z=0.2, gross_pnl=None,
                            age_sec=10) == 'REVERSION_EXIT'
 
 
-def test_max_hold_only_walks_away_with_profit(exit_config):
+def test_gate_floor_decays_with_age_deadlock_fix(exit_config):
+    exit_config.EXITS['GATE_FLOOR_USD'] = 50.0
+    ladder, plan = build(exit_config)
+    position = make_position()
+    max_hold = plan['max_hold_sec']
+
+    # Young, z home, net +$20 (< $50 floor) -> gate HOLDS
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES + 20,
+                           age_sec=60) is None
+    # Past 1x max-hold the floor decays to break-even: +$20 net releases
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES + 20,
+                           age_sec=max_hold + 1) == 'REVERSION_EXIT'
+    # A net loser still holds between 1x and 2x
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES - 20,
+                           age_sec=max_hold + 1) is None
+    # Past 2x the gate releases entirely
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES - 20,
+                           age_sec=2 * max_hold + 1) == 'REVERSION_EXIT'
+
+
+def test_max_hold_only_walks_away_with_net_profit(exit_config):
     ladder, plan = build(exit_config)
     position = make_position()
     age = plan['max_hold_sec'] + 1
-    # z=2.6 -> progress 0.13, no suppression
-    assert ladder.evaluate(position, plan, z=2.6, net_pnl=-100,
+    # Gross +$2.9k is a NET loser -> hold (z=2.6: no suppression)
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=FEES - 100,
                            age_sec=age) is None
-    assert ladder.evaluate(position, plan, z=2.6, net_pnl=100,
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=FEES + 100,
                            age_sec=age) == 'MAX_HOLD'
 
 
@@ -116,108 +163,132 @@ def test_max_hold_suppressed_while_travelling_toward_tp(exit_config):
     ladder, plan = build(exit_config, entry_z=3.0)
     position = make_position()
     age = plan['max_hold_sec'] + 1
-    # z=1.2 -> progress 60% toward home AND a TP exists -> keep riding
-    assert ladder.evaluate(position, plan, z=1.2, net_pnl=100,
-                           age_sec=age) is None
-    # No TP -> never wait for a target that is configured off
+    assert ladder.evaluate(position, plan, z=1.2, gross_pnl=FEES + 100,
+                           age_sec=age) is None       # 60% home + TP set
     plan_no_tp = dict(plan, tp_usd=None)
-    assert ladder.evaluate(position, plan_no_tp, z=1.2, net_pnl=100,
-                           age_sec=age) == 'MAX_HOLD'
+    assert ladder.evaluate(position, plan_no_tp, z=1.2,
+                           gross_pnl=FEES + 100, age_sec=age) == 'MAX_HOLD'
 
 
-def test_gate_floor_decays_with_age_deadlock_fix(exit_config):
-    # Regression for the +$1.19-held-over-2c -> -$4.46 deadlock
-    exit_config.EXITS['GATE_FLOOR_USD'] = 50.0
+def test_hard_time_stop_multiple_of_max_hold(exit_config):
     ladder, plan = build(exit_config)
     position = make_position()
     max_hold = plan['max_hold_sec']
-
-    # Young trade, z home, net below floor -> gate HOLDS
-    assert ladder.evaluate(position, plan, z=0.2, net_pnl=20.0,
-                           age_sec=60) is None
-    # Past 1x max-hold the floor decays to break-even: +$20 releases...
-    assert ladder.evaluate(position, plan, z=0.2, net_pnl=20.0,
-                           age_sec=max_hold + 1) == 'REVERSION_EXIT'
-    # ...but a loser still holds between 1x and 2x
-    assert ladder.evaluate(position, plan, z=0.2, net_pnl=-20.0,
-                           age_sec=max_hold + 1) is None
-    # Past 2x the gate releases entirely — take what's there, even a loss
-    assert ladder.evaluate(position, plan, z=0.2, net_pnl=-20.0,
-                           age_sec=2 * max_hold + 1) == 'REVERSION_EXIT'
-
-
-def test_hard_time_stop_is_the_sideways_losers_clock(exit_config):
-    ladder, plan = build(exit_config)
-    position = make_position()
-    max_hold = plan['max_hold_sec']
-    # Sideways loser: net < 0, z never reverts (z=2.6: no suppression,
-    # no reversion, no z-stop). Before 3x: no exit fires...
-    assert ladder.evaluate(position, plan, z=2.6, net_pnl=-100,
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=-100,
                            age_sec=2.5 * max_hold) is None
-    # ...at 3x the hard clock closes it regardless of P&L
-    assert ladder.evaluate(position, plan, z=2.6, net_pnl=-100,
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=-100,
                            age_sec=3 * max_hold + 1) == 'TIME_STOP'
-    # Disabled -> corner accepted, still no exit
     exit_config.EXITS['HARD_TIME_STOP_MULT'] = 0
-    assert ladder.evaluate(position, plan, z=2.6, net_pnl=-100,
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=-100,
                            age_sec=10 * max_hold) is None
+
+
+def test_hard_max_hold_fixed_minutes(exit_config):
+    """The ~90-minute drift window: a FIXED clock independent of the
+    measured half-life, P&L-agnostic."""
+    exit_config.EXITS.update({'HARD_TIME_STOP_MULT': 0.0,
+                              'HARD_MAX_HOLD_MIN': 90.0})
+    ladder, plan = build(exit_config, half_life=6000)   # max_hold 400min
+    position = make_position()
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=-100,
+                           age_sec=89 * 60) is None
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=-100,
+                           age_sec=91 * 60) == 'TIME_STOP'
 
 
 def test_z_stop_suppression_matrix(exit_config, caplog):
     import logging as logging_mod
     sell = make_position(SignalType.SELL_BASIS)
 
-    # DEFAULT (disabled) + dollar stop armed -> z-stop suppressed,
-    # would-have-fired is LOGGED for design scoring
     ladder, plan = build(exit_config)
     with caplog.at_level(logging_mod.WARNING):
-        assert ladder.evaluate(sell, plan, z=4.5, net_pnl=-100,
+        assert ladder.evaluate(sell, plan, z=4.5, gross_pnl=-100,
                                age_sec=10) is None
     assert any('WOULD HAVE FIRED' in r.message for r in caplog.records)
-    # Dollar stop itself is NEVER suppressed
-    assert ladder.evaluate(sell, plan, z=4.5, net_pnl=-2000,
+    assert ladder.evaluate(sell, plan, z=4.5, gross_pnl=-2000,
                            age_sec=10) == 'DOLLAR_STOP'
 
-    # Explicitly enabled -> fires, directionally
     exit_config.EXITS['Z_STOP_EXIT_ENABLED'] = True
     ladder2, plan2 = build(exit_config)
-    assert ladder2.evaluate(sell, plan2, z=4.5, net_pnl=-100,
+    assert ladder2.evaluate(sell, plan2, z=4.5, gross_pnl=-100,
                             age_sec=10) == 'Z_STOP'
-    assert ladder2.evaluate(sell, plan2, z=-4.5, net_pnl=-100,
+    assert ladder2.evaluate(sell, plan2, z=-4.5, gross_pnl=-100,
                             age_sec=10) is None
     buy = make_position(SignalType.BUY_BASIS)
-    assert ladder2.evaluate(buy, plan2, z=-4.5, net_pnl=-100,
+    assert ladder2.evaluate(buy, plan2, z=-4.5, gross_pnl=-100,
                             age_sec=10) == 'Z_STOP'
 
-    # FAIL-SAFE: disabled but NO dollar stop armed -> a trade must
-    # always have a stop, so the z-stop re-enables itself
     exit_config.EXITS['Z_STOP_EXIT_ENABLED'] = False
     ladder3, plan3 = build(exit_config)
     plan_unarmed = dict(plan3, stop_usd=0.0)
-    assert ladder3.evaluate(sell, plan_unarmed, z=4.5, net_pnl=-100,
+    assert ladder3.evaluate(sell, plan_unarmed, z=4.5, gross_pnl=-100,
                             age_sec=10) == 'Z_STOP'
 
 
-def test_capital_pct_forms_bind_when_leverage_set(exit_config):
-    # LEVERAGE on: capital = (3300+3320)*5000/100 = $331,000
-    exit_config.EXITS.update({'LEVERAGE': 100.0, 'USE_SIGMA_TARGET': False,
-                              'TP_CAPITAL_PCT': 0.5,
-                              'STOP_CAPITAL_PCT': 0.3,
-                              'COST_FLOOR_MULT': 0.0, 'RR': 0.0})
+# ---------------------------------------------------------------------------
+# Exit modes (zscore | spread | hybrid)
+# ---------------------------------------------------------------------------
+
+
+def test_spread_mode_exits_on_mean_cross_not_z(exit_config):
+    exit_config.SIGNALS['EXIT_MODE'] = 'spread'
     ladder, plan = build(exit_config)
-    assert plan['capital_at_risk'] == pytest.approx(331000, rel=0.001)
-    assert plan['tp_usd'] == pytest.approx(1655, rel=0.001)     # 0.5%
-    # Stop = min(per-lot 1500, 0.3% cap 993) -> the %-cap binds
-    assert plan['stop_usd'] == pytest.approx(993, rel=0.001)
+    plan['entry_mu'] = 15.0                      # mean frozen at entry
+    sell = make_position(SignalType.SELL_BASIS)  # entered with S above mu
+    gross = FEES + 100                           # net-positive, gate passes
+
+    # z still far, but spread crossed the frozen mean -> exit
+    assert ladder.evaluate(sell, plan, z=2.0, gross_pnl=gross,
+                           age_sec=10, spread=14.8) == 'REVERSION_EXIT'
+    # Spread above the mean -> no exit even though z is home
+    assert ladder.evaluate(sell, plan, z=0.1, gross_pnl=gross,
+                           age_sec=10, spread=16.0) is None
+
+
+def test_hybrid_mode_takes_either_signal(exit_config):
+    exit_config.SIGNALS['EXIT_MODE'] = 'hybrid'
+    ladder, plan = build(exit_config)
+    plan['entry_mu'] = 15.0
+    sell = make_position(SignalType.SELL_BASIS)
+    gross = FEES + 100
+    assert ladder.evaluate(sell, plan, z=0.1, gross_pnl=gross,
+                           age_sec=10, spread=16.0) == 'REVERSION_EXIT'
+    assert ladder.evaluate(sell, plan, z=2.0, gross_pnl=gross,
+                           age_sec=10, spread=14.8) == 'REVERSION_EXIT'
+
+
+# ---------------------------------------------------------------------------
+# Spread levels (the in-position card's BE / EX / TP / SL)
+# ---------------------------------------------------------------------------
+
+
+def test_spread_levels_sell_basis(exit_config):
+    _, plan = build(exit_config)
+    levels = ExitLadder.spread_levels(plan, entry_spread=20.0, oz=5000,
+                                      signal_type=SignalType.SELL_BASIS)
+    # Profit needs the spread to FALL: BE below entry by fees/oz
+    assert levels['favorable'] == 'down'
+    assert levels['be'] == pytest.approx(20.0 - FEES / 5000)      # 19.40
+    assert levels['tp'] == pytest.approx(20.0 - 18000 / 5000)     # 16.40
+    assert levels['sl'] == pytest.approx(20.0 + 1500 / 5000)      # 20.30
+    assert levels['ex'] == pytest.approx(levels['be'])            # floor 0
+
+
+def test_spread_levels_buy_basis_mirrored(exit_config):
+    _, plan = build(exit_config)
+    levels = ExitLadder.spread_levels(plan, entry_spread=-10.0, oz=5000,
+                                      signal_type=SignalType.BUY_BASIS)
+    assert levels['favorable'] == 'up'
+    assert levels['be'] == pytest.approx(-10.0 + FEES / 5000)
+    assert levels['tp'] == pytest.approx(-10.0 + 18000 / 5000)
+    assert levels['sl'] == pytest.approx(-10.0 - 1500 / 5000)
 
 
 def test_outcome_tags_are_deterministic():
-    from statarb.exits import outcome_tag
     assert outcome_tag('TAKE_PROFIT', False) == 'TARGET_HIT'
     assert outcome_tag('REVERSION_EXIT', True) == 'REVERSION_BANKED'
     assert outcome_tag('MAX_HOLD', True) == 'TIME_EXIT'
     assert outcome_tag('TIME_STOP', False) == 'TIME_EXIT'
-    # The stop split that matters: did z come home but price never pay?
     assert outcome_tag('DOLLAR_STOP', False) == 'STOPPED_IN_TREND'
     assert outcome_tag('DOLLAR_STOP', True) == 'STOPPED_AFTER_FULL_REVERSION'
     assert outcome_tag('Z_STOP', True) == 'STOPPED_AFTER_FULL_REVERSION'

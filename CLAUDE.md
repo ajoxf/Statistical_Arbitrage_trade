@@ -159,6 +159,42 @@ That branch ran REAL orders; its commit log paid for these rules:
   track fills across replaced tickets; our MODIFY-based re-peg keeps
   one ticket for the order's life — do not regress to cancel/replace.
 
+## W3 feature port (2026-08, from ajoxf/Stat_Arb_W3_Wsckt
+## branch claude/busy-tesla-41ja8f) — status
+
+Applied to the engine:
+- Exits are BREAK-EVEN aware: TP/gate/max-hold act on NET = gross -
+  round-trip cost ("profit % on top of BE"); dollar stop stays GROSS
+  (stop = spread distance, not fees).
+- Spread LEVELS frozen at entry for the in-position card: BE/EX/TP/SL
+  as absolute swap_diff values (ExitLadder.spread_levels).
+- EXIT_MODE zscore|spread|hybrid (spread = crosses the mean frozen at
+  entry). HARD_MAX_HOLD_MIN fixed-minutes clock (owner: ~90min, exit
+  before the spread starts drifting) alongside HARD_TIME_STOP_MULT.
+Web control panel (statarb/webapp.py, own process, file-bridge only):
+- Dashboard: in-position card (BE/EX/TP/SL + level $ + gross/net P&L
+  + peak/trough + max-hold bar + P&L progress bar), algo start/stop,
+  manual market-close button, canvas spread/z charts.
+- Settings: ALL config sections + MT5 broker/leg topology editor
+  (3 topologies: 2 brokers / 1 broker 2 accounts / 1 account).
+  Saves merge into config.json (back-fill — partial saves can't zero
+  fields); coordinator hot-reloads safe sections every ~10s via
+  AlgoTradingConfig.hot_apply; STRUCTURAL fields (accounts, legs,
+  symbols, HEDGE_RATIO) are blocked -> restart; beta change with a
+  position open returns 409 (W3 rule).
+- Analysis: outcome + edge-quality tiles (win rate, PF, expectancy,
+  break-even WR, max DD, P70 peak, median peak-minute), outcome-tag
+  counts, excursions table (peak/trough $ @ minutes, capture %),
+  trade journal, untracked-close ledger.
+- Coordinator control.json: {'algo_enabled', 'close': {...}} — algo
+  off stops ENTRIES only; exits always run. MANUAL_CLOSE is urgent
+  (market, by ticket).
+Reversibility: tag v1-engine-baseline = pre-port engine; main stays
+there until the owner approves this work. NOT yet ported from W3:
+SD-touch chart/table, shadow "what-if-held" tracker, Hurst/velocity/
+trailing optional exits, auto-tuner, AI monitor, per-leg maker/taker
+fee split, backtest suite.
+
 ## Repo branch map (2026-07)
 
 - `main` = this system (fast-forwarded 2026-07).

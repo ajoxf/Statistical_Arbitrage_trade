@@ -56,6 +56,10 @@ class DataLogger:
                 signal TEXT
             )
         ''')
+        try:    # z column added later — upgrade in place
+            cursor.execute('ALTER TABLE market_data ADD COLUMN z REAL')
+        except sqlite3.OperationalError:
+            pass
         # Crash-safe live-position snapshots for restart recovery
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS position_state (
@@ -197,16 +201,16 @@ class DataLogger:
         conn.commit()
         conn.close()
 
-    def log_market_data(self, asset, market_data, signal):
+    def log_market_data(self, asset, market_data, signal, z=None):
         signal_str = signal.value if hasattr(signal, 'value') else str(signal)
         conn = sqlite3.connect(self.db_path)
         conn.execute('''
-            INSERT INTO market_data VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO market_data VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             datetime.now().isoformat(), asset, market_data['spot_price'],
             market_data['futures_price'], market_data['actual_basis'],
             market_data['swap_basis'], market_data['swap_premium_pct'],
-            signal_str,
+            signal_str, z,
         ))
         conn.commit()
         conn.close()

@@ -32,7 +32,8 @@ import uuid
 from .models import OrderSide, SignalType, Trade
 
 EPS = 1e-9
-URGENT_REASONS = {'STOP_LOSS', 'DOLLAR_STOP', 'Z_STOP', 'SYSTEM_SHUTDOWN'}
+URGENT_REASONS = {'STOP_LOSS', 'DOLLAR_STOP', 'Z_STOP', 'SYSTEM_SHUTDOWN',
+                  'MANUAL_CLOSE'}
 
 
 class PairExecutor:

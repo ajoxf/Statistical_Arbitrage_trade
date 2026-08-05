@@ -117,6 +117,10 @@ class AlgoTradingConfig:
                                        # entries live in [ENTRY_Z, this).
                                        # Keep the band >= 1 sigma wide.
             'STOP_Z': 4.5,             # z-stop threshold (see EXITS)
+            # Exit trigger mode: 'zscore' (z back inside EXIT_Z),
+            # 'spread' (spread crosses the mean frozen at entry),
+            # 'hybrid' (either)
+            'EXIT_MODE': 'zscore',
             'LOOKBACK_SEC': 7200,
             'STATS_INTERVAL_SEC': 300, # freeze mu/sigma between refreshes
             'MIN_SAMPLES': 300,        # warm-up before any signal
@@ -172,6 +176,9 @@ class AlgoTradingConfig:
             # regardless of P&L (0 = off). Covers the sideways loser
             # that has no other clock.
             'HARD_TIME_STOP_MULT': 3.0,
+            # Fixed-minutes hard cap (0 = off): exit before the spread
+            # starts drifting, e.g. 90 minutes — P&L-agnostic
+            'HARD_MAX_HOLD_MIN': 90.0,
             # z-stop demoted to entry-ceiling duty: in-trade risk is
             # DOLLARS. Fail-safe: auto-re-enabled whenever no dollar
             # stop is armed; would-have-fired occasions are logged.
@@ -234,6 +241,53 @@ class AlgoTradingConfig:
 
         logging.info("Configuration loaded from %s", path)
         return cfg
+
+    # Sections safe to hot-apply while the coordinator runs. Structural
+    # fields (accounts, leg mapping, symbols, HEDGE_RATIO) change the
+    # spread series or the topology and require flat book + restart.
+    HOT_SECTIONS = ('SIGNAL_THRESHOLDS', 'SIGNALS', 'EXITS', 'COSTS',
+                    'RISK_LIMITS', 'EXECUTION', 'TELEGRAM', 'RECONCILE')
+    HOT_TRADING_KEYS = ('CLIP_LOTS', 'SLICE_LOTS', 'DAILY_LOT_TARGET',
+                        'POLL_INTERVAL_SEC')
+
+    def hot_apply(self, fresh, positions_open=False):
+        """Apply a freshly-loaded config to this live one in place.
+
+        Returns (applied, blocked): section names applied, and reasons
+        for anything refused. HEDGE_RATIO is structural — changing it
+        recomputes the whole spread series, so it is REJECTED while a
+        position is open (and needs a restart regardless). Note:
+        changed risk settings apply to any OPEN trade immediately.
+        """
+        applied, blocked = [], []
+        for section in self.HOT_SECTIONS:
+            if getattr(self, section) != getattr(fresh, section):
+                getattr(self, section).update(getattr(fresh, section))
+                applied.append(section)
+        for key in self.HOT_TRADING_KEYS:
+            if self.TRADING.get(key) != fresh.TRADING.get(key):
+                self.TRADING[key] = fresh.TRADING[key]
+                applied.append(f'TRADING.{key}')
+
+        if fresh.TRADING.get('HEDGE_RATIO') != self.TRADING.get('HEDGE_RATIO'):
+            if positions_open:
+                blocked.append('HEDGE_RATIO change rejected: position open')
+            else:
+                blocked.append('HEDGE_RATIO change requires a restart '
+                               '(recomputes the spread series)')
+        for name, check in [
+                ('accounts', {k: vars(a) for k, a in fresh.accounts.items()}
+                 != {k: vars(a) for k, a in self.accounts.items()}),
+                ('leg_accounts', fresh.leg_accounts != self.leg_accounts),
+                ('assets', {k: dict(a) for k, a in fresh.ASSETS.items()}
+                 != {k: dict(a) for k, a in self.ASSETS.items()})]:
+            if check:
+                blocked.append(f'{name} change requires a restart')
+        if applied:
+            logging.info("Config hot-reloaded: %s", ', '.join(applied))
+        for reason in blocked:
+            logging.warning("Config reload: %s", reason)
+        return applied, blocked
 
     def validate_expiries(self):
         """Warn about expired futures contracts (they disable signals)."""

@@ -64,6 +64,7 @@
     "EXIT_Z": 0.5,
     "MAX_ENTRY_Z": 4.5,
     "STOP_Z": 4.5,
+    "EXIT_MODE": "zscore",
     "LOOKBACK_SEC": 7200,
     "STATS_INTERVAL_SEC": 300,
     "MIN_SAMPLES": 300,
@@ -94,6 +95,7 @@
     "MAX_HOLD_FALLBACK_MIN": 240,
     "MAX_HOLD_PROGRESS_SUPPRESS": 0.5,
     "HARD_TIME_STOP_MULT": 3.0,
+    "HARD_MAX_HOLD_MIN": 90.0,
     "Z_STOP_EXIT_ENABLED": false
   },
   "reconcile": {

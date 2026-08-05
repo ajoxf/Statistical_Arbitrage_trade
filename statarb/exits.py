@@ -140,24 +140,74 @@ class ExitLadder:
 
     # ------------------------------------------------------------------
 
-    def evaluate(self, position, plan, z, net_pnl, age_sec):
-        """Return an exit reason string, or None to keep holding."""
+    @staticmethod
+    def spread_levels(plan, entry_spread, oz, signal_type):
+        """Translate the dollar ladder into absolute SPREAD levels for
+        display (the in-position card): BE = entry cost-adjusted, EX =
+        gate release, TP, SL. d = -1 when profit needs the spread to
+        FALL (SELL_BASIS), +1 when it needs it to rise."""
+        if not oz:
+            return None
+        d = -1.0 if signal_type == SignalType.SELL_BASIS else 1.0
+        fees = plan.get('rt_cost_usd', 0.0)
+        levels = {
+            'entry_spread': entry_spread,
+            'be': entry_spread + d * fees / oz,
+            'sl': entry_spread - d * plan['stop_usd'] / oz
+                  if plan.get('stop_usd') else None,
+            'tp': entry_spread + d * (plan['tp_usd'] + fees) / oz
+                  if plan.get('tp_usd') else None,
+            'ex': entry_spread + d * (plan.get('gate_floor_usd', 0)
+                                      + fees) / oz,
+            'favorable': 'down' if d < 0 else 'up',
+        }
+        return levels
+
+    def _reversion_home(self, plan, z, spread, signal_type):
+        """Has the spread 'come home'? Depends on SIGNALS.EXIT_MODE:
+        zscore (z inside the band), spread (crossed the mean frozen at
+        entry), or hybrid (either)."""
+        cfg = self.config.SIGNALS
+        z_home = z is not None and abs(z) <= cfg['EXIT_Z']
+        spread_home = False
+        entry_mu = plan.get('entry_mu')
+        if spread is not None and entry_mu is not None:
+            if signal_type == SignalType.SELL_BASIS:
+                spread_home = spread <= entry_mu
+            else:
+                spread_home = spread >= entry_mu
+        mode = cfg.get('EXIT_MODE', 'zscore')
+        if mode == 'spread':
+            return spread_home
+        if mode == 'hybrid':
+            return z_home or spread_home
+        return z_home
+
+    def evaluate(self, position, plan, z, gross_pnl, age_sec, spread=None):
+        """Return an exit reason string, or None to keep holding.
+
+        gross_pnl is the mark-to-market price move. Profit decisions
+        act on NET = gross - round-trip costs (break-even aware: the
+        TP is 'profit on top of break-even'); the dollar stop acts on
+        GROSS so 'stop' means spread distance, not fees."""
         exits = self.config.EXITS
         cfg = self.config.SIGNALS
         max_hold = plan['max_hold_sec']
+        fees = plan.get('rt_cost_usd', 0.0)
+        net_pnl = gross_pnl - fees if gross_pnl is not None else None
 
         # 1. Dollar stop — ungated, gross move
-        if plan['stop_usd'] and net_pnl is not None \
-                and net_pnl <= -plan['stop_usd']:
+        if plan['stop_usd'] and gross_pnl is not None \
+                and gross_pnl <= -plan['stop_usd']:
             return 'DOLLAR_STOP'
 
-        # 2. Take profit — ungated, money alone
+        # 2. Take profit — ungated, NET money alone (BE + target)
         if plan['tp_usd'] and net_pnl is not None \
                 and net_pnl >= plan['tp_usd']:
             return 'TAKE_PROFIT'
 
         # 3. Reversion exit — gate floor decays with age (deadlock fix)
-        if z is not None and abs(z) <= cfg['EXIT_Z']:
+        if self._reversion_home(plan, z, spread, position.signal_type):
             if net_pnl is None:
                 return 'REVERSION_EXIT'              # fail-open
             if age_sec >= 2 * max_hold:
@@ -169,8 +219,8 @@ class ExitLadder:
                 return 'REVERSION_EXIT'
             # else: hold — never book a losing "profit-take" early
 
-        # 4. Max hold — only walk away with a profit; suppressed while
-        # still travelling toward an EXISTING take-profit
+        # 4. Max hold — only walk away with a NET profit; suppressed
+        # while still travelling toward an EXISTING take-profit
         if age_sec >= max_hold and net_pnl is not None and net_pnl > 0:
             suppressed = False
             entry_z = plan.get('entry_z')
@@ -182,9 +232,14 @@ class ExitLadder:
             if not suppressed:
                 return 'MAX_HOLD'
 
-        # 5. Hard time stop — ANY P&L; the sideways loser's only clock
+        # 5. Hard time stops — ANY P&L. Two independent clocks: a
+        # multiple of max-hold, and a FIXED minutes cap (exit before
+        # the spread starts drifting, e.g. 90 minutes)
         time_stop_mult = exits.get('HARD_TIME_STOP_MULT', 0)
         if time_stop_mult and age_sec >= time_stop_mult * max_hold:
+            return 'TIME_STOP'
+        hard_minutes = exits.get('HARD_MAX_HOLD_MIN', 0)
+        if hard_minutes and age_sec >= hard_minutes * 60:
             return 'TIME_STOP'
 
         # 6. z-stop — demoted to entry-ceiling duty
@@ -205,7 +260,7 @@ class ExitLadder:
                         "Z-STOP WOULD HAVE FIRED for %s at z=%.2f (gross "
                         "$%.2f, dollar line -$%.0f) — disabled while the "
                         "dollar stop is armed; logged for design scoring",
-                        position.position_id, z, net_pnl or 0,
+                        position.position_id, z, gross_pnl or 0,
                         plan['stop_usd'])
 
         return None

@@ -12,7 +12,13 @@ from statarb.webapp import create_app                       # noqa: E402
 
 
 @pytest.fixture
-def dashboard(tmp_path):
+def paths(tmp_path):
+    return {'config': str(tmp_path / "config.json"),
+            'control': str(tmp_path / "control.json")}
+
+
+@pytest.fixture
+def dashboard(tmp_path, paths):
     db = DataLogger(db_path=str(tmp_path / "dash.db"))
 
     spot = Trade('XAUUSD', OrderSide.BUY, 50.0)
@@ -44,16 +50,28 @@ def dashboard(tmp_path):
                        'age': '1.5h'}],
     }))
 
+    import json as json_mod
+    with open(paths['config'], 'w') as f:
+        json_mod.dump({'accounts': {'account_a': {'login': 1},
+                                    'account_b': {'login': 2}},
+                       'leg_accounts': {'spot': 'account_a',
+                                        'futures': 'account_b'},
+                       'trading': {'HEDGE_RATIO': 1.0, 'CLIP_LOTS': 50.0},
+                       'signals': {'ENTRY_Z': 3.0}}, f)
+
     app = create_app(db_path=str(tmp_path / "dash.db"),
-                     status_path=str(status_path))
+                     status_path=str(status_path),
+                     config_path=paths['config'],
+                     control_path=paths['control'])
     app.config['TESTING'] = True
     return app.test_client()
 
 
-def test_index_serves_page(dashboard):
-    response = dashboard.get('/')
-    assert response.status_code == 200
-    assert b'StatArb Dashboard' in response.data
+def test_pages_serve(dashboard):
+    for route in ('/', '/settings', '/analysis'):
+        response = dashboard.get(route)
+        assert response.status_code == 200, route
+    assert b'Brokers & legs (MT5)' in dashboard.get('/settings').data
 
 
 def test_summary_reflects_runtime_status(dashboard):
@@ -81,3 +99,52 @@ def test_reviews_and_untracked_from_db(dashboard):
 
 def test_market_endpoint_empty_ok(dashboard):
     assert dashboard.get('/api/market?asset=GOLD').get_json() == []
+
+
+def test_engine_toggle_and_close_write_control(dashboard, paths):
+    import json as json_mod
+    response = dashboard.post('/api/engine/toggle')
+    assert response.status_code == 200
+    control = json_mod.load(open(paths['control']))
+    assert control['algo_enabled'] is False    # status said True
+
+    response = dashboard.post('/api/engine/close',
+                              json={'position_id': 'POS_0002'})
+    assert response.status_code == 200
+    control = json_mod.load(open(paths['control']))
+    assert control['close']['position_id'] == 'POS_0002'
+    assert control['algo_enabled'] is False    # toggle preserved
+
+
+def test_config_save_merges_and_backfills(dashboard, paths):
+    import json as json_mod
+    response = dashboard.post('/api/config', json={
+        'sections': {'SIGNALS': {'ENTRY_Z': 2.5},
+                     'EXITS': {'HARD_MAX_HOLD_MIN': 90.0}},
+    })
+    assert response.status_code == 200
+    raw = json_mod.load(open(paths['config']))
+    assert raw['signals']['ENTRY_Z'] == 2.5
+    assert raw['exits']['HARD_MAX_HOLD_MIN'] == 90.0
+    # Untouched sections/keys survive (back-fill rule)
+    assert raw['trading']['CLIP_LOTS'] == 50.0
+    assert raw['accounts']['account_a']['login'] == 1
+
+
+def test_config_rejects_beta_change_while_in_trade(dashboard, paths):
+    # runtime status fixture shows an open position -> 409, W3 rule
+    response = dashboard.post('/api/config', json={
+        'sections': {'TRADING': {'HEDGE_RATIO': 2.0}},
+    })
+    assert response.status_code == 409
+    import json as json_mod
+    raw = json_mod.load(open(paths['config']))
+    assert raw['trading']['HEDGE_RATIO'] == 1.0    # unchanged
+
+
+def test_analysis_endpoint_math(dashboard):
+    stats = dashboard.get('/api/analysis').get_json()
+    # One closed trade in the fixture: +$500
+    assert stats['total'] == 1 and stats['winners'] == 1
+    assert stats['total_pnl'] == 500.0
+    assert stats['win_rate'] == 100.0
