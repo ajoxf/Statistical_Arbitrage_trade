@@ -93,6 +93,18 @@ DASHBOARD = """
 <button id="toggle" class="gray" style="margin:0;float:right"></button></h1>
 <div id="assets"></div>
 <div id="poscards"></div>
+<h2>Manual spread trade</h2>
+<div class="card"><div class="row">
+ <div><label>Asset</label><select id="m_asset"></select></div>
+ <div><label>Direction</label><select id="m_dir">
+  <option value="SELL_BASIS">SELL basis (short spread)</option>
+  <option value="BUY_BASIS">BUY basis (long spread)</option></select></div>
+ <div><label>Lots (blank = clip size)</label><input id="m_lots"></div>
+ <div><button style="margin-top:20px" onclick="manualOpen()">Open pair
+  </button></div>
+</div><div class="note">Bypasses the signal gates only — risk limits,
+circuit breakers and atomic pre-checks still apply, and the exit
+ladder manages the trade like any other.</div></div>
 <h2>Spread & z-score</h2>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
 <canvas id="spreadChart" height="160"></canvas>
@@ -120,6 +132,9 @@ async function refresh(){
     basis ${fmt(a.basis)} | ${a.lots_today||0}/${a.lot_target||0} lots</span>`
   ).join('')+`<span class="badge">day P&L
     <span class="${cls(S.daily_pnl)}">$${fmt(S.daily_pnl,0)}</span></span>`;
+  const ma=document.getElementById('m_asset');
+  if(!ma.options.length&&(S.assets||[]).length)
+   ma.innerHTML=S.assets.map(a=>`<option>${a.asset}</option>`).join('');
   renderCards(S.positions||[]);
  }catch(e){}
 }
@@ -164,6 +179,19 @@ function renderCards(ps){
    <div class="bar"><i style="left:0;width:${holdPct}%;
     background:${holdPct<66?'#3fb950':holdPct<100?'#d29922':'#f85149'}"></i></div>
   </div>`;}).join('');
+}
+async function manualOpen(){
+ const asset=document.getElementById('m_asset').value,
+       dir=document.getElementById('m_dir').value,
+       lots=document.getElementById('m_lots').value;
+ if(!asset){msg('No asset available yet');return}
+ if(!confirm(`Open MANUAL ${dir} pair on ${asset}`+
+   (lots?` (${lots} lots)?`:' (clip size)?')))return;
+ await fetch('api/engine/open',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({asset,direction:dir,
+   lots:lots?parseFloat(lots):null})});
+ msg('Manual trade command sent — watch the position card');
 }
 async function closePos(id){
  if(!confirm('Close '+id+' at market?'))return;
@@ -742,6 +770,17 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return jsonify({'error': 'position_id required'}), 400
         write_control({'close': {'position_id': position_id,
                                  'ts': time.time()}})
+        return jsonify({'ok': True})
+
+    @app.route('/api/engine/open', methods=['POST'])
+    def api_open():
+        payload = request.get_json(silent=True) or {}
+        if not payload.get('asset') or not payload.get('direction'):
+            return jsonify({'error': 'asset and direction required'}), 400
+        write_control({'open': {'asset': payload['asset'],
+                                'direction': payload['direction'],
+                                'lots': payload.get('lots'),
+                                'ts': time.time()}})
         return jsonify({'ok': True})
 
     @app.route('/api/config', methods=['GET', 'POST'])

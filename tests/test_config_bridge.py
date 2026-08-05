@@ -63,3 +63,52 @@ def test_coordinator_control_and_reload(tmp_path, monkeypatch, config):
     os.utime(config_path, (time.time() + 10, time.time() + 10))
     coordinator._maybe_reload_config()
     assert coordinator.config.SIGNALS['ENTRY_Z'] == 2.2
+
+
+def test_manual_spread_trade_via_control_file(tmp_path, monkeypatch,
+                                              config):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator, PaperExecutor
+    from tests.test_limit_execution import LimitFakeLeg
+
+    coordinator = Coordinator(config, trading_mode='PAPER')
+    spot_leg = LimitFakeLeg('a', price=3300.0)
+    fut_leg = LimitFakeLeg('b', price=3320.0)
+    coordinator.spot_leg, coordinator.futures_leg = spot_leg, fut_leg
+    coordinator.executor = PaperExecutor(spot_leg, fut_leg)
+    coordinator.active_assets['GOLD'] = {
+        'config': config.ASSETS['GOLD'], 'spot_symbol': 'XAUUSD',
+        'futures_symbol': 'GC1225', 'last_data': None}
+
+    control = tmp_path / "control.json"
+    control.write_text(json.dumps({
+        'algo_enabled': True,
+        'open': {'asset': 'GOLD', 'direction': 'SELL_BASIS',
+                 'lots': 1.0, 'ts': 100.0}}))
+    coordinator.control_path = str(control)
+    coordinator._read_control()
+
+    active = coordinator.position_manager.get_active_positions()
+    assert len(active) == 1
+    position = next(iter(active.values()))
+    assert position.signal_type.value == 'SELL_BASIS'
+    assert position.spot_trade.lot_size == 1.0
+    # Exit plan attached even without warm stats (fixed stop armed)
+    assert position.exit_plan['stop_usd'] > 0
+    assert position.exit_plan['source'] == 'MANUAL'
+
+    # Same command ts again -> no duplicate position
+    coordinator._control_mtime = 0
+    coordinator._read_control()
+    assert len(coordinator.position_manager.get_active_positions()) == 1
+
+    # Circuit breaker blocks manual trades too
+    config.RISK_LIMITS['LOSS_STREAK_PAUSE'] = 1
+    coordinator.risk_manager.on_position_closed(-100)
+    control.write_text(json.dumps({
+        'algo_enabled': True,
+        'open': {'asset': 'GOLD', 'direction': 'BUY_BASIS',
+                 'lots': 1.0, 'ts': 200.0}}))
+    os.utime(control, (time.time() + 10, time.time() + 10))
+    coordinator._read_control()
+    assert len(coordinator.position_manager.get_active_positions()) == 1

@@ -108,6 +108,7 @@ class Coordinator:
         self.control_path = 'control.json'
         self._control_mtime = 0
         self._last_close_ts = 0
+        self._last_open_ts = 0
         self.algo_enabled = True       # entries only; exits ALWAYS run
 
         self.spot_leg, self.futures_leg = self._resolve_legs()
@@ -400,32 +401,43 @@ class Coordinator:
             logging.info("Entry rejected for %s: %s", asset_key, reason)
             return
 
-        # Exit plan is computed BEFORE entering — a trade whose cost
-        # floor exceeds plausible reversion is refused outright
+        self._open_position(asset_key, signal_type, clip, market_data,
+                            stats, contract_size)
+
+    def _open_position(self, asset_key, signal_type, lots, market_data,
+                       stats, contract_size, manual=False):
+        """Shared entry path for signal and manual trades: exit plan
+        BEFORE orders (a trade whose cost floor exceeds plausible
+        reversion is refused), execute, attach frozen levels."""
         plan = None
-        if self.use_z and stats is not None:
+        if (self.use_z and stats is not None) or manual:
+            warm = stats is not None and stats.warm
             plan = self.exit_ladder.build_plan(
-                clip, contract_size, stats.z, stats.sigma,
-                stats.half_life_sec, market_data)
+                lots, contract_size,
+                stats.z if warm else None,
+                stats.sigma if warm else None,
+                stats.half_life_sec if stats else None, market_data)
             if plan is None:
-                return
+                return None
+            if manual:
+                plan['source'] = 'MANUAL'
 
         asset = self.active_assets[asset_key]
         success, spot_trade, futures_trade = \
             self.executor.execute_trade_pair(
-                asset_key, signal_type, clip,
+                asset_key, signal_type, lots,
                 asset['spot_symbol'], asset['futures_symbol'])
         if not success:
             logging.error("Pair entry failed for %s %s", asset_key,
                           signal_type.value)
-            return
+            return None
 
         position = self.position_manager.create_position(
             asset_key, signal_type, spot_trade, futures_trade,
             market_data['swap_premium_pct'])
-        if plan and spot_trade.lot_size and clip:
-            # Rescale dollar levels if we filled less than the clip
-            scale = spot_trade.lot_size / clip
+        if plan and spot_trade.lot_size and lots:
+            # Rescale dollar levels if we filled less than requested
+            scale = spot_trade.lot_size / lots
             for key in ('tp_usd', 'stop_usd', 'rt_cost_usd'):
                 if plan.get(key):
                     plan[key] *= scale
@@ -441,10 +453,12 @@ class Coordinator:
         self.data_logger.save_position_state(position)
         self.risk_manager.record_trade(asset_key, lots=spot_trade.lot_size)
         self.notifier.notify_trade_opened(
-            position, market_data, z=stats.z if stats else None)
-        logging.info("Position opened: %s (%.2f lots, %s)",
+            position, market_data,
+            z=stats.z if stats and stats.warm else None)
+        logging.info("Position opened: %s (%.2f lots, %s%s)",
                      position.position_id, spot_trade.lot_size,
-                     self.trading_mode)
+                     self.trading_mode, ", MANUAL" if manual else "")
+        return position
 
     def _close(self, position_id, position, reason, contract_size, z,
                spread=None):
@@ -576,6 +590,59 @@ class Coordinator:
                     position.asset, {}).get('lot_size', 1.0)
                 self._close(position_id, position, "MANUAL_CLOSE",
                             contract, None)
+
+        open_cmd = control.get('open') or {}
+        ts = open_cmd.get('ts', 0)
+        if open_cmd.get('asset') and ts > self._last_open_ts:
+            self._last_open_ts = ts
+            self._manual_open(open_cmd['asset'],
+                              open_cmd.get('direction', ''),
+                              open_cmd.get('lots'))
+
+    def _manual_open(self, asset_key, direction, lots=None):
+        """Manual spread trade from the web UI: bypasses SIGNAL gates
+        (z, trend, cooldowns, edge filter) but NEVER risk limits or
+        circuit breakers. Exits are managed by the normal ladder."""
+        if asset_key not in self.active_assets:
+            logging.error("Manual trade rejected: unknown asset %s",
+                          asset_key)
+            return
+        try:
+            signal_type = SignalType(direction)
+        except ValueError:
+            logging.error("Manual trade rejected: bad direction %r",
+                          direction)
+            return
+        if signal_type not in (SignalType.SELL_BASIS,
+                               SignalType.BUY_BASIS):
+            return
+
+        halted, why = self.risk_manager.halted()
+        if halted:
+            logging.warning("Manual trade rejected: circuit breaker (%s)",
+                            why)
+            return
+        lots = float(lots or self.config.TRADING.get('CLIP_LOTS', 1.0))
+        if lots > self.config.RISK_LIMITS['MAX_LOT_SIZE']:
+            logging.warning("Manual trade rejected: %s lots > MAX_LOT_SIZE",
+                            lots)
+            return
+        active = self.position_manager.get_positions_for_asset(asset_key)
+        if len(active) >= self.config.RISK_LIMITS['MAX_POSITIONS_PER_ASSET']:
+            logging.warning("Manual trade rejected: max positions reached")
+            return
+
+        market_data = self.get_market_data(asset_key) \
+            or self.active_assets[asset_key]['last_data']
+        if not market_data:
+            logging.error("Manual trade rejected: no market data")
+            return
+        contract_size = self.config.ASSETS[asset_key]['lot_size']
+        stats = self.stats.get(asset_key)
+        logging.warning("MANUAL SPREAD TRADE via web UI: %s %s %.2f lots",
+                        asset_key, signal_type.value, lots)
+        self._open_position(asset_key, signal_type, lots, market_data,
+                            stats, contract_size, manual=True)
 
     def _write_runtime_status(self, all_market_data):
         """Refresh runtime_status.json for the read-only dashboard.
