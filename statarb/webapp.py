@@ -97,6 +97,7 @@ DASHBOARD = """
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
 <canvas id="spreadChart" height="160"></canvas>
 <canvas id="zChart" height="160"></canvas></div>
+<h2>Recent trades</h2><table id="recent"></table>
 <script>
 function cls(v){return v>=0?'pos':'neg'}
 function fmt(v,d=2){return v==null?'—':Number(v).toLocaleString(undefined,
@@ -197,6 +198,15 @@ async function charts(){
   m.reverse();
   drawLine('spreadChart',m.map(r=>r.actual_basis-r.swap_basis),'#58a6ff',0);
   drawLine('zChart',m.map(r=>r.z),'#d29922',0);
+  const t=await (await fetch('api/reviews?limit=10')).json();
+  document.getElementById('recent').innerHTML=
+   '<tr><th>ID</th><th>Asset</th><th>Side</th><th>Lots</th><th>P&L</th>'+
+   '<th>Reason</th><th>Outcome</th><th>Closed</th></tr>'+
+   t.map(r=>`<tr><td>${r.position_id}</td><td>${r.asset}</td><td></td>
+    <td>${fmt(r.lots,1)}</td>
+    <td class="${cls(r.realized_pnl)}">$${fmt(r.realized_pnl,0)}</td>
+    <td>${r.exit_reason||''}</td><td>${r.outcome||''}</td>
+    <td>${(r.closed||'').slice(5,16)}</td></tr>`).join('')||'';
  }catch(e){}}
 refresh();charts();setInterval(refresh,2000);setInterval(charts,10000);
 </script>"""
@@ -379,14 +389,26 @@ async function load(){
    <td>${r.outcome||''}</td></tr>`).join('');
  document.getElementById('journal').innerHTML=
   '<tr><th>ID</th><th>Asset</th><th>Entry z</th><th>Exit z</th>'+
-  '<th>Lots</th><th>Target $</th><th>Cost est $</th><th>P&L</th>'+
+  '<th>Entry sprd</th><th>Exit sprd</th><th>Δ sprd</th>'+
+  '<th>BE</th><th>EX</th><th>TP</th><th>SL</th>'+
+  '<th>Lots</th><th>Notional</th><th>P&L</th><th>P&L %</th>'+
   '<th>Reason</th><th>Opened</th><th>Closed</th></tr>'+
-  t.map(r=>`<tr><td>${r.position_id}</td><td>${r.asset}</td>
-   <td>${fmt(r.entry_z)}</td><td>${fmt(r.exit_z)}</td><td>${fmt(r.lots,1)}</td>
-   <td>${fmt(r.capture_target,0)}</td><td>${fmt(r.cost_est,0)}</td>
+  t.map(r=>{
+   const ds=(r.exit_spread!=null&&r.entry_spread!=null)
+     ?r.exit_spread-r.entry_spread:null;
+   const pct=(r.notional&&r.realized_pnl!=null)
+     ?100*r.realized_pnl/r.notional:null;
+   return `<tr><td>${r.position_id}</td><td>${r.asset}</td>
+   <td>${fmt(r.entry_z)}</td><td>${fmt(r.exit_z)}</td>
+   <td>${fmt(r.entry_spread)}</td><td>${fmt(r.exit_spread)}</td>
+   <td class="${cls(-ds)}">${ds==null?'—':fmt(ds)}</td>
+   <td>${fmt(r.be_spread)}</td><td>${fmt(r.ex_spread)}</td>
+   <td>${fmt(r.tp_spread)}</td><td>${fmt(r.sl_spread)}</td>
+   <td>${fmt(r.lots,1)}</td><td>${fmt(r.notional,0)}</td>
    <td class="${cls(r.realized_pnl)}">$${fmt(r.realized_pnl,0)}</td>
+   <td class="${cls(pct)}">${pct==null?'—':fmt(pct,3)+'%'}</td>
    <td>${r.exit_reason||''}</td><td>${(r.opened||'').slice(5,16)}</td>
-   <td>${(r.closed||'').slice(5,16)}</td></tr>`).join('');
+   <td>${(r.closed||'').slice(5,16)}</td></tr>`}).join('');
  const sh=await (await fetch('api/shadow')).json();
  document.getElementById('shadowbadge').textContent=
   `${sh.count} completed · ${sh.active} live`;

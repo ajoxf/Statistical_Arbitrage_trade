@@ -98,11 +98,19 @@ class DataLogger:
                 closed TEXT
             )
         ''')
-        # Lifecycle extremes + outcome tag (added later — upgrade in place)
+        # Lifecycle extremes + outcome tag + spread levels (added later —
+        # upgrade in place)
         for column, col_type in [('peak_pnl', 'REAL'), ('peak_min', 'REAL'),
                                  ('trough_pnl', 'REAL'),
                                  ('trough_min', 'REAL'),
-                                 ('outcome', 'TEXT')]:
+                                 ('outcome', 'TEXT'),
+                                 ('entry_spread', 'REAL'),
+                                 ('exit_spread', 'REAL'),
+                                 ('be_spread', 'REAL'),
+                                 ('ex_spread', 'REAL'),
+                                 ('tp_spread', 'REAL'),
+                                 ('sl_spread', 'REAL'),
+                                 ('notional', 'REAL')]:
             try:
                 cursor.execute(f'ALTER TABLE trade_review '
                                f'ADD COLUMN {column} {col_type}')
@@ -198,12 +206,15 @@ class DataLogger:
         conn.close()
 
     def log_trade_review(self, position, exit_z=None, capture_target=None,
-                         cost_est=None, outcome=None):
+                         cost_est=None, outcome=None, exit_spread=None,
+                         notional=None):
         conn = sqlite3.connect(self.db_path)
         plan = position.exit_plan or {}
+        levels = plan.get('levels') or {}
         conn.execute('''
             INSERT OR REPLACE INTO trade_review VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             position.position_id, position.asset,
             plan.get('entry_z'), exit_z, plan.get('entry_sigma'),
@@ -217,6 +228,10 @@ class DataLogger:
             position.peak_pnl, position.peak_min,
             position.trough_pnl, position.trough_min,
             outcome,
+            levels.get('entry_spread'), exit_spread,
+            levels.get('be'), levels.get('ex'),
+            levels.get('tp'), levels.get('sl'),
+            notional,
         ))
         conn.commit()
         conn.close()

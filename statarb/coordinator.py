@@ -319,7 +319,8 @@ class Coordinator:
 
             reason = self._exit_reason(position, z, market_data)
             if reason:
-                self._close(position_id, position, reason, contract_size, z)
+                self._close(position_id, position, reason, contract_size, z,
+                            spread=market_data.get('swap_diff'))
 
         # -- entries (only while the algo is enabled; exits above
         # always run — stopping the algo never abandons a position) --
@@ -445,7 +446,8 @@ class Coordinator:
                      position.position_id, spot_trade.lot_size,
                      self.trading_mode)
 
-    def _close(self, position_id, position, reason, contract_size, z):
+    def _close(self, position_id, position, reason, contract_size, z,
+               spread=None):
         contract = contract_size
         closed = self.position_manager.close_position(
             position_id, reason, self.executor, contract_size=contract)
@@ -456,7 +458,13 @@ class Coordinator:
         self.z_gen.notify_close(position.asset, reason,
                                 position.signal_type)
         tag = outcome_tag(reason, position.z_reverted)
-        self.data_logger.log_trade_review(position, exit_z=z, outcome=tag)
+        notional = None
+        if position.spot_trade.executed_price:
+            notional = (position.spot_trade.executed_price
+                        * position.spot_trade.lot_size * contract_size)
+        self.data_logger.log_trade_review(position, exit_z=z, outcome=tag,
+                                          exit_spread=spread,
+                                          notional=notional)
         self.notifier.notify_trade_closed(position, exit_z=z, outcome=tag)
         self.shadow.start(position, contract_size)
 
