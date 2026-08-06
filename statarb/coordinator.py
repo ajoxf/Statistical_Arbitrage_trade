@@ -169,7 +169,13 @@ class Coordinator:
             if acct.name in legs:
                 continue
             if acct.endpoint:
-                legs[acct.name] = RemoteLeg(acct.name, acct.endpoint)
+                try:
+                    legs[acct.name] = RemoteLeg(acct.name, acct.endpoint)
+                except ValueError as e:
+                    raise ValueError(
+                        f"Account '{acct.name}': {e} Fix it on the "
+                        f"Exchanges page (Settings > MT5 Brokers) and "
+                        f"restart the launcher.") from None
             else:
                 legs[acct.name] = LocalLeg(BrokerSession(acct))
 
@@ -1598,8 +1604,15 @@ def main():
             print("Cancelled")
             sys.exit(0)
 
-    coordinator = Coordinator(config, trading_mode=mode,
-                              config_path=args.config)
+    try:
+        coordinator = Coordinator(config, trading_mode=mode,
+                                  config_path=args.config)
+    except ValueError as e:
+        # Configuration the operator can fix — say so plainly instead
+        # of printing a traceback into the launcher window.
+        logging.error("Cannot start: %s", e)
+        print(f"\nCannot start: {e}\n")
+        sys.exit(1)
     if not coordinator.start():
         print("Startup failed — are the leg runners started and logged in?")
         sys.exit(1)

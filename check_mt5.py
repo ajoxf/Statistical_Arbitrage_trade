@@ -133,6 +133,89 @@ def check_environment():
     return True
 
 
+def check_config_files(config, env_path='.env'):
+    """The two settings that silently take the whole system down: a
+    malformed leg-runner endpoint (both processes crash at startup) and
+    a .env line dotenv cannot read (the password never loads, so MT5
+    login fails with no explanation)."""
+    from statarb import ipc
+
+    header("Configuration files")
+    for name, account in config.accounts.items():
+        if not account.endpoint:
+            continue
+        try:
+            host, port = ipc.parse_endpoint(account.endpoint)
+            if f'{host}:{port}' != str(account.endpoint).strip():
+                line('warn', f"{name}: endpoint '{account.endpoint}' was "
+                             f"read as {host}:{port}",
+                     [f"Set it to {host}:{port} on the Exchanges page"])
+            else:
+                line('ok', f"{name}: endpoint {host}:{port}")
+        except ValueError as e:
+            line('fail', f"{name}: {e}",
+                 ["The coordinator AND this account's leg runner both "
+                  "crash at startup until this is fixed",
+                  "Settings > MT5 Brokers > this account > Endpoint"])
+
+    ports = {}
+    for name, account in config.accounts.items():
+        if not account.endpoint:
+            continue
+        try:
+            ports.setdefault(ipc.parse_endpoint(account.endpoint)[1],
+                             []).append(name)
+        except ValueError:
+            pass
+    for port, names in ports.items():
+        if len(names) > 1:
+            line('fail', f"Accounts {', '.join(names)} share port {port}",
+                 ["Each account needs its OWN port — e.g. 9101 and 9102"])
+
+    if not os.path.exists(env_path):
+        line('warn', f"No {env_path} file — passwords are stored there",
+             ["Set each account's password on the Settings page"])
+        return
+    bad = []
+    with open(env_path, 'r', encoding='utf-8') as handle:
+        for number, text in enumerate(handle, 1):
+            stripped = text.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            key = stripped.split('=', 1)[0].strip()
+            if '=' not in stripped or not key \
+                    or not key.replace('_', '').isalnum() \
+                    or key[0].isdigit():
+                bad.append((number, stripped[:40]))
+    if bad:
+        line('fail', f"{len(bad)} line(s) in {env_path} cannot be read by "
+                     f"dotenv: " + ', '.join(f"line {n} ({t}…)"
+                                             for n, t in bad),
+             ["A key with a space or a missing '=' makes dotenv skip the "
+              "line — the password it holds NEVER reaches MT5",
+              "This happens when an account name has a space in it "
+              "(MT5_PASSWORD_UT 2)",
+              "Re-save each account's password on the Settings page: it "
+              "now writes a safe key name and quotes the value"])
+    else:
+        line('ok', f"{env_path} parses cleanly")
+
+    for name, account in config.accounts.items():
+        var = getattr(account, 'password_env', None)
+        if not var:
+            continue
+        if ' ' in var or not var.replace('_', '').isalnum():
+            line('fail', f"{name}: password_env '{var}' is not a legal "
+                         f"environment variable name",
+                 ["Re-save this account's password on the Settings page"])
+        elif not os.environ.get(var):
+            line('warn', f"{name}: {var} is not set — no password loaded",
+                 ["Set the password on the Settings page",
+                  "Or open this account's terminal and log in by hand"])
+        else:
+            line('ok', f"{name}: password loaded from {var}")
+
+
 def check_endpoints(config):
     """Are the leg runners actually listening? A coordinator with no
     prices usually means these are not up."""
@@ -376,6 +459,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Check the MT5 connection for every configured account")
     parser.add_argument('--config', default='config.json')
+    parser.add_argument('--env', default='.env')
     parser.add_argument('--account', default=None,
                         help='Check only this account')
     parser.add_argument('--order', action='store_true',
@@ -417,6 +501,7 @@ def main():
                      f"{spot_account}, futures "
                      f"{asset.get('futures_symbols')} on {fut_account}")
 
+    check_config_files(config, args.env)
     check_endpoints(config)
 
     if args.order:

@@ -154,7 +154,13 @@ def main():
         print(f"Account '{args.account}' has no endpoint in config and no "
               f"--listen given (e.g. --listen 127.0.0.1:9101)")
         sys.exit(1)
-    host, port = parse_endpoint(endpoint)
+    try:
+        host, port = parse_endpoint(endpoint)
+    except ValueError as e:
+        print(f"Account '{args.account}': {e}")
+        print("Fix the endpoint on the Exchanges page (Settings > MT5 "
+              "Brokers), then restart the launcher.")
+        sys.exit(1)
 
     broker = BrokerSession(account)
     if not broker.initialize():

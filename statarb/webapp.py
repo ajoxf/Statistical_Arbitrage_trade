@@ -33,30 +33,67 @@ try:
 except ImportError:
     SocketIO = None            # UI falls back to polling
 
-from . import scenarios, webapi
+from . import ipc, scenarios, webapi
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
 
+def env_var_name(prefix, name):
+    """A .env key that dotenv can actually read. An account called
+    'Ut 2' would otherwise produce MT5_PASSWORD_UT 2 — a key with a
+    space, which makes dotenv fail to parse the line and silently
+    leaves the password unset, so MT5 login fails with no clue why."""
+    cleaned = ''.join(ch if ch.isalnum() else '_' for ch in str(name))
+    cleaned = '_'.join(part for part in cleaned.split('_') if part)
+    return f"{prefix}{cleaned.upper() or 'DEFAULT'}"
+
+
+def _env_quote(value):
+    """Quote a value so any password (spaces, #, quotes) survives."""
+    text = str(value).replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{text}"'
+
+
 def update_env_file(path, updates):
     """Merge key=value pairs into a .env file, preserving other lines.
-    This is how the UI stores secrets — they never touch config.json."""
-    lines = []
+    This is how the UI stores secrets — they never touch config.json.
+
+    Values are quoted, and lines whose key is not a legal env-var name
+    are dropped: one malformed line makes dotenv give up on the
+    statement and the credential it holds never reaches the engine."""
+    lines, dropped = [], []
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
             lines = [line.rstrip('\n') for line in f]
+
+    updates = {env_var_name('', key) if not key.replace('_', '').isalnum()
+               else key: value for key, value in updates.items()}
     keys = set(updates)
-    kept = [line for line in lines
-            if line.split('=', 1)[0].strip() not in keys]
-    kept += [f"{key}={value}" for key, value in updates.items()]
+    kept = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            kept.append(line)
+            continue
+        key = stripped.split('=', 1)[0].strip()
+        if key in keys:
+            continue                      # replaced below
+        if '=' not in stripped or not key or not key.replace('_', '')\
+                .isalnum() or key[0].isdigit():
+            dropped.append(line)          # dotenv cannot read this line
+            continue
+        kept.append(line)
+    kept += [f"{key}={_env_quote(value)}" for key, value in updates.items()]
+
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         f.write("\n".join(kept) + "\n")
     os.replace(tmp, path)
     for key, value in updates.items():
-        os.environ[key] = value      # visible to this process immediately
+        os.environ[key] = str(value)  # visible to this process immediately
+    return dropped
 
 
 def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
@@ -115,6 +152,17 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
     def ui_status():
         return webapi.status_to_ui(runtime_status(), load_config_raw())
+
+    def normalise_endpoint(endpoint):
+        """(ok, 'host:port') or (False, message). Blank is legal — it
+        means this account has no leg runner (both legs, one account)."""
+        if endpoint in (None, ''):
+            return True, endpoint
+        try:
+            host, port = ipc.parse_endpoint(endpoint)
+        except ValueError as e:
+            return False, str(e)
+        return True, f'{host}:{port}'
 
     # ---------------- pages ----------------
 
@@ -237,7 +285,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                     var = (acct.get('password_env')
                            or (raw.get('accounts', {}).get(name, {})
                                or {}).get('password_env')
-                           or f"MT5_PASSWORD_{name.upper()}")
+                           or env_var_name('MT5_PASSWORD_', name))
                     acct['password_env'] = var
                     env_updates[var] = password
                 elif not acct.get('password_env'):
@@ -245,6 +293,15 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                                 or {}).get('password_env')
                     if existing:
                         acct['password_env'] = existing
+            for name, acct in payload['accounts'].items():
+                ok, endpoint_or_error = normalise_endpoint(
+                    (acct or {}).get('endpoint'))
+                if not ok:
+                    return jsonify({'success': False,
+                                    'error': f"{name}: "
+                                             f"{endpoint_or_error}"}), 400
+                if acct is not None:
+                    acct['endpoint'] = endpoint_or_error
             raw['accounts'] = payload['accounts']
             note = ('Saved. Account changes need a launcher restart.')
         if env_updates:
@@ -589,6 +646,16 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         if request.method == 'GET':
             accounts = raw.get('accounts') or {}
             legs = raw.get('leg_accounts') or {}
+            assets = raw.get('assets') or {}
+            asset_key = next((k for k, v in assets.items()
+                              if v.get('enabled', True)), 'GOLD')
+            asset = assets.get(asset_key) or {}
+            expiry = asset.get('futures_expiry')
+
+            def role_of(name):
+                return ('SPOT' if legs.get('spot') == name else
+                        'FUTURES' if legs.get('futures') == name else 'NONE')
+
             return jsonify([{
                 'id': name, 'name': name, 'exchange_type': 'MT5',
                 'terminal_path': acct.get('terminal_path') or '',
@@ -596,9 +663,19 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 'server': acct.get('server') or '',
                 'endpoint': acct.get('endpoint') or '',
                 'has_password': bool(acct.get('password_env')),
-                'role': ('SPOT' if legs.get('spot') == name else
-                         'FUTURES' if legs.get('futures') == name else 'NONE'),
+                'role': role_of(name),
                 'is_active': name in legs.values(),
+                # The symbol this account trades, so the broker row is
+                # the whole story for that leg (as in the old app).
+                'asset': asset_key,
+                'symbol': ((asset.get('futures_symbols') or [''])[0]
+                           if role_of(name) == 'FUTURES'
+                           else (asset.get('spot_symbols') or [''])[0]
+                           if role_of(name) == 'SPOT' else ''),
+                'contract_size': asset.get('lot_size'),
+                'swap_charge': asset.get('swap_charge'),
+                'futures_expiry': (expiry[:10] if isinstance(expiry, str)
+                                   else None),
             } for name, acct in accounts.items()])
 
         payload = request.get_json(silent=True) or {}
@@ -610,13 +687,62 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         for field in ('terminal_path', 'server', 'endpoint'):
             if payload.get(field) is not None:
                 acct[field] = payload[field]
+        # A malformed endpoint takes the coordinator AND the leg runner
+        # down at startup, so it is rejected here rather than saved.
+        ok, endpoint_or_error = normalise_endpoint(acct.get('endpoint'))
+        if not ok:
+            return jsonify({'success': False,
+                            'error': endpoint_or_error}), 400
+        acct['endpoint'] = endpoint_or_error
         if payload.get('login'):
             acct['login'] = int(payload['login'])
         password = payload.get('password')
         if password:
-            var = acct.get('password_env') or f"MT5_PASSWORD_{name.upper()}"
+            var = (acct.get('password_env')
+                   or env_var_name('MT5_PASSWORD_', name))
             acct['password_env'] = var
             update_env_file(env_path, {var: password})
+
+        # Role, symbol and contract specs live on the broker row, the
+        # way the old app did it: "this account, this leg, this
+        # symbol". The role decides which side of the asset the symbol
+        # is written to.
+        role = (payload.get('role') or '').strip().upper()
+        if role in ('SPOT', 'FUTURES'):
+            raw.setdefault('leg_accounts', {})[role.lower()] = name
+        symbol = (payload.get('symbol') or '').strip()
+        specs = {field: payload.get(field)
+                 for field in ('contract_size', 'swap_charge',
+                               'futures_expiry')
+                 if payload.get(field) not in (None, '')}
+        if symbol or specs:
+            asset_key = (payload.get('asset')
+                         or next((k for k, v in (raw.get('assets') or {})
+                                  .items() if v.get('enabled', True)),
+                                 'GOLD'))
+            asset = raw.setdefault('assets', {}).setdefault(
+                asset_key, {'name': asset_key, 'enabled': True})
+            asset.setdefault('name', asset_key)
+            asset.setdefault('enabled', True)
+            asset.setdefault('risk_free_rate', 0.0425)
+            asset.setdefault('multiplier', 1.0)
+            if symbol:
+                if role == 'FUTURES':
+                    asset['futures_symbols'] = [symbol]
+                elif role == 'SPOT':
+                    asset['spot_symbols'] = [symbol]
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Choose a role (Spot or Futures) so the '
+                                 'symbol can be assigned to a leg'}), 400
+            for field, key in (('contract_size', 'lot_size'),
+                               ('swap_charge', 'swap_charge')):
+                if field in specs:
+                    asset[key] = float(specs[field])
+            if specs.get('futures_expiry'):
+                asset['futures_expiry'] = specs['futures_expiry']
+
         save_config_raw(raw)
         return jsonify({'success': True, 'id': name,
                         'note': 'Saved. Restart the launcher to connect.'})

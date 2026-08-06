@@ -33,9 +33,10 @@ def test_update_env_file_merges_and_preserves(tmp_path, monkeypatch):
                                'TELEGRAM_BOT_TOKEN': 'tok'})
     content = env.read_text()
     assert 'EXISTING=keep' in content
-    assert 'MT5_PASSWORD_A=new-secret' in content
+    assert 'MT5_PASSWORD_A="new-secret"' in content   # quoted: a
+    # password with spaces or # must survive dotenv
     assert 'old' not in content
-    assert 'TELEGRAM_BOT_TOKEN=tok' in content
+    assert 'TELEGRAM_BOT_TOKEN="tok"' in content
     assert os.environ['MT5_PASSWORD_A'] == 'new-secret'
 
 
@@ -65,7 +66,7 @@ def test_password_saved_to_env_not_config(tmp_path, monkeypatch):
     assert 'S3cret!' not in config_path.read_text()   # NEVER in config
     assert saved['accounts']['account_a']['password_env'] == \
         'MT5_PASSWORD_ACCOUNT_A'
-    assert 'MT5_PASSWORD_ACCOUNT_A=S3cret!' in env_path.read_text()
+    assert 'MT5_PASSWORD_ACCOUNT_A="S3cret!"' in env_path.read_text()
 
 
 def test_order_selftest_via_control(tmp_path, monkeypatch, config):

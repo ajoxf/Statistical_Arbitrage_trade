@@ -474,7 +474,7 @@ def test_broker_list_add_and_leg_mapping(client):
     raw = json.loads((client.tmp_path / "config.json").read_text())
     assert raw['accounts']['account_c']['login'] == 333
     assert 'Sup3r!' not in (client.tmp_path / "config.json").read_text()
-    assert 'MT5_PASSWORD_ACCOUNT_C=Sup3r!' in \
+    assert 'MT5_PASSWORD_ACCOUNT_C="Sup3r!"' in \
         (client.tmp_path / ".env").read_text()
 
     assert client.post('/api/set-active-exchanges',
@@ -489,8 +489,8 @@ def test_telegram_secrets_go_to_env(client):
         'telegram_chat_id': '999'})
     assert response.status_code == 200
     env = (client.tmp_path / ".env").read_text()
-    assert 'TELEGRAM_BOT_TOKEN=123:ABC' in env
-    assert 'TELEGRAM_CHAT_ID=999' in env
+    assert 'TELEGRAM_BOT_TOKEN="123:ABC"' in env
+    assert 'TELEGRAM_CHAT_ID="999"' in env
     assert '123:ABC' not in (client.tmp_path / "config.json").read_text()
     # GET masks the token
     assert client.get('/api/telegram/config').get_json()[

@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  353 tests, all fakes, no MT5 (runs anywhere)
+tests/                  378 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -291,6 +291,25 @@ per-leg maker/taker fee split, backtest suite.
   the web dashboard are all ported to this system. Only the OKX
   adapter remains unported — the sole reason to keep that branch.
 - Other `claude/*` branches: session artifacts, superseded.
+
+## Live startup bugs found on the operator's box (2026-08-06)
+
+- Endpoint typed `127.0.0.1.9101` (dot, not colon) crashed BOTH the
+  coordinator and the leg runner at startup in a restart loop, with an
+  int() traceback. `ipc.parse_endpoint` now accepts the dot form and a
+  bare port, raises a message that says what to type, the UI REJECTS a
+  bad endpoint on save (and normalises the dot form), and both
+  processes print "Cannot start: ..." naming the account instead of a
+  traceback.
+- An account named `Ut 2` produced the .env key `MT5_PASSWORD_UT 2` —
+  a key with a space, which dotenv cannot parse, so the password never
+  loaded and MT5 could not log in ("could not parse statement starting
+  at line 2"). `env_var_name` now sanitises the key, values are
+  QUOTED (passwords with spaces/# survive), and update_env_file drops
+  lines dotenv cannot read. check_mt5.py reports both faults.
+- Symbols follow app.py's model: the symbol, contract size, swap and
+  expiry live on the BROKER ROW with its leg, not in a separate panel.
+  Saving a row writes leg_accounts[role] and assets[..]_symbols.
 
 ## Bugs already found and fixed (2026-07) — don't reintroduce
 

@@ -660,4 +660,6 @@ def test_exchanges_page_has_the_connectivity_controls(client):
     assert 'Connectivity Checklist' in page
     assert '/api/brokers/' in page and '/api/symbols/search' in page
     assert 'Leg runner endpoint' in page
-    assert 'Save Symbols' in page
+    # The symbol lives on the broker row, as it did in the old app
+    assert 'Add / Edit MT5 Broker' in page
+    assert 'Save Broker' in page

@@ -20,10 +20,10 @@
         <div class="card-body">
             <div id="brokers-list"></div>
             <p class="text-secondary small mb-0 mt-3">
-                Add, edit and map accounts on the
-                <a href="/settings#brokers">Settings</a> page &mdash; passwords
-                are written to the local <code>.env</code> file and never
-                stored in config or git.
+                Edit a row to change its leg, symbol or credentials. Passwords
+                go to the local <code>.env</code> file, never into config or
+                git. Account, leg, symbol and endpoint changes need a launcher
+                restart.
             </p>
         </div>
     </div>
@@ -44,56 +44,88 @@
         </div>
     </div>
 
-    <!-- Symbols -->
+    <!-- Add / edit a broker: role, symbol and specs live on the row -->
     <div class="card mt-3">
-        <div class="card-header"><i class="bi bi-tag me-2"></i>Symbols</div>
+        <div class="card-header"><i class="bi bi-plus-circle me-2"></i>Add / Edit MT5 Broker</div>
         <div class="card-body">
-            <p class="small text-secondary">
-                Each leg trades ONE symbol on ITS OWN account. Brokers spell the
-                same instrument differently (<code>XAUUSD</code>, <code>GOLD</code>,
-                <code>XAUUSD.r</code>) &mdash; use <strong>Find</strong> to search
-                the account itself rather than guessing, then Save. Symbols are
-                structural: the engine picks them up when the launcher restarts.
-            </p>
-            <div class="row g-3">
-                <div class="col-md-6">
-                    <label class="form-label small">Leg A &mdash; spot
-                        <span class="text-secondary" id="sym-spot-account"></span></label>
-                    <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" id="sym-spot"
-                               placeholder="XAUUSD">
-                        <button class="btn btn-outline-secondary"
-                                onclick="findSymbols('spot')">Find</button>
+            <form id="broker-form" onsubmit="saveBroker(event)">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">Account name</label>
+                        <input type="text" class="form-control" name="name" required
+                               placeholder="e.g. spot_fxpro">
+                        <small class="text-secondary">Your label for this terminal</small>
                     </div>
-                    <div id="sym-spot-results" class="small mt-1"></div>
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label small">Leg B &mdash; futures
-                        <span class="text-secondary" id="sym-fut-account"></span></label>
-                    <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" id="sym-fut"
-                               placeholder="GC1225 / XAUUSD-DEC25">
-                        <button class="btn btn-outline-secondary"
-                                onclick="findSymbols('futures')">Find</button>
+                    <div class="col-md-4">
+                        <label class="form-label">Leg</label>
+                        <select class="form-select" name="role" id="broker-role">
+                            <option value="SPOT">Leg A &mdash; Spot</option>
+                            <option value="FUTURES">Leg B &mdash; Futures</option>
+                        </select>
                     </div>
-                    <div id="sym-fut-results" class="small mt-1"></div>
+                    <div class="col-md-4">
+                        <label class="form-label">Symbol</label>
+                        <input type="text" class="form-control" name="symbol"
+                               id="broker-symbol" list="symbol-options"
+                               placeholder="e.g. XAUUSD" autocomplete="off"
+                               oninput="suggestSymbols()">
+                        <datalist id="symbol-options"></datalist>
+                        <small class="text-secondary">Exactly as this broker spells it</small>
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label">Contract size</label>
+                        <input type="number" class="form-control" name="contract_size"
+                               step="0.01" placeholder="100">
+                        <small class="text-secondary">Units per lot (gold: 100 oz)</small>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Swap / day ($)</label>
+                        <input type="number" class="form-control" name="swap_charge"
+                               step="0.01" placeholder="0.00">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Futures expiry</label>
+                        <input type="date" class="form-control" name="futures_expiry">
+                        <small class="text-secondary">Futures leg only</small>
+                    </div>
+
+                    <div class="col-12"><hr class="my-1"></div>
+                    <div class="col-md-6">
+                        <label class="form-label">MT5 terminal path</label>
+                        <input type="text" class="form-control" name="terminal_path"
+                               placeholder="C:\Program Files\MetaTrader 5\terminal64.exe">
+                        <small class="text-secondary">Leave blank to attach to the terminal you opened</small>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Leg runner endpoint</label>
+                        <input type="text" class="form-control" name="endpoint"
+                               placeholder="127.0.0.1:9101">
+                        <small class="text-secondary">One port per account &mdash; 9101, then 9102. Blank only if both legs share one account.</small>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Login</label>
+                        <input type="number" class="form-control" name="login">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Server</label>
+                        <input type="text" class="form-control" name="server"
+                               placeholder="FxPro-MT5">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-control" name="password"
+                               placeholder="leave blank to keep">
+                        <small class="text-secondary">Stored in .env, never in config</small>
+                    </div>
+                    <div class="col-12">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg me-2"></i>Save Broker
+                        </button>
+                        <span id="broker-note" class="ms-2 small"></span>
+                    </div>
                 </div>
-                <div class="col-md-4">
-                    <label class="form-label small">Futures expiry</label>
-                    <input type="date" class="form-control form-control-sm" id="sym-expiry">
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label small">Contract size (oz / lot)</label>
-                    <input type="number" class="form-control form-control-sm"
-                           id="sym-contract" step="1" min="1">
-                </div>
-                <div class="col-md-4 d-flex align-items-end">
-                    <button class="btn btn-sm btn-primary w-100" onclick="saveSymbols()">
-                        <i class="bi bi-save me-1"></i>Save Symbols
-                    </button>
-                </div>
-            </div>
-            <div id="sym-note" class="small mt-2"></div>
+            </form>
         </div>
     </div>
 
@@ -171,9 +203,11 @@
 {% block scripts %}
 <script>
 let LIVE_ACCOUNTS = {};
+let BROKERS = [];
 
 async function loadBrokers() {
     const brokers = await (await fetch('/api/exchanges')).json();
+    BROKERS = brokers;
     try {
         const info = await (await fetch('/api/account-info')).json();
         LIVE_ACCOUNTS = {};
@@ -182,20 +216,22 @@ async function loadBrokers() {
 
     document.getElementById('brokers-list').innerHTML = brokers.length ? `
         <table class="table table-sm table-dark align-middle mb-0">
-            <thead><tr><th>Account</th><th>Login</th><th>Server</th>
-            <th>Terminal</th><th>Leg runner endpoint</th><th>Role</th>
-            <th>Leverage</th><th>Status</th><th style="width:11rem;"></th></tr></thead>
+            <thead><tr><th>Account</th><th>Leg</th><th>Symbol</th><th>Login</th>
+            <th>Server</th><th>Terminal</th><th>Leg runner endpoint</th>
+            <th>Leverage</th><th>Status</th><th style="width:15rem;"></th></tr></thead>
             <tbody>${brokers.map(b => {
                 const live = LIVE_ACCOUNTS[b.name] || {};
                 return `
                 <tr id="broker-row-${b.name}">
-                    <td><strong>${b.name}</strong></td><td>${b.login || '—'}</td>
-                    <td>${b.server || '—'}</td>
-                    <td class="small text-secondary">${b.terminal_path || 'attach to open terminal'}</td>
-                    <td class="small"><code>${b.endpoint || 'in-process'}</code></td>
+                    <td><strong>${b.name}</strong></td>
                     <td>${b.role === 'NONE'
                         ? '<span class="badge bg-secondary">unused</span>'
                         : `<span class="badge bg-primary">${b.role}</span>`}</td>
+                    <td><code>${b.symbol || '—'}</code></td>
+                    <td>${b.login || '—'}</td>
+                    <td>${b.server || '—'}</td>
+                    <td class="small text-secondary">${b.terminal_path || 'attach to open terminal'}</td>
+                    <td class="small"><code>${b.endpoint || 'in-process'}</code></td>
                     <td>${live.leverage ? live.leverage + 'x' : '—'}</td>
                     <td id="broker-status-${b.name}">${live.connected
                         ? '<span class="badge bg-success">connected</span>'
@@ -204,9 +240,15 @@ async function loadBrokers() {
                         <button class="btn btn-sm btn-outline-primary me-1"
                                 onclick="testBroker('${b.name}')" title="Test connection">
                             <i class="bi bi-plug"></i> Test</button>
-                        <button class="btn btn-sm btn-outline-warning"
+                        <button class="btn btn-sm btn-outline-warning me-1"
                                 onclick="runDiagnostics('${b.name}')" title="Diagnose this account">
                             <i class="bi bi-heart-pulse"></i> Diagnose</button>
+                        <button class="btn btn-sm btn-outline-secondary me-1"
+                                onclick="editBroker('${b.name}')" title="Edit">
+                            <i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-danger"
+                                onclick="deleteBroker('${b.name}')" title="Remove">
+                            <i class="bi bi-trash"></i></button>
                     </td>
                 </tr>`; }).join('')}
             </tbody></table>`
@@ -303,74 +345,76 @@ function renderDiagnostics(data) {
         + `<div class="small text-secondary">Ran at ${data.ran_at || '—'}</div>`;
 }
 
-// ========== Symbols ==========
-async function loadSymbols() {
-    try {
-        const d = await (await fetch('/api/leg-symbols')).json();
-        document.getElementById('sym-spot').value = d.spot_symbol || '';
-        document.getElementById('sym-fut').value = d.futures_symbol || '';
-        document.getElementById('sym-spot-account').textContent =
-            d.spot_account ? `(on ${d.spot_account})` : '';
-        document.getElementById('sym-fut-account').textContent =
-            d.futures_account ? `(on ${d.futures_account})` : '';
-    } catch (e) { /* config not readable yet */ }
-    try {
-        const cfg = await (await fetch('/api/config')).json();
-        if (cfg.futures_expiry) document.getElementById('sym-expiry').value = cfg.futures_expiry;
-        if (cfg.contract_size) document.getElementById('sym-contract').value = cfg.contract_size;
-    } catch (e) { /* optional */ }
+// ========== Broker form (role + symbol live on the row) ==========
+function editBroker(name) {
+    const broker = (BROKERS || []).find(b => b.id === name);
+    if (!broker) return;
+    const form = document.getElementById('broker-form');
+    form.name.value = broker.id;
+    form.role.value = broker.role === 'FUTURES' ? 'FUTURES' : 'SPOT';
+    form.symbol.value = broker.symbol || '';
+    form.contract_size.value = broker.contract_size || '';
+    form.swap_charge.value = broker.swap_charge || '';
+    form.futures_expiry.value = broker.futures_expiry || '';
+    form.terminal_path.value = broker.terminal_path || '';
+    form.endpoint.value = broker.endpoint || '';
+    form.login.value = broker.login || '';
+    form.server.value = broker.server || '';
+    form.password.value = '';
+    form.scrollIntoView({behavior: 'smooth', block: 'center'});
 }
 
-async function findSymbols(leg) {
-    const input = document.getElementById(leg === 'spot' ? 'sym-spot' : 'sym-fut');
-    const out = document.getElementById(leg === 'spot' ? 'sym-spot-results' : 'sym-fut-results');
-    out.innerHTML = '<span class="text-secondary">Searching the account…</span>';
-    try {
-        const d = await (await fetch(
-            `/api/symbols/search?leg=${leg}&q=${encodeURIComponent(input.value || '')}`)).json();
-        if (d.error) { out.innerHTML = `<span class="text-danger">${d.error}</span>`; return; }
-        const rows = d.symbols || [];
-        if (!rows.length) { out.innerHTML = '<span class="text-secondary">No match on this account.</span>'; return; }
-        out.innerHTML = rows.slice(0, 12).map(s => `
-            <div><a href="#" onclick="pickSymbol('${leg}','${s.symbol}');return false;">
-                <code>${s.symbol}</code></a>
-                <span class="text-secondary">${s.description || ''}
-                ${s.contract_size ? '· ' + s.contract_size + '/lot' : ''}
-                ${s.visible ? '' : '· hidden'}</span></div>`).join('')
-            + (rows.length > 12 ? `<div class="text-secondary">…${rows.length - 12} more</div>` : '');
-    } catch (e) {
-        out.innerHTML = `<span class="text-danger">Error: ${e}</span>`;
+async function saveBroker(event) {
+    event.preventDefault();
+    const form = event.target;
+    const body = {};
+    for (const field of form.elements) {
+        if (field.name && field.value !== '') body[field.name] = field.value;
     }
-}
-
-function pickSymbol(leg, symbol) {
-    document.getElementById(leg === 'spot' ? 'sym-spot' : 'sym-fut').value = symbol;
-    document.getElementById(leg === 'spot' ? 'sym-spot-results' : 'sym-fut-results').innerHTML = '';
-}
-
-async function saveSymbols() {
-    const note = document.getElementById('sym-note');
-    const body = {
-        spot_symbol: document.getElementById('sym-spot').value,
-        futures_symbol: document.getElementById('sym-fut').value,
-        futures_expiry: document.getElementById('sym-expiry').value,
-        contract_size: document.getElementById('sym-contract').value,
-    };
+    const note = document.getElementById('broker-note');
+    note.innerHTML = '<span class="text-secondary">Saving…</span>';
     try {
-        const d = await (await fetch('/api/leg-symbols', {
+        const d = await (await fetch('/api/exchanges', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(body)})).json();
-        note.innerHTML = `<span class="text-${d.success ? 'warning' : 'danger'}">${
-            (d.changed || []).join(', ')} ${d.note || d.error || ''}</span>`;
+        if (!d.success) {
+            note.innerHTML = `<span class="text-danger">${d.error}</span>`;
+            return;
+        }
+        note.innerHTML = `<span class="text-warning">${d.note}</span>`;
+        form.password.value = '';
+        loadBrokers();
     } catch (e) {
         note.innerHTML = `<span class="text-danger">Error: ${e}</span>`;
     }
 }
 
-document.addEventListener('DOMContentLoaded', function() {
+async function deleteBroker(name) {
+    if (!confirm(`Remove account "${name}" from the config?`)) return;
+    await fetch(`/api/exchanges/${encodeURIComponent(name)}`, {method: 'DELETE'});
     loadBrokers();
-    loadSymbols();
-});
+}
+
+// Typing in Symbol offers the names that actually exist on that
+// account — no separate search panel, just browser autocomplete.
+let _symbolTimer = null;
+function suggestSymbols() {
+    clearTimeout(_symbolTimer);
+    _symbolTimer = setTimeout(async () => {
+        const text = document.getElementById('broker-symbol').value.trim();
+        if (text.length < 2) return;
+        const leg = document.getElementById('broker-role').value.toLowerCase();
+        try {
+            const d = await (await fetch(
+                `/api/symbols/search?leg=${leg}&q=${encodeURIComponent(text)}`)).json();
+            document.getElementById('symbol-options').innerHTML =
+                (d.symbols || []).slice(0, 20).map(
+                    s => `<option value="${s.symbol}">${s.description || ''}</option>`).join('');
+        } catch (e) { /* the coordinator may not be up yet */ }
+    }, 400);
+}
+
+document.addEventListener('DOMContentLoaded', loadBrokers);
 
 // ========== Full Order Test Suite (spot & futures round trips) ==========
 let SCENARIOS = [];
