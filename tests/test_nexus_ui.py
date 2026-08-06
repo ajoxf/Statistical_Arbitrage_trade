@@ -13,6 +13,7 @@ pytest.importorskip("flask")
 
 from statarb.database import DataLogger                      # noqa: E402
 from statarb.models import OrderSide, Position, SignalType, Trade  # noqa: E402
+from statarb import webapi                                  # noqa: E402
 from statarb.webapp import create_app                        # noqa: E402
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -624,3 +625,43 @@ def test_the_dashboard_marks_the_fair_value_reference_only(client):
     assert 'id="fair-value-row"' in page
     assert 'ref only' in page
     assert 'REFERENCE ONLY' in page
+
+
+# ---------------------------------------------------------------------------
+# The warm-up counter after warm-up
+# ---------------------------------------------------------------------------
+# Operator, 2026-08-06: "10,894 / 300 ... Why is it stuck at 300?"
+# MIN_SAMPLES is a threshold to CLEAR, not a target to sit at. Once
+# cleared the ratio reads like a broken denominator.
+
+def test_the_counter_label_starts_as_a_warm_up_target(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'quotes to warm up' in page
+    assert 'id="data-count-label"' in page
+
+
+def test_the_ratio_is_dropped_once_the_threshold_is_cleared(client):
+    """Rendered client-side, so assert the branch exists and that the
+    post-warm-up wording is present rather than the bare ratio."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'const warming = dataPoints < minSamples' in page
+    assert "'quotes in ' +" in page
+
+
+def test_a_collapsed_sigma_is_named_instead_of_collecting_data(client):
+    """Enough quotes but no z: saying "collecting data" while the
+    counter sits past its target explains nothing."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'No usable Z-score' in page
+    assert 'sigma too small to trust a z' in page
+
+
+def test_the_ui_payload_carries_the_degenerate_flag():
+    status = {'assets': [{'asset': 'GOLD', 'z': None, 'spread': 9.13,
+                          'samples': 10894, 'min_samples': 300,
+                          'lookback': 7200, 'degenerate': True}]}
+    ui = webapi.status_to_ui(status, {})
+    assert ui['signal']['degenerate'] is True
+    assert ui['signal']['data_ready'] is False
+    assert ui['signal']['lookback'] == 300        # threshold
+    assert ui['signal']['lookback_sec'] == 7200   # window duration

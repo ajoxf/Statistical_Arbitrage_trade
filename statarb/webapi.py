@@ -398,6 +398,10 @@ def status_to_ui(status, config_raw):
             'lookback': first.get('min_samples') or first.get('lookback'),
             'lookback_sec': first.get('lookback'),
             'data_ready': first.get('z') is not None,
+            # Enough quotes but no usable z: the window's sigma has
+            # collapsed. Without this the banner says "collecting data"
+            # while the counter sits well past its target.
+            'degenerate': bool(first.get('degenerate')),
             'hedge_ratio': (config_raw.get('trading') or {}).get(
                 'HEDGE_RATIO', 1.0),
             'entry_threshold': (config_raw.get('signals') or {}).get(

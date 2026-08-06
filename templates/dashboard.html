@@ -182,7 +182,7 @@
             </div>
             <div class="text-end">
                 <div id="data-count-display" class="fw-bold font-monospace">0 / {{ config.min_samples }}</div>
-                <small class="text-secondary">data points</small>
+                <small class="text-secondary" id="data-count-label">quotes to warm up</small>
             </div>
         </div>
     </div>
@@ -573,7 +573,7 @@
                     <div class="progress flex-grow-1 me-2" style="height: 6px;">
                         <div class="progress-bar bg-success" role="progressbar" id="collection-progress" style="width: 0%"></div>
                     </div>
-                    <span id="data-points" class="text-secondary">0</span>/<span class="text-secondary">{{ config.min_samples }}</span>
+                    <span id="data-points" class="text-secondary">0</span><span class="text-secondary" id="data-points-target">/{{ config.min_samples }}</span>
                     <span class="ms-2 text-secondary">(<span id="collection-percent">0</span>%)</span>
                 </div>
             </div>
@@ -2396,19 +2396,32 @@
 
         const dataPoints = data.data_points || 0;
         const lookback = data.lookback || {{ config.min_samples }};
-        document.getElementById('data-points').textContent = dataPoints;
+        document.getElementById('data-points').textContent =
+            dataPoints.toLocaleString();
 
-        const progressPercent = Math.min(100, (dataPoints / lookback) * 100);
+        // Same rule as the banner: the "/ min samples" ratio only means
+        // something while the threshold has yet to be cleared.
+        const warmingUp = dataPoints < lookback;
+        const progressPercent = warmingUp
+            ? Math.min(100, (dataPoints / lookback) * 100) : 100;
         const progressEl = document.getElementById('collection-progress');
         const percentEl = document.getElementById('collection-percent');
+        const targetEl = document.getElementById('data-points-target');
         if (progressEl) {
             progressEl.style.width = progressPercent + '%';
-            progressEl.className = 'progress-bar ' + (progressPercent >= 100 ? 'bg-success' : 'bg-warning');
+            progressEl.className = 'progress-bar ' + (warmingUp ? 'bg-warning' : 'bg-success');
         }
-        if (percentEl) percentEl.textContent = Math.round(progressPercent);
+        if (targetEl) targetEl.textContent = warmingUp
+            ? '/' + lookback.toLocaleString() : ' quotes in window';
+        if (percentEl) {
+            percentEl.parentElement.style.display = warmingUp ? '' : 'none';
+            percentEl.textContent = Math.round(progressPercent);
+        }
 
         // Update Trading Status Banner
-        updateTradingStatus(dataPoints, lookback, data.data_ready, data.hurst_ok, data.std_filter_ok);
+        updateTradingStatus(dataPoints, lookback, data.data_ready,
+                            data.hurst_ok, data.std_filter_ok,
+                            data.lookback_sec, data.degenerate);
 
         updateFilterStatus('hurst-status', data.hurst_ok, data.hurst);
         updateFilterStatus('std-status', data.std_filter_ok);
@@ -2864,7 +2877,16 @@ function updateFilterStatus(elementId, passed, value) {
         }
     }, 1000);
 
-    function updateTradingStatus(dataPoints, lookback, dataReady, hurstOk, stdOk) {
+    // "2h window" / "45m window" — what the quote count is measured over.
+    function windowLabel(seconds) {
+        if (!seconds) return 'window';
+        if (seconds < 3600) return Math.round(seconds / 60) + 'm window';
+        const hours = seconds / 3600;
+        return (hours % 1 ? hours.toFixed(1) : hours) + 'h window';
+    }
+
+    function updateTradingStatus(dataPoints, minSamples, dataReady, hurstOk,
+                                 stdOk, lookbackSec, degenerate) {
         const statusCard = document.getElementById('trading-status-card');
         const statusIcon = document.getElementById('trading-status-icon');
         const statusText = document.getElementById('trading-status-text');
@@ -2872,22 +2894,48 @@ function updateFilterStatus(elementId, passed, value) {
         const progressBar = document.getElementById('trading-progress-bar');
         const progressText = document.getElementById('trading-progress-text');
         const dataCountDisplay = document.getElementById('data-count-display');
+        const dataCountLabel = document.getElementById('data-count-label');
 
-        const percent = Math.min(100, (dataPoints / lookback) * 100);
+        // minSamples is a THRESHOLD to clear, not a target to hold at.
+        // Once cleared, "10,894 / 300" reads like a broken denominator —
+        // so the ratio is only shown while it still means something.
+        const warming = dataPoints < minSamples;
+        const percent = warming
+            ? Math.min(100, (dataPoints / minSamples) * 100) : 100;
 
-        // Update progress bar
         progressBar.style.width = percent + '%';
-        progressText.textContent = Math.round(percent) + '%';
-        dataCountDisplay.textContent = dataPoints.toLocaleString() + ' / ' + lookback.toLocaleString();
+        if (warming) {
+            progressText.textContent = Math.round(percent) + '%';
+            dataCountDisplay.textContent = dataPoints.toLocaleString() +
+                ' / ' + minSamples.toLocaleString();
+            if (dataCountLabel) dataCountLabel.textContent = 'quotes to warm up';
+        } else {
+            progressText.textContent = '';
+            dataCountDisplay.textContent = dataPoints.toLocaleString();
+            if (dataCountLabel) {
+                dataCountLabel.textContent = 'quotes in ' +
+                    windowLabel(lookbackSec);
+            }
+        }
 
         if (!dataReady) {
-            // Collecting data
             statusCard.style.borderLeft = '4px solid #ffc107';
             statusIcon.innerHTML = '<i class="bi bi-hourglass-split text-warning"></i>';
-            statusText.textContent = 'Collecting Data...';
             statusText.className = 'fw-bold text-warning';
-            statusDetail.textContent = 'Cannot trade until lookback period is complete';
             progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-warning';
+            if (warming) {
+                statusText.textContent = 'Collecting Data...';
+                statusDetail.textContent = (minSamples - dataPoints)
+                    .toLocaleString() + ' more quotes before trading can start';
+            } else {
+                // Enough quotes, still no z — the window's sigma has
+                // collapsed. Saying "collecting data" here while the
+                // counter sits past its target explains nothing.
+                statusText.textContent = 'No usable Z-score';
+                statusDetail.textContent = degenerate
+                    ? 'Enough quotes, but the spread has barely moved — sigma too small to trust a z'
+                    : 'Enough quotes, but the engine has not published a z yet';
+            }
         } else {
             // Check if filters pass
             const filtersPass = (hurstOk !== false) && (stdOk !== false);

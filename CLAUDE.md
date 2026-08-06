@@ -389,7 +389,15 @@ per-leg maker/taker fee split, backtest suite.
   for a new dict would silently freeze the live window at old values.
 - The warm-up bar read "181 / 7,200": it compared a SAMPLE COUNT to
   LOOKBACK_SEC, a duration, so it could never fill. It now counts
-  against MIN_SAMPLES, which is what actually gates trading.
+  against MIN_SAMPLES, which is what actually gates trading. FOLLOW-UP
+  (same day, operator: "10,894 / 300 — why is it stuck at 300?"):
+  MIN_SAMPLES is a threshold to CLEAR, not a target to sit at, so once
+  cleared the ratio reads like a broken denominator. The counter now
+  drops the ratio when warm and shows "10,894 quotes in 2h window"
+  instead. And when there are enough quotes but still no z (a collapsed
+  sigma — `degenerate`, now published to the UI) the banner says "No
+  usable Z-score / the spread has barely moved" rather than "Collecting
+  Data" while the counter sits past its target.
 - **Filling mode**: `close_position_ticket` and `send_market_order`
   hardcoded ORDER_FILLING_IOC, so on a FOK-only broker EVERY close came
   back `10030 Unsupported filling mode` — the engine could open and
