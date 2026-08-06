@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  408 tests, all fakes, no MT5 (runs anywhere)
+tests/                  412 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -310,6 +310,14 @@ per-leg maker/taker fee split, backtest suite.
 - Symbols follow app.py's model: the symbol, contract size, swap and
   expiry live on the BROKER ROW with its leg, not in a separate panel.
   Saving a row writes leg_accounts[role] and assets[..]_symbols.
+- Setup must work with the coordinator DOWN. Symbol search, [Test] and
+  [Diagnose] now talk STRAIGHT to the account's leg runner over its
+  endpoint (webapp opens a short-lived RemoteLeg — a socket client, no
+  MT5 in-process), falling back to the coordinator bridge. Otherwise
+  it is a deadlock: the coordinator will not start until the symbols
+  and legs are right, and those were the tools for finding out. An
+  account therefore NEEDS an endpoint; the Add form pre-fills the next
+  free port.
 - leg_accounts must map BOTH legs. An empty/stale mapping used to
   KeyError('default') in _resolve_legs — a raw crash loop that also
   bypassed main()'s clean ValueError exit. Now it names the missing

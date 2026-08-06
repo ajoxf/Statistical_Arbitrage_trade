@@ -33,7 +33,7 @@ try:
 except ImportError:
     SocketIO = None            # UI falls back to polling
 
-from . import ipc, scenarios, webapi
+from . import diagnostics, ipc, scenarios, webapi
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
@@ -967,6 +967,40 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
     # -- connectivity checklist + symbol lookup (Exchanges page) --
 
+    def leg_client(account_name):
+        """A short-lived connection straight to that account's leg
+        runner.
+
+        Setup is a chicken-and-egg otherwise: symbol search and
+        diagnostics used to go through the coordinator, but the
+        coordinator will not start until the symbols and legs are
+        already right. The leg runner is up as soon as its terminal is,
+        so the UI asks it directly. This is a plain socket client — the
+        web app still never imports MT5."""
+        account = (load_config_raw().get('accounts') or {}).get(account_name)
+        if not account or not account.get('endpoint'):
+            return None
+        try:
+            from .legs import RemoteLeg
+            leg = RemoteLeg(account_name, account['endpoint'], timeout=5.0)
+        except ValueError:
+            return None                    # malformed endpoint
+        if not leg.connect(retries=1, delay=0.2):
+            return None
+        return leg
+
+    def leg_for_role(role):
+        """(account_name, connected leg or None) for 'spot'/'futures'."""
+        legs = load_config_raw().get('leg_accounts') or {}
+        name = legs.get(role)
+        if not name:
+            # Nothing mapped yet — during setup, any account with a
+            # runner is better than refusing to answer.
+            accounts = load_config_raw().get('accounts') or {}
+            name = next((n for n, a in accounts.items() if a.get('endpoint')),
+                        None)
+        return name, (leg_client(name) if name else None)
+
     def ask_coordinator(payload, key, timeout=None):
         """Post a read-only request into control.json and wait for the
         coordinator to answer in runtime_status. Same file bridge the
@@ -981,6 +1015,99 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             time.sleep(0.3)
         return None
 
+    def diagnose_via_leg_runners(asset_key=None):
+        """Build the checklist by asking the leg runners directly.
+
+        Works while the coordinator is down — which is exactly when the
+        operator needs it, because a wrong symbol or an unmapped leg is
+        what stops the coordinator starting."""
+        raw = load_config_raw()
+        accounts = raw.get('accounts') or {}
+        legs = raw.get('leg_accounts') or {}
+        assets = raw.get('assets') or {}
+        asset_key = asset_key or next(
+            (k for k, v in assets.items() if v.get('enabled', True)), 'GOLD')
+        asset = assets.get(asset_key) or {}
+
+        checks, sides, raw_legs = [], {}, {}
+        for role, symbol_key in (('spot', 'spot_symbols'),
+                                 ('futures', 'futures_symbols')):
+            name = legs.get(role)
+            if not name:
+                checks.append({
+                    'scope': 'ENGINE', 'name': f'{role.upper()} leg',
+                    'status': 'FAIL',
+                    'message': 'No account is mapped to this leg — the '
+                               'coordinator cannot start',
+                    'fix': ['Edit an account above and set its Leg, '
+                            'then restart the launcher']})
+                continue
+            symbol = (asset.get(symbol_key) or [''])[0]
+            leg = leg_client(name)
+            if leg is None:
+                checks.append({
+                    'scope': f'{role.upper()} · {name}', 'name': 'Leg runner',
+                    'status': 'FAIL',
+                    'message': f"No leg runner answering for '{name}'",
+                    'fix': [
+                        'Give this account an endpoint (127.0.0.1:9101 for '
+                        'the first account, 9102 for the second) and '
+                        'restart the launcher',
+                        'Check its window / leg_<account>.log if it exited']})
+                continue
+            try:
+                terminal = leg.terminal_report()
+                report = (leg.symbol_report(symbol) if symbol else
+                          {'symbol': '', 'found': False,
+                           'error': 'No symbol set for this leg'})
+            finally:
+                leg.close()
+            sides[role] = {'account': name, 'role': role,
+                           'terminal': terminal, 'symbol': report,
+                           'asset': asset}
+            raw_legs[name] = {'terminal': terminal, 'symbol': report,
+                              'role': role}
+
+        if len(sides) == 2:
+            from .config import AlgoTradingConfig
+            config = AlgoTradingConfig.from_file(config_path) \
+                if os.path.exists(config_path) else AlgoTradingConfig()
+            expected = {name: acct.login
+                        for name, acct in config.accounts.items()
+                        if getattr(acct, 'login', None)}
+            report = diagnostics.build_report(
+                config, sides['spot'], sides['futures'],
+                expected_logins=expected,
+                leverages={'spot': config.EXITS.get('SPOT_LEVERAGE')
+                           or config.EXITS.get('LEVERAGE'),
+                           'futures': config.EXITS.get('FUT_LEVERAGE')
+                           or config.EXITS.get('LEVERAGE')})
+            report['checks'] = checks + report['checks']
+        else:
+            # Not enough to compare the pair — report what we have.
+            checklist = diagnostics.Checklist()
+            for role, side in sides.items():
+                diagnostics.check_leg(
+                    checklist, role, side['account'], side['terminal'],
+                    side['symbol'], _fallback_config(), asset)
+            report = checklist.result()
+            report['checks'] = checks + report['checks']
+        for key in ('passed', 'warnings', 'failed'):
+            report.setdefault(key, 0)
+        report['failed'] += sum(1 for c in checks if c['status'] == 'FAIL')
+        report['overall'] = ('FAIL' if report['failed'] else
+                             'WARN' if report['warnings'] else 'PASS')
+        report['legs'] = raw_legs
+        report['via'] = 'leg runners'
+        report['ran_at'] = datetime.now().strftime('%H:%M:%S')
+        return report if (sides or checks) else None
+
+    def _fallback_config():
+        from .config import AlgoTradingConfig
+        if os.path.exists(config_path):
+            return AlgoTradingConfig.from_file(config_path)
+        return AlgoTradingConfig()
+
     @app.route('/api/brokers/diagnose', methods=['POST'])
     @app.route('/api/brokers/<account>/diagnose', methods=['POST'])
     def api_broker_diagnose(account=None):
@@ -989,14 +1116,28 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         each symbol (found, in Market Watch, priced, sizes, contract
         specs) and the pair (currency, hedge ratio, live basis)."""
         body = request.get_json(silent=True) or {}
-        report = ask_coordinator({'asset': body.get('asset')},
-                                 'diagnostics')
+        # Ask the leg runners directly first — this must work while the
+        # coordinator is down, because that is when it is needed.
+        report = diagnose_via_leg_runners(body.get('asset'))
+        if report is None or not report.get('legs'):
+            # No leg runner answered. A running coordinator holds the
+            # connections instead (in-process topology), so ask it —
+            # and only if that is silent too do we report the runner
+            # failures, which say more than "no coordinator".
+            from_coordinator = ask_coordinator({'asset': body.get('asset')},
+                                               'diagnostics')
+            report = from_coordinator if from_coordinator else report
         if report is None:
             return jsonify({
                 'success': False, 'overall': 'FAIL', 'checks': [
-                    {'scope': 'ENGINE', 'name': 'Coordinator', 'status':
-                     'FAIL', 'message': 'No answer from the coordinator — '
-                     'is it running? Start it with start.py.'}],
+                    {'scope': 'ENGINE', 'name': 'No engine reachable',
+                     'status': 'FAIL',
+                     'message': 'Neither a leg runner nor the coordinator '
+                                'answered.',
+                     'fix': ['Give each account a leg runner endpoint '
+                             '(127.0.0.1:9101, then 9102)',
+                             'Start the launcher: python start.py',
+                             'Or run: python check_mt5.py']}],
                 'passed': 0, 'warnings': 0, 'failed': 1})
         if account:
             report = dict(report, checks=[
@@ -1009,16 +1150,38 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     def api_broker_test(account):
         """Quick connection test for one account, in the old app's
         shape: latency, who is logged in, and a live price."""
-        report = ask_coordinator({}, 'diagnostics')
-        if report is None:
-            return jsonify({'success': False,
-                            'error': 'No answer from the coordinator — is '
-                                     'it running?'})
-        leg = (report.get('legs') or {}).get(account)
-        if not leg:
-            return jsonify({'success': False,
-                            'error': f"'{account}' is not mapped to a leg. "
-                                     f"Map it on the Settings page."})
+        # Straight to this account's leg runner when it has one.
+        client = leg_client(account)
+        if client is not None:
+            raw = load_config_raw()
+            assets = raw.get('assets') or {}
+            legs = raw.get('leg_accounts') or {}
+            asset = next((v for v in assets.values()
+                          if v.get('enabled', True)), {})
+            key = ('futures_symbols' if legs.get('futures') == account
+                   else 'spot_symbols')
+            symbol_name = (asset.get(key) or [''])[0]
+            try:
+                terminal = client.terminal_report()
+                symbol = (client.symbol_report(symbol_name) if symbol_name
+                          else {'symbol': '', 'found': False})
+            finally:
+                client.close()
+            leg = {'terminal': terminal, 'symbol': symbol}
+        else:
+            report = ask_coordinator({}, 'diagnostics')
+            if report is None:
+                return jsonify({
+                    'success': False,
+                    'error': f"No leg runner for '{account}' and no "
+                             f"coordinator. Give the account an endpoint "
+                             f"(e.g. 127.0.0.1:9101) and restart the "
+                             f"launcher."})
+            leg = (report.get('legs') or {}).get(account)
+            if not leg:
+                return jsonify({'success': False,
+                                'error': f"'{account}' is not mapped to a "
+                                         f"leg. Set its Leg above."})
         terminal, symbol = leg['terminal'], leg['symbol']
         if not terminal.get('logged_in'):
             return jsonify({'success': False,
@@ -1054,12 +1217,32 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         instrument differently, so the operator looks it up here rather
         than guessing at the spelling."""
         pattern = request.args.get('q', '')
-        leg = request.args.get('leg', 'spot')
-        answer = ask_coordinator({'find_symbols': pattern, 'leg': leg},
+        role = request.args.get('leg', 'spot')
+        account = request.args.get('account')
+
+        # Straight to the leg runner when there is one: this has to
+        # work BEFORE the coordinator can start, since finding the
+        # right symbol is what lets it start.
+        name = account or leg_for_role(role)[0]
+        leg = leg_client(name) if name else None
+        if leg is not None:
+            try:
+                found = leg.find_symbols(pattern, 40)
+            finally:
+                leg.close()
+            if found is not None:
+                return jsonify({'leg': role, 'account': name,
+                                'pattern': pattern, 'symbols': found,
+                                'via': 'leg runner'})
+
+        answer = ask_coordinator({'find_symbols': pattern, 'leg': role},
                                  'symbol_search')
         if answer is None:
-            return jsonify({'symbols': [], 'error': 'No answer from the '
-                                                    'coordinator.'})
+            return jsonify({
+                'symbols': [],
+                'error': f"Cannot reach account '{name or role}'. Give it a "
+                         f"leg runner endpoint (e.g. 127.0.0.1:9101) and "
+                         f"restart the launcher, or start the coordinator."})
         return jsonify(answer)
 
     @app.route('/api/leg-symbols', methods=['GET', 'POST'])

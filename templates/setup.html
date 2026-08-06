@@ -408,7 +408,24 @@ function suggestSymbols() {
     }, 400);
 }
 
-document.addEventListener('DOMContentLoaded', loadBrokers);
+// A new account gets the next free port by default: without an
+// endpoint there is no leg runner, and then nothing — not even symbol
+// search — can reach that terminal.
+function suggestEndpoint() {
+    const used = new Set((BROKERS || []).map(b => (b.endpoint || '').trim())
+                                        .filter(Boolean));
+    for (let port = 9101; port < 9120; port++) {
+        const candidate = `127.0.0.1:${port}`;
+        if (!used.has(candidate)) return candidate;
+    }
+    return '127.0.0.1:9101';
+}
+
+document.addEventListener('DOMContentLoaded', async function() {
+    await loadBrokers();
+    const form = document.getElementById('broker-form');
+    if (form && !form.endpoint.value) form.endpoint.value = suggestEndpoint();
+});
 
 // ========== Full Order Test Suite (spot & futures round trips) ==========
 let SCENARIOS = [];

@@ -588,10 +588,16 @@ def test_test_connection_on_an_unmapped_account_says_so(client):
     assert not data['success'] and 'not mapped' in data['error']
 
 
-def test_a_silent_coordinator_is_reported_not_hung(client):
+def test_nothing_running_at_all_reports_the_leg_runners(client):
+    """With neither a leg runner nor the coordinator up, name the leg
+    runners — that is the thing the operator has to start, and it is
+    what unblocks the symbol lookup."""
     data = client.post('/api/brokers/diagnose').get_json()
     assert data['overall'] == 'FAIL'
-    assert 'No answer from the coordinator' in data['checks'][0]['message']
+    messages = ' '.join(c['message'] for c in data['checks'])
+    assert 'No leg runner answering' in messages
+    fixes = ' '.join(step for c in data['checks'] for step in c.get('fix', []))
+    assert 'restart the launcher' in fixes
 
 
 def test_symbol_search_passes_the_pattern_and_leg_through(client):
@@ -721,3 +727,109 @@ def test_different_brokers_need_no_broker_note(cfg):
                                  terminal_path='C:/MT5-B/terminal64.exe'),
                    sym=symbol(symbol='GC1225'))
     assert find(report(cfg, spot=spot, futures=futures), 'Broker') is None
+
+
+# --- setup must work while the coordinator is DOWN ------------------------
+# The chicken-and-egg the operator hit: the coordinator will not start
+# until the symbols and legs are right, but symbol search and Diagnose
+# used to go through the coordinator. They now talk to the leg runner.
+
+@pytest.fixture
+def leg_runner_client(tmp_path, monkeypatch):
+    import threading
+    from statarb.leg_runner import LegServer
+    from tests.test_diagnostics import terminal as terminal_report
+    monkeypatch.chdir(tmp_path)
+
+    class Broker:
+        account = type('A', (), {'name': 'account_a'})()
+
+        def initialize(self):
+            return True
+
+        def shutdown(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+        def account_info(self):
+            return None
+
+        def terminal_report(self):
+            return terminal_report()
+
+        def symbol_report(self, sym):
+            if sym == 'XAUUSD':
+                return symbol()
+            return {'symbol': sym, 'found': False,
+                    'error': f'{sym} does not exist on this broker'}
+
+        def find_symbols(self, pattern, limit=40):
+            rows = [{'symbol': 'XAUUSD', 'description': 'Gold vs USD'},
+                    {'symbol': 'XAUUSD.f', 'description': 'Gold futures'}]
+            return [r for r in rows if pattern.upper() in r['symbol'].upper()
+                    or pattern.upper() in r['description'].upper()]
+
+    server = LegServer(Broker(), '127.0.0.1', 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    (tmp_path / "config.json").write_text(json.dumps({
+        'accounts': {'account_a': {'login': 111,
+                                   'endpoint': f'127.0.0.1:{server.port}'}},
+        'leg_accounts': {'spot': 'account_a'},
+        'assets': {'GOLD': {'name': 'GOLD', 'enabled': True,
+                            'spot_symbols': ['XAUUSD'],
+                            'futures_symbols': ['GC1225'],
+                            'lot_size': 100}}}))
+    (tmp_path / "runtime_status.json").write_text('{}')
+    app = create_app(db_path=str(tmp_path / "algo.db"),
+                     status_path=str(tmp_path / "runtime_status.json"),
+                     config_path=str(tmp_path / "config.json"),
+                     control_path=str(tmp_path / "control.json"),
+                     env_path=str(tmp_path / ".env"),
+                     scenario_timeout=1.0, diagnose_timeout=1.0)
+    app.config['TESTING'] = True
+    client = app.test_client()
+    client.tmp_path = tmp_path
+    yield client
+    server.stop()
+
+
+def test_symbol_search_works_with_no_coordinator(leg_runner_client):
+    data = leg_runner_client.get(
+        '/api/symbols/search?leg=spot&q=GOLD').get_json()
+    assert data['via'] == 'leg runner'
+    # Matches on description too — 'GOLD' finds both gold instruments
+    assert [s['symbol'] for s in data['symbols']] == ['XAUUSD', 'XAUUSD.f']
+
+
+def test_diagnose_works_with_no_coordinator(leg_runner_client):
+    data = leg_runner_client.post('/api/brokers/diagnose').get_json()
+    assert data['via'] == 'leg runners'
+    messages = {c['name']: c for c in data['checks']}
+    assert messages['Account login']['status'] == 'PASS'
+    assert messages['Symbol']['status'] == 'PASS'
+    # The futures leg is unmapped — that is the actual blocker
+    assert messages['FUTURES leg']['status'] == 'FAIL'
+    assert data['overall'] == 'FAIL'
+
+
+def test_test_connection_works_with_no_coordinator(leg_runner_client):
+    data = leg_runner_client.post(
+        '/api/brokers/account_a/test').get_json()
+    assert data['success']
+    assert data['account_info']['login'] == 111
+    assert data['price_info']['symbol'] == 'XAUUSD'
+
+
+def test_a_wrong_symbol_is_named_without_a_coordinator(leg_runner_client):
+    """Set a symbol the broker does not have; Diagnose must still say
+    so, because that is how the operator finds the right one."""
+    raw = json.loads((leg_runner_client.tmp_path / "config.json").read_text())
+    raw['assets']['GOLD']['spot_symbols'] = ['NOPE']
+    (leg_runner_client.tmp_path / "config.json").write_text(json.dumps(raw))
+    data = leg_runner_client.post('/api/brokers/diagnose').get_json()
+    symbol_check = next(c for c in data['checks'] if c['name'] == 'Symbol')
+    assert symbol_check['status'] == 'FAIL'
+    assert 'does not exist' in symbol_check['message']
