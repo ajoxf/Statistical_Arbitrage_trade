@@ -1,0 +1,2253 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Nexus{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-gear me-2"></i>Trading Configuration
+            </div>
+            <div class="card-body">
+                <form id="config-form">
+                    <!-- Pair Selection -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Pair Selection</h6>
+                            <small class="text-secondary d-block mb-3">
+                                Trade the spread between <strong>any two MT5 symbols</strong> &mdash; Leg A
+                                and Leg B can each be spot metal or a dated future, on one broker or two. Same
+                                underlying (classic basis trade) or two entirely different instruments
+                                (cross-instrument / fiat-quote / inter-exchange spread). Type to search; the
+                                full live list is loaded from the exchange.
+                            </small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Quick Pick <small class="text-secondary">(basis trade shortcut)</small></label>
+                            <select class="form-select" id="asset_quickpick"
+                                    title="One-click fills both legs for the classic spot vs perp basis trade. Leave alone and pick legs manually for any other spread.">
+                                <option value="">&mdash; choose &mdash;</option>
+                                {% for key, asset in assets.items() %}
+                                <option value="{{ key }}">{{ key }} - {{ asset.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Leg A <small class="text-secondary">(spot symbol, Broker&nbsp;1)</small></label>
+                            <input type="text" class="form-control" id="spot_symbol" name="spot_symbol"
+                                   list="spot_symbols_list" value="{{ config.spot_symbol }}"
+                                   placeholder="e.g. XAUUSD  or  XAUUSD_  or  GOLD" autocomplete="off">
+                            <datalist id="spot_symbols_list"></datalist>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Leg B <small class="text-secondary">(futures symbol, Broker&nbsp;2)</small></label>
+                            <input type="text" class="form-control" id="futures_symbol" name="futures_symbol"
+                                   list="futures_symbols_list" value="{{ config.futures_symbol }}"
+                                   placeholder="e.g. GC1225  or  XAUUSD.f  or  GCZ5" autocomplete="off">
+                            <datalist id="futures_symbols_list"></datalist>
+                        </div>
+                        <div class="col-md-4 mt-3">
+                            <label class="form-label d-flex justify-content-between align-items-center">
+                                <span>Hedge Ratio (&beta;)</span>
+                                <span id="beta_suggestion_wrap" class="text-secondary"
+                                      style="font-size: 0.7rem; display:none;">
+                                    suggestion: <span id="beta_suggestion_value" class="text-info">&mdash;</span>
+                                    <a href="#" id="beta_suggestion_apply" class="ms-1"
+                                       title="Apply the suggested β to the hedge ratio field">apply</a>
+                                </span>
+                            </label>
+                            <input type="number" class="form-control" id="hedge_ratio" name="hedge_ratio"
+                                   value="{{ config.hedge_ratio }}" step="0.0001" min="0.0001">
+                            <small class="text-secondary">
+                                spread = price(Leg B) &minus; &beta; &times; price(Leg A). Use <strong>1</strong>
+                                for the same underlying (e.g. XAUUSD vs GC1225). For a cross pair (e.g. gold vs silver)
+                                set &beta; so the legs are comparable &mdash; Leg A is scaled by &beta; to stay
+                                dollar-hedged. The suggestion above is mid(Leg B) &divide; mid(Leg A) from live
+                                broker prices &mdash; the ounce-neutral &beta;. Verify against both brokers' contract specs.
+                            </small>
+                        </div>
+                        <div class="col-12 mt-2">
+                            <small class="text-secondary">
+                                Pair label: <span id="pair_label_display" class="text-info">&mdash;</span>
+                                <span id="instruments_status" class="ms-2 text-secondary"></span>
+                                <a href="#" id="refresh_instruments_btn" class="ms-2"
+                                   title="Re-read the symbols configured for this asset">&#x21bb; refresh</a>
+                            </small>
+                        </div>
+                        <div class="col-12 mt-2">
+                            <div id="pair_warning" class="alert alert-warning py-2 px-3 small mb-0"
+                                 style="display:none;"></div>
+                        </div>
+                    </div>
+                    <!-- asset is now derived from the chosen legs (DB/history key) -->
+                    <input type="hidden" id="asset" name="asset" value="{{ config.asset }}">
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Z-Score Thresholds -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Z-Score Thresholds</h6>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Entry Threshold</label>
+                            <input type="number" class="form-control" id="entry_threshold" name="entry_threshold" value="{{ config.entry_threshold }}" step="0.1" min="0.5" max="5">
+                            <small class="text-secondary">Entry at Z &ge; +/- this value</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Exit Threshold</label>
+                            <input type="number" class="form-control" id="exit_threshold" name="exit_threshold" value="{{ config.exit_threshold }}" step="0.1" min="0" max="3">
+                            <small class="text-secondary">Exit when Z returns to +/- this value</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Stop Loss Threshold</label>
+                            <input type="number" class="form-control" id="stop_loss_threshold" name="stop_loss_threshold" value="{{ config.stop_loss_threshold }}" step="0.1" min="2" max="10">
+                            <small class="text-secondary">Stop loss at Z &ge; +/- this value</small>
+                            <div class="form-check form-switch mt-1">
+                                <input class="form-check-input" type="checkbox" id="z_stop_exit_enabled" name="z_stop_exit_enabled" {% if config.z_stop_exit_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="z_stop_exit_enabled" style="font-size: 0.8rem;">z-stop closes trades</label>
+                            </div>
+                            <small class="text-secondary"><strong>OFF</strong> = once in a trade, the stop is the <strong>Dollar Stop (% capital) only</strong> — post-entry the rolling z drifts (mean/σ move during the hold) so its dollar meaning wanders. Fail-safe: the z-stop stays active if no dollar stop is armed. This threshold <em>always</em> keeps blocking entries at |z| &ge; it.</small>
+                        </div>
+                    </div>
+
+                    <!-- Fast-Exit Overrides (trending-market protection) -->
+                    <div class="row mb-2">
+                        <div class="col-12 mb-2">
+                            <h6 class="text-secondary mb-1"><i class="bi bi-lightning-charge me-2"></i>Fast-Exit Overrides
+                                <a href="/static/exit-logic-reference.html" target="_blank" class="ms-2" style="font-size: 0.8rem; font-weight: normal;">
+                                    <i class="bi bi-book me-1"></i>Full exit-logic reference — how every close happens
+                                </a>
+                            </h6>
+                            <small class="text-secondary">Exit on dollars/time instead of waiting for Z to fully revert &mdash; protects profit in trending markets. All P&L is <strong>NET</strong> (after round-trip fees). Set to <strong>0</strong> to disable. Z-score exit/stop-loss remain active as backstops &mdash; but note the <strong>Dollar Stop below usually fires first</strong>, so raising the Z-score Stop alone (e.g. to 7) will <em>not</em> give a trade more room to revert; widen the dollar stop (lower R:R and/or higher %-capital cap) instead.
+                            <br><strong>Scale-invariant (recommended)</strong> &mdash; these auto-adjust to position size, volatility and the pair, so they keep working unchanged as you scale up. They take precedence over the fixed-$ fields below when set.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Target (&sigma;-fraction)</label>
+                            <input type="number" class="form-control" id="profit_target_sigma_frac" name="profit_target_sigma_frac" value="{{ config.profit_target_sigma_frac }}" step="0.05" min="0" max="2">
+                            <small class="text-secondary">Fraction of expected reversion. <strong>0.5&ndash;0.7</strong> recommended &mdash; lower = quicker, smaller, higher-probability wins (target = f &times; |Z<sub>entry</sub>| &times; &sigma; &times; qty; floored by Cost Floor below). Takes precedence over the %-of-capital form.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Target (% of capital)</label>
+                            <input type="number" class="form-control" id="profit_target_capital_pct" name="profit_target_capital_pct" value="{{ config.profit_target_capital_pct }}" step="0.01" min="0" max="5">
+                            <small class="text-secondary"><strong>"Bank the win":</strong> close once net P&L (all fees paid) &ge; this % of capital-at-risk. Fires on <strong>P&L alone &mdash; no z-score condition</strong>, immune to rolling-mean drift. e.g. <strong>0.5</strong> = take profit at BE + 0.5% of capital. Used when &sigma;-fraction is 0; overrides the fixed USD field. Floored by the Cost Floor.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Hold (&times; half-life)</label>
+                            <input type="number" class="form-control" id="max_hold_halflife_mult" name="max_hold_halflife_mult" value="{{ config.max_hold_halflife_mult }}" step="0.5" min="0" max="20">
+                            <small class="text-secondary">Multiple of measured half-life. <strong>4&times;</strong> typical (range 2&ndash;6): ~4&times; &asymp; 94% reverted. Only exits if P&L &gt; 0 <em>and</em> Z-progress below gate</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Hold Z-Progress Gate</label>
+                            <input type="number" class="form-control" id="max_hold_z_progress_min" name="max_hold_z_progress_min" value="{{ config.max_hold_z_progress_min }}" step="0.05" min="0" max="1">
+                            <small class="text-secondary">Suppress MAX_HOLD while Z has reverted &ge; this fraction of the entry&rarr;exit journey. <strong>0.5</strong> = let trades &gt;50% home reach the profit target</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Dollar Stop (% capital)</label>
+                            <input type="number" class="form-control" id="stop_loss_capital_pct" name="stop_loss_capital_pct" value="{{ config.stop_loss_capital_pct }}" step="0.01" min="0" max="50">
+                            <small class="text-secondary">% of capital-at-risk per trade &mdash; the hard <strong>catastrophe ceiling</strong>. Effective stop = the <em>tighter</em> of this and (target &divide; R:R). <strong>1.0&ndash;1.5</strong> at $100k+; at small size this is dollar-tiny, so set <strong>0</strong> and let R:R set the stop until you scale.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Min Reward / Risk (R:R)</label>
+                            <input type="number" class="form-control" id="min_entry_rr_multiple" name="min_entry_rr_multiple" value="{{ config.min_entry_rr_multiple }}" step="0.1" min="0" max="10">
+                            <small class="text-secondary"><strong>Sets the dollar stop:</strong> stop&nbsp;=&nbsp;target&nbsp;&divide;&nbsp;R:R. <strong>Higher R:R &rarr; TIGHTER stop</strong> (fires sooner, more shakeouts); lower &rarr; wider stop (more room to revert). Effective stop is the <em>tighter</em> of this and the %-capital cap. <strong>0.8&ndash;1.0</strong> for mean-reversion room; <strong>0</strong> = use only the %-capital cap.</small>
+                        </div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Cost Floor (&times; fees)</label>
+                            <input type="number" class="form-control" id="profit_target_min_cost_mult" name="profit_target_min_cost_mult" value="{{ config.profit_target_min_cost_mult }}" step="0.25" min="0" max="10">
+                            <small class="text-secondary"><strong>1.0</strong> recommended. <strong>0</strong> = off</small>
+                        </div>
+                        <div class="col-md-8 d-flex align-items-end">
+                            <small class="text-secondary mb-1">Safety floor on the profit target &mdash; it can never fire below this multiple of the trade's round-trip fees. Live P&L is measured at the <em>mid</em>, but a real exit <em>crosses the spread</em>, so without this a statistically-small target could &ldquo;hit&rdquo; yet fill at a net loss. At <strong>1.0</strong> a profit-target exit always nets at least its own fees back; at <strong>1.5</strong> it clears fees plus a 50% margin. Applies to both the &sigma;-fraction and fixed-$ targets.</small>
+                        </div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-12 mb-1">
+                            <small class="text-secondary"><i class="bi bi-sliders me-1"></i><strong>Fixed-$ fallback</strong> (optional hard caps) &mdash; used only when the matching scale-invariant field above is 0.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Profit Target (USD)</label>
+                            <input type="number" class="form-control" id="profit_target_usd" name="profit_target_usd" value="{{ config.profit_target_usd }}" step="0.5" min="0">
+                            <small class="text-secondary">Exit once net P&L &ge; this</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Hold (minutes)</label>
+                            <input type="number" class="form-control" id="max_hold_minutes" name="max_hold_minutes" value="{{ config.max_hold_minutes }}" step="1" min="0">
+                            <small class="text-secondary">Exit after N min <em>if</em> net P&L &gt; 0</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Hard Max Hold (minutes)</label>
+                            <input type="number" class="form-control" id="hard_max_hold_minutes" name="hard_max_hold_minutes" value="{{ config.hard_max_hold_minutes }}" step="1" min="0">
+                            <small class="text-secondary">Exit after N min <b>regardless of P&amp;L</b> &mdash; cuts losers a soft max-hold won't. 0 = off. <b>~90</b> suggested</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Dollar Stop (USD)</label>
+                            <input type="number" class="form-control" id="max_loss_usd" name="max_loss_usd" value="{{ config.max_loss_usd }}" step="0.5" min="0">
+                            <small class="text-secondary">Exit when net P&L &le; &minus;this</small>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <label class="form-label">RFQ Min Notional (USD)</label>
+                            <input type="number" class="form-control" id="rfq_notional_threshold_usd" name="rfq_notional_threshold_usd" value="{{ config.rfq_notional_threshold_usd }}" step="1" min="0">
+                            <small class="text-secondary">Route trades with per-leg notional &ge; this to atomic RFQ/Block. <strong>0 = off</strong> (order book always). MT5 block-trade min ≈ $1,000/leg; maker liquidity for a 2-perp structure is unverified &mdash; validate with <code>rfq_demo_validate.py</code> first.</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">RFQ Max Markup (bps)</label>
+                            <input type="number" class="form-control" id="rfq_max_markup_bps" name="rfq_max_markup_bps" value="{{ config.rfq_max_markup_bps }}" step="0.5" min="0">
+                            <small class="text-secondary">Reject a maker quote whose worst-leg markup vs mid exceeds this, then fall back to the order book.</small>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-md-12">
+                            <label class="form-label">Exit Signal Mode</label>
+                            <select class="form-select" id="exit_signal_mode" name="exit_signal_mode">
+                                <option value="zscore"  {% if config.exit_signal_mode == 'zscore' %}selected{% endif %}>Z-Score (original) — exit when rolling Z returns to ±exit threshold</option>
+                                <option value="spread"  {% if config.exit_signal_mode == 'spread' %}selected{% endif %}>Absolute Spread — exit only when spread crosses entry-time mean (resistant to rolling-mean drift)</option>
+                                <option value="hybrid"  {% if config.exit_signal_mode == 'hybrid' %}selected{% endif %}>Hybrid — exit when EITHER fires (whichever is first)</option>
+                            </select>
+                            <small class="text-secondary d-block mt-1">
+                                Z-Score mode can "exit at the mean" while the spread hasn't actually reverted — the rolling mean drifts during the hold to chase the spread. <b>Spread mode</b> freezes the entry-time mean and waits for the live spread to actually cross it before exiting. Stop-loss always uses Z-score regardless.
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <label class="form-label">Exit Profit Gate (USD, net after all fees)</label>
+                            <input type="number" class="form-control" id="exit_profit_gate_usd" name="exit_profit_gate_usd" value="{{ config.exit_profit_gate_usd }}" step="0.5" min="-1">
+                            <small class="text-secondary">A reversion EXIT only closes the trade once live net P&amp;L (all fees paid) is at least this. <b>0 = break-even gate</b>: never take a losing "profit" exit — hold until the spread crosses the BE level. <b>−1 = off</b> (original behaviour). The dollar stop, z stop-loss, profit target and max-hold are never gated. Ignored while the %-of-capital field is &gt; 0.</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Exit Profit Gate (% of capital)</label>
+                            <input type="number" class="form-control" id="exit_profit_gate_pct" name="exit_profit_gate_pct" value="{{ config.exit_profit_gate_pct }}" step="0.01" min="0" max="5">
+                            <small class="text-secondary">Scale-invariant form — <b>overrides the USD field when &gt; 0</b>. Required net profit past break-even as % of capital-at-risk (same denominator as the Dollar Stop %-capital). e.g. <b>0.5</b> = a reversion EXIT waits until net ≥ 0.5% of capital. The position card shows the resolved release level as the <b>EX</b> chip.</small>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Rolling Window -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Rolling Window Settings</h6>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Lookback Period</label>
+                            <input type="number" class="form-control" id="lookback_period" name="lookback_period" value="{{ config.lookback_period }}" min="20" max="100000">
+                            <small class="text-secondary">Number of ticks to collect before trading. Progress shown on dashboard.</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Stats Update Interval (seconds)</label>
+                            <select class="form-select" id="stats_update_interval" name="stats_update_interval">
+                                <option value="0" {% if config.stats_update_interval == 0 %}selected{% endif %}>Every tick (real-time)</option>
+                                <option value="60" {% if config.stats_update_interval == 60 %}selected{% endif %}>1 minute</option>
+                                <option value="300" {% if config.stats_update_interval == 300 %}selected{% endif %}>5 minutes</option>
+                                <option value="600" {% if config.stats_update_interval == 600 %}selected{% endif %}>10 minutes</option>
+                                <option value="900" {% if config.stats_update_interval == 900 %}selected{% endif %}>15 minutes</option>
+                                <option value="1800" {% if config.stats_update_interval == 1800 %}selected{% endif %}>30 minutes</option>
+                                <option value="3600" {% if config.stats_update_interval == 3600 %}selected{% endif %}>1 hour</option>
+                            </select>
+                            <small class="text-secondary">How often to recalculate mean/std (bands stay stable)</small>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Filters -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Signal Filters</h6>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="hurst_enabled" name="hurst_enabled" {% if config.hurst_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="hurst_enabled">Enable Hurst Filter</label>
+                            </div>
+                            <label class="form-label">Hurst Threshold</label>
+                            <input type="number" class="form-control" id="hurst_threshold" name="hurst_threshold" value="{{ config.hurst_threshold }}" step="0.05" min="0.3" max="0.7">
+                            <small class="text-secondary">Block entries when Hurst &ge; this value (trending)</small>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="std_filter_enabled" name="std_filter_enabled" {% if config.std_filter_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="std_filter_enabled">Enable Edge Filter</label>
+                            </div>
+                            <label class="form-label">Min Net P&L / Cost Ratio</label>
+                            <input type="number" class="form-control" id="min_std_multiple" name="min_std_multiple" value="{{ config.min_std_multiple }}" step="0.1" min="1" max="5">
+                            <small class="text-secondary">Only enter when the trade's <strong>net profit target</strong> (f &times; |Z| &times; &sigma; &times; qty &mdash; the same number the exit aims for) is &ge; this &times; round-trip cost (fees + slippage). <strong>1.5&ndash;2.0</strong> recommended. Auto-floored at the Profit Cost Floor so entry can never be looser than the exit.</small>
+                        </div>
+                        <div class="col-md-6 mt-3">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="trend_direction_filter" name="trend_direction_filter" {% if config.trend_direction_filter %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="trend_direction_filter">Trend Direction Filter</label>
+                            </div>
+                            <small class="text-secondary d-block">
+                                When <strong>ON</strong>: only takes signals aligned with the current spread slope —
+                                rising spread (Leg B outperforming) allows SHORT only;
+                                falling spread allows LONG only.
+                                Useful when Hurst is high and mean-reversion is unreliable.
+                            </small>
+                        </div>
+                        <div class="col-md-6 mt-3">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="z_reset_gate_enabled" name="z_reset_gate_enabled" {% if config.z_reset_gate_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="z_reset_gate_enabled">Z-Reset Gate</label>
+                            </div>
+                            <small class="text-secondary d-block">
+                                When <strong>ON</strong>: after a stop-loss, blocks re-entry in the same direction
+                                until the z-score crosses back through &plusmn;exit&nbsp;threshold.
+                                Prevents re-entering a trending market immediately after a loss.
+                            </small>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Post-Entry Exit Overrides -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Post-Entry Exit Overrides</h6>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="hurst_exit_enabled" name="hurst_exit_enabled" {% if config.hurst_exit_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="hurst_exit_enabled">Hurst Regime Exit</label>
+                            </div>
+                            <small class="text-secondary d-block mb-2">Exit when H &gt; threshold for N ticks after entry — spread has flipped to trending.</small>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <label class="form-label mb-0">H Threshold</label>
+                                    <input type="number" class="form-control form-control-sm" id="hurst_exit_threshold" name="hurst_exit_threshold" value="{{ config.hurst_exit_threshold }}" step="0.05" min="0.3" max="0.9">
+                                    <small class="text-secondary">H &gt; this = trending</small>
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label mb-0">Consecutive Ticks</label>
+                                    <input type="number" class="form-control form-control-sm" id="hurst_exit_n_ticks" name="hurst_exit_n_ticks" value="{{ config.hurst_exit_n_ticks }}" step="1" min="1" max="20">
+                                    <small class="text-secondary">Ticks to confirm</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="velocity_exit_enabled" name="velocity_exit_enabled" {% if config.velocity_exit_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="velocity_exit_enabled">Spread Velocity Exit</label>
+                            </div>
+                            <small class="text-secondary d-block mb-2">Exit when adverse drift &gt; X pts/min for N ticks — trend accelerating.</small>
+                            <div class="row g-2">
+                                <div class="col-4">
+                                    <label class="form-label mb-0 d-flex justify-content-between">
+                                        <span>pts/min</span>
+                                        <span id="velocity_exit_pts_per_min_val" class="fw-bold text-primary">{{ config.velocity_exit_pts_per_min }}</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="velocity_exit_pts_per_min" name="velocity_exit_pts_per_min"
+                                           value="{{ config.velocity_exit_pts_per_min }}" step="0.5" min="0.5" max="10"
+                                           oninput="document.getElementById('velocity_exit_pts_per_min_val').textContent=parseFloat(this.value).toFixed(1)">
+                                    <small class="text-secondary d-flex justify-content-between"><span>0.5</span><span>Threshold</span><span>10</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label mb-0 d-flex justify-content-between">
+                                        <span>Ticks</span>
+                                        <span id="velocity_exit_n_ticks_val" class="fw-bold text-primary">{{ config.velocity_exit_n_ticks }}</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="velocity_exit_n_ticks" name="velocity_exit_n_ticks"
+                                           value="{{ config.velocity_exit_n_ticks }}" step="1" min="1" max="20"
+                                           oninput="document.getElementById('velocity_exit_n_ticks_val').textContent=this.value">
+                                    <small class="text-secondary d-flex justify-content-between"><span>1</span><span>To confirm</span><span>20</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label mb-0 d-flex justify-content-between">
+                                        <span>Window</span>
+                                        <span id="velocity_exit_window_ticks_val" class="fw-bold text-primary">{{ config.velocity_exit_window_ticks }}</span>
+                                    </label>
+                                    <input type="range" class="form-range" id="velocity_exit_window_ticks" name="velocity_exit_window_ticks"
+                                           value="{{ config.velocity_exit_window_ticks }}" step="5" min="5" max="120"
+                                           oninput="document.getElementById('velocity_exit_window_ticks_val').textContent=this.value">
+                                    <small class="text-secondary d-flex justify-content-between"><span>5</span><span>~0.5s ea</span><span>120</span></small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Trailing Stop -->
+                    <div class="row mb-3 mt-3">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-2">Trailing Stop</h6>
+                            <small class="text-secondary d-block mb-3">Once P&amp;L reaches Floor % of profit target, exit when P&amp;L retraces Pullback % from its peak. Example: Floor=70%, Pullback=20% → arms at $3.47 (70% of $4.95), fires if P&amp;L drops 20% from its high.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label mb-0">Pullback %</label>
+                            <input type="number" class="form-control form-control-sm" id="trailing_stop_pct" name="trailing_stop_pct" value="{{ config.trailing_stop_pct }}" step="5" min="0" max="100">
+                            <small class="text-secondary">% drop from peak P&amp;L (0 = disabled)</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label mb-0">Floor %</label>
+                            <input type="number" class="form-control form-control-sm" id="trailing_stop_floor_pct" name="trailing_stop_floor_pct" value="{{ config.trailing_stop_floor_pct }}" step="5" min="0" max="100">
+                            <small class="text-secondary">Arm when P&amp;L ≥ X% of target (0 = always armed)</small>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Self-Learning -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Self-Learning (AI Auto-Tune)</h6>
+                            <small class="text-secondary d-block mb-3">
+                                After every closed trade, Claude analyses the outcome and stores a structured learning.
+                                When <strong>Auto-Tune</strong> is on, it will automatically adjust parameters if
+                                3 or more consecutive analyses agree on the same change with &ge;70% confidence.
+                                Changes are clamped to safe corridors (max ±0.2 per adjustment).
+                            </small>
+                        </div>
+
+                        <!-- Claude API Key entry -->
+                        <div class="col-12 mb-3">
+                            <label class="form-label fw-semibold">
+                                Claude AI API Key
+                                <span id="anthropic-status-badge" class="badge ms-2 bg-secondary" style="font-size:0.65rem;">Checking...</span>
+                            </label>
+                            <div class="input-group">
+                                <input type="password" class="form-control" id="anthropic-key-input"
+                                    placeholder="sk-ant-api03-..." autocomplete="off">
+                                <button class="btn btn-outline-primary" type="button" id="anthropic-toggle-eye" title="Show/hide key">
+                                    <i class="bi bi-eye" id="anthropic-eye-icon"></i>
+                                </button>
+                                <button class="btn btn-primary" type="button" id="anthropic-save-btn">Save Key</button>
+                                <button class="btn btn-outline-secondary" type="button" id="anthropic-test-btn">Test Connection</button>
+                            </div>
+                            <small id="anthropic-key-hint" class="text-secondary">
+                                Get your key at <a href="https://console.anthropic.com/keys" target="_blank">console.anthropic.com/keys</a>.
+                                Saved to <code>.env</code> — persists across restarts.
+                            </small>
+                            <div id="anthropic-feedback" class="mt-1" style="font-size:0.82rem;display:none;"></div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="auto_tune_enabled" name="auto_tune_enabled" {% if config.auto_tune_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="auto_tune_enabled">Enable Auto-Tune Parameters</label>
+                            </div>
+                            <small class="text-secondary">
+                                When disabled, Claude still analyses every trade and the Learning Log is updated —
+                                but no parameters are changed automatically.
+                            </small>
+                        </div>
+                        <div class="col-md-6 d-flex align-items-start gap-2 flex-wrap">
+                            <a href="/api/learning-log" target="_blank" class="btn btn-sm btn-outline-secondary">
+                                <i class="bi bi-list-ul me-1"></i>View Learning Log (JSON)
+                            </a>
+                            <a href="/api/learnings" target="_blank" class="btn btn-sm btn-outline-secondary">
+                                <i class="bi bi-lightbulb me-1"></i>View Learnings (JSON)
+                            </a>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Position Sizing -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Position Sizing</h6>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Position Size (USD)</label>
+                            <input type="number" class="form-control" id="clip_lots" name="clip_lots" value="{{ config.clip_lots }}" step="0.01" min="0.01">
+                            <small class="text-secondary mt-1 d-block" style="font-size: 0.7rem;"
+                                   id="capital_preview"
+                                   title="Live preview of the same math the runtime balance guard uses: (Leg A margin + Leg B margin) × 1.10 buffer. Updates as you change size, leverage, β, or legs.">
+                                Capital required (live): <span id="capital_preview_value" class="fw-bold text-info">&mdash;</span>
+                                <span id="capital_preview_breakdown" class="text-secondary"></span>
+                            </small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Max Position Size (USD)</label>
+                            <input type="number" class="form-control" id="max_lot_size" name="max_lot_size" value="{{ config.max_lot_size }}" step="0.01" min="0.01">
+                        </div>
+                        <div class="col-md-6 mt-3">
+                            <label class="form-label">M2M Buffer (%)</label>
+                            <input type="number" class="form-control" id="m2m_buffer_pct" name="m2m_buffer_pct"
+                                   value="{{ config.m2m_buffer_pct }}" step="5" min="0" max="100">
+                            <small class="text-secondary">
+                                Mark-to-market headroom on top of required margin (fees, slippage, drift).
+                                The pre-trade balance guard requires available &ge; margin &times; (1 + this%).
+                                Default 10%; raise to 30% for more safety on volatile pairs.
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Leverage Settings</h6>
+                            <small class="text-secondary d-block mb-3">Leverage multiplies both potential gains and losses. Use with caution.</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Leg A Leverage</label>
+                            <select class="form-select" id="spot_leverage" name="spot_leverage">
+                                <option value="1" {% if config.spot_leverage == 1 %}selected{% endif %}>1x (Cash / No Margin)</option>
+                                <option value="2" {% if config.spot_leverage == 2 %}selected{% endif %}>2x</option>
+                                <option value="3" {% if config.spot_leverage == 3 %}selected{% endif %}>3x</option>
+                                <option value="5" {% if config.spot_leverage == 5 %}selected{% endif %}>5x</option>
+                                <option value="10" {% if config.spot_leverage == 10 %}selected{% endif %}>10x</option>
+                                <option value="15" {% if config.spot_leverage == 15 %}selected{% endif %}>15x</option>
+                                <option value="20" {% if config.spot_leverage == 20 %}selected{% endif %}>20x</option>
+                                <option value="25" {% if config.spot_leverage == 25 %}selected{% endif %}>25x</option>
+                                <option value="30" {% if config.spot_leverage == 30 %}selected{% endif %}>30x</option>
+                                <option value="40" {% if config.spot_leverage == 40 %}selected{% endif %}>40x</option>
+                                <option value="50" {% if config.spot_leverage == 50 %}selected{% endif %}>50x</option>
+                            </select>
+                            <small class="text-secondary">Applies to the account's margin. Used by the %-of-capital target and stop.</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Leg B Leverage</label>
+                            <select class="form-select" id="futures_leverage" name="futures_leverage">
+                                <option value="1" {% if config.futures_leverage == 1 %}selected{% endif %}>1x</option>
+                                <option value="2" {% if config.futures_leverage == 2 %}selected{% endif %}>2x</option>
+                                <option value="3" {% if config.futures_leverage == 3 %}selected{% endif %}>3x (recommended)</option>
+                                <option value="5" {% if config.futures_leverage == 5 %}selected{% endif %}>5x</option>
+                                <option value="10" {% if config.futures_leverage == 10 %}selected{% endif %}>10x</option>
+                                <option value="15" {% if config.futures_leverage == 15 %}selected{% endif %}>15x</option>
+                                <option value="20" {% if config.futures_leverage == 20 %}selected{% endif %}>20x</option>
+                                <option value="25" {% if config.futures_leverage == 25 %}selected{% endif %}>25x</option>
+                                <option value="30" {% if config.futures_leverage == 30 %}selected{% endif %}>30x</option>
+                                <option value="40" {% if config.futures_leverage == 40 %}selected{% endif %}>40x</option>
+                                <option value="50" {% if config.futures_leverage == 50 %}selected{% endif %}>50x</option>
+                            </select>
+                            <small class="text-secondary">Used by the %-of-capital target and stop. Leave at 1x to disable those forms.</small>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Fee Estimates (for STD Filter)</h6>
+                            <small class="text-secondary d-block mb-2">
+                                The STD Filter calculates the minimum spread required to profit after fees.
+                                Spot and Futures fees differ — set them separately for an accurate calculation.
+                            </small>
+                            <div class="alert alert-info py-2 px-3 mb-3" style="font-size:0.82rem;">
+                                <strong>Round-trip cost</strong> =
+                                Entry (Spot + Futures) + Exit (Spot + Futures)<br>
+                                <span id="fee-summary-text" class="text-muted">—</span>
+                            </div>
+                        </div>
+
+                        <!-- Leg A Fees (spot tier) -->
+                        <div class="col-12 mb-2">
+                            <span class="badge bg-primary me-1">LEG A · spot tier</span>
+                            <small class="text-secondary">Broker commission on the spot leg. Check your contract specs.</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Leg A Maker (bps)</label>
+                            <input type="number" class="form-control fee-input" id="spot_maker_fee_bps" name="spot_maker_fee_bps" value="{{ config.spot_maker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
+                            <small class="text-secondary">Limit orders on the spot leg</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Leg A Taker (bps)</label>
+                            <input type="number" class="form-control fee-input" id="spot_taker_fee_bps" name="spot_taker_fee_bps" value="{{ config.spot_taker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
+                            <small class="text-secondary">Market orders on the spot leg</small>
+                        </div>
+
+                        <!-- Leg B Fees (derivative tier) -->
+                        <div class="col-12 mb-2 mt-3">
+                            <span class="badge bg-warning text-dark me-1">LEG B · derivative tier</span>
+                            <small class="text-secondary">Broker commission on the futures leg. Check your contract specs.</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Leg B Maker (bps)</label>
+                            <input type="number" class="form-control fee-input" id="futures_maker_fee_bps" name="futures_maker_fee_bps" value="{{ config.futures_maker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
+                            <small class="text-secondary">Limit orders on the derivative leg</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Leg B Taker (bps)</label>
+                            <input type="number" class="form-control fee-input" id="futures_taker_fee_bps" name="futures_taker_fee_bps" value="{{ config.futures_taker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
+                            <small class="text-secondary">Market orders on the derivative leg</small>
+                        </div>
+
+                        <!-- Slippage -->
+                        <div class="col-12 mb-2 mt-3">
+                            <span class="badge bg-secondary me-1">SLIPPAGE</span>
+                            <small class="text-secondary">Extra cost per leg even with LIMIT orders (queue position, amendment delays, market impact)</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Slippage per Leg (bps)</label>
+                            <input type="number" class="form-control fee-input" id="slippage_bps" name="slippage_bps" value="{{ config.slippage_bps }}" step="any" min="0" max="20" oninput="updateFeeSummary()">
+                            <small class="text-secondary">Applied to all 4 legs (×4 round-trip)</small>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Trading Mode -->
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Trading Mode</h6>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="paper_trading" name="paper_trading" {% if config.paper_trading %}checked{% endif %} onchange="toggleLiveChecklist(this)">
+                                <label class="form-check-label" for="paper_trading">Paper Trading Mode</label>
+                            </div>
+                            <small class="text-secondary">Simulate trades without real orders</small>
+                        </div>
+                    </div>
+
+                    <!-- Live Trading Checklist (shown when Paper Trading is turned OFF) -->
+                    <div id="live-trading-checklist" class="alert alert-danger mb-3" style="display:{% if not config.paper_trading %}block{% else %}none{% endif %};">
+                        <h6 class="mb-2"><i class="bi bi-exclamation-octagon-fill me-2"></i>Live Trading Pre-Flight Checklist</h6>
+                        <ul class="mb-2" style="font-size:0.85rem;">
+                            <li>Use the <strong>MT5 Server Mode</strong> toggle above to switch from Demo → Live</li>
+                            <li>Verify your MT5 API key has <strong>Trade</strong> permissions (not read-only)</li>
+                            <li>Confirm <strong>position size</strong> and <strong>max position size</strong> below match your risk budget</li>
+                            <li>Confirm <strong>futures leverage</strong> is ≤ 5x for a new live account</li>
+                            <li>Set a <strong>stop-loss threshold</strong> (e.g. 3.5–4.0σ) — never disable it in live mode</li>
+                            <li>Hurst filter should remain <strong>enabled</strong> to avoid trending markets</li>
+                            <li>Monitor closely for the first 24 hours after going live</li>
+                        </ul>
+                        <small class="text-danger"><strong>Warning:</strong> Disabling Paper Trading sends real orders to the MT5 accounts configured on this page. Make sure those accounts are the ones you intend to trade, then restart the launcher.</small>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Order Execution -->
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Order Execution</h6>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Entry Mode</label>
+                            <select class="form-select" id="entry_execution_mode" name="entry_execution_mode" onchange="updateLimitSettingsVisibility()">
+                                <option value="MARKET" {% if config.entry_execution_mode == 'MARKET' %}selected{% endif %}>Market</option>
+                                <option value="LIMIT" {% if config.entry_execution_mode == 'LIMIT' %}selected{% endif %}>Limit (Maker)</option>
+                            </select>
+                            <small class="text-secondary">Opening new positions</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Exit Mode</label>
+                            <select class="form-select" id="exit_execution_mode" name="exit_execution_mode" onchange="updateLimitSettingsVisibility()">
+                                <option value="MARKET" {% if config.exit_execution_mode == 'MARKET' %}selected{% endif %}>Market</option>
+                                <option value="LIMIT" {% if config.exit_execution_mode == 'LIMIT' %}selected{% endif %}>Limit (Maker)</option>
+                            </select>
+                            <small class="text-secondary">Closing positions</small>
+                        </div>
+                        <div class="col-md-3" id="limit-timeout-group">
+                            <label class="form-label">Limit Timeout (sec)</label>
+                            <input type="number" class="form-control" id="limit_order_timeout_sec" name="limit_order_timeout_sec" value="{{ config.limit_order_timeout_sec }}" min="5" max="300">
+                            <small class="text-secondary">Max wait for fill</small>
+                        </div>
+                        <div class="col-md-3" id="limit-offset-group">
+                            <label class="form-label">Price Offset (bps)</label>
+                            <input type="number" class="form-control" id="limit_order_price_offset_bps" name="limit_order_price_offset_bps" value="{{ config.limit_order_price_offset_bps }}" step="any" min="0" max="10">
+                            <small class="text-secondary">0 = passive, higher = faster</small>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info" id="limit-order-info" style="display: {% if config.entry_execution_mode == 'LIMIT' or config.exit_execution_mode == 'LIMIT' %}block{% else %}none{% endif %};">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <strong>Limit Orders:</strong> Uses POST_ONLY (maker fees guaranteed).
+                        <strong>Recommended:</strong> Limit for entries (save fees), Market for exits (avoid slippage).
+                    </div>
+
+                    <!-- Institutional Order Slicing (Synchronized Pair TWAP) -->
+                    <div class="row mb-3 mt-3">
+                        <div class="col-12 mb-2">
+                            <h6 class="text-secondary mb-1"><i class="bi bi-layers me-2"></i>Order Slicing (TWAP Entry)</h6>
+                            <small class="text-secondary">Splits each entry into N equal child orders placed simultaneously on both legs. Prices are VWAP-blended across slices. Use 1 to disable (default).</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Entry Slices</label>
+                            <input type="number" class="form-control" id="entry_slices" name="entry_slices" value="{{ config.entry_slices }}" min="1" max="10" step="1">
+                            <small class="text-secondary">1 = no slicing, 2-10 = TWAP</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Slice Interval (sec)</label>
+                            <input type="number" class="form-control" id="entry_slice_interval_sec" name="entry_slice_interval_sec" value="{{ config.entry_slice_interval_sec }}" min="0" max="60" step="0.5">
+                            <small class="text-secondary">Seconds between child orders</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Min Fill Ratio</label>
+                            <input type="number" class="form-control" id="min_fill_ratio" name="min_fill_ratio" value="{{ config.min_fill_ratio }}" min="0.5" max="1.0" step="0.01">
+                            <small class="text-secondary">Reject entry if fills &lt; this fraction (e.g. 0.95)</small>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Safety Settings -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3"><i class="bi bi-shield-check me-2"></i>Safety Settings</h6>
+                            <small class="text-secondary d-block mb-3">Prevents duplicate orders and runaway positions.</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Entry Cooldown (seconds)</label>
+                            <input type="number" class="form-control" id="entry_cooldown_seconds" name="entry_cooldown_seconds" value="{{ config.entry_cooldown_seconds }}" min="0" max="3600">
+                            <small class="text-secondary">Minimum wait time between trades (prevents rapid re-entry)</small>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mt-4">
+                                <input class="form-check-input" type="checkbox" id="verify_exchange_position" name="verify_exchange_position" {% if config.verify_exchange_position %}checked{% endif %}>
+                                <label class="form-check-label" for="verify_exchange_position">Verify Exchange Position Before Entry</label>
+                            </div>
+                            <small class="text-secondary">Query exchange for existing positions before placing new orders</small>
+                        </div>
+                        <div class="col-md-6 mt-3">
+                            <label class="form-label">Orphan Leg Recovery Timeout (seconds)</label>
+                            <input type="number" class="form-control" id="orphan_recovery_timeout_sec" name="orphan_recovery_timeout_sec" value="{{ config.orphan_recovery_timeout_sec }}" min="10" max="300">
+                            <small class="text-secondary">
+                                When one leg fills and the other is cancelled, try to fill the missing leg as a <strong>maker</strong> order for this many seconds before falling back to market.
+                                Higher = more time to fill at maker rates. Lower = faster resolution but may use market orders.
+                            </small>
+                        </div>
+                        <div class="col-md-6 mt-3">
+                            <label class="form-label">Daily Loss Limit (USD)</label>
+                            <input type="number" class="form-control" id="daily_max_loss_usd" name="daily_max_loss_usd" value="{{ config.daily_max_loss_usd }}" step="10" min="0">
+                            <small class="text-secondary">Auto-disable algo if total losses exceed this amount in a UTC day. Set to <strong>0</strong> to disable.</small>
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-end gap-2">
+                        <button type="button" class="btn btn-outline-secondary" onclick="resetForm()">Reset</button>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-lg me-1"></i>Save Configuration
+                        </button>
+                    </div>
+                </form>
+
+                <hr class="my-4" style="border-color: var(--border-color);">
+
+                <!-- Telegram Notifications -->
+                <div class="mt-4" id="telegram-section">
+                    <h6 class="text-secondary mb-3"><i class="bi bi-telegram me-2"></i>Telegram Notifications</h6>
+                    <small class="text-secondary d-block mb-3">
+                        Receive real-time trade alerts and run interactive commands directly in Telegram.
+                        Create a bot via <strong>@BotFather</strong> and get your Chat ID from <strong>@userinfobot</strong>.
+                    </small>
+
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="tg_enabled" {% if config.telegram_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="tg_enabled">Enable Telegram Notifications</label>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label">Bot Token</label>
+                            <input type="password" class="form-control" id="tg_token"
+                                   placeholder="{% if config.telegram_bot_token %}saved — leave blank to keep{% else %}123456789:ABCdefGHIjklMNOpqrsTUVwxyz{% endif %}"
+                                   value=""
+                                   autocomplete="off">
+                            <small class="text-secondary">
+                                From @BotFather → /newbot.
+                                {% if config.telegram_bot_token %}<span class="text-success">✓ token is saved</span> — leave blank to keep existing.{% endif %}
+                            </small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Chat ID</label>
+                            <input type="text" class="form-control" id="tg_chat_id"
+                                   placeholder="e.g. 123456789"
+                                   value="{{ config.telegram_chat_id }}">
+                            <small class="text-secondary">Your personal Telegram chat ID from @userinfobot</small>
+                        </div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <label class="form-label text-secondary">Notification Types</label>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="tg_notify_trades" {% if config.telegram_notify_trades %}checked{% endif %}>
+                                <label class="form-check-label" for="tg_notify_trades">Trade Entry &amp; Exit</label>
+                            </div>
+                            <small class="text-secondary">Alert on every trade open/close</small>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="tg_notify_signals" {% if config.telegram_notify_signals %}checked{% endif %}>
+                                <label class="form-check-label" for="tg_notify_signals">Trading Signals</label>
+                            </div>
+                            <small class="text-secondary">Alert on LONG/SHORT/EXIT/STOP signals</small>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="tg_notify_errors" {% if config.telegram_notify_errors %}checked{% endif %}>
+                                <label class="form-check-label" for="tg_notify_errors">System Errors</label>
+                            </div>
+                            <small class="text-secondary">Alert on critical engine errors</small>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info py-2 px-3 mb-3" style="font-size:0.82rem;">
+                        <strong>Bot Commands</strong> (send to your bot once connected):<br>
+                        <code>/status</code> — engine &amp; signal status &nbsp;|&nbsp;
+                        <code>/positions</code> — open positions &nbsp;|&nbsp;
+                        <code>/trades</code> — recent trades<br>
+                        <code>/balance</code> — account balance &nbsp;|&nbsp;
+                        <code>/pnl</code> — P&amp;L summary &nbsp;|&nbsp;
+                        <code>/eod</code> — end-of-day report
+                    </div>
+
+                    <div id="tg-save-result" class="mb-3" style="display:none;"></div>
+
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-primary" onclick="saveTelegramConfig()">
+                            <i class="bi bi-floppy me-1"></i>Save &amp; Test
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" onclick="saveTelegramConfig(false)">
+                            <i class="bi bi-floppy me-1"></i>Save Only
+                        </button>
+                    </div>
+                </div>
+
+                <hr class="my-4" style="border-color: var(--border-color);">
+
+                <!-- Manual Order Testing -->
+                <div class="mt-4">
+                    <h6 class="text-secondary mb-3"><i class="bi bi-tools me-2"></i>Manual Order Testing</h6>
+                    <small class="text-secondary d-block mb-3">Test order execution without waiting for signals. Uses current execution mode (Market/Limit).</small>
+
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Order Type</label>
+                            <select class="form-select" id="test_order_type">
+                                <optgroup label="Single Leg">
+                                    <option value="BUY_SPOT">Buy Spot</option>
+                                    <option value="SELL_SPOT">Sell Spot</option>
+                                    <option value="BUY_FUTURES">Buy Futures (Long)</option>
+                                    <option value="SELL_FUTURES">Sell Futures (Short)</option>
+                                </optgroup>
+                                <optgroup label="Spread (Both Legs)">
+                                    <option value="LONG_SPREAD">Buy Spot + Sell Futures</option>
+                                    <option value="SHORT_SPREAD">Sell Spot + Buy Futures</option>
+                                </optgroup>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Test Size (USD)</label>
+                            <input type="number" class="form-control" id="test_size_usd" value="100" min="10" max="10000" step="10">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Action</label>
+                            <button type="button" class="btn btn-success w-100" id="btn-open-test" onclick="openTestOrder()">
+                                <i class="bi bi-play-fill me-1"></i>Execute Order
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Open Positions -->
+                    <div class="card bg-dark mb-3" id="test-positions-card" style="display: none;">
+                        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-list-check me-2"></i>Open Test Positions</span>
+                            <button type="button" class="btn btn-outline-danger btn-sm" onclick="closeAllTestOrders()">
+                                <i class="bi bi-x-lg me-1"></i>Close All
+                            </button>
+                        </div>
+                        <div class="card-body py-2">
+                            <table class="table table-sm table-dark mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Type</th>
+                                        <th>Side</th>
+                                        <th>Qty</th>
+                                        <th>Entry Price</th>
+                                        <th>Current</th>
+                                        <th>P&L</th>
+                                        <th>Order ID</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="test-positions-body">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-warning mt-3 mb-0">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        <strong>Warning:</strong> This places real orders on your exchange account. Use with caution.
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
+                    <!-- Full Test Suite -->
+                    <div class="mt-3">
+                        <h6 class="text-secondary mb-1"><i class="bi bi-clipboard2-check me-2"></i>Full Order Test Suite</h6>
+                        <small class="text-muted d-block mb-3">
+                            40 scenarios: 18 LIMIT (6 order types × 3 attempts) + 18 MARKET (same, forced)
+                            + 4 partial-fill recovery (one leg fills, other fails → market-close the filled leg).
+                            Click <strong>Run Full Test Suite</strong> to run all in sequence, or hit
+                            <strong>Run</strong> next to any row to execute a single scenario on demand.
+                            LIMIT scenarios are spaced ~20 s apart; MARKET ~5 s apart.
+                        </small>
+                        <div class="d-flex gap-2 mb-3 flex-wrap">
+                            <button type="button" class="btn btn-primary" id="btn-run-suite" onclick="startTestSuite()">
+                                <i class="bi bi-play-circle me-1"></i>Run Full Test Suite
+                            </button>
+                            <button type="button" class="btn btn-outline-danger d-none" id="btn-stop-suite" onclick="stopTestSuite()">
+                                <i class="bi bi-stop-circle me-1"></i>Stop Suite
+                            </button>
+                            <a href="/api/test-suite/download-csv" class="btn btn-outline-secondary d-none" id="btn-download-csv" download>
+                                <i class="bi bi-download me-1"></i>Download CSV
+                            </a>
+                            <!-- Shown only when flags are stuck (running=true but no row is active) -->
+                            <button type="button" class="btn btn-outline-warning d-none" id="btn-force-reset"
+                                    onclick="forceResetSuite()" title="Clear stuck running flags without restarting the server">
+                                <i class="bi bi-exclamation-triangle me-1"></i>Force Reset
+                            </button>
+                        </div>
+
+                        <!-- Scenario panel – visible immediately so Run buttons are always accessible -->
+                        <div id="suite-panel">
+                            <!-- Header row: counters + progress bar -->
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <div class="d-flex gap-3">
+                                    <span class="badge bg-secondary fs-6" id="suite-progress-badge">0 / 40</span>
+                                    <span class="badge bg-success fs-6" id="suite-pass-badge">0 passed</span>
+                                    <span class="badge bg-danger  fs-6" id="suite-fail-badge">0 failed</span>
+                                </div>
+                                <small class="text-muted" id="suite-mode-label"></small>
+                            </div>
+                            <div class="progress mb-3" style="height:6px;">
+                                <div class="progress-bar bg-success" id="suite-progress-bar"
+                                     role="progressbar" style="width:0%"></div>
+                            </div>
+
+                            <!-- Scenario table -->
+                            <div class="card bg-dark">
+                                <div class="card-body p-0" style="overflow-x:auto;">
+                                    <table class="table table-sm table-dark mb-0" style="font-size:0.78rem; min-width:900px;">
+                                        <thead>
+                                            <tr>
+                                                <th style="width:2rem;">#</th>
+                                                <th style="width:12rem;">Scenario</th>
+                                                <th style="width:5rem;">Mode</th>
+                                                <th style="width:5rem;">Type</th>
+                                                <th style="width:5rem;">Status</th>
+                                                <th style="min-width:34rem;">Detail</th>
+                                                <th style="width:4rem;"></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="suite-tbody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MT5 Brokers & Legs -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <i class="bi bi-hdd-network me-2"></i>MT5 Brokers &amp; Legs
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info mb-4">
+                    <h6 class="alert-heading"><i class="bi bi-shield-check me-2"></i>How MT5 connections work</h6>
+                    <p class="mb-2">One MT5 terminal serves one account. All three topologies are supported:</p>
+                    <ul class="mb-2 small">
+                        <li><strong>Leg A &rarr; Broker A / Account 1</strong> and <strong>Leg B &rarr; Broker B / Account 2</strong> &mdash; two terminals, one leg runner each</li>
+                        <li><strong>Both legs &rarr; Broker A</strong>, two different accounts &mdash; two terminals</li>
+                        <li><strong>Both legs &rarr; one account</strong> &mdash; a single terminal, no leg runners</li>
+                    </ul>
+                    <p class="mb-0 small text-secondary">Passwords are written to the local <code>.env</code> file &mdash; never into config or git. Account changes take effect when the launcher is restarted.</p>
+                </div>
+
+                <div id="brokers-list" class="mb-4"></div>
+
+                <h6 class="text-secondary mb-3">Add / update an account</h6>
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">Account name</label>
+                        <input type="text" class="form-control" id="broker_name" placeholder="account_a">
+                    </div>
+                    <div class="col-md-8">
+                        <label class="form-label">MT5 terminal path</label>
+                        <input type="text" class="form-control" id="broker_terminal_path" placeholder="C:\Program Files\FxPro MT5\terminal64.exe">
+                        <small class="text-secondary">Leave blank to attach to the terminal that is already open.</small>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Login</label>
+                        <input type="number" class="form-control" id="broker_login" placeholder="591805111">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Server</label>
+                        <input type="text" class="form-control" id="broker_server" placeholder="FxPro-MT5 Demo">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-control" id="broker_password" placeholder="stored in .env">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Leg-runner endpoint</label>
+                        <input type="text" class="form-control" id="broker_endpoint" placeholder="127.0.0.1:9101">
+                        <small class="text-secondary">Only needed when two accounts run at once.</small>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between mt-3">
+                    <button type="button" class="btn btn-outline-info" onclick="testBrokerConnection()">
+                        <i class="bi bi-wifi me-1"></i>Test Connection
+                    </button>
+                    <button type="button" class="btn btn-primary" onclick="saveBroker()">
+                        <i class="bi bi-save me-1"></i>Save Account
+                    </button>
+                </div>
+
+                <hr class="my-4">
+                <h6 class="text-secondary mb-3">Leg mapping</h6>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Leg A (spot) account</label>
+                        <select class="form-select" id="leg_spot_account" onchange="updateTopologyHint()"></select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Leg B (futures) account</label>
+                        <select class="form-select" id="leg_futures_account" onchange="updateTopologyHint()"></select>
+                    </div>
+                </div>
+                <div class="mt-2"><small class="text-secondary" id="topology_hint"></small></div>
+                <button type="button" class="btn btn-primary mt-3" onclick="saveLegMapping()">
+                    <i class="bi bi-save me-1"></i>Save Leg Mapping
+                </button>
+            </div>
+        </div>
+
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Quick-pick asset -> default spot/futures symbols for the same underlying
+    const assetSymbols = {
+        {% for key, asset in assets.items() %}
+        '{{ key }}': {
+            spot: '{{ asset.spot }}',
+            futures: '{{ asset.futures }}'
+        },
+        {% endfor %}
+    };
+
+    // Derive the pair label (DB/history key) from the two chosen legs:
+    // same underlying -> base symbol (e.g. "BTC"); different -> "ETH/SOL".
+    function baseOf(instId) {
+        return (instId || '').split('-')[0].toUpperCase();
+    }
+    function updatePairLabel() {
+        const spotBase = baseOf(document.getElementById('spot_symbol').value);
+        const futBase  = baseOf(document.getElementById('futures_symbol').value);
+        let label = '';
+        if (spotBase && futBase) {
+            label = (spotBase === futBase) ? spotBase : (spotBase + '/' + futBase);
+        } else {
+            label = spotBase || futBase || '';
+        }
+        document.getElementById('asset').value = label;
+        document.getElementById('pair_label_display').textContent = label || '—';
+        return label;
+    }
+
+    // Quick-pick fills both legs with the same underlying, then re-labels
+    document.getElementById('asset_quickpick').addEventListener('change', function() {
+        const asset = this.value;
+        if (assetSymbols[asset]) {
+            document.getElementById('spot_symbol').value = assetSymbols[asset].spot;
+            document.getElementById('futures_symbol').value = assetSymbols[asset].futures;
+            updatePairLabel();
+        }
+    });
+
+    // Re-label and re-check warning whenever either leg is edited directly
+    document.getElementById('spot_symbol').addEventListener('input', function() {
+        updatePairLabel(); checkPairWarning(); fetchBetaSuggestion();
+    });
+    document.getElementById('futures_symbol').addEventListener('input', function() {
+        updatePairLabel(); checkPairWarning(); fetchBetaSuggestion();
+    });
+
+    // Live β suggestion = mid(Leg B) / mid(Leg A) from MT5
+    // Debounced so typing doesn't fire a fetch per keystroke. Cleared whenever
+    // either leg is invalid/empty so a stale suggestion can't mislead the user.
+    let _betaSuggestionTimer = null;
+    let _betaSuggestionSeq = 0;   // ignore late responses if the user typed more
+    function setBetaSuggestion(text, betaValue) {
+        const wrap = document.getElementById('beta_suggestion_wrap');
+        const val  = document.getElementById('beta_suggestion_value');
+        const apply= document.getElementById('beta_suggestion_apply');
+        if (!wrap || !val || !apply) return;
+        if (!text) { wrap.style.display = 'none'; apply.dataset.beta = ''; return; }
+        wrap.style.display = '';
+        val.textContent = text;
+        apply.dataset.beta = (betaValue !== undefined && betaValue !== null) ? String(betaValue) : '';
+        apply.style.display = apply.dataset.beta ? '' : 'none';
+    }
+    // Live prices cached from the most recent /api/leg-prices fetch — fed into
+    // updateCapitalPreview() so the user can see the actual β-scaled Leg B
+    // notional, not just an assumed dollar-neutral approximation.
+    let _cachedLegAPrice = 0;
+    let _cachedLegBPrice = 0;
+
+    // Mirrors adapters/base.is_derivative — drives the Cash vs Lev decision
+    function _settingsIsDerivative(symbol) {
+        if (!symbol) return false;
+        if (symbol.endsWith('-SWAP')) return true;
+        return (symbol.match(/-/g) || []).length >= 2;
+    }
+    function _fmtUsdLong(n) {
+        if (!isFinite(n)) return '—';
+        return '$' + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+    function _fmtUsdShort(n) {
+        if (!isFinite(n)) return '—';
+        return '$' + Math.round(n).toLocaleString();
+    }
+
+    // Mirror of core/trading_engine._check_sufficient_balance — same formula,
+    // 10% buffer, same per-leg margin treatment. Pure preview; engine does
+    // its own real-time check at signal time, so a stale price cache here
+    // doesn't cause a bad trade.
+    function updateCapitalPreview() {
+        const valEl   = document.getElementById('capital_preview_value');
+        const breakEl = document.getElementById('capital_preview_breakdown');
+        if (!valEl || !breakEl) return;
+
+        const ps   = parseFloat(document.getElementById('clip_lots').value) || 0;
+        const beta = Math.max(parseFloat(document.getElementById('hedge_ratio').value) || 1, 1e-9);
+        const aLevRaw = parseInt(document.getElementById('spot_leverage').value, 10)    || 1;
+        const bLevRaw = parseInt(document.getElementById('futures_leverage').value, 10) || 1;
+        const aSym = (document.getElementById('spot_symbol').value    || '').trim();
+        const bSym = (document.getElementById('futures_symbol').value || '').trim();
+
+        if (ps <= 0) {
+            valEl.textContent = '—';
+            breakEl.textContent = '';
+            return;
+        }
+
+        const aIsDeriv = _settingsIsDerivative(aSym);
+        const bIsDeriv = _settingsIsDerivative(bSym);
+        const aLev = aIsDeriv ? Math.max(aLevRaw, 1) : 1;   // spot ignores leverage
+        const bLev = bIsDeriv ? Math.max(bLevRaw, 1) : 1;
+
+        // Leg B notional: use live β-scaled if we have prices, else assume dollar-neutral
+        const notA = ps;
+        let notB = ps;
+        if (_cachedLegAPrice > 0 && _cachedLegBPrice > 0) {
+            notB = ps * (_cachedLegBPrice / (beta * _cachedLegAPrice));
+        }
+        const marginA = notA / aLev;
+        const marginB = notB / bLev;
+        const bufPctEl = document.getElementById('m2m_buffer_pct');
+        const bufPct = bufPctEl ? (parseFloat(bufPctEl.value) || 0) : 10;
+        const required = (marginA + marginB) * (1 + bufPct / 100);
+
+        valEl.textContent = _fmtUsdLong(required);
+        // Spell out the breakdown so the math is auditable
+        const aDesc = aIsDeriv ? (aLev + 'x lev') : 'cash';
+        const bDesc = bIsDeriv ? (bLev + 'x lev') : 'cash';
+        const pricesNote = (_cachedLegAPrice > 0 && _cachedLegBPrice > 0)
+            ? '' : '  (assuming β ≈ live ratio)';
+        const mult = (1 + bufPct / 100).toFixed(2);
+        breakEl.innerHTML =
+            ' &nbsp;= (Leg A ' + _fmtUsdShort(marginA) + ' ' + aDesc +
+            ' + Leg B ' + _fmtUsdShort(marginB) + ' ' + bDesc + ') × ' + mult +
+            ' (' + bufPct + '% M2M)' + pricesNote;
+    }
+
+    function fetchBetaSuggestion() {
+        clearTimeout(_betaSuggestionTimer);
+        const a = (document.getElementById('spot_symbol').value || '').trim();
+        const b = (document.getElementById('futures_symbol').value || '').trim();
+        if (!a || !b) {
+            setBetaSuggestion('', null);
+            _cachedLegAPrice = 0; _cachedLegBPrice = 0;
+            updateCapitalPreview();
+            return;
+        }
+        if (a === b) {
+            setBetaSuggestion('1.0000  (same instrument)', 1);
+            _cachedLegAPrice = 0; _cachedLegBPrice = 0;
+            updateCapitalPreview();
+            return;
+        }
+        // Debounce
+        _betaSuggestionTimer = setTimeout(function() {
+            const seq = ++_betaSuggestionSeq;
+            setBetaSuggestion('fetching…', null);
+            fetch('/api/leg-prices?leg_a=' + encodeURIComponent(a) +
+                              '&leg_b=' + encodeURIComponent(b))
+                .then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
+                .then(function(res) {
+                    if (seq !== _betaSuggestionSeq) return;   // stale response
+                    if (res.ok && res.body.success) {
+                        const beta = res.body.suggested_beta;
+                        // Cache prices so the capital preview can use the real
+                        // β-scaled Leg B notional
+                        _cachedLegAPrice = res.body.leg_a_price || 0;
+                        _cachedLegBPrice = res.body.leg_b_price || 0;
+                        // Compact display: keep 4 dp for most ratios, fewer for big numbers
+                        const display = (Math.abs(beta) >= 100)
+                            ? beta.toFixed(2)
+                            : beta.toFixed(4);
+                        setBetaSuggestion(display, beta);
+                    } else {
+                        _cachedLegAPrice = 0; _cachedLegBPrice = 0;
+                        const msg = (res.body && res.body.error) || 'unavailable';
+                        setBetaSuggestion(msg.length > 30 ? 'unavailable' : msg, null);
+                    }
+                    updateCapitalPreview();
+                })
+                .catch(function() {
+                    if (seq !== _betaSuggestionSeq) return;
+                    _cachedLegAPrice = 0; _cachedLegBPrice = 0;
+                    setBetaSuggestion('unavailable', null);
+                    updateCapitalPreview();
+                });
+        }, 500);
+    }
+
+    // "apply" link copies the suggested β into the hedge ratio input
+    (function() {
+        const apply = document.getElementById('beta_suggestion_apply');
+        if (!apply) return;
+        apply.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            const beta = apply.dataset.beta;
+            if (!beta) return;
+            const input = document.getElementById('hedge_ratio');
+            input.value = beta;
+            // Flash so the user sees the apply landed
+            input.classList.add('border-info');
+            setTimeout(function() { input.classList.remove('border-info'); }, 800);
+        });
+    })();
+
+    // Per-instId category lookup, populated as the datalists fill
+    const instrumentCategories = new Map();
+
+    function formatExpiry(epochMs) {
+        if (!epochMs) return '';
+        const n = parseInt(epochMs, 10);
+        if (!n) return '';
+        const d = new Date(n);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+    }
+
+    function badgeFor(it) {
+        const base = it.base || '';
+        const quote = it.quote || '';
+        const exp = formatExpiry(it.expiry);
+        switch (it.category) {
+            case 'usdt_linear':   return base + ' / ' + quote;
+            case 'usdc_linear':   return base + ' / ' + quote + ' · USDC rail';
+            case 'inverse':       return base + ' · inverse perp';
+            case 'dated_usdt':    return base + ' dated · ' + (exp || 'expiry');
+            case 'dated_usdc':    return base + ' dated · USDC · ' + (exp || 'expiry');
+            case 'inverse_dated': return base + ' dated · inverse · ' + (exp || 'expiry');
+            case 'non_usd_quoted':return base + ' / ' + quote + ' · non-USD quote';
+            default:              return it.instId;
+        }
+    }
+
+    // Populate the spot/futures datalists from the live exchange instrument universe
+    function fillDatalist(id, items) {
+        const dl = document.getElementById(id);
+        dl.innerHTML = '';
+        items.forEach(function(it) {
+            instrumentCategories.set(it.instId, it.category || 'unknown');
+            const opt = document.createElement('option');
+            opt.value = it.instId;
+            opt.label = badgeFor(it);
+            dl.appendChild(opt);
+        });
+    }
+
+    // Warning chip when either leg is anything other than USDT linear
+    const CATEGORY_NOTES = {
+        usdc_linear:    'USDC rail — sizing assumes USDC ≈ 1 USD (small basis vs USDT).',
+        inverse:        'inverse / coin-margined — margin & PnL in the base coin, not USD.',
+        dated_usdt:     'dated future — basis compresses to zero at expiry.',
+        dated_usdc:     'dated future + USDC rail — both caveats apply.',
+        inverse_dated:  'dated inverse — expiry + coin-margined caveats apply.',
+        non_usd_quoted: 'symbol quoted in a non-USD currency — P&L converts at the broker rate.',
+        other:          'non-standard configuration — review manually.',
+        other_dated:    'non-standard configuration — review manually.'
+    };
+
+    function checkPairWarning() {
+        const warnEl = document.getElementById('pair_warning');
+        if (!warnEl) return;
+        const legs = [
+            ['Spot', document.getElementById('spot_symbol').value],
+            ['Futures', document.getElementById('futures_symbol').value]
+        ];
+        const issues = [];
+        legs.forEach(function(pair) {
+            const cat = instrumentCategories.get(pair[1]);
+            if (cat && cat !== 'usdt_linear' && cat !== 'unknown') {
+                issues.push(pair[0] + ' (' + pair[1] + '): ' + (CATEGORY_NOTES[cat] || cat));
+            }
+        });
+        if (issues.length === 0) {
+            warnEl.style.display = 'none';
+            warnEl.innerHTML = '';
+        } else {
+            warnEl.style.display = 'block';
+            warnEl.innerHTML =
+                '<strong>Heads up &mdash; engine math assumes USDT linear:</strong><ul class="mb-0 mt-1">' +
+                issues.map(function(t){ return '<li>' + t + '</li>'; }).join('') +
+                '</ul>';
+        }
+    }
+
+    function loadInstruments(refresh) {
+        const status = document.getElementById('instruments_status');
+        status.textContent = '· loading instruments…';
+        fetch('/api/instruments' + (refresh ? '?refresh=1' : ''))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data && data.success) {
+                    // Both legs draw from the same universe: every spot + every
+                    // futures contract + every dated future MT5 lists right now.
+                    // Safe (usdt_linear) entries sort to the top within the merged list.
+                    const universe = (data.spot || []).concat(data.futures || []);
+                    universe.sort(function(a, b) {
+                        const aSafe = a.category === 'usdt_linear' ? 0 : 1;
+                        const bSafe = b.category === 'usdt_linear' ? 0 : 1;
+                        if (aSafe !== bSafe) return aSafe - bSafe;
+                        return a.instId.localeCompare(b.instId);
+                    });
+                    fillDatalist('spot_symbols_list', universe);
+                    fillDatalist('futures_symbols_list', universe);
+                    const spotN = data.spot_count || 0;
+                    const futN = data.futures_count || 0;
+                    status.textContent = '· ' + (spotN + futN) + ' instruments available ('
+                                         + spotN + ' spot · ' + futN + ' perp+dated)';
+                    checkPairWarning();
+                } else {
+                    status.textContent = '· could not load instrument list (connect the exchange first)';
+                }
+            })
+            .catch(function() {
+                status.textContent = '· could not load instrument list';
+            });
+    }
+
+    // Manual refresh: bypass the 1h server-side cache; also clear the in-page
+    // category map so a stale tag can't linger on an instId MT5 has changed.
+    (function() {
+        const btn = document.getElementById('refresh_instruments_btn');
+        if (!btn) return;
+        btn.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            if (btn.dataset.busy === '1') return;   // ignore double-clicks
+            btn.dataset.busy = '1';
+            btn.style.pointerEvents = 'none';
+            btn.style.opacity = '0.5';
+            instrumentCategories.clear();
+            loadInstruments(true);
+            // Re-enable after the fetch resolves (handled inline by setTimeout
+            // since loadInstruments doesn't return a promise)
+            setTimeout(function() {
+                btn.dataset.busy = '0';
+                btn.style.pointerEvents = '';
+                btn.style.opacity = '';
+            }, 1500);
+        });
+    })();
+
+    loadInstruments(false);
+    updatePairLabel();
+    fetchBetaSuggestion();
+
+    // Wire the capital preview to every input that affects the math.
+    // Symbols are already covered — they fire fetchBetaSuggestion which
+    // calls updateCapitalPreview once prices land.
+    ['clip_lots', 'hedge_ratio', 'spot_leverage', 'futures_leverage', 'm2m_buffer_pct']
+        .forEach(function(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('input',  updateCapitalPreview);
+            el.addEventListener('change', updateCapitalPreview);
+        });
+    updateCapitalPreview();   // initial paint from server-rendered values
+
+    // Show/hide live trading checklist when paper trading toggle changes
+    function toggleLiveChecklist(checkbox) {
+        const checklist = document.getElementById('live-trading-checklist');
+        if (checklist) {
+            checklist.style.display = checkbox.checked ? 'none' : 'block';
+        }
+    }
+
+    // Toggle limit order settings visibility based on entry/exit modes
+    function updateLimitSettingsVisibility() {
+        const entryMode = document.getElementById('entry_execution_mode').value;
+        const exitMode = document.getElementById('exit_execution_mode').value;
+        const anyLimit = entryMode === 'LIMIT' || exitMode === 'LIMIT';
+        document.getElementById('limit-timeout-group').style.opacity = anyLimit ? '1' : '0.5';
+        document.getElementById('limit-offset-group').style.opacity = anyLimit ? '1' : '0.5';
+        document.getElementById('limit_order_timeout_sec').disabled = !anyLimit;
+        document.getElementById('limit_order_price_offset_bps').disabled = !anyLimit;
+        document.getElementById('limit-order-info').style.display = anyLimit ? 'block' : 'none';
+        updateFeeSummary();
+    }
+
+    // Live fee round-trip summary
+    function updateFeeSummary() {
+        const spotMaker  = parseFloat(document.getElementById('spot_maker_fee_bps').value) || 0;
+        const spotTaker  = parseFloat(document.getElementById('spot_taker_fee_bps').value) || 0;
+        const futMaker   = parseFloat(document.getElementById('futures_maker_fee_bps').value) || 0;
+        const futTaker   = parseFloat(document.getElementById('futures_taker_fee_bps').value) || 0;
+        const slippage   = parseFloat(document.getElementById('slippage_bps').value) || 0;
+
+        const entryMode = document.getElementById('entry_execution_mode').value;
+        const exitMode  = document.getElementById('exit_execution_mode').value;
+
+        // LIMIT uses maker rates, MARKET uses taker rates
+        const spotEntryFee = entryMode === 'LIMIT' ? spotMaker : spotTaker;
+        const futEntryFee  = entryMode === 'LIMIT' ? futMaker  : futTaker;
+        const entryCost    = spotEntryFee + futEntryFee;
+
+        const spotExitFee = exitMode === 'LIMIT' ? spotMaker : spotTaker;
+        const futExitFee  = exitMode === 'LIMIT' ? futMaker  : futTaker;
+        const exitCost    = spotExitFee + futExitFee;
+
+        const totalSlippage = slippage * 4;  // 4 legs
+        const totalCost  = entryCost + exitCost + totalSlippage;
+        const entryLabel = entryMode === 'LIMIT' ? 'maker' : 'taker';
+        const exitLabel  = exitMode  === 'LIMIT' ? 'maker' : 'taker';
+
+        document.getElementById('fee-summary-text').textContent =
+            `Entry (${entryLabel}): ${entryCost} bps  ·  ` +
+            `Exit (${exitLabel}): ${exitCost} bps  ·  ` +
+            `Slippage (4 legs): ${totalSlippage} bps  ·  ` +
+            `Total: ${totalCost} bps (${(totalCost / 100).toFixed(3)}%)`;
+    }
+
+    updateLimitSettingsVisibility(); // Initial state (also calls updateFeeSummary)
+
+    // Form submission
+    document.getElementById('config-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        const formData = {
+            asset: document.getElementById('asset').value,
+            spot_symbol: document.getElementById('spot_symbol').value,
+            futures_symbol: document.getElementById('futures_symbol').value,
+            hedge_ratio: parseFloat(document.getElementById('hedge_ratio').value) || 1.0,
+            m2m_buffer_pct: parseFloat(document.getElementById('m2m_buffer_pct').value) || 0.0,
+            entry_threshold: parseFloat(document.getElementById('entry_threshold').value),
+            exit_threshold: parseFloat(document.getElementById('exit_threshold').value),
+            stop_loss_threshold: parseFloat(document.getElementById('stop_loss_threshold').value),
+            profit_target_sigma_frac: parseFloat(document.getElementById('profit_target_sigma_frac').value) || 0,
+            profit_target_capital_pct: parseFloat(document.getElementById('profit_target_capital_pct').value) || 0,
+            profit_target_usd: parseFloat(document.getElementById('profit_target_usd').value) || 0,
+            profit_target_min_cost_mult: parseFloat(document.getElementById('profit_target_min_cost_mult').value) || 0,
+            max_hold_halflife_mult: parseFloat(document.getElementById('max_hold_halflife_mult').value) || 0,
+            max_hold_minutes: parseFloat(document.getElementById('max_hold_minutes').value) || 0,
+            hard_max_hold_minutes: parseFloat(document.getElementById('hard_max_hold_minutes').value) || 0,
+            max_hold_z_progress_min: parseFloat(document.getElementById('max_hold_z_progress_min').value) || 0,
+            stop_loss_capital_pct: parseFloat(document.getElementById('stop_loss_capital_pct').value) || 0,
+            max_loss_usd: parseFloat(document.getElementById('max_loss_usd').value) || 0,
+            exit_signal_mode: document.getElementById('exit_signal_mode').value,
+            z_stop_exit_enabled: document.getElementById('z_stop_exit_enabled').checked,
+            exit_profit_gate_usd: parseFloat(document.getElementById('exit_profit_gate_usd').value) || 0,
+            exit_profit_gate_pct: parseFloat(document.getElementById('exit_profit_gate_pct').value) || 0,
+            lookback_period: parseInt(document.getElementById('lookback_period').value),
+            stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
+            hurst_enabled: document.getElementById('hurst_enabled').checked,
+            hurst_threshold: parseFloat(document.getElementById('hurst_threshold').value),
+            hurst_exit_enabled: document.getElementById('hurst_exit_enabled').checked,
+            hurst_exit_threshold: parseFloat(document.getElementById('hurst_exit_threshold').value),
+            hurst_exit_n_ticks: parseInt(document.getElementById('hurst_exit_n_ticks').value) || 3,
+            velocity_exit_enabled: document.getElementById('velocity_exit_enabled').checked,
+            velocity_exit_pts_per_min: parseFloat(document.getElementById('velocity_exit_pts_per_min').value) || 2.0,
+            velocity_exit_n_ticks: parseInt(document.getElementById('velocity_exit_n_ticks').value) || 5,
+            velocity_exit_window_ticks: parseInt(document.getElementById('velocity_exit_window_ticks').value) || 20,
+            trailing_stop_pct: parseFloat(document.getElementById('trailing_stop_pct').value) || 0,
+            trailing_stop_floor_pct: parseFloat(document.getElementById('trailing_stop_floor_pct').value) || 0,
+            std_filter_enabled: document.getElementById('std_filter_enabled').checked,
+            trend_direction_filter: document.getElementById('trend_direction_filter').checked,
+            z_reset_gate_enabled: document.getElementById('z_reset_gate_enabled').checked,
+            min_std_multiple: parseFloat(document.getElementById('min_std_multiple').value),
+            min_entry_rr_multiple: parseFloat(document.getElementById('min_entry_rr_multiple').value) || 0,
+            rfq_notional_threshold_usd: parseFloat(document.getElementById('rfq_notional_threshold_usd').value) || 0,
+            rfq_max_markup_bps: parseFloat(document.getElementById('rfq_max_markup_bps').value) || 0,
+            clip_lots: parseFloat(document.getElementById('clip_lots').value),
+            max_lot_size: parseFloat(document.getElementById('max_lot_size').value),
+            spot_leverage: parseInt(document.getElementById('spot_leverage').value),
+            futures_leverage: parseInt(document.getElementById('futures_leverage').value),
+            spot_maker_fee_bps: parseFloat(document.getElementById('spot_maker_fee_bps').value),
+            spot_taker_fee_bps: parseFloat(document.getElementById('spot_taker_fee_bps').value),
+            futures_maker_fee_bps: parseFloat(document.getElementById('futures_maker_fee_bps').value),
+            futures_taker_fee_bps: parseFloat(document.getElementById('futures_taker_fee_bps').value),
+            slippage_bps: parseFloat(document.getElementById('slippage_bps').value),
+            auto_tune_enabled: document.getElementById('auto_tune_enabled').checked,
+            paper_trading: document.getElementById('paper_trading').checked,
+            entry_execution_mode: document.getElementById('entry_execution_mode').value,
+            exit_execution_mode: document.getElementById('exit_execution_mode').value,
+            limit_order_timeout_sec: parseInt(document.getElementById('limit_order_timeout_sec').value),
+            limit_order_price_offset_bps: parseFloat(document.getElementById('limit_order_price_offset_bps').value),
+            entry_slices: parseInt(document.getElementById('entry_slices').value) || 1,
+            entry_slice_interval_sec: parseFloat(document.getElementById('entry_slice_interval_sec').value) || 5.0,
+            min_fill_ratio: parseFloat(document.getElementById('min_fill_ratio').value) || 0.95,
+            entry_cooldown_seconds: parseInt(document.getElementById('entry_cooldown_seconds').value),
+            verify_exchange_position: document.getElementById('verify_exchange_position').checked,
+            orphan_recovery_timeout_sec: parseInt(document.getElementById('orphan_recovery_timeout_sec').value),
+            daily_max_loss_usd: parseFloat(document.getElementById('daily_max_loss_usd').value) || 0,
+        };
+
+        fetch('/api/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(formData)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast('Configuration saved successfully', 'success');
+            } else {
+                showToast('Error: ' + (data.error || 'Unknown error'), 'danger');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('Error: ' + error.message, 'danger');
+        });
+    });
+
+    // ========== MT5 Brokers & Legs ==========
+    async function loadBrokers() {
+        try {
+            const brokers = await (await fetch('/api/exchanges')).json();
+            const list = document.getElementById('brokers-list');
+            if (!list) return;
+            list.innerHTML = brokers.length ? `
+                <table class="table table-sm table-dark align-middle mb-0">
+                    <thead><tr><th>Account</th><th>Login</th><th>Server</th>
+                    <th>Terminal</th><th>Endpoint</th><th>Password</th>
+                    <th>Role</th><th></th></tr></thead>
+                    <tbody>${brokers.map(b => `
+                        <tr>
+                            <td><strong>${b.name}</strong></td>
+                            <td>${b.login || '—'}</td>
+                            <td>${b.server || '—'}</td>
+                            <td class="small text-secondary">${b.terminal_path || 'attach to open terminal'}</td>
+                            <td class="small">${b.endpoint || 'in-process'}</td>
+                            <td>${b.has_password
+                                ? '<span class="badge bg-success">saved</span>'
+                                : '<span class="badge bg-secondary">none</span>'}</td>
+                            <td>${b.role === 'NONE'
+                                ? '<span class="badge bg-secondary">unused</span>'
+                                : `<span class="badge bg-primary">${b.role}</span>`}</td>
+                            <td class="text-end"><button type="button"
+                                class="btn btn-sm btn-outline-danger"
+                                onclick="deleteBroker('${b.id}')">Remove</button></td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table>` : '<p class="text-secondary mb-0">No accounts configured yet.</p>';
+
+            const options = brokers.map(b =>
+                `<option value="${b.id}">${b.name}</option>`).join('');
+            for (const [id, role] of [['leg_spot_account', 'SPOT'],
+                                      ['leg_futures_account', 'FUTURES']]) {
+                const select = document.getElementById(id);
+                if (!select) continue;
+                const current = select.value;
+                select.innerHTML = options;
+                const active = brokers.find(b => b.role === role);
+                select.value = current || (active ? active.id : '');
+            }
+            updateTopologyHint();
+        } catch (e) { console.error('loadBrokers', e); }
+    }
+
+    function updateTopologyHint() {
+        const spot = document.getElementById('leg_spot_account');
+        const futures = document.getElementById('leg_futures_account');
+        const hint = document.getElementById('topology_hint');
+        if (!spot || !futures || !hint) return;
+        hint.textContent = (spot.value && spot.value === futures.value)
+            ? 'Both legs on one account — a single MT5 terminal, no leg runners needed.'
+            : 'Two accounts — give each one a leg-runner endpoint; the launcher starts one runner per account.';
+    }
+
+    async function saveBroker() {
+        const payload = {
+            name: document.getElementById('broker_name').value.trim(),
+            terminal_path: document.getElementById('broker_terminal_path').value.trim(),
+            login: document.getElementById('broker_login').value.trim(),
+            server: document.getElementById('broker_server').value.trim(),
+            password: document.getElementById('broker_password').value,
+            endpoint: document.getElementById('broker_endpoint').value.trim()
+        };
+        if (!payload.name) { showToast('Account name is required', 'warning'); return; }
+        const response = await fetch('/api/exchanges', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        showToast(result.note || (result.success ? 'Account saved' : 'Save failed'),
+                  result.success ? 'success' : 'danger');
+        document.getElementById('broker_password').value = '';
+        loadBrokers();
+    }
+
+    async function deleteBroker(id) {
+        if (!confirm(`Remove account ${id}?`)) return;
+        await fetch(`/api/exchanges/${id}`, {method: 'DELETE'});
+        showToast('Account removed', 'success');
+        loadBrokers();
+    }
+
+    async function testBrokerConnection() {
+        const response = await fetch('/api/exchanges/current/test', {method: 'POST'});
+        const result = await response.json();
+        showToast(result.note || 'Connectivity test queued', 'info');
+    }
+
+    async function saveLegMapping() {
+        const response = await fetch('/api/set-active-exchanges', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                spot_id: document.getElementById('leg_spot_account').value,
+                futures_id: document.getElementById('leg_futures_account').value
+            })
+        });
+        const result = await response.json();
+        showToast(result.note || 'Leg mapping saved', 'success');
+        loadBrokers();
+    }
+
+    document.addEventListener('DOMContentLoaded', loadBrokers);
+
+    // ========== Telegram ==========
+    function saveTelegramConfig(doTest = true) {
+        const enabled   = document.getElementById('tg_enabled').checked;
+        // Empty token field = 'keep existing saved value'. The backend sees
+        // an empty string and preserves whatever token is in the DB. This
+        // matches the placeholder hint shown when a token is already saved,
+        // so the user doesn't have to re-paste it every time they visit
+        // Settings (or risk wiping it by saving with an empty box).
+        const tokenRaw  = document.getElementById('tg_token').value.trim();
+        const token     = tokenRaw === '' ? '***' : tokenRaw;  // '***' = preserve sentinel
+        const chatId    = document.getElementById('tg_chat_id').value.trim();
+        const trades    = document.getElementById('tg_notify_trades').checked;
+        const signals   = document.getElementById('tg_notify_signals').checked;
+        const errors    = document.getElementById('tg_notify_errors').checked;
+
+        const resultEl = document.getElementById('tg-save-result');
+        resultEl.style.display = 'block';
+        resultEl.className = 'alert alert-info py-2 px-3 mb-3';
+        resultEl.textContent = doTest ? 'Saving and sending test message…' : 'Saving…';
+
+        fetch('/api/telegram/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                telegram_enabled: enabled,
+                telegram_bot_token: token,
+                telegram_chat_id: chatId,
+                telegram_notify_trades: trades,
+                telegram_notify_signals: signals,
+                telegram_notify_errors: errors,
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                resultEl.className = 'alert alert-danger py-2 px-3 mb-3';
+                resultEl.textContent = 'Save failed: ' + (data.error || 'Unknown error');
+                return;
+            }
+            if (!doTest) {
+                resultEl.className = 'alert alert-success py-2 px-3 mb-3';
+                resultEl.textContent = 'Settings saved.';
+                return;
+            }
+            // Send test message
+            return fetch('/api/telegram/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: token, chat_id: chatId })
+            })
+            .then(r => r.json())
+            .then(td => {
+                if (td.success) {
+                    resultEl.className = 'alert alert-success py-2 px-3 mb-3';
+                    resultEl.textContent = 'Settings saved. Test message sent successfully!';
+                } else {
+                    resultEl.className = 'alert alert-warning py-2 px-3 mb-3';
+                    resultEl.textContent = 'Settings saved, but test message failed: ' + (td.error || 'Check token and chat ID');
+                }
+            });
+        })
+        .catch(err => {
+            resultEl.className = 'alert alert-danger py-2 px-3 mb-3';
+            resultEl.textContent = 'Error: ' + err.message;
+        });
+    }
+
+    function resetForm() {
+        fetch('/api/config')
+            .then(response => response.json())
+            .then(config => {
+                document.getElementById('asset').value = config.asset;
+                document.getElementById('spot_symbol').value = config.spot_symbol;
+                document.getElementById('futures_symbol').value = config.futures_symbol;
+                document.getElementById('hedge_ratio').value = config.hedge_ratio;
+                document.getElementById('m2m_buffer_pct').value = config.m2m_buffer_pct;
+                updatePairLabel();
+                document.getElementById('entry_threshold').value = config.entry_threshold;
+                document.getElementById('exit_threshold').value = config.exit_threshold;
+                document.getElementById('stop_loss_threshold').value = config.stop_loss_threshold;
+                document.getElementById('profit_target_sigma_frac').value = config.profit_target_sigma_frac || 0;
+                document.getElementById('profit_target_capital_pct').value = config.profit_target_capital_pct || 0;
+                document.getElementById('profit_target_usd').value = config.profit_target_usd || 0;
+                document.getElementById('profit_target_min_cost_mult').value = config.profit_target_min_cost_mult || 0;
+                document.getElementById('max_hold_halflife_mult').value = config.max_hold_halflife_mult || 0;
+                document.getElementById('max_hold_minutes').value = config.max_hold_minutes || 0;
+                document.getElementById('hard_max_hold_minutes').value = config.hard_max_hold_minutes || 0;
+                document.getElementById('max_hold_z_progress_min').value = config.max_hold_z_progress_min ?? 0.5;
+                document.getElementById('stop_loss_capital_pct').value = config.stop_loss_capital_pct || 0;
+                document.getElementById('max_loss_usd').value = config.max_loss_usd || 0;
+                document.getElementById('exit_signal_mode').value = config.exit_signal_mode || 'zscore';
+                document.getElementById('z_stop_exit_enabled').checked = config.z_stop_exit_enabled !== false;
+                document.getElementById('exit_profit_gate_usd').value = config.exit_profit_gate_usd || 0;
+                document.getElementById('exit_profit_gate_pct').value = config.exit_profit_gate_pct || 0;
+                document.getElementById('lookback_period').value = config.lookback_period;
+                document.getElementById('stats_update_interval').value = config.stats_update_interval;
+                document.getElementById('hurst_enabled').checked = config.hurst_enabled;
+                document.getElementById('hurst_threshold').value = config.hurst_threshold;
+                document.getElementById('hurst_exit_enabled').checked = config.hurst_exit_enabled || false;
+                document.getElementById('hurst_exit_threshold').value = config.hurst_exit_threshold || 0.55;
+                document.getElementById('hurst_exit_n_ticks').value = config.hurst_exit_n_ticks || 3;
+                document.getElementById('velocity_exit_enabled').checked = config.velocity_exit_enabled || false;
+                document.getElementById('velocity_exit_pts_per_min').value = config.velocity_exit_pts_per_min || 2.0;
+                document.getElementById('velocity_exit_pts_per_min_val').textContent = parseFloat(config.velocity_exit_pts_per_min || 2.0).toFixed(1);
+                document.getElementById('velocity_exit_n_ticks').value = config.velocity_exit_n_ticks || 5;
+                document.getElementById('velocity_exit_n_ticks_val').textContent = config.velocity_exit_n_ticks || 5;
+                document.getElementById('velocity_exit_window_ticks').value = config.velocity_exit_window_ticks || 20;
+                document.getElementById('velocity_exit_window_ticks_val').textContent = config.velocity_exit_window_ticks || 20;
+                document.getElementById('trailing_stop_pct').value = config.trailing_stop_pct || 0;
+                document.getElementById('trailing_stop_floor_pct').value = config.trailing_stop_floor_pct || 0;
+                document.getElementById('std_filter_enabled').checked = config.std_filter_enabled;
+                document.getElementById('trend_direction_filter').checked = config.trend_direction_filter || false;
+                document.getElementById('z_reset_gate_enabled').checked = config.z_reset_gate_enabled !== false;
+                document.getElementById('min_std_multiple').value = config.min_std_multiple;
+                document.getElementById('min_entry_rr_multiple').value = config.min_entry_rr_multiple || 0;
+                document.getElementById('clip_lots').value = config.clip_lots;
+                document.getElementById('max_lot_size').value = config.max_lot_size;
+                document.getElementById('spot_leverage').value = config.spot_leverage || 1;
+                document.getElementById('futures_leverage').value = config.futures_leverage || 1;
+                document.getElementById('spot_maker_fee_bps').value = config.spot_maker_fee_bps || 8.0;
+                document.getElementById('spot_taker_fee_bps').value = config.spot_taker_fee_bps || 10.0;
+                document.getElementById('futures_maker_fee_bps').value = config.futures_maker_fee_bps || 2.0;
+                document.getElementById('futures_taker_fee_bps').value = config.futures_taker_fee_bps || 5.0;
+                document.getElementById('slippage_bps').value = config.slippage_bps ?? 3.0;
+                document.getElementById('auto_tune_enabled').checked = config.auto_tune_enabled || false;
+                document.getElementById('paper_trading').checked = config.paper_trading;
+                document.getElementById('entry_execution_mode').value = config.entry_execution_mode || 'LIMIT';
+                document.getElementById('exit_execution_mode').value = config.exit_execution_mode || 'MARKET';
+                document.getElementById('limit_order_timeout_sec').value = config.limit_order_timeout_sec;
+                document.getElementById('limit_order_price_offset_bps').value = config.limit_order_price_offset_bps;
+                document.getElementById('entry_cooldown_seconds').value = config.entry_cooldown_seconds || 60;
+                document.getElementById('verify_exchange_position').checked = config.verify_exchange_position !== false;
+                document.getElementById('orphan_recovery_timeout_sec').value = config.orphan_recovery_timeout_sec || 60;
+                document.getElementById('daily_max_loss_usd').value = config.daily_max_loss_usd || 0;
+                updateLimitSettingsVisibility();
+                updateFeeSummary();
+            });
+    }
+
+    // ========== Manual Order Testing ==========
+    let testOrderInterval = null;
+
+    function openTestOrder() {
+        const orderType = document.getElementById('test_order_type').value;
+        const sizeUsd = parseFloat(document.getElementById('test_size_usd').value);
+
+        document.getElementById('btn-open-test').disabled = true;
+        document.getElementById('btn-open-test').innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Executing...';
+
+        fetch('/api/test-order/open', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                order_type: orderType,
+                size_usd: sizeUsd
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('btn-open-test').disabled = false;
+            document.getElementById('btn-open-test').innerHTML = '<i class="bi bi-play-fill me-1"></i>Execute Order';
+
+            if (data.success) {
+                showToast(`Order executed: ${orderType}`, 'success');
+                fetchTestOrderStatus();
+            } else {
+                showToast(`Error: ${data.error}`, 'danger');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('Error executing order', 'danger');
+            document.getElementById('btn-open-test').disabled = false;
+            document.getElementById('btn-open-test').innerHTML = '<i class="bi bi-play-fill me-1"></i>Execute Order';
+        });
+    }
+
+    function closeTestOrder(positionId) {
+        fetch('/api/test-order/close', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ position_id: positionId })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast(`Position closed. P&L: $${data.pnl_usd?.toFixed(2) || '0.00'}`, 'success');
+                fetchTestOrderStatus();
+            } else {
+                showToast(`Error: ${data.error}`, 'danger');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('Error closing position', 'danger');
+        });
+    }
+
+    function closeAllTestOrders() {
+        fetch('/api/test-order/close-all', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast(`All positions closed. Total P&L: $${data.total_pnl?.toFixed(2) || '0.00'}`, 'success');
+                fetchTestOrderStatus();
+            } else {
+                showToast(`Error: ${data.error}`, 'danger');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('Error closing positions', 'danger');
+        });
+    }
+
+    function updateTestPositionsTable(positions) {
+        const tbody = document.getElementById('test-positions-body');
+        const card = document.getElementById('test-positions-card');
+
+        if (!positions || positions.length === 0) {
+            card.style.display = 'none';
+            return;
+        }
+
+        card.style.display = 'block';
+        tbody.innerHTML = '';
+
+        positions.forEach(pos => {
+            const pnlClass = pos.unrealized_pnl >= 0 ? 'text-success' : 'text-danger';
+            const sideClass = pos.side === 'BUY' ? 'text-success' : 'text-danger';
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${pos.market_type}</td>
+                <td class="${sideClass}">${pos.side}</td>
+                <td>${pos.quantity?.toFixed(6) || '-'}</td>
+                <td>$${pos.entry_price?.toFixed(2) || '-'}</td>
+                <td>$${pos.current_price?.toFixed(2) || '-'}</td>
+                <td class="${pnlClass}">$${pos.unrealized_pnl?.toFixed(2) || '0.00'}</td>
+                <td><code class="small">${pos.order_id || '-'}</code></td>
+                <td>
+                    <button class="btn btn-outline-danger btn-sm py-0 px-1" onclick="closeTestOrder('${pos.id}')">
+                        <i class="bi bi-x"></i>
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    function startTestOrderPolling() {
+        stopTestOrderPolling();
+        testOrderInterval = setInterval(fetchTestOrderStatus, 1000);
+    }
+
+    function stopTestOrderPolling() {
+        if (testOrderInterval) {
+            clearInterval(testOrderInterval);
+            testOrderInterval = null;
+        }
+    }
+
+    function fetchTestOrderStatus() {
+        fetch('/api/test-order/status')
+            .then(response => response.json())
+            .then(data => {
+                updateTestPositionsTable(data.positions || []);
+                if (data.positions && data.positions.length > 0) {
+                    startTestOrderPolling();
+                } else {
+                    stopTestOrderPolling();
+                }
+            })
+            .catch(error => console.error('Error fetching test order status:', error));
+    }
+
+    // Check for existing test positions on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        fetchTestOrderStatus();
+        fetchSuiteStatus();   // Restore state if suite was already running
+    });
+
+    // ─────────────────────────────────────────────────────────────────
+    // Full Test Suite
+    // ─────────────────────────────────────────────────────────────────
+
+    // Status badge colours per scenario state
+    const SUITE_BADGE = {
+        pending:   '<span class="badge bg-secondary">pending</span>',
+        running:   '<span class="badge bg-warning text-dark"><span class="spinner-border spinner-border-sm me-1"></span>running</span>',
+        pass:      '<span class="badge bg-success">pass</span>',
+        fail:      '<span class="badge bg-danger">fail</span>',
+        cancelled: '<span class="badge bg-secondary">cancelled</span>',
+    };
+
+    // Order-type label colours
+    const TYPE_BADGE = {
+        BUY_SPOT:     '<span class="badge bg-primary" style="font-size:0.7rem;">BUY_SPOT</span>',
+        SELL_SPOT:    '<span class="badge bg-warning text-dark" style="font-size:0.7rem;">SELL_SPOT</span>',
+        BUY_FUTURES:  '<span class="badge bg-info text-dark" style="font-size:0.7rem;">BUY_FUT</span>',
+        SELL_FUTURES: '<span class="badge bg-orange" style="font-size:0.7rem;background:#fd7e14;">SELL_FUT</span>',
+        LONG_SPREAD:  '<span class="badge" style="font-size:0.7rem;background:#6f42c1;color:#fff;">LONG_SPR</span>',
+        SHORT_SPREAD: '<span class="badge" style="font-size:0.7rem;background:#d63384;color:#fff;">SHORT_SPR</span>',
+    };
+
+    function renderSuiteTable(state) {
+        const tbody = document.getElementById('suite-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const anyRunning = state.running || state.single_running;
+
+        // Convert "  |  " separators to line breaks; HTML-escape the rest
+        function detailHtml(text) {
+            if (!text) return '';
+            const esc = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            return esc.split('  |  ').map(part => `<span>${part}</span>`).join('<br>');
+        }
+        (state.scenarios || []).forEach((s, i) => {
+            const tr = document.createElement('tr');
+            if (s.status === 'running') tr.classList.add('table-warning');
+            else if (s.status === 'pass')  tr.classList.add('table-success', 'opacity-75');
+            else if (s.status === 'fail')  tr.classList.add('table-danger',  'opacity-75');
+
+            const cancelTag = s.cancel_test
+                ? '<span class="badge bg-secondary ms-1" style="font-size:0.65rem;">cancel</span>'
+                : '';
+
+            // Run button: disabled while full suite or single scenario is active
+            const btnDisabled = anyRunning ? ' disabled' : '';
+            const btnSpinner  = (s.status === 'running' && state.single_running)
+                ? '<span class="spinner-border spinner-border-sm me-1" style="width:.6rem;height:.6rem;"></span>'
+                : '';
+
+            tr.innerHTML = `
+                <td class="text-muted">${i + 1}</td>
+                <td>${s.label}${cancelTag}</td>
+                <td><span class="badge bg-dark border" style="font-size:0.7rem;">${s.mode || ''}</span></td>
+                <td>${TYPE_BADGE[s.order_type] || s.order_type}</td>
+                <td>${SUITE_BADGE[s.status] || s.status}</td>
+                <td class="text-muted small" style="line-height:1.6;">${detailHtml(s.detail)}</td>
+                <td><button class="btn btn-sm btn-outline-primary py-0 px-2"
+                            style="font-size:0.7rem;"
+                            onclick="runSingleScenario('${s.id}')"${btnDisabled}>${btnSpinner}Run</button></td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function applySuiteState(state) {
+        if (!state) return;
+        const total      = state.total || 40;
+        const current    = state.current || 0;
+        const pct        = Math.round((current / total) * 100);
+        const anyRunning = state.running || state.single_running;
+
+        document.getElementById('suite-progress-badge').textContent = `${current} / ${total}`;
+        document.getElementById('suite-pass-badge').textContent     = `${state.pass || 0} passed`;
+        document.getElementById('suite-fail-badge').textContent     = `${state.fail || 0} failed`;
+        document.getElementById('suite-progress-bar').style.width   = `${pct}%`;
+
+        let modeLabel = state.order_mode ? `Mode: ${state.order_mode}  |  ` : '';
+        if (state.running)        modeLabel += 'suite running…';
+        else if (state.single_running) modeLabel += 'scenario running…';
+        else if (current > 0 || (state.scenarios && state.scenarios.some(s => s.status !== 'pending')))
+                                  modeLabel += 'complete';
+        document.getElementById('suite-mode-label').textContent = modeLabel;
+
+        const hasResults  = (state.scenarios && state.scenarios.some(s => s.status !== 'pending'));
+        const hasActiveRow = (state.scenarios && state.scenarios.some(s => s.status === 'running'));
+        // Stuck = flags say running but no row is actually active (crashed coroutine)
+        const isStuck     = anyRunning && !hasActiveRow;
+
+        document.getElementById('btn-run-suite').classList.toggle('d-none',    state.running || isStuck);
+        document.getElementById('btn-stop-suite').classList.toggle('d-none',   !state.running || isStuck);
+        document.getElementById('btn-download-csv').classList.toggle('d-none',  anyRunning || !hasResults);
+        document.getElementById('btn-force-reset').classList.toggle('d-none',  !isStuck);
+
+        renderSuiteTable(state);
+
+        // Scroll the currently running row into view
+        const rows = document.querySelectorAll('#suite-tbody tr');
+        rows.forEach(r => { if (r.classList.contains('table-warning')) r.scrollIntoView({block: 'nearest'}); });
+    }
+
+    function startTestSuite() {
+        fetch('/api/test-suite/start', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Test suite started – 36 scenarios will run automatically', 'success');
+                } else {
+                    showToast('Could not start suite: ' + data.error, 'danger');
+                }
+            })
+            .catch(e => showToast('Error: ' + e, 'danger'));
+    }
+
+    function stopTestSuite() {
+        fetch('/api/test-suite/stop', { method: 'POST' })
+            .then(r => r.json())
+            .then(() => showToast('Stop signal sent – current scenario will finish before stopping', 'warning'));
+    }
+
+    function forceResetSuite() {
+        fetch('/api/test-suite/reset', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) showToast('Suite flags cleared – you can now start a new run', 'success');
+                else showToast('Reset failed: ' + data.error, 'danger');
+            })
+            .catch(e => showToast('Error: ' + e, 'danger'));
+    }
+
+    function runSingleScenario(scenarioId) {
+        fetch('/api/test-suite/run-scenario', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({scenario_id: scenarioId}),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showToast(`Running scenario ${scenarioId}…`, 'success');
+            } else {
+                showToast('Cannot run scenario: ' + data.error, 'danger');
+            }
+        })
+        .catch(e => showToast('Error: ' + e, 'danger'));
+    }
+
+    // Fetch current status on load so the table (and Run buttons) are visible immediately
+    function fetchSuiteStatus() {
+        fetch('/api/test-suite/status')
+            .then(r => r.json())
+            .then(data => { if (data) applySuiteState(data); })
+            .catch(() => {});
+    }
+
+    // Live updates via WebSocket  (socket is initialised in base.html)
+    document.addEventListener('DOMContentLoaded', function() {
+        fetchSuiteStatus();   // populate table immediately on page load
+        if (typeof socket !== 'undefined') {
+            socket.on('test_suite_update', function(data) {
+                applySuiteState(data);
+            });
+        }
+    });
+
+    // ── Anthropic API Key Management ──────────────────────────────────────────
+    (function() {
+        const badge   = document.getElementById('anthropic-status-badge');
+        const input   = document.getElementById('anthropic-key-input');
+        const saveBtn = document.getElementById('anthropic-save-btn');
+        const testBtn = document.getElementById('anthropic-test-btn');
+        const feedback = document.getElementById('anthropic-feedback');
+        const eyeBtn  = document.getElementById('anthropic-toggle-eye');
+        const eyeIcon = document.getElementById('anthropic-eye-icon');
+
+        function setFeedback(msg, type) {
+            feedback.textContent = msg;
+            feedback.className = 'mt-1 text-' + type;
+            feedback.style.display = 'block';
+        }
+
+        function setBadge(configured, preview) {
+            if (configured) {
+                badge.className = 'badge ms-2 bg-success';
+                badge.textContent = 'Connected — ' + preview;
+            } else {
+                badge.className = 'badge ms-2 bg-danger';
+                badge.textContent = 'Not Configured';
+            }
+        }
+
+        // Check current status on page load
+        fetch('/api/anthropic/status')
+            .then(r => r.json())
+            .then(d => setBadge(d.configured, d.preview))
+            .catch(() => { badge.className = 'badge ms-2 bg-secondary'; badge.textContent = 'Unknown'; });
+
+        // Show/hide key toggle
+        eyeBtn.addEventListener('click', function() {
+            if (input.type === 'password') {
+                input.type = 'text';
+                eyeIcon.className = 'bi bi-eye-slash';
+            } else {
+                input.type = 'password';
+                eyeIcon.className = 'bi bi-eye';
+            }
+        });
+
+        function fetchWithTimeout(url, opts, timeoutMs) {
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), timeoutMs);
+            return fetch(url, {...opts, signal: controller.signal})
+                .finally(() => clearTimeout(id));
+        }
+
+        // Save key
+        saveBtn.addEventListener('click', function() {
+            const key = input.value.trim();
+            if (!key) { setFeedback('Please paste your API key first.', 'warning'); return; }
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Saving...';
+            feedback.style.display = 'none';
+            fetchWithTimeout('/api/anthropic/key', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({key})
+            }, 10000)
+            .then(r => {
+                if (!r.ok && r.headers.get('content-type') && !r.headers.get('content-type').includes('json')) {
+                    throw new Error('Server error ' + r.status);
+                }
+                return r.json();
+            })
+            .then(d => {
+                if (d.success) {
+                    setFeedback('Key saved and active — no restart needed.', 'success');
+                    setBadge(true, d.preview);
+                    input.value = '';
+                } else {
+                    setFeedback('Error: ' + d.error, 'danger');
+                }
+            })
+            .catch(err => setFeedback(err.name === 'AbortError' ? 'Request timed out. Is the app running?' : ('Error: ' + err.message), 'danger'))
+            .finally(() => { saveBtn.disabled = false; saveBtn.textContent = 'Save Key'; });
+        });
+
+        // Test connection
+        testBtn.addEventListener('click', function() {
+            testBtn.disabled = true;
+            testBtn.textContent = 'Testing...';
+            setFeedback('Sending test request to Claude API...', 'secondary');
+            fetchWithTimeout('/api/anthropic/test', {method: 'POST'}, 30000)
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    setFeedback('Connection successful! API is working correctly.', 'success');
+                    setBadge(true, badge.textContent.replace('Connected — ', ''));
+                } else {
+                    setFeedback('Test failed: ' + d.error, 'danger');
+                    badge.className = 'badge ms-2 bg-danger';
+                    badge.textContent = 'Connection Failed';
+                }
+            })
+            .catch(err => setFeedback(err.name === 'AbortError' ? 'Test timed out (30s). Check network or API status.' : ('Error: ' + err.message), 'danger'))
+            .finally(() => { testBtn.disabled = false; testBtn.textContent = 'Test Connection'; });
+        });
+    })();
+
+    // Demo / Live mode toggle
+    (function() {
+        const toggle = document.getElementById('demoModeSwitch');
+        const badge = document.getElementById('demo-mode-badge');
+        const desc = document.getElementById('demo-mode-desc');
+        const spinner = document.getElementById('demo-mode-spinner');
+
+        toggle.addEventListener('change', function() {
+            const enableDemo = this.checked;
+
+            if (!enableDemo) {
+                const ok = confirm(
+                    '⚠️  Switch to LIVE SERVER?\n\n' +
+                    'This reconnects the engine to the real MT5 broker.\n' +
+                    'Ensure your API key has Trade permission and Paper Trading\n' +
+                    'is still ON if you do not want real orders placed.\n\n' +
+                    'Continue?'
+                );
+                if (!ok) {
+                    this.checked = true;
+                    return;
+                }
+            }
+
+            toggle.disabled = true;
+            spinner.classList.remove('d-none');
+
+            fetch('/api/engine/set-demo-mode', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({demo: enableDemo})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    if (enableDemo) {
+                        badge.innerHTML = '<span class="badge bg-warning text-dark"><i class="bi bi-cloud-slash me-1"></i>DEMO SERVER</span>';
+                        desc.textContent = 'Demo mode — orders go to the MT5 demo exchange (simulated fills, no real money).';
+                    } else {
+                        badge.innerHTML = '<span class="badge bg-danger"><i class="bi bi-cloud-fill me-1"></i>LIVE SERVER</span>';
+                        desc.textContent = 'Live mode — orders execute against the real MT5 broker with real funds.';
+                    }
+                    showToast('Switched to ' + (enableDemo ? 'Demo' : 'Live') + ' server — engine restarted', 'success');
+                } else {
+                    toggle.checked = !enableDemo;
+                    showToast('Failed to switch mode: ' + (data.error || 'unknown error'), 'danger');
+                }
+            })
+            .catch(err => {
+                toggle.checked = !enableDemo;
+                showToast('Error switching mode: ' + err.message, 'danger');
+            })
+            .finally(() => {
+                toggle.disabled = false;
+                spinner.classList.add('d-none');
+            });
+        });
+    })();
+</script>
+{% endblock %}

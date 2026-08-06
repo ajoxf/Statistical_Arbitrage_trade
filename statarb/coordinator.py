@@ -110,6 +110,7 @@ class Coordinator:
         self._last_close_ts = 0
         self._last_open_ts = 0
         self._last_test_ts = 0
+        self._last_recon_ts = 0
         self._test_results = None
         self.algo_enabled = True       # entries only; exits ALWAYS run
 
@@ -537,7 +538,14 @@ class Coordinator:
                 'tp_usd': plan.get('tp_usd'),
                 'stop_usd': plan.get('stop_usd'),
                 'rt_cost_usd': plan.get('rt_cost_usd'),
+                'gate_floor_usd': plan.get('gate_floor_usd'),
                 'max_hold_sec': plan.get('max_hold_sec'),
+                'half_life_min': ((plan.get('half_life_sec') or 0) / 60
+                                  or None),
+                'notional': ((position.spot_trade.executed_price or 0)
+                             * position.spot_trade.lot_size
+                             * self.config.ASSETS.get(position.asset, {})
+                             .get('lot_size', 1.0)),
                 'levels': plan.get('levels'),
                 'peak_pnl': position.peak_pnl,
                 'trough_pnl': position.trough_pnl,
@@ -613,9 +621,22 @@ class Coordinator:
 
         test_cmd = control.get('test') or {}
         ts = test_cmd.get('ts', 0)
-        if test_cmd.get('kind') and ts > self._last_test_ts:
+        if ts > self._last_test_ts:
             self._last_test_ts = ts
-            self._run_tests(test_cmd['kind'])
+            if test_cmd.get('kind'):
+                self._run_tests(test_cmd['kind'])
+            else:
+                self._test_results = None      # UI cleared the results
+
+        recon_cmd = control.get('reconcile') or {}
+        ts = recon_cmd.get('ts', 0)
+        if ts > self._last_recon_ts:
+            self._last_recon_ts = ts
+            if self.reconciler:
+                logging.warning("Reconciliation requested via web UI")
+                for action, leg_name, detail in self.reconciler.check():
+                    self.notifier.notify_reconcile(action, leg_name,
+                                                   str(detail))
 
     # ------------------------------------------------------------------
     # MT5 connectivity & order tests (round trips, real orders)
@@ -769,6 +790,35 @@ class Coordinator:
         Atomic replace so the dashboard never reads a half-written file."""
         halted, why = self.risk_manager.halted()
         target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
+        assets = []
+        for asset_key, md in all_market_data.items():
+            stats = self.stats.get(asset_key)
+            age_ms = (datetime.now() - md['timestamp']).total_seconds() * 1000
+            assets.append({
+                'asset': asset_key,
+                'z': stats.z if stats else None,
+                'mu': stats.mu if stats else None,
+                'sigma': stats.sigma if stats else None,
+                'half_life_min': ((stats.half_life_sec / 60)
+                                  if stats and stats.half_life_sec else None),
+                'samples': len(stats.samples) if stats else 0,
+                'lookback': self.config.SIGNALS.get('LOOKBACK_SEC'),
+                'basis': md['actual_basis'],
+                'swap_diff': md['swap_diff'],
+                'spot_price': md['spot_price'],
+                'spot_bid': md['spot_bid'], 'spot_ask': md['spot_ask'],
+                'futures_price': md['futures_price'],
+                'fut_bid': md['futures_bid'], 'fut_ask': md['futures_ask'],
+                'tick_age_ms': age_ms,
+                'lots_today': self.risk_manager.lots_traded_today(asset_key),
+                'lot_target': target,
+            })
+        accounts, equity = {}, None
+        for leg in self._each_leg():
+            info = leg.account_info()
+            if info:
+                accounts[leg.name] = info
+                equity = (equity or 0) + (info.get('equity') or 0)
         payload = {
             'mode': self.trading_mode,
             'updated': datetime.now().strftime('%H:%M:%S'),
@@ -776,14 +826,11 @@ class Coordinator:
             'halted': halted,
             'halt_reason': why,
             'daily_pnl': self.risk_manager.daily_realized_pnl,
-            'assets': [{
-                'asset': asset_key,
-                'z': (self.stats[asset_key].z
-                      if asset_key in self.stats else None),
-                'basis': md['actual_basis'],
-                'lots_today': self.risk_manager.lots_traded_today(asset_key),
-                'lot_target': target,
-            } for asset_key, md in all_market_data.items()],
+            'accounts': accounts,
+            'equity': equity,
+            'tick_age_ms': min((a['tick_age_ms'] for a in assets),
+                               default=None),
+            'assets': assets,
             'positions': self._position_snapshot(),
             'shadow': {'active': len(self.shadow.active),
                        'tracking': self.shadow.snapshot()},

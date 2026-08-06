@@ -1,0 +1,433 @@
+"""Translation layer between the Nexus UI (W3 field names) and this
+engine's sectioned MT5 config.
+
+The vendored templates speak W3's flat config vocabulary
+(entry_threshold, profit_target_capital_pct, ...). The engine stores
+sectioned MT5 config (SIGNALS.ENTRY_Z, EXITS.TP_CAPITAL_PCT, ...).
+Everything in this module is that mapping, in both directions, so the
+UI stays byte-identical to W3 while the engine stays MT5-native.
+"""
+
+# W3 field -> (config section, key). Values pass through unchanged
+# unless listed in the transform tables below.
+FIELD_MAP = {
+    # Z-score thresholds
+    'entry_threshold': ('SIGNALS', 'ENTRY_Z'),
+    'exit_threshold': ('SIGNALS', 'EXIT_Z'),
+    'stop_loss_threshold': ('SIGNALS', 'STOP_Z'),
+    'max_entry_z': ('SIGNALS', 'MAX_ENTRY_Z'),
+    'exit_signal_mode': ('SIGNALS', 'EXIT_MODE'),
+    'lookback_period': ('SIGNALS', 'LOOKBACK_SEC'),
+    'stats_update_interval': ('SIGNALS', 'STATS_INTERVAL_SEC'),
+    'min_samples': ('SIGNALS', 'MIN_SAMPLES'),
+    'trend_direction_filter': ('SIGNALS', 'TREND_FILTER'),
+    'trend_window_sec': ('SIGNALS', 'TREND_WINDOW_SEC'),
+    'entry_cooldown_seconds': ('SIGNALS', 'ENTRY_COOLDOWN_SEC'),
+    'stop_cooldown_seconds': ('SIGNALS', 'STOP_COOLDOWN_SEC'),
+    'use_z_signals': ('SIGNALS', 'USE_Z_SIGNALS'),
+
+    # Exits
+    'z_stop_exit_enabled': ('EXITS', 'Z_STOP_EXIT_ENABLED'),
+    'use_sigma_target': ('EXITS', 'USE_SIGMA_TARGET'),
+    'profit_target_capital_pct': ('EXITS', 'TP_CAPITAL_PCT'),
+    'profit_target_usd': ('EXITS', 'TP_USD_PER_LOT'),
+    'profit_target_min_cost_mult': ('EXITS', 'COST_FLOOR_MULT'),
+    'max_hold_halflife_mult': ('EXITS', 'MAX_HOLD_HALF_LIVES'),
+    'max_hold_minutes': ('EXITS', 'MAX_HOLD_FALLBACK_MIN'),
+    'hard_max_hold_minutes': ('EXITS', 'HARD_MAX_HOLD_MIN'),
+    'hard_time_stop_mult': ('EXITS', 'HARD_TIME_STOP_MULT'),
+    'max_hold_z_progress_min': ('EXITS', 'MAX_HOLD_PROGRESS_SUPPRESS'),
+    'stop_loss_capital_pct': ('EXITS', 'STOP_CAPITAL_PCT'),
+    'max_loss_usd': ('EXITS', 'STOP_USD_PER_LOT'),
+    'min_entry_rr_multiple': ('EXITS', 'RR'),
+    'exit_profit_gate_usd': ('EXITS', 'GATE_FLOOR_USD'),
+    'm2m_buffer_pct': ('EXITS', 'M2M_BUFFER_PCT'),
+    'leverage': ('EXITS', 'LEVERAGE'),
+
+    # Costs / edge filter
+    'profit_target_sigma_frac': ('COSTS', 'TARGET_FRACTION'),
+    'min_std_multiple': ('COSTS', 'MIN_EDGE_MULTIPLE'),
+    'commission_per_lot_spot': ('COSTS', 'COMMISSION_PER_LOT_SPOT'),
+    'commission_per_lot_futures': ('COSTS', 'COMMISSION_PER_LOT_FUT'),
+    'spread_cost_factor': ('COSTS', 'SPREAD_COST_FACTOR'),
+
+    # Sizing (MT5: lots, not USD notional)
+    'hedge_ratio': ('TRADING', 'HEDGE_RATIO'),
+    'clip_lots': ('TRADING', 'CLIP_LOTS'),
+    'slice_lots': ('TRADING', 'SLICE_LOTS'),
+    'daily_lot_target': ('TRADING', 'DAILY_LOT_TARGET'),
+    'poll_interval_sec': ('TRADING', 'POLL_INTERVAL_SEC'),
+
+    # Execution
+    'entry_execution_mode': ('EXECUTION', 'ENTRY_STYLE'),
+    'limit_order_timeout_sec': ('EXECUTION', 'LIMIT_TIMEOUT_SEC'),
+    'hedge_timeout_sec': ('EXECUTION', 'HEDGE_TIMEOUT_SEC'),
+    'exit_timeout_sec': ('EXECUTION', 'EXIT_TIMEOUT_SEC'),
+    'limit_peg_interval': ('EXECUTION', 'REPEG_INTERVAL_SEC'),
+    'limit_order_price_offset_bps': ('EXECUTION', 'PEG_OFFSET_POINTS'),
+    'min_fill_ratio': ('EXECUTION', 'MIN_MATCHED_FRACTION'),
+    'on_timeout': ('EXECUTION', 'ON_TIMEOUT'),
+    'slippage_tolerance': ('EXECUTION', 'SLIPPAGE_TOLERANCE'),
+
+    # Risk / breakers
+    'max_positions': ('RISK_LIMITS', 'MAX_POSITIONS_PER_ASSET'),
+    'max_lot_size': ('RISK_LIMITS', 'MAX_LOT_SIZE'),
+    'max_daily_trades': ('RISK_LIMITS', 'MAX_DAILY_TRADES'),
+    'daily_max_loss_usd': ('RISK_LIMITS', 'DAILY_MAX_LOSS_USD'),
+    'loss_streak_reduce': ('RISK_LIMITS', 'LOSS_STREAK_REDUCE'),
+    'loss_streak_pause': ('RISK_LIMITS', 'LOSS_STREAK_PAUSE'),
+
+    # Reconciliation
+    'sync_interval_sec': ('RECONCILE', 'SYNC_INTERVAL_SEC'),
+    'reconcile_strikes': ('RECONCILE', 'STRIKES'),
+
+    # Telegram toggles (token/chat live in .env)
+    'telegram_enabled': ('TELEGRAM', 'ENABLED'),
+    'telegram_notify_trades': ('TELEGRAM', 'NOTIFY_TRADES'),
+    'telegram_notify_errors': ('TELEGRAM', 'NOTIFY_ERRORS'),
+    'telegram_notify_signals': ('TELEGRAM', 'NOTIFY_SIGNALS'),
+}
+
+SECTION_JSON_KEY = {
+    'SIGNAL_THRESHOLDS': 'signal_thresholds', 'RISK_LIMITS': 'risk_limits',
+    'EXECUTION': 'execution', 'TRADING': 'trading', 'SIGNALS': 'signals',
+    'COSTS': 'costs', 'EXITS': 'exits', 'RECONCILE': 'reconcile',
+    'TELEGRAM': 'telegram',
+}
+
+# Values the UI sends uppercase but the engine stores lowercase
+LOWERCASE_FIELDS = {'entry_execution_mode', 'exit_signal_mode', 'on_timeout'}
+BOOL_FIELDS = {'z_stop_exit_enabled', 'trend_direction_filter',
+               'use_sigma_target', 'use_z_signals', 'telegram_enabled',
+               'telegram_notify_trades', 'telegram_notify_errors',
+               'telegram_notify_signals'}
+
+
+def _defaults():
+    from .config import AlgoTradingConfig
+    return AlgoTradingConfig()
+
+
+def to_ui_config(raw, defaults=None):
+    """Sectioned config.json -> flat W3 field names for the UI."""
+    defaults = defaults or _defaults()
+    out = {}
+    for field, (section, key) in FIELD_MAP.items():
+        merged = dict(getattr(defaults, section))
+        merged.update(raw.get(SECTION_JSON_KEY[section], {}))
+        value = merged.get(key)
+        if field in LOWERCASE_FIELDS and isinstance(value, str):
+            value = value.upper() if field == 'entry_execution_mode' else value
+        out[field] = value
+
+    assets = raw.get('assets') or {
+        k: dict(v) for k, v in defaults.ASSETS.items()}
+    asset_key = next((k for k, v in assets.items() if v.get('enabled', True)),
+                     'GOLD')
+    asset = assets.get(asset_key, {})
+    out['asset'] = asset_key
+    out['spot_symbol'] = (asset.get('spot_symbols') or [''])[0]
+    out['futures_symbol'] = (asset.get('futures_symbols') or [''])[0]
+    out['contract_size'] = asset.get('lot_size')
+    out['swap_charge'] = asset.get('swap_charge')
+    expiry = asset.get('futures_expiry')
+    out['futures_expiry'] = (expiry.isoformat()[:10]
+                             if hasattr(expiry, 'isoformat') else expiry)
+    out['paper_trading'] = raw.get('trading_mode', 'paper') != 'live'
+    out['algo_enabled'] = raw.get('algo_enabled', True)
+    out['accounts'] = raw.get('accounts', {})
+    out['leg_accounts'] = raw.get('leg_accounts', {})
+    return out
+
+
+def apply_ui_config(raw, payload):
+    """Flat W3 field names from the UI -> sectioned config.json (in
+    place). Returns (raw, env_updates, notes)."""
+    env_updates, notes = {}, []
+    for field, value in payload.items():
+        mapping = FIELD_MAP.get(field)
+        if not mapping or value is None:
+            continue
+        section, key = mapping
+        json_key = SECTION_JSON_KEY[section]
+        raw.setdefault(json_key, {})
+        if field in BOOL_FIELDS:
+            value = value in (True, 'true', 'True', 'on', 1, '1')
+        elif field in LOWERCASE_FIELDS:
+            value = str(value).lower()
+        else:
+            try:
+                value = float(value)
+                if value == int(value) and key in (
+                        'MIN_SAMPLES', 'LOOKBACK_SEC', 'STATS_INTERVAL_SEC',
+                        'MAX_POSITIONS_PER_ASSET', 'MAX_DAILY_TRADES',
+                        'LOSS_STREAK_REDUCE', 'LOSS_STREAK_PAUSE',
+                        'SYNC_INTERVAL_SEC', 'STRIKES', 'TREND_WINDOW_SEC',
+                        'ENTRY_COOLDOWN_SEC', 'STOP_COOLDOWN_SEC'):
+                    value = int(value)
+            except (TypeError, ValueError):
+                pass
+        raw[json_key][key] = value
+
+    # Symbols / contract specs live under assets
+    asset_key = payload.get('asset')
+    if asset_key:
+        raw.setdefault('assets', {})
+        asset = raw['assets'].setdefault(asset_key, {})
+        asset.setdefault('name', asset_key)
+        asset.setdefault('enabled', True)
+        if payload.get('spot_symbol'):
+            asset['spot_symbols'] = [payload['spot_symbol']]
+        if payload.get('futures_symbol'):
+            asset['futures_symbols'] = [payload['futures_symbol']]
+        for field, key in (('contract_size', 'lot_size'),
+                           ('swap_charge', 'swap_charge'),
+                           ('futures_expiry', 'futures_expiry')):
+            if payload.get(field) not in (None, ''):
+                asset[key] = payload[field]
+        asset.setdefault('risk_free_rate', 0.0425)
+        asset.setdefault('multiplier', 1.0)
+
+    if 'paper_trading' in payload:
+        paper = payload['paper_trading'] in (True, 'true', 'on', 1, '1')
+        new_mode = 'paper' if paper else 'live'
+        if new_mode != raw.get('trading_mode', 'paper'):
+            notes.append("Trading mode change applies when the launcher "
+                         "is restarted.")
+        raw['trading_mode'] = new_mode
+
+    return raw, env_updates, notes
+
+
+def trade_to_ui(row):
+    """trade_review row -> the W3 journal/trade shape the UI renders."""
+    pnl = row.get('realized_pnl')
+    notional = row.get('notional') or 0
+    entry_spread = row.get('entry_spread')
+    exit_spread = row.get('exit_spread')
+    return {
+        'id': row.get('position_id'),
+        'asset': row.get('asset'),
+        'position_type': ('SHORT' if (row.get('entry_z') or 0) > 0
+                          else 'LONG'),
+        'entry_time': row.get('opened'),
+        'exit_time': row.get('closed'),
+        'entry_zscore': row.get('entry_z'),
+        'exit_zscore': row.get('exit_z'),
+        'entry_spread': entry_spread,
+        'exit_spread': exit_spread,
+        'be_spread': row.get('be_spread'),
+        'ex_spread': row.get('ex_spread'),
+        'tp_spread': row.get('tp_spread'),
+        'sl_spread': row.get('sl_spread'),
+        'quantity': row.get('lots'),
+        'notional_usd': notional,
+        'pnl_usd': pnl,
+        'pnl_pct': (100 * pnl / notional) if (notional and pnl is not None)
+                   else None,
+        'pnl_pct_on_capital': (100 * pnl / notional)
+                              if (notional and pnl is not None) else None,
+        'exit_reason': row.get('exit_reason'),
+        'outcome': row.get('outcome'),
+        'peak_net_usd': row.get('peak_pnl'),
+        'trough_net_usd': row.get('trough_pnl'),
+        'peak_minutes': row.get('peak_min'),
+        'trough_minutes': row.get('trough_min'),
+        'is_open': False,
+        'is_paper': False,
+    }
+
+
+def statistics_from_rows(rows):
+    """Aggregate stats block for the analysis page tiles."""
+    pnls = [r['realized_pnl'] for r in rows
+            if r.get('realized_pnl') is not None]
+    if not pnls:
+        return {'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
+                'win_rate': 0, 'total_pnl': 0, 'avg_pnl': 0, 'avg_win': 0,
+                'avg_loss': 0, 'reward_risk': 0, 'profit_factor': 0,
+                'breakeven_wr': 0, 'expectancy_r': 0, 'max_drawdown': 0,
+                'max_drawdown_pct': 0, 'current_drawdown': 0,
+                'current_drawdown_pct': 0, 'p70_peak': 0,
+                'median_peak_minutes': 0}
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    gross_win, gross_loss = sum(wins), -sum(losses)
+    rr = (avg_win / abs(avg_loss)) if avg_loss else 0.0
+    peak = dd = run = 0.0
+    for p in reversed(pnls):          # rows arrive newest-first
+        run += p
+        peak = max(peak, run)
+        dd = max(dd, peak - run)
+    peaks = sorted(r['peak_pnl'] for r in rows
+                   if r.get('peak_pnl') is not None)
+    peak_mins = sorted(r['peak_min'] for r in rows
+                       if r.get('peak_min') is not None
+                       and (r.get('realized_pnl') or 0) > 0)
+    total = sum(pnls)
+    return {
+        'total_trades': len(pnls), 'winning_trades': len(wins),
+        'losing_trades': len(losses),
+        'win_rate': 100 * len(wins) / len(pnls),
+        'total_pnl': total, 'avg_pnl': total / len(pnls),
+        'expectancy': total / len(pnls),
+        'avg_win': avg_win, 'avg_loss': avg_loss, 'reward_risk': rr,
+        'profit_factor': (gross_win / gross_loss) if gross_loss else 0.0,
+        'breakeven_wr': (100 / (1 + rr)) if rr else 0.0,
+        'expectancy_r': ((total / len(pnls)) / abs(avg_loss))
+                        if avg_loss else 0.0,
+        'max_drawdown': dd, 'max_drawdown_pct': 0.0,
+        'current_drawdown': max(0.0, peak - run),
+        'current_drawdown_pct': 0.0,
+        'p70_peak': peaks[int(0.7 * (len(peaks) - 1))] if peaks else 0.0,
+        'median_peak_minutes': (peak_mins[len(peak_mins) // 2]
+                                if peak_mins else 0.0),
+    }
+
+
+def excursion_row(row):
+    """trade_review row -> the MAE/MFE excursion row the analysis page's
+    'Max Drawdown by Trade' table renders."""
+    pnl = row.get('realized_pnl') or 0.0
+    notional = row.get('notional') or 0.0
+    peak = row.get('peak_pnl')
+    trough = row.get('trough_pnl')
+    target = row.get('capture_target')
+    # The template formats these unconditionally ('%.2f' % value) and
+    # renders MAE as a positive magnitude behind a minus sign, so they
+    # must always be numbers, never None.
+    mae_usd = abs(min(trough or 0.0, 0.0))
+    mfe_usd = max(peak or 0.0, 0.0)
+    return {
+        'id': row.get('position_id'), 'trade_id': row.get('position_id'),
+        'position_type': ('SHORT' if (row.get('entry_z') or 0) > 0
+                          else 'LONG'),
+        'exit_reason': row.get('exit_reason'),
+        'mae_usd': mae_usd, 'mfe_usd': mfe_usd,
+        'mae_pct': (100 * mae_usd / notional) if notional else None,
+        'mfe_pct': (100 * mfe_usd / notional) if notional else None,
+        'mae_eq_pct': (100 * mae_usd / notional) if notional else None,
+        'pnl_usd': pnl, 'exit_net_usd': pnl, 'current_net_usd': pnl,
+        'pnl_pct': (100 * pnl / notional) if notional else None,
+        'pnl_eq_pct': (100 * pnl / notional) if notional else None,
+        'utilization_pct': (100 * pnl / mfe_usd) if mfe_usd else None,
+        'peak_net_usd': peak, 'peak_minutes': row.get('peak_min'),
+        'trough_minutes': row.get('trough_min'),
+        'mins_since_entry': None,
+        'target_usd': target,
+        'hit_target': bool(target and pnl >= target),
+        'hit_be': pnl >= 0, 'hit_be_min': None,
+    }
+
+
+def drawdown_block(rows):
+    """Equity-curve drawdown summary for the analysis tiles."""
+    pnls = [r['realized_pnl'] for r in rows
+            if r.get('realized_pnl') is not None]
+    peak = run = max_dd = 0.0
+    for pnl in reversed(pnls):        # rows arrive newest-first
+        run += pnl
+        peak = max(peak, run)
+        max_dd = max(max_dd, peak - run)
+    current = max(0.0, peak - run)
+    return {
+        'max_usd': max_dd, 'current_usd': current,
+        'peak_equity_usd': peak,
+        'max_pct': (100 * max_dd / peak) if peak else 0.0,
+        'current_pct': (100 * current / peak) if peak else 0.0,
+    }
+
+
+def status_to_ui(status, config_raw):
+    """runtime_status.json -> the /api/engine/status shape the Nexus
+    dashboard consumes."""
+    assets = status.get('assets') or []
+    first = assets[0] if assets else {}
+    positions = status.get('positions') or []
+    open_position = positions[0] if positions else None
+
+    signal = None
+    if first:
+        signal = {
+            'zscore': first.get('z'),
+            'spread': first.get('swap_diff', first.get('basis')),
+            'mean': first.get('mu'), 'std': first.get('sigma'),
+            'half_life': first.get('half_life_min'),
+            'hurst': None, 'regime': first.get('regime'),
+            'data_points': first.get('samples'),
+            'lookback': first.get('lookback'),
+            'data_ready': first.get('z') is not None,
+            'hedge_ratio': (config_raw.get('trading') or {}).get(
+                'HEDGE_RATIO', 1.0),
+            'entry_threshold': (config_raw.get('signals') or {}).get(
+                'ENTRY_Z'),
+            'current_position': open_position['signal_type']
+                                if open_position else 'NONE',
+        }
+
+    open_trade = None
+    if open_position:
+        levels = open_position.get('levels') or {}
+        open_trade = {
+            'id': open_position.get('position_id'),
+            'asset': open_position.get('asset'),
+            'position_type': ('SHORT' if open_position.get('signal_type')
+                              == 'SELL_BASIS' else 'LONG'),
+            'quantity': open_position.get('lots'),
+            'entry_spot_price': open_position.get('entry_spot'),
+            'entry_futures_price': open_position.get('entry_fut'),
+            'entry_spread': levels.get('entry_spread'),
+            'entry_zscore': open_position.get('entry_z'),
+            'unrealized_pnl': open_position.get('unrealized_pnl'),
+            'pnl_usd': open_position.get('net_pnl'),
+            'peak_net_usd': open_position.get('peak_pnl'),
+            'trough_net_usd': open_position.get('trough_pnl'),
+            'notional_usd': open_position.get('notional'),
+            'age_seconds': open_position.get('age_sec'),
+            'max_hold_minutes': (open_position.get('max_hold_sec') or 0) / 60,
+            'half_life_minutes': open_position.get('half_life_min'),
+            'exit_target_usd': open_position.get('tp_usd'),
+            'exit_stop_usd': open_position.get('stop_usd'),
+            'exit_gate_floor_usd': open_position.get('gate_floor_usd'),
+            'spread_levels': {
+                'break_even': levels.get('be'),
+                'gate_release': levels.get('ex'),
+                'take_profit': levels.get('tp'),
+                'stop': levels.get('sl'),
+                'favorable': levels.get('favorable'),
+            } if levels else None,
+            'is_open': True,
+            'is_paper': status.get('mode') != 'LIVE',
+        }
+
+    spot_tick = futures_tick = None
+    if first.get('spot_price') is not None:
+        spot_tick = {'bid': first.get('spot_bid'), 'ask': first.get('spot_ask'),
+                     'last': first.get('spot_price')}
+        futures_tick = {'bid': first.get('fut_bid'), 'ask': first.get('fut_ask'),
+                        'last': first.get('futures_price')}
+
+    return {
+        'is_running': bool(status),
+        'algo_enabled': status.get('algo_enabled', False),
+        'paper_trading': status.get('mode') != 'LIVE',
+        'asset': first.get('asset'),
+        'position': open_trade['position_type'] if open_trade else 'NONE',
+        'signal': signal,
+        'spot_tick': spot_tick,
+        'futures_tick': futures_tick,
+        'open_trade': open_trade,
+        'tick_age_ms': status.get('tick_age_ms'),
+        'ws_connected': bool(status),
+        'sl_cooldown_remaining': 0,
+        'daily_loss_usd': min(0.0, status.get('daily_pnl', 0.0)),
+        'daily_pnl': status.get('daily_pnl', 0.0),
+        'halted': status.get('halted', False),
+        'halt_reason': status.get('halt_reason'),
+        'shadow_active': (status.get('shadow') or {}).get('active', 0),
+        'execution_backend': 'MT5',
+        'test_results': status.get('test_results'),
+        'updated': status.get('updated'),
+    }

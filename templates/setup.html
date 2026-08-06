@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}MT5 Brokers - Nexus{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <h4 class="mb-1">MT5 Brokers</h4>
+    <p class="text-secondary">Each MT5 terminal serves one account. Configure
+       the accounts here, map them to Leg A / Leg B, then restart the
+       launcher.</p>
+
+    <div class="card mt-3">
+        <div class="card-header"><i class="bi bi-hdd-network me-2"></i>Accounts</div>
+        <div class="card-body">
+            <div id="brokers-list"></div>
+            <p class="text-secondary small mb-0 mt-3">
+                Add, edit and map accounts on the
+                <a href="/settings#brokers">Settings</a> page &mdash; passwords
+                are written to the local <code>.env</code> file and never
+                stored in config or git.
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadBrokers() {
+    const brokers = await (await fetch('/api/exchanges')).json();
+    document.getElementById('brokers-list').innerHTML = brokers.length ? `
+        <table class="table table-sm table-dark align-middle mb-0">
+            <thead><tr><th>Account</th><th>Login</th><th>Server</th>
+            <th>Terminal</th><th>Endpoint</th><th>Role</th></tr></thead>
+            <tbody>${brokers.map(b => `
+                <tr><td><strong>${b.name}</strong></td><td>${b.login || '—'}</td>
+                <td>${b.server || '—'}</td>
+                <td class="small text-secondary">${b.terminal_path || 'attach to open terminal'}</td>
+                <td class="small">${b.endpoint || 'in-process'}</td>
+                <td>${b.role === 'NONE'
+                    ? '<span class="badge bg-secondary">unused</span>'
+                    : `<span class="badge bg-primary">${b.role}</span>`}</td></tr>`).join('')}
+            </tbody></table>`
+        : '<p class="text-secondary mb-0">No accounts configured yet.</p>';
+}
+document.addEventListener('DOMContentLoaded', loadBrokers);
+</script>
+{% endblock %}
