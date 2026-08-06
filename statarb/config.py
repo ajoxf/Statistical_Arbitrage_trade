@@ -147,6 +147,10 @@ class AlgoTradingConfig:
         self.RECONCILE = {
             'SYNC_INTERVAL_SEC': 20,
             'STRIKES': 3,            # consecutive mismatches before acting
+            # Failed orphan closes before escalating instead of
+            # retrying every pass forever (a position the broker will
+            # not let us close needs a human, not another attempt).
+            'CLOSE_ATTEMPTS': 3,
         }
         # Manual Spread Trade (dashboard panel) + overnight handling
         self.MANUAL = {

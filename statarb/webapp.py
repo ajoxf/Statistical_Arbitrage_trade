@@ -923,17 +923,35 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     # -- MT5 order tests (W3's test-order / test-suite panels) --
 
     def _test_state():
+        """The per-leg order check, in the shape the vendored suite
+        table renders: label / mode / order_type / status / detail.
+        Feeding it our raw {leg, check, ok, detail} rows printed a
+        table of 'undefined'."""
         results = runtime_status().get('test_results') or {}
         rows = results.get('results') or []
+        scenarios = [{
+            'id': f"{row.get('leg', '')}:{row.get('check', index)}",
+            'label': row.get('check') or 'check',
+            'mode': 'CHECK',
+            'order_type': row.get('leg') or '',
+            'status': 'pass' if row.get('ok') else 'fail',
+            'detail': row.get('detail') or '',
+            'cancel_test': False,
+        } for index, row in enumerate(rows)]
         return {
             'running': False,
             'kind': results.get('kind'),
             'ts': results.get('ts'),
             'results': rows,
-            'scenarios': rows,
+            'scenarios': scenarios,
             'passed': sum(1 for r in rows if r.get('ok')),
             'failed': sum(1 for r in rows if not r.get('ok')),
+            # the vendored table reads these names for its counters
+            'pass': sum(1 for r in rows if r.get('ok')),
+            'fail': sum(1 for r in rows if not r.get('ok')),
+            'current': len(rows),
             'total': len(rows),
+            'order_mode': results.get('kind'),
         }
 
     @app.route('/api/test-suite/status')

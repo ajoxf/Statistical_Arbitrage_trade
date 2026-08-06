@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  412 tests, all fakes, no MT5 (runs anywhere)
+tests/                  421 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -291,6 +291,23 @@ per-leg maker/taker fee split, backtest suite.
   the web dashboard are all ported to this system. Only the OKX
   adapter remains unported — the sole reason to keep that branch.
 - Other `claude/*` branches: session artifacts, superseded.
+
+## Live LIVE-run bugs (2026-08-06, CFI7-Demo, engine streaming)
+
+- **Filling mode**: `close_position_ticket` and `send_market_order`
+  hardcoded ORDER_FILLING_IOC, so on a FOK-only broker EVERY close came
+  back `10030 Unsupported filling mode` — the engine could open and
+  never exit. Both now read symbol_info.filling_mode and RETRY across
+  the allowed modes (`_send_market`); only 10030 is retried, and the
+  error names what the broker allows. The pending path already did
+  this; the market paths did not.
+- An orphan the broker refuses to close was retried every 20s forever.
+  After RECONCILE.CLOSE_ATTEMPTS (3) failures the reconciler escalates
+  ONCE with "CLOSE IT BY HAND" and stops hammering it; a later
+  successful close clears the escalation.
+- The Settings suite table rendered "undefined" rows: it was fed the
+  raw {leg, check, ok, detail} rows while the vendored template reads
+  label/mode/order_type/status/detail. _test_state now maps them.
 
 ## Live startup bugs found on the operator's box (2026-08-06)
 

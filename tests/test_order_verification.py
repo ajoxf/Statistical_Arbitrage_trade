@@ -345,3 +345,118 @@ def test_the_dashboard_table_shows_the_source(client):
     log = page.split('Exchange Order Log', 1)[1]
     assert '<th>Source</th>' in log.split('</thead>', 1)[0]
     assert 'SOURCE_STYLE' in page
+
+
+# --- filling mode: the broker decides, not us ----------------------------
+# Live on CFI7-Demo: every close came back "10030 - Unsupported filling
+# mode" because the market paths hardcoded IOC. The engine could open
+# positions and never exit them.
+
+class FillingMT5:
+    ORDER_FILLING_FOK = 0
+    ORDER_FILLING_IOC = 1
+    ORDER_FILLING_RETURN = 2
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    ORDER_TIME_GTC = 0
+    TRADE_ACTION_DEAL = 1
+    TRADE_RETCODE_DONE = 10009
+    POSITION_TYPE_BUY = 0
+
+    def __init__(self, allowed_mask, accepts):
+        self.allowed_mask = allowed_mask
+        self.accepts = accepts          # the ONE mode the broker takes
+        self.attempts = []
+
+    def symbol_info(self, symbol):
+        return SimpleNamespace(filling_mode=self.allowed_mask, point=0.01,
+                               digits=2, visible=True)
+
+    def symbol_info_tick(self, symbol):
+        return SimpleNamespace(bid=3300.0, ask=3300.2, last=3300.1,
+                               time=1_760_000_000)
+
+    def positions_get(self, **kwargs):
+        return ()
+
+    def history_deals_get(self, *args, **kwargs):
+        return ()
+
+    def last_error(self):
+        return (0, 'ok')
+
+    def order_send(self, request):
+        mode = request['type_filling']
+        self.attempts.append(mode)
+        if mode != self.accepts:
+            return SimpleNamespace(retcode=10030,
+                                   comment='Unsupported filling mode',
+                                   order=0, price=0.0, volume=0.0)
+        return SimpleNamespace(retcode=self.TRADE_RETCODE_DONE,
+                               comment='Done', order=555,
+                               price=request['price'],
+                               volume=request['volume'])
+
+
+def test_a_close_retries_until_the_broker_accepts_a_filling_mode(mt5):
+    """FOK-only broker: the close must still go through."""
+    from statarb.models import OrderSide
+    fake = mt5(FillingMT5(allowed_mask=1,
+                          accepts=FillingMT5.ORDER_FILLING_FOK))
+    result = session().close_position_ticket('XAUUSD_', 102269341, 0.01,
+                                             OrderSide.BUY)
+    assert result.success
+    assert FillingMT5.ORDER_FILLING_FOK in fake.attempts
+
+
+def test_an_ioc_broker_is_served_first_since_it_allows_partials(mt5):
+    from statarb.models import OrderSide
+    fake = mt5(FillingMT5(allowed_mask=2,
+                          accepts=FillingMT5.ORDER_FILLING_IOC))
+    assert session().close_position_ticket('XAUUSD_', 1, 0.01,
+                                           OrderSide.BUY).success
+    assert fake.attempts[0] == FillingMT5.ORDER_FILLING_IOC
+
+
+def test_market_orders_use_the_brokers_mode_too(mt5):
+    from statarb.models import OrderSide
+    fake = mt5(FillingMT5(allowed_mask=1,
+                          accepts=FillingMT5.ORDER_FILLING_FOK))
+    result = session().send_market_order('XAUUSD_', OrderSide.BUY, 0.01)
+    assert result.success and result.ticket == 555
+    assert FillingMT5.ORDER_FILLING_FOK in fake.attempts
+
+
+def test_a_symbol_declaring_nothing_still_gets_all_three_tried(mt5):
+    from statarb.models import OrderSide
+    fake = mt5(FillingMT5(allowed_mask=0,
+                          accepts=FillingMT5.ORDER_FILLING_RETURN))
+    assert session().send_market_order('XAUUSD_', OrderSide.BUY, 0.01).success
+    assert len(fake.attempts) == 3
+
+
+def test_a_genuine_rejection_is_not_retried_forever(mt5):
+    """Only 10030 means 'wrong filling mode'. Anything else — no money,
+    market closed — must surface immediately."""
+    from statarb.models import OrderSide
+
+    class Rejects(FillingMT5):
+        def order_send(self, request):
+            self.attempts.append(request['type_filling'])
+            return SimpleNamespace(retcode=10019, comment='No money',
+                                   order=0, price=0.0, volume=0.0)
+
+    fake = mt5(Rejects(allowed_mask=3, accepts=None))
+    result = session().send_market_order('XAUUSD_', OrderSide.BUY, 0.01)
+    assert not result.success and 'No money' in result.error
+    assert len(fake.attempts) == 1
+
+
+def test_exhausting_every_mode_says_what_the_broker_allows(mt5):
+    from statarb.models import OrderSide
+    mt5(FillingMT5(allowed_mask=1, accepts=None))
+    result = session().close_position_ticket('XAUUSD_', 1, 0.01,
+                                             OrderSide.BUY)
+    assert not result.success
+    assert 'tried every filling mode' in result.error
+    assert 'broker allows FOK' in result.error

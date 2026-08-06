@@ -154,3 +154,77 @@ def test_failed_orphan_close_books_nothing(config, data_logger):
     conn.close()
     assert rows[0] == 0
     assert rm.daily_realized_pnl == 0.0
+
+
+def test_an_orphan_that_cannot_be_closed_escalates_once(config,
+                                                        data_logger, caplog):
+    """Live on CFI: every close came back 'Unsupported filling mode' and
+    the reconciler retried the same four positions every 20 seconds
+    forever. A position the broker will not close needs a human."""
+    from statarb.reconcile import Reconciler
+    from statarb.positions import PositionManager
+    from statarb.risk import RiskManager
+
+    class StuckLeg:
+        name = 'Uts'
+
+        def __init__(self):
+            self.attempts = 0
+
+        def positions(self, symbol=None):
+            return [{'ticket': 102269341, 'symbol': 'XAUUSD_', 'side': 'BUY',
+                     'volume': 0.01, 'price_open': 4260.0}]
+
+        def close_ticket(self, *args, **kwargs):
+            self.attempts += 1
+            return {'ok': False, 'filled_volume': 0.0, 'price': None,
+                    'error': 'Close failed: 10030 - Unsupported filling mode'}
+
+    leg = StuckLeg()
+    reconciler = Reconciler(config, PositionManager(data_logger),
+                            data_logger, RiskManager(config),
+                            {'spot': leg, 'futures': leg},
+                            clock=lambda: 0.0)
+    strikes = config.RECONCILE['STRIKES']
+    attempts_allowed = config.RECONCILE['CLOSE_ATTEMPTS']
+
+    with caplog.at_level('CRITICAL'):
+        for _ in range(strikes * (attempts_allowed + 4)):
+            reconciler.last_sync = -1e9        # always due
+            reconciler.check()
+
+    assert leg.attempts == attempts_allowed    # stopped hammering it
+    assert 'CLOSE IT BY HAND' in caplog.text
+    assert caplog.text.count('GIVING UP') == 1  # escalated exactly once
+
+
+def test_a_close_that_starts_working_clears_the_escalation(config,
+                                                           data_logger):
+    from statarb.reconcile import Reconciler
+    from statarb.positions import PositionManager
+    from statarb.risk import RiskManager
+
+    class Leg:
+        name = 'Uts'
+        open_position = True
+
+        def positions(self, symbol=None):
+            return ([{'ticket': 7001, 'symbol': 'XAUUSD_', 'side': 'BUY',
+                      'volume': 0.01, 'price_open': 4260.0}]
+                    if self.open_position else [])
+
+        def close_ticket(self, *args, **kwargs):
+            self.open_position = False
+            return {'ok': True, 'filled_volume': 0.01, 'price': 4261.0,
+                    'error': None}
+
+    leg = Leg()
+    reconciler = Reconciler(config, PositionManager(data_logger),
+                            data_logger, RiskManager(config),
+                            {'spot': leg, 'futures': leg},
+                            clock=lambda: 0.0)
+    for _ in range(config.RECONCILE['STRIKES']):
+        reconciler.last_sync = -1e9
+        actions = reconciler.check()
+    assert ('orphan_closed', 'Uts', 7001) in actions
+    assert not reconciler.unclosable

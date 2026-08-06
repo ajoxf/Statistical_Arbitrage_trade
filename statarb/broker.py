@@ -471,6 +471,51 @@ class BrokerSession:
         modes.append('RETURN')  # always available for pending orders
         return modes
 
+    def _market_filling_modes(self, symbol):
+        """Filling modes to try for a MARKET order, best first.
+
+        symbol_info.filling_mode is a bitmask of what the broker allows
+        (FOK=1, IOC=2). Hardcoding IOC here used to make every close
+        fail with 10030 'Unsupported filling mode' on brokers that only
+        allow FOK — the engine could open but never exit."""
+        info = self.symbol_info(symbol)
+        mask = getattr(info, 'filling_mode', 0) if info else 0
+        modes = []
+        if mask & 2:
+            modes.append(mt5.ORDER_FILLING_IOC)   # allows partial fills
+        if mask & 1:
+            modes.append(mt5.ORDER_FILLING_FOK)
+        if not modes:
+            # Nothing declared: try all three rather than guess wrong.
+            modes = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK,
+                     mt5.ORDER_FILLING_RETURN]
+        elif mt5.ORDER_FILLING_RETURN not in modes:
+            modes.append(mt5.ORDER_FILLING_RETURN)
+        return modes
+
+    def _send_market(self, request, symbol):
+        """order_send, retrying with another filling mode if the broker
+        rejects the one we chose. Returns (result, last_mode)."""
+        result = None
+        for mode in self._market_filling_modes(symbol):
+            request["type_filling"] = mode
+            result = mt5.order_send(request)
+            if result is None:
+                continue
+            if result.retcode != 10030:        # not a filling-mode problem
+                return result, mode
+            logging.debug("%s rejected filling mode %s (10030) — retrying",
+                          symbol, mode)
+        return result, None
+
+    def _filling_hint(self, symbol):
+        info = self.symbol_info(symbol)
+        mask = getattr(info, 'filling_mode', 0) if info else 0
+        allowed = [name for bit, name in ((1, 'FOK'), (2, 'IOC')) if mask & bit]
+        return (f"broker allows {'/'.join(allowed)} for {symbol}"
+                if allowed else
+                f"{symbol} declares no filling mode")
+
     def _pending_filling_mode(self, symbol):
         """Pick a filling mode the broker actually accepts for pending
         orders. RETURN is the default, but some brokers only allow
@@ -622,12 +667,14 @@ class BrokerSession:
                 "magic": MAGIC_NUMBER,
                 "comment": comment,
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
             }
-            result = mt5.order_send(request)
+            result, _mode = self._send_market(request, symbol)
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                 error = (mt5.last_error() if result is None
                          else f"{result.retcode} - {result.comment}")
+                if result is not None and result.retcode == 10030:
+                    error += f" (tried every filling mode; " \
+                             f"{self._filling_hint(symbol)})"
                 return OrderResult(False, requested_price=price,
                                    error=f"Close failed: {error}")
             return OrderResult(True, requested_price=price,
@@ -663,17 +710,19 @@ class BrokerSession:
                 "magic": MAGIC_NUMBER,
                 "comment": comment,
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
-            result = mt5.order_send(request)
+            result, _mode = self._send_market(request, symbol)
             if result is None:
                 return OrderResult(False, requested_price=price,
                                    error=f"order_send failed: {mt5.last_error()}")
             if result.retcode != mt5.TRADE_RETCODE_DONE:
-                return OrderResult(
-                    False, requested_price=price,
-                    error=f"Order failed: {result.retcode} - {result.comment}")
+                detail = f"{result.retcode} - {result.comment}"
+                if result.retcode == 10030:
+                    detail += f" (tried every filling mode; " \
+                              f"{self._filling_hint(symbol)})"
+                return OrderResult(False, requested_price=price,
+                                   error=f"Order failed: {detail}")
 
             return OrderResult(True, requested_price=price,
                                executed_price=result.price,

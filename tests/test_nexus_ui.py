@@ -495,3 +495,27 @@ def test_telegram_secrets_go_to_env(client):
     # GET masks the token
     assert client.get('/api/telegram/config').get_json()[
         'telegram_bot_token'] == '***'
+
+
+def test_the_settings_suite_table_gets_renderable_rows(client, tmp_path):
+    """It rendered a table of 'undefined': the per-leg order check rows
+    were handed straight to the vendored scenario table, which reads
+    label / mode / order_type / status / detail."""
+    (client.tmp_path / "runtime_status.json").write_text(json.dumps({
+        'test_results': {'kind': 'orders', 'ts': '11:00:00', 'results': [
+            {'leg': 'Uts', 'check': 'connection ping', 'ok': True,
+             'detail': ''},
+            {'leg': 'Uts', 'check': 'account info', 'ok': True,
+             'detail': 'login 32020119 equity $50,019'},
+            {'leg': 'Uts', 'check': 'market open XAUUSD_', 'ok': False,
+             'detail': 'Unsupported filling mode'}]}}))
+    state = client.get('/api/test-suite/status').get_json()
+    rows = state['scenarios']
+    assert [r['label'] for r in rows] == ['connection ping', 'account info',
+                                          'market open XAUUSD_']
+    assert [r['status'] for r in rows] == ['pass', 'pass', 'fail']
+    assert all(r['order_type'] == 'Uts' for r in rows)
+    assert all(r['id'] for r in rows)
+    assert state['pass'] == 2 and state['fail'] == 1
+    assert state['current'] == 3 and state['total'] == 3
+    assert 'undefined' not in json.dumps(rows)

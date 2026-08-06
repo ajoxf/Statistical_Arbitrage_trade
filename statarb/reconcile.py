@@ -34,6 +34,8 @@ class Reconciler:
         self.clock = clock
         self.orphan_strikes = {}    # (leg_name, ticket) -> count
         self.ghost_strikes = {}     # position_id -> count
+        self.close_failures = {}    # (leg_name, ticket) -> failed closes
+        self.unclosable = {}        # (leg_name, ticket) -> last error
         self.last_sync = 0.0
 
     # ------------------------------------------------------------------
@@ -85,7 +87,11 @@ class Reconciler:
                 key = (leg.name, ticket)
                 if ticket in expected_by_leg[leg_id]:
                     self.orphan_strikes.pop(key, None)
+                    self.close_failures.pop(key, None)
+                    self.unclosable.pop(key, None)
                     continue
+                if key in self.unclosable:
+                    continue        # already escalated; do not spam
                 self.orphan_strikes[key] = self.orphan_strikes.get(key, 0) + 1
                 logging.warning(
                     "Reconcile: orphan position on [%s]: ticket %s %s "
@@ -154,10 +160,25 @@ class Reconciler:
                 pos_info['symbol'], pos_info['ticket'],
                 pos_info['volume'], cost)
         else:
-            # Failed close books NOTHING — it will strike again next pass
+            # Failed close books NOTHING — it strikes again next pass.
+            # After enough failures the retry loop is just noise hiding
+            # a position that needs a human: say so once, loudly, and
+            # stop re-trying that ticket.
+            key = (leg.name, pos_info['ticket'])
+            self.close_failures[key] = self.close_failures.get(key, 0) + 1
+            attempts = self.close_failures[key]
             logging.critical(
-                "Reconcile: orphan close FAILED on [%s] ticket %s: %s",
-                leg.name, pos_info['ticket'], result.get('error'))
+                "Reconcile: orphan close FAILED on [%s] ticket %s "
+                "(attempt %d): %s", leg.name, pos_info['ticket'], attempts,
+                result.get('error'))
+            if attempts >= self.config.RECONCILE.get('CLOSE_ATTEMPTS', 3):
+                self.unclosable[key] = result.get('error')
+                logging.critical(
+                    "Reconcile: GIVING UP on [%s] ticket %s %s %.2f lots "
+                    "after %d attempts — CLOSE IT BY HAND in the terminal. "
+                    "Last error: %s", leg.name, pos_info['ticket'],
+                    pos_info['symbol'], pos_info['volume'], attempts,
+                    result.get('error'))
 
     def _force_clear(self, position):
         position.status = PositionStatus.CLOSED
