@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  430 tests, all fakes, no MT5 (runs anywhere)
+tests/                  432 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -346,6 +346,12 @@ per-leg maker/taker fee split, backtest suite.
 - Symbols follow app.py's model: the symbol, contract size, swap and
   expiry live on the BROKER ROW with its leg, not in a separate panel.
   Saving a row writes leg_accounts[role] and assets[..]_symbols.
+  Settings' Pair Selection therefore shows the two symbols READ-ONLY
+  (with a link to Exchanges) and dropped the Quick Pick dropdown —
+  editing a symbol there set no leg mapping, so the two places could
+  silently disagree. HEDGE_RATIO stays editable in Settings: it is a
+  strategy parameter, and the connectivity check computes the right
+  value from the two contract sizes.
 - Setup must work with the coordinator DOWN. Symbol search, [Test] and
   [Diagnose] now talk STRAIGHT to the account's leg runner over its
   endpoint (webapp opens a short-lived RemoteLeg — a socket client, no

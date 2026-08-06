@@ -519,3 +519,30 @@ def test_the_settings_suite_table_gets_renderable_rows(client, tmp_path):
     assert state['pass'] == 2 and state['fail'] == 1
     assert state['current'] == 3 and state['total'] == 3
     assert 'undefined' not in json.dumps(rows)
+
+
+def test_symbols_are_not_editable_in_two_places(client):
+    """They live on the Exchanges page next to the account that trades
+    them; Settings shows them read-only so the two cannot disagree."""
+    page = client.get('/settings').get_data(as_text=True)
+    pair = page.split('Pair Selection', 1)[1].split('</div>\n                    </div>', 1)[0]
+    for field in ('id="spot_symbol"', 'id="futures_symbol"'):
+        block = pair.split(field, 1)[1].split('>', 1)[0]
+        assert 'readonly' in block, f'{field} should be read-only'
+    assert 'asset_quickpick' not in page       # dropdown removed with it
+    assert 'change on Exchanges' in pair
+
+
+def test_the_hedge_ratio_stays_editable_in_settings(client):
+    """Beta is a strategy parameter, not a broker fact."""
+    page = client.get('/settings').get_data(as_text=True)
+    block = page.split('id="hedge_ratio"', 1)[1].split('>', 1)[0]
+    assert 'readonly' not in block
+    # (with a flat book — a beta change mid-trade is refused by design)
+    status = json.loads((client.tmp_path / "runtime_status.json").read_text())
+    status['positions'] = []
+    (client.tmp_path / "runtime_status.json").write_text(json.dumps(status))
+    assert client.post('/api/config', json={'hedge_ratio': 2.0}
+                       ).status_code == 200
+    raw = json.loads((client.tmp_path / "config.json").read_text())
+    assert raw['trading']['HEDGE_RATIO'] == 2.0

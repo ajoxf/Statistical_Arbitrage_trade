@@ -18,34 +18,27 @@
                             <small class="text-secondary d-block mb-3">
                                 Trade the spread between <strong>any two MT5 symbols</strong> &mdash; Leg A
                                 and Leg B can each be spot metal or a dated future, on one broker or two. Same
-                                underlying (classic basis trade) or two entirely different instruments
-                                (cross-instrument / fiat-quote / inter-exchange spread). Type to search; the
-                                full live list is loaded from the exchange.
+                                underlying (classic basis trade) or two entirely different instruments.
+                                The symbols themselves are set per account on the
+                                <a href="/setup">Exchanges</a> page, next to the leg that trades them &mdash;
+                                shown here for reference. &beta; below is a strategy setting and is edited here.
                             </small>
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Quick Pick <small class="text-secondary">(basis trade shortcut)</small></label>
-                            <select class="form-select" id="asset_quickpick"
-                                    title="One-click fills both legs for the classic spot vs perp basis trade. Leave alone and pick legs manually for any other spread.">
-                                <option value="">&mdash; choose &mdash;</option>
-                                {% for key, asset in assets.items() %}
-                                <option value="{{ key }}">{{ key }} - {{ asset.name }}</option>
-                                {% endfor %}
-                            </select>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Leg A <small class="text-secondary">(spot symbol, Broker&nbsp;1)</small></label>
                             <input type="text" class="form-control" id="spot_symbol" name="spot_symbol"
-                                   list="spot_symbols_list" value="{{ config.spot_symbol }}"
-                                   placeholder="e.g. XAUUSD  or  XAUUSD_  or  GOLD" autocomplete="off">
-                            <datalist id="spot_symbols_list"></datalist>
+                                   value="{{ config.spot_symbol }}" readonly
+                                   title="Set on the Exchanges page, on the account that trades this leg">
+                            <small class="text-secondary">from the Leg A account &mdash;
+                                <a href="/setup">change on Exchanges</a></small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Leg B <small class="text-secondary">(futures symbol, Broker&nbsp;2)</small></label>
                             <input type="text" class="form-control" id="futures_symbol" name="futures_symbol"
-                                   list="futures_symbols_list" value="{{ config.futures_symbol }}"
-                                   placeholder="e.g. GC1225  or  XAUUSD.f  or  GCZ5" autocomplete="off">
-                            <datalist id="futures_symbols_list"></datalist>
+                                   value="{{ config.futures_symbol }}" readonly
+                                   title="Set on the Exchanges page, on the account that trades this leg">
+                            <small class="text-secondary">from the Leg B account &mdash;
+                                <a href="/setup">change on Exchanges</a></small>
                         </div>
                         <div class="col-md-4 mt-3">
                             <label class="form-label d-flex justify-content-between align-items-center">
@@ -1128,23 +1121,12 @@
         return label;
     }
 
-    // Quick-pick fills both legs with the same underlying, then re-labels
-    document.getElementById('asset_quickpick').addEventListener('change', function() {
-        const asset = this.value;
-        if (assetSymbols[asset]) {
-            document.getElementById('spot_symbol').value = assetSymbols[asset].spot;
-            document.getElementById('futures_symbol').value = assetSymbols[asset].futures;
-            updatePairLabel();
-        }
-    });
-
-    // Re-label and re-check warning whenever either leg is edited directly
-    document.getElementById('spot_symbol').addEventListener('input', function() {
-        updatePairLabel(); checkPairWarning(); fetchBetaSuggestion();
-    });
-    document.getElementById('futures_symbol').addEventListener('input', function() {
-        updatePairLabel(); checkPairWarning(); fetchBetaSuggestion();
-    });
+    // The symbols are read-only here — they belong to the account that
+    // trades the leg, on the Exchanges page. Label and beta suggestion
+    // are computed once from whatever they hold.
+    updatePairLabel();
+    checkPairWarning();
+    fetchBetaSuggestion();
 
     // Live β suggestion = mid(Leg B) / mid(Leg A) from MT5
     // Debounced so typing doesn't fire a fetch per keystroke. Cleared whenever
@@ -1407,11 +1389,11 @@
                                          + spotN + ' spot · ' + futN + ' perp+dated)';
                     checkPairWarning();
                 } else {
-                    status.textContent = '· could not load instrument list (connect the exchange first)';
+                    status.textContent = '';   // symbols come from Exchanges
                 }
             })
             .catch(function() {
-                status.textContent = '· could not load instrument list';
+                status.textContent = '';       // symbols come from Exchanges
             });
     }
 
