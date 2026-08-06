@@ -181,7 +181,7 @@
                 </div>
             </div>
             <div class="text-end">
-                <div id="data-count-display" class="fw-bold font-monospace">0 / {{ config.lookback_period }}</div>
+                <div id="data-count-display" class="fw-bold font-monospace">0 / {{ config.min_samples }}</div>
                 <small class="text-secondary">data points</small>
             </div>
         </div>
@@ -358,7 +358,7 @@
                         <div class="metric-label">Spread</div>
                         <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
                              id="spread-breakdown"
-                             title="Spread = futures price − hedge_ratio × spot price"></div>
+                             title="What the engine z-scores. With a live futures expiry and a known carry cost it is the basis minus the carry; otherwise it is the raw basis."></div>
                     </div>
                     <div class="col-4 text-center">
                         <div class="d-flex align-items-center justify-content-center gap-2">
@@ -566,7 +566,7 @@
                     <div class="progress flex-grow-1 me-2" style="height: 6px;">
                         <div class="progress-bar bg-success" role="progressbar" id="collection-progress" style="width: 0%"></div>
                     </div>
-                    <span id="data-points" class="text-secondary">0</span>/<span class="text-secondary">{{ config.lookback_period }}</span>
+                    <span id="data-points" class="text-secondary">0</span>/<span class="text-secondary">{{ config.min_samples }}</span>
                     <span class="ms-2 text-secondary">(<span id="collection-percent">0</span>%)</span>
                 </div>
             </div>
@@ -2207,6 +2207,18 @@
         spreadEl.classList.remove('price-up', 'price-down', 'price-neutral');
         spreadEl.classList.add(spread > 0 ? 'price-up' : spread < 0 ? 'price-down' : 'price-neutral');
 
+        // Show how the spread was derived. A carry-detrended spread does
+        // NOT equal futures minus spot, and one bare number on a card
+        // gives no way to tell a detrended spread from a broken one.
+        const breakdownEl = document.getElementById('spread-breakdown');
+        if (breakdownEl && data.raw_basis != null) {
+            breakdownEl.textContent = data.carry_adjusted
+                ? 'basis ' + data.raw_basis.toFixed(2) +
+                  ' − carry ' + (data.carry || 0).toFixed(2)
+                : 'raw basis (no carry)';
+            breakdownEl.style.display = '';
+        }
+
         // Position Δ Spread — how far the spread has moved since entry, colored
         // by whether that move is favorable for the current direction.
         //   LONG  profits when spread falls → favorable when Δ < 0
@@ -2357,7 +2369,7 @@
         }
 
         const dataPoints = data.data_points || 0;
-        const lookback = data.lookback || {{ config.lookback_period }};
+        const lookback = data.lookback || {{ config.min_samples }};
         document.getElementById('data-points').textContent = dataPoints;
 
         const progressPercent = Math.min(100, (dataPoints / lookback) * 100);
@@ -2488,7 +2500,7 @@
     let _cachedCurrentPosition = 'NONE';
     let _cachedDataReady = false;
     let _cachedDataPoints = 0;
-    let _cachedLookback = {{ config.lookback_period if config.lookback_period else 100 }};
+    let _cachedLookback = {{ config.min_samples if config.min_samples else 100 }};
 
     function _relAge(ms) {
         if (ms < 5_000)      return 'just now';

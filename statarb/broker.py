@@ -205,6 +205,10 @@ class BrokerSession:
             'expiry': int(getattr(info, 'expiration_time', 0) or 0),
             'swap_long': getattr(info, 'swap_long', None),
             'swap_short': getattr(info, 'swap_short', None),
+            # Without the mode, swap_long is an uninterpretable number:
+            # it is points, or a currency amount, or an annual interest
+            # rate, depending on this. See Coordinator._swap_to_currency.
+            'swap_mode': getattr(info, 'swap_mode', None),
         }
 
     def verify_ticket(self, ticket, attempts=3, delay=0.4):

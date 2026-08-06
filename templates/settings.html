@@ -230,12 +230,21 @@
                         <div class="col-12">
                             <h6 class="text-secondary mb-3">Rolling Window Settings</h6>
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Lookback Period</label>
-                            <input type="number" class="form-control" id="lookback_period" name="lookback_period" value="{{ config.lookback_period }}" min="20" max="100000">
-                            <small class="text-secondary">Number of ticks to collect before trading. Progress shown on dashboard.</small>
+                        <div class="col-md-4">
+                            <label class="form-label">Lookback Window (seconds)</label>
+                            <input type="number" class="form-control" id="lookback_period" name="lookback_period" value="{{ config.lookback_period }}" min="60" max="100000">
+                            <small class="text-secondary">How far back mean/std are measured &mdash; a DURATION, not a
+                            tick count. Quotes older than this leave the window. Too short and
+                            std collapses, which is what produces an absurd z.</small>
                         </div>
-                        <div class="col-md-6">
+                        <div class="col-md-4">
+                            <label class="form-label">Minimum Samples</label>
+                            <input type="number" class="form-control" id="min_samples" name="min_samples" value="{{ config.min_samples }}" min="20" max="100000">
+                            <small class="text-secondary">Quotes needed inside the window before trading starts. THIS is
+                            what the dashboard's warm-up bar counts against. Repeated quotes
+                            don't count &mdash; only ones the broker actually moved.</small>
+                        </div>
+                        <div class="col-md-4">
                             <label class="form-label">Stats Update Interval (seconds)</label>
                             <select class="form-select" id="stats_update_interval" name="stats_update_interval">
                                 <option value="0" {% if config.stats_update_interval == 0 %}selected{% endif %}>Every tick (real-time)</option>
@@ -1526,6 +1535,7 @@
             exit_profit_gate_usd: parseFloat(document.getElementById('exit_profit_gate_usd').value) || 0,
             exit_profit_gate_pct: parseFloat(document.getElementById('exit_profit_gate_pct').value) || 0,
             lookback_period: parseInt(document.getElementById('lookback_period').value),
+            min_samples: parseInt(document.getElementById('min_samples').value),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
             hurst_enabled: document.getElementById('hurst_enabled').checked,
             hurst_threshold: parseFloat(document.getElementById('hurst_threshold').value),
@@ -1810,6 +1820,7 @@
                 document.getElementById('exit_profit_gate_usd').value = config.exit_profit_gate_usd || 0;
                 document.getElementById('exit_profit_gate_pct').value = config.exit_profit_gate_pct || 0;
                 document.getElementById('lookback_period').value = config.lookback_period;
+                document.getElementById('min_samples').value = config.min_samples;
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;
                 document.getElementById('hurst_enabled').checked = config.hurst_enabled;
                 document.getElementById('hurst_threshold').value = config.hurst_threshold;

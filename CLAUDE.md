@@ -334,6 +334,40 @@ per-leg maker/taker fee split, backtest suite.
   the log prints. `run()` also re-reads POLL_INTERVAL_SEC each pass —
   it is in HOT_TRADING_KEYS but was captured once before the loop, so
   hot-reloading it did nothing.
+- **"The Spread seems incorrect."** Two separate causes. (1) The card
+  showed swap_diff with no indication a carry had been subtracted, and
+  its tooltip still carried W3's formula (`futures - beta*spot`), so a
+  detrended spread of 9.13 next to prices 59.07 apart looked broken.
+  The snapshot now carries `spread_formula` + `swap_basis`, the UI
+  shows "basis X - carry Y", and startup LOGS which definition is in
+  force. (2) The carry itself was wrong: `_adopt_broker_specs` read
+  the FUTURES symbol's `swap_long` — the wrong leg (swap_diff detrends
+  by the cost of carrying the SPOT leg, and a dated contract's swap is
+  typically 0) — and only LOGGED it, never adopting it, so swap_charge
+  stayed at whatever was typed. Now `_adopt_swap_charge` reads the SPOT
+  report, converts by `swap_mode` (1=points x point x contract size,
+  2/3/4=currency per lot per day, 5/6=annual interest -> REFUSED,
+  0=disabled), and flips the sign (a broker DEBIT is a positive cost).
+  Anything it cannot convert leaves the carry OFF with a warning — a
+  wrong carry shifts the whole spread series, which is worse than
+  none. `carry_adjusted` is now True only when swap_basis is actually
+  non-zero (with swap_charge 0 it used to claim "carry-detrended"
+  while returning the raw basis). NOT modelled: the carry is one
+  number, but the pair is long one leg and short the other, so a
+  rigorous model needs swap_long on one side and swap_short on the
+  other.
+- **"The lookback period setting seems incorrect and not working."**
+  The Settings field was labelled "Number of ticks to collect before
+  trading" (W3's meaning) but wrote `SIGNALS.LOOKBACK_SEC` — a window
+  DURATION in seconds. `MIN_SAMPLES`, which is what actually gates
+  trading and what the warm-up bar counts, had NO control at all, so
+  changing "Lookback Period" appeared to do nothing to warm-up while
+  silently narrowing the statistical window (and a too-short window is
+  exactly what collapses sigma). Now two honest controls: "Lookback
+  Window (seconds)" and "Minimum Samples". Both hot-apply live —
+  SpreadStats holds a reference to config.SIGNALS and hot_apply
+  updates that dict IN PLACE; regression-tested, because swapping it
+  for a new dict would silently freeze the live window at old values.
 - The warm-up bar read "181 / 7,200": it compared a SAMPLE COUNT to
   LOOKBACK_SEC, a duration, so it could never fill. It now counts
   against MIN_SAMPLES, which is what actually gates trading.

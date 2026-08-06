@@ -6,9 +6,15 @@ from datetime import datetime
 
 
 def calculate_swap_basis(asset_cfg, spot_price, time_to_expiry):
-    """Swap-implied futures price and basis from real carry cost."""
+    """Swap-implied futures price and basis from real carry cost.
+
+    swap_charge is the cost of CARRYING THE SPOT LEG for one lot for one
+    day, in account currency, as a positive number. It is the spot
+    symbol's financing cost — not the futures symbol's, which is
+    typically zero on a dated contract.
+    """
     position_value = spot_price * asset_cfg['lot_size']
-    daily_swap_rate = asset_cfg['swap_charge'] / position_value
+    daily_swap_rate = (asset_cfg.get('swap_charge') or 0.0) / position_value
     annual_swap_rate = daily_swap_rate * 365
 
     swap_futures_price = spot_price * math.exp(annual_swap_rate * time_to_expiry)
@@ -61,7 +67,13 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
         else:
             swap_premium_pct = (actual_basis / spot_price) * 100
         swap_diff = actual_basis - swap_basis
-        carry_adjusted = True
+        # Only claim a carry adjustment when one was actually made. With
+        # swap_charge unset (0 — the default until the operator supplies
+        # the spot leg's financing cost) swap_basis is identically zero
+        # and swap_diff IS the raw basis. Reporting "carry-detrended"
+        # there sent the operator looking for the difference between a
+        # spread of 59 and a spread of 59.
+        carry_adjusted = abs(swap_basis) > 1e-9
     else:
         swap_futures_price = futures_price
         swap_basis = annual_swap_rate = 0
@@ -91,4 +103,12 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
         'time_to_expiry': time_to_expiry,
         'days_to_expiry': days_to_expiry,
         'carry_adjusted': carry_adjusted,
+        # The spread the strategy trades, spelled out. One number on a
+        # card cannot be checked against the two prices next to it —
+        # the operator has to be able to see WHY 4328.80 and 4269.73
+        # make a spread of 9.13 rather than 59.07.
+        'spread_formula': (
+            "swap_diff = (futures - spot) - carry"
+            if carry_adjusted else "swap_diff = futures - spot"),
+        'swap_charge': asset_cfg.get('swap_charge') or 0.0,
     }

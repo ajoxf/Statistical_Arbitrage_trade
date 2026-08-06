@@ -546,3 +546,44 @@ def test_the_hedge_ratio_stays_editable_in_settings(client):
                        ).status_code == 200
     raw = json.loads((client.tmp_path / "config.json").read_text())
     assert raw['trading']['HEDGE_RATIO'] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Rolling-window controls: seconds vs sample count
+# ---------------------------------------------------------------------------
+# Operator, 2026-08-06: "the lookback period setting seems incorrect and
+# not working". The field was labelled "Number of ticks to collect
+# before trading" (W3's meaning) but wrote SIGNALS.LOOKBACK_SEC, a
+# window DURATION. MIN_SAMPLES — the value that actually gates trading,
+# and what the warm-up bar counts — had no control at all.
+
+def test_the_lookback_field_says_it_is_a_duration(client):
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'Lookback Window (seconds)' in page
+    assert 'Number of ticks to collect before trading' not in page
+
+
+def test_minimum_samples_has_its_own_control(client):
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'id="min_samples"' in page
+    assert 'Minimum Samples' in page
+
+
+def test_saving_minimum_samples_reaches_the_config(client):
+    client.post('/api/config', json={'min_samples': 120})
+    with open(client.tmp_path / 'config.json') as f:
+        assert json.load(f)['signals']['MIN_SAMPLES'] == 120
+
+
+def test_saving_the_lookback_window_reaches_the_config(client):
+    client.post('/api/config', json={'lookback_period': 1800})
+    with open(client.tmp_path / 'config.json') as f:
+        assert json.load(f)['signals']['LOOKBACK_SEC'] == 1800
+
+
+def test_the_warmup_bar_counts_against_min_samples_not_seconds(client):
+    """"181 / 7,200" compared a sample count to a duration in seconds,
+    so the bar could never fill."""
+    page = client.get('/').get_data(as_text=True)
+    assert '0 / 300' in page         # MIN_SAMPLES default
+    assert '7200' not in page

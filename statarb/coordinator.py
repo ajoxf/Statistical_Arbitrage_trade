@@ -397,14 +397,90 @@ class Coordinator:
             if expiry and not asset_cfg.get('futures_expiry'):
                 asset_cfg['futures_expiry'] = datetime.fromtimestamp(expiry)
                 logging.info(
-                    "%s: futures contract expires %s (read from the "
-                    "broker) — the spread is carry-detrended", asset_key,
-                    asset_cfg['futures_expiry'].date())
-            swap = fut_report.get('swap_long')
-            if swap is not None and not asset_cfg.get('swap_charge'):
-                logging.info("%s: broker swap long/short %.2f/%.2f per lot "
-                             "per day", asset_key, swap,
-                             fut_report.get('swap_short') or 0.0)
+                    "%s: futures contract expires %s (read from the broker)",
+                    asset_key, asset_cfg['futures_expiry'].date())
+
+        self._adopt_swap_charge(asset_key, asset_cfg, spot_report)
+        self._log_spread_definition(asset_key, asset_cfg)
+
+    def _adopt_swap_charge(self, asset_key, asset_cfg, spot_report):
+        """Take the carry cost from the SPOT symbol.
+
+        swap_diff detrends the basis by the cost of CARRYING THE SPOT
+        LEG to expiry, so the number it needs is the spot symbol's
+        financing cost. This used to read the FUTURES symbol's swap —
+        the wrong leg, and typically zero on a dated contract — and then
+        only logged it without ever adopting it.
+
+        Two things have to be right or the spread is nonsense:
+        UNITS, because MT5 reports swap in points, in a currency, or as
+        an annual interest percentage depending on swap_mode; and SIGN,
+        because swap_long on spot gold is a DEBIT (negative) and the
+        carry model wants a positive cost of carry. Anything we cannot
+        convert is left alone with a warning — a wrong carry is worse
+        than none, because it moves the whole spread series.
+        """
+        if asset_cfg.get('swap_charge') or not spot_report:
+            return
+        charge, how = self._swap_to_currency(asset_cfg, spot_report)
+        if charge is None:
+            logging.warning(
+                "%s: cannot convert the spot swap to a daily cost (%s) — "
+                "leaving the carry adjustment OFF. The engine trades the "
+                "raw basis until swap_charge is set on the Settings page.",
+                asset_key, how)
+            return
+        asset_cfg['swap_charge'] = charge
+        logging.info(
+            "%s: carry cost %.2f per lot per day, from the spot symbol's "
+            "swap (%s)", asset_key, charge, how)
+
+    @staticmethod
+    def _swap_to_currency(asset_cfg, report):
+        """(daily cost per lot in account currency, how it was derived).
+
+        MT5 swap_mode values: 0 disabled, 1 points, 2 symbol currency,
+        3 margin currency, 4 deposit currency, 5/6 annual interest %.
+        """
+        swap = report.get('swap_long')
+        if swap is None:
+            return None, 'the broker reported no swap'
+        cost = -float(swap)          # a debit is the cost we want, positive
+        mode = report.get('swap_mode')
+        if mode in (2, 3, 4):
+            return cost, f'swap_mode {mode}, already per lot per day'
+        if mode == 1:
+            point = report.get('point')
+            size = asset_cfg.get('lot_size')
+            if not point or not size:
+                return None, 'swap is in points but point/contract size ' \
+                             'are unknown'
+            return (cost * float(point) * float(size),
+                    f'{swap:g} points x {point:g} x {size:g}/lot')
+        if mode in (5, 6):
+            return None, (f'swap_mode {mode} is an annual interest rate, '
+                          'not a per-day charge')
+        if mode == 0:
+            return 0.0, 'swaps are disabled on this symbol'
+        return None, f'unrecognised swap_mode {mode}'
+
+    @staticmethod
+    def _log_spread_definition(asset_key, asset_cfg):
+        """Say in the log exactly what the number on the dashboard is.
+        'The spread seems incorrect' is usually the operator comparing a
+        detrended spread against futures minus spot."""
+        expiry = asset_cfg.get('futures_expiry')
+        live = expiry and expiry > datetime.now()
+        if live and asset_cfg.get('swap_charge'):
+            logging.info(
+                "%s spread = (futures - spot) - carry to %s, at %.2f per "
+                "lot per day. It will NOT equal futures minus spot.",
+                asset_key, expiry.date(), asset_cfg['swap_charge'])
+        else:
+            why = ('no futures expiry' if not live
+                   else 'no carry cost known')
+            logging.info(
+                "%s spread = futures - spot (raw basis, %s)", asset_key, why)
 
     def _suggest_symbols(self, asset_key, role, leg, candidates):
         """Tell the operator what this broker DOES call the instrument —
@@ -1327,7 +1403,9 @@ class Coordinator:
                 'degenerate': bool(stats.degenerate) if stats else False,
                 'basis': md['actual_basis'],
                 'swap_diff': md['swap_diff'],
+                'swap_basis': md.get('swap_basis', 0.0),
                 'carry_adjusted': md.get('carry_adjusted', True),
+                'spread_formula': md.get('spread_formula'),
                 'spot_price': md['spot_price'],
                 'spot_bid': md['spot_bid'], 'spot_ask': md['spot_ask'],
                 'futures_price': md['futures_price'],

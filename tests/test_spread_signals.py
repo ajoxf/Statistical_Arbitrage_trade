@@ -327,3 +327,43 @@ def test_without_a_quote_id_every_call_is_a_sample(sig_config):
     stats = make_stats(sig_config, clock)
     feed(stats, clock, [9.0, 9.2] * 30)
     assert len(stats.samples) == 60
+
+
+# --- the rolling-window settings reach the LIVE stats --------------------
+# Operator, 2026-08-06: "the lookback period setting ... not working".
+# SpreadStats holds a reference to config.SIGNALS, and hot_apply updates
+# that dict in place — so a saved setting must take effect without a
+# restart. If either side ever swaps the dict for a new one instead of
+# updating it, the live window silently keeps the old value.
+
+def test_a_hot_reloaded_lookback_applies_without_a_restart(sig_config):
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    feed(stats, clock, [9.0, 9.2] * 30, dt=10.0)     # 600s of quotes
+    assert len(stats.samples) == 60
+
+    sig_config.SIGNALS['LOOKBACK_SEC'] = 100         # as the UI would save
+    clock.t += 1
+    stats.update(9.1)
+    assert len(stats.samples) <= 11                  # older quotes dropped
+
+
+def test_a_hot_reloaded_min_samples_applies_without_a_restart(sig_config):
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    feed(stats, clock, [8.5, 8.7, 9.0, 9.3, 8.9, 9.1] * 10)
+    assert stats.warm
+
+    sig_config.SIGNALS['MIN_SAMPLES'] = 10 ** 6
+    assert not stats.warm and stats.z is None
+
+
+def test_hot_apply_updates_the_signals_dict_in_place(config):
+    """SpreadStats was handed this exact dict at start-up."""
+    from statarb.config import AlgoTradingConfig
+    live = config.SIGNALS
+    fresh = AlgoTradingConfig()
+    fresh.SIGNALS['LOOKBACK_SEC'] = 1234
+    config.hot_apply(fresh)
+    assert live is config.SIGNALS            # same object, not replaced
+    assert live['LOOKBACK_SEC'] == 1234
