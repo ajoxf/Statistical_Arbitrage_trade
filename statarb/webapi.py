@@ -76,6 +76,12 @@ FIELD_MAP = {
     'daily_max_loss_usd': ('RISK_LIMITS', 'DAILY_MAX_LOSS_USD'),
     'loss_streak_reduce': ('RISK_LIMITS', 'LOSS_STREAK_REDUCE'),
     'loss_streak_pause': ('RISK_LIMITS', 'LOSS_STREAK_PAUSE'),
+    'margin_breaker_enabled': ('RISK_LIMITS', 'MARGIN_BREAKER_ENABLED'),
+    'margin_halt_level': ('RISK_LIMITS', 'MARGIN_HALT_LEVEL'),
+    'margin_min_free_usd': ('RISK_LIMITS', 'MARGIN_MIN_FREE_USD'),
+    'margin_reduce_enabled': ('RISK_LIMITS', 'MARGIN_REDUCE_ENABLED'),
+    'margin_reduce_level': ('RISK_LIMITS', 'MARGIN_REDUCE_LEVEL'),
+    'margin_min_size_fraction': ('RISK_LIMITS', 'MARGIN_MIN_SIZE_FRACTION'),
 
     # Reconciliation
     'sync_interval_sec': ('RECONCILE', 'SYNC_INTERVAL_SEC'),
@@ -100,7 +106,8 @@ LOWERCASE_FIELDS = {'entry_execution_mode', 'exit_signal_mode', 'on_timeout'}
 BOOL_FIELDS = {'z_stop_exit_enabled', 'trend_direction_filter',
                'use_sigma_target', 'use_z_signals', 'telegram_enabled',
                'telegram_notify_trades', 'telegram_notify_errors',
-               'telegram_notify_signals'}
+               'telegram_notify_signals', 'margin_breaker_enabled',
+               'margin_reduce_enabled'}
 
 
 def _defaults():

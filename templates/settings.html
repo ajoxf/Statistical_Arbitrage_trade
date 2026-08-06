@@ -677,6 +677,57 @@
 
                     <hr class="my-4" style="border-color: var(--border-color);">
 
+                    <!-- Margin Breaker (per-account M2M) -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3"><i class="bi bi-speedometer2 me-2"></i>Margin Breaker <span class="badge bg-secondary ms-2" id="margin-breaker-state">off</span></h6>
+                            <small class="text-secondary d-block mb-3">
+                                Each MT5 account posts its own margin. This breaker watches the
+                                <strong>weakest</strong> account and halts <strong>new entries</strong> when it
+                                tightens &mdash; exits, stops and reconciliation always keep running.
+                                A flat account posts no margin, so it never triggers.
+                            </small>
+                        </div>
+                        <div class="col-12 mb-2">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="margin_breaker_enabled" name="margin_breaker_enabled"
+                                       {% if config.margin_breaker_enabled %}checked{% endif %} onchange="toggleMarginBreakerFields()">
+                                <label class="form-check-label fw-semibold" for="margin_breaker_enabled">Enable margin breaker</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 margin-breaker-field">
+                            <label class="form-label">Halt entries below margin level (%)</label>
+                            <input type="number" class="form-control" id="margin_halt_level" name="margin_halt_level"
+                                   value="{{ config.margin_halt_level }}" step="10" min="0">
+                            <small class="text-secondary">MT5 margin level = equity &divide; margin used. Brokers typically margin-call near 100%.</small>
+                        </div>
+                        <div class="col-md-6 margin-breaker-field">
+                            <label class="form-label">Halt below free margin ($)</label>
+                            <input type="number" class="form-control" id="margin_min_free_usd" name="margin_min_free_usd"
+                                   value="{{ config.margin_min_free_usd }}" step="100" min="0">
+                            <small class="text-secondary">Second trigger in cash terms. <strong>0 = off</strong>.</small>
+                        </div>
+                        <div class="col-12 mt-2 margin-breaker-field">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="margin_reduce_enabled" name="margin_reduce_enabled"
+                                       {% if config.margin_reduce_enabled %}checked{% endif %}>
+                                <label class="form-check-label" for="margin_reduce_enabled">Taper clip size before halting</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 margin-breaker-field">
+                            <label class="form-label">Start tapering below (%)</label>
+                            <input type="number" class="form-control" id="margin_reduce_level" name="margin_reduce_level"
+                                   value="{{ config.margin_reduce_level }}" step="10" min="0">
+                            <small class="text-secondary">Full size at or above this; shrinks linearly down to the halt level.</small>
+                        </div>
+                        <div class="col-md-6 margin-breaker-field">
+                            <label class="form-label">Minimum size fraction</label>
+                            <input type="number" class="form-control" id="margin_min_size_fraction" name="margin_min_size_fraction"
+                                   value="{{ config.margin_min_size_fraction }}" step="0.05" min="0.05" max="1">
+                            <small class="text-secondary">Never taper below this fraction of the clip (e.g. 0.25 = quarter size).</small>
+                        </div>
+                    </div>
+
                     <!-- Safety Settings -->
                     <div class="row mb-4">
                         <div class="col-12">
@@ -1447,6 +1498,13 @@
         e.preventDefault();
 
         const formData = {
+            // Margin breaker (per-account M2M guard)
+            margin_breaker_enabled: document.getElementById('margin_breaker_enabled').checked,
+            margin_halt_level: parseFloat(document.getElementById('margin_halt_level').value) || 0,
+            margin_min_free_usd: parseFloat(document.getElementById('margin_min_free_usd').value) || 0,
+            margin_reduce_enabled: document.getElementById('margin_reduce_enabled').checked,
+            margin_reduce_level: parseFloat(document.getElementById('margin_reduce_level').value) || 0,
+            margin_min_size_fraction: parseFloat(document.getElementById('margin_min_size_fraction').value) || 0.25,
             asset: document.getElementById('asset').value,
             spot_symbol: document.getElementById('spot_symbol').value,
             futures_symbol: document.getElementById('futures_symbol').value,
@@ -1531,6 +1589,21 @@
             showToast('Error: ' + error.message, 'danger');
         });
     });
+
+    // ========== Margin Breaker ==========
+    function toggleMarginBreakerFields() {
+        const on = document.getElementById('margin_breaker_enabled').checked;
+        document.querySelectorAll('.margin-breaker-field').forEach(el => {
+            el.style.opacity = on ? '1' : '0.45';
+            el.querySelectorAll('input').forEach(i => { i.disabled = !on; });
+        });
+        const badge = document.getElementById('margin-breaker-state');
+        if (badge) {
+            badge.textContent = on ? 'armed' : 'off';
+            badge.className = 'badge ms-2 ' + (on ? 'bg-success' : 'bg-secondary');
+        }
+    }
+    document.addEventListener('DOMContentLoaded', toggleMarginBreakerFields);
 
     // ========== MT5 Brokers & Legs ==========
     async function loadBrokers() {
@@ -1714,6 +1787,13 @@
                 document.getElementById('hedge_ratio').value = config.hedge_ratio;
                 document.getElementById('m2m_buffer_pct').value = config.m2m_buffer_pct;
                 updatePairLabel();
+                document.getElementById('margin_breaker_enabled').checked = !!config.margin_breaker_enabled;
+                document.getElementById('margin_halt_level').value = config.margin_halt_level;
+                document.getElementById('margin_min_free_usd').value = config.margin_min_free_usd;
+                document.getElementById('margin_reduce_enabled').checked = !!config.margin_reduce_enabled;
+                document.getElementById('margin_reduce_level').value = config.margin_reduce_level;
+                document.getElementById('margin_min_size_fraction').value = config.margin_min_size_fraction;
+                toggleMarginBreakerFields();
                 document.getElementById('entry_threshold').value = config.entry_threshold;
                 document.getElementById('exit_threshold').value = config.exit_threshold;
                 document.getElementById('stop_loss_threshold').value = config.stop_loss_threshold;

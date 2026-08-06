@@ -16,6 +16,79 @@ class RiskManager:
         self.consecutive_losses = 0
         self.daily_realized_pnl = 0.0
         self._breaker_date = datetime.now().date()
+        self.accounts = {}          # name -> account_info from each leg
+        self._margin_warned = False
+
+    # -- margin breaker ---------------------------------------------------
+
+    def update_accounts(self, accounts):
+        """Feed the latest per-account margin picture from the legs."""
+        self.accounts = dict(accounts or {})
+
+    def weakest_margin(self):
+        """(account, level, free) for the account closest to a margin
+        call. A flat account reports no margin level (nothing is
+        posted) — that is not a constraint, so it is skipped."""
+        weakest = None
+        for name, info in self.accounts.items():
+            level = info.get('margin_level')
+            if not level:           # None or 0 -> nothing at risk yet
+                continue
+            if weakest is None or level < weakest[1]:
+                weakest = (name, level, info.get('margin_free'))
+        return weakest
+
+    def margin_halt(self):
+        """(halted, reason) from the margin breaker. Entries only —
+        exits and stops are never blocked by it."""
+        limits = self.config.RISK_LIMITS
+        if not limits.get('MARGIN_BREAKER_ENABLED'):
+            return False, None
+        weakest = self.weakest_margin()
+        if weakest is None and not self.accounts:
+            return False, None
+        if weakest is None and not self._margin_warned:
+            self._margin_warned = True
+            logging.info("Margin breaker armed; no margin posted yet "
+                         "(accounts flat)")
+
+        # BOTH triggers are checked on EVERY account — the account
+        # closest to a margin call and the account starved of free
+        # cash need not be the same one.
+        halt_level = limits.get('MARGIN_HALT_LEVEL', 0)
+        min_free = limits.get('MARGIN_MIN_FREE_USD', 0)
+        for name, info in sorted(self.accounts.items()):
+            level = info.get('margin_level')
+            if halt_level and level and level < halt_level:
+                return True, (f"{name} margin level {level:.0f}% below "
+                              f"{halt_level:.0f}%")
+            free = info.get('margin_free')
+            if min_free and free is not None and free < min_free:
+                return True, (f"{name} free margin ${free:,.0f} below "
+                              f"${min_free:,.0f}")
+        return False, None
+
+    def margin_size_multiplier(self):
+        """Taper clip size as the weakest account's margin tightens:
+        1.0 at MARGIN_REDUCE_LEVEL, falling linearly to
+        MARGIN_MIN_SIZE_FRACTION at MARGIN_HALT_LEVEL."""
+        limits = self.config.RISK_LIMITS
+        if not (limits.get('MARGIN_BREAKER_ENABLED')
+                and limits.get('MARGIN_REDUCE_ENABLED')):
+            return 1.0
+        weakest = self.weakest_margin()
+        if weakest is None:
+            return 1.0
+        level = weakest[1]
+        reduce_at = limits.get('MARGIN_REDUCE_LEVEL', 0)
+        halt_at = limits.get('MARGIN_HALT_LEVEL', 0)
+        floor = limits.get('MARGIN_MIN_SIZE_FRACTION', 0.25)
+        if not reduce_at or level >= reduce_at:
+            return 1.0
+        if reduce_at <= halt_at:            # misconfigured; no taper
+            return 1.0
+        span = (level - halt_at) / (reduce_at - halt_at)
+        return max(floor, min(1.0, span))
 
     # -- circuit breakers ------------------------------------------------
 
@@ -37,16 +110,18 @@ class RiskManager:
             self.consecutive_losses = 0
 
     def size_multiplier(self):
-        """Streak reducer: cut size after consecutive losses."""
+        """Clip-size multiplier: loss-streak reducer and, when the
+        margin breaker is armed, the margin taper. Both apply."""
         self._roll_breaker_date()
+        multiplier = 1.0
         reduce_at = self.config.RISK_LIMITS.get('LOSS_STREAK_REDUCE', 3)
         cut = self.config.RISK_LIMITS.get('STREAK_SIZE_CUT', 0.2)
         if reduce_at and self.consecutive_losses >= reduce_at:
-            return 1.0 - cut
-        return 1.0
+            multiplier *= 1.0 - cut
+        return multiplier * self.margin_size_multiplier()
 
     def halted(self):
-        """(halted, reason) — daily-loss breach or loss-streak pause."""
+        """(halted, reason) — daily loss, loss streak, or margin."""
         self._roll_breaker_date()
         max_loss = self.config.RISK_LIMITS.get('DAILY_MAX_LOSS_USD', 0)
         if max_loss and self.daily_realized_pnl <= -max_loss:
@@ -55,6 +130,9 @@ class RiskManager:
         pause_at = self.config.RISK_LIMITS.get('LOSS_STREAK_PAUSE', 6)
         if pause_at and self.consecutive_losses >= pause_at:
             return True, f"{self.consecutive_losses} consecutive losses"
+        margin_halted, why = self.margin_halt()
+        if margin_halted:
+            return True, f"margin breaker: {why}"
         return False, None
 
     def lots_traded_today(self, asset):

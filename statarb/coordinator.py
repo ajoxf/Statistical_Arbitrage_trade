@@ -826,6 +826,9 @@ class Coordinator:
                 info['roles'] = roles.get(leg.name, [])
                 accounts[leg.name] = info
                 equity = (equity or 0) + (info.get('equity') or 0)
+        # The margin breaker acts on the weakest account, so it needs
+        # the live per-account picture every status tick.
+        self.risk_manager.update_accounts(accounts)
         payload = {
             'mode': self.trading_mode,
             'updated': datetime.now().strftime('%H:%M:%S'),
@@ -842,6 +845,7 @@ class Coordinator:
             'shadow': {'active': len(self.shadow.active),
                        'tracking': self.shadow.snapshot()},
             'test_results': self._test_results,
+            'margin_breaker': self._margin_breaker_state(),
         }
         try:
             tmp = self.status_path + '.tmp'
@@ -852,6 +856,21 @@ class Coordinator:
             logging.debug("Could not write runtime status: %s", e)
 
     # -- Telegram command handlers (W3 command set, MT5-adapted) --------
+
+    def _margin_breaker_state(self):
+        limits = self.config.RISK_LIMITS
+        weakest = self.risk_manager.weakest_margin()
+        halted, why = self.risk_manager.margin_halt()
+        return {
+            'enabled': bool(limits.get('MARGIN_BREAKER_ENABLED')),
+            'halt_level': limits.get('MARGIN_HALT_LEVEL'),
+            'reduce_enabled': bool(limits.get('MARGIN_REDUCE_ENABLED')),
+            'reduce_level': limits.get('MARGIN_REDUCE_LEVEL'),
+            'weakest_account': weakest[0] if weakest else None,
+            'weakest_level': weakest[1] if weakest else None,
+            'size_multiplier': self.risk_manager.margin_size_multiplier(),
+            'halted': halted, 'reason': why,
+        }
 
     def _telegram_command(self, command):
         parts = command.split()

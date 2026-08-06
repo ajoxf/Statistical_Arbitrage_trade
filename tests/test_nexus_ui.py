@@ -236,6 +236,39 @@ def test_dashboard_renders_per_account_margin(client):
     assert 'renderAccountsStrip' in body
 
 
+def test_margin_breaker_toggle_round_trips_through_ui(client):
+    """The operator must be able to arm and disarm it from Settings."""
+    body = client.get('/settings').data.decode()
+    assert 'margin_breaker_enabled' in body
+    assert 'Margin Breaker' in body
+    assert 'margin_halt_level' in body and 'margin_reduce_level' in body
+
+    assert client.get('/api/config').get_json()[
+        'margin_breaker_enabled'] is False        # off by default
+
+    response = client.post('/api/config', json={
+        'margin_breaker_enabled': True, 'margin_halt_level': 250,
+        'margin_reduce_enabled': True, 'margin_reduce_level': 500,
+        'margin_min_size_fraction': 0.3, 'margin_min_free_usd': 5000})
+    assert response.status_code == 200
+
+    raw = json.loads((client.tmp_path / "config.json").read_text())
+    limits = raw['risk_limits']
+    assert limits['MARGIN_BREAKER_ENABLED'] is True
+    assert limits['MARGIN_HALT_LEVEL'] == 250
+    assert limits['MARGIN_REDUCE_ENABLED'] is True
+    assert limits['MARGIN_MIN_SIZE_FRACTION'] == 0.3
+
+    config = client.get('/api/config').get_json()
+    assert config['margin_breaker_enabled'] is True
+    assert config['margin_halt_level'] == 250
+
+    # ...and back off again
+    client.post('/api/config', json={'margin_breaker_enabled': False})
+    assert client.get('/api/config').get_json()[
+        'margin_breaker_enabled'] is False
+
+
 def test_socketio_server_is_wired(client):
     """The Nexus navbar shows Connected/Disconnected from a socket.io
     session — without a server it sat on 'Disconnected' forever."""

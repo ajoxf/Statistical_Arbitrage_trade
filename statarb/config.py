@@ -86,6 +86,14 @@ class AlgoTradingConfig:
             'LOSS_STREAK_REDUCE': 3,     # cut size after N straight losses
             'STREAK_SIZE_CUT': 0.2,      # -20% clip size
             'LOSS_STREAK_PAUSE': 6,      # halt entries after N straight
+            # Margin breaker (per account — with two brokers each posts
+            # its own margin; the WEAKEST account governs).
+            'MARGIN_BREAKER_ENABLED': False,   # master on/off
+            'MARGIN_HALT_LEVEL': 200.0,        # halt entries below this %
+            'MARGIN_MIN_FREE_USD': 0.0,        # or below this free margin
+            'MARGIN_REDUCE_ENABLED': False,    # taper clip size first
+            'MARGIN_REDUCE_LEVEL': 400.0,      # start tapering below this %
+            'MARGIN_MIN_SIZE_FRACTION': 0.25,  # never taper below this
         }
         self.EXECUTION = {
             'SLIPPAGE_TOLERANCE': 1.0,
