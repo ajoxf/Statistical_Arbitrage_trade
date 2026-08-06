@@ -108,6 +108,21 @@ class SpreadStats:
         return abs(raw) > self.cfg.get('MAX_ABS_Z', 25.0)
 
     @property
+    def suggested_lookback_sec(self):
+        """A window long enough to measure the reversion we can see.
+
+        mu/sigma are only meaningful over a window that contains
+        several round trips of the series, so the measured AR(1)
+        half-life is the honest basis for a suggestion — not a tick
+        count. None until a half-life exists; the operator's configured
+        LOOKBACK_SEC is never changed automatically.
+        """
+        if not self.half_life_sec:
+            return None
+        multiple = self.cfg.get('LOOKBACK_HALF_LIVES', 6.0) or 6.0
+        return self.half_life_sec * multiple
+
+    @property
     def warm(self):
         return (len(self.samples) >= self.cfg['MIN_SAMPLES']
                 and self.sigma is not None and not self.degenerate)

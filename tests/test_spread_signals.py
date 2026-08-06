@@ -367,3 +367,57 @@ def test_hot_apply_updates_the_signals_dict_in_place(config):
     config.hot_apply(fresh)
     assert live is config.SIGNALS            # same object, not replaced
     assert live['LOOKBACK_SEC'] == 1234
+
+
+# --- the window SUGGESTION (seconds, not a tick count) -------------------
+# W3's dashboard tile showed "Suggested Lookback ... pts" — a tick count,
+# the same wrong unit that made the setting unusable. This engine never
+# published the value at all, so the tile read "—" from the day it was
+# ported.
+
+def test_the_suggested_window_comes_from_the_measured_half_life(sig_config):
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    values, x = [], 10.0
+    for _ in range(200):                 # AR(1) phi=0.9, dt=1s -> HL ~6.6s
+        values.append(x)
+        x *= 0.9
+    feed(stats, clock, values, dt=1.0)
+    assert stats.half_life_sec is not None
+    assert stats.suggested_lookback_sec == pytest.approx(
+        stats.half_life_sec * 6.0)
+
+
+def test_the_multiple_is_configurable(sig_config):
+    clock = FakeClock()
+    sig_config.SIGNALS['LOOKBACK_HALF_LIVES'] = 10.0
+    stats = make_stats(sig_config, clock)
+    values, x = [], 10.0
+    for _ in range(200):
+        values.append(x)
+        x *= 0.9
+    feed(stats, clock, values, dt=1.0)
+    assert stats.suggested_lookback_sec == pytest.approx(
+        stats.half_life_sec * 10.0)
+
+
+def test_no_half_life_means_no_suggestion(sig_config):
+    """It refuses rather than inventing a number, like everything else
+    that would otherwise guess."""
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    feed(stats, clock, [1.0, 2.0])       # too few for an AR(1) fit
+    assert stats.half_life_sec is None
+    assert stats.suggested_lookback_sec is None
+
+
+def test_the_suggestion_never_changes_the_configured_window(sig_config):
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    values, x = [], 10.0
+    for _ in range(200):
+        values.append(x)
+        x *= 0.9
+    feed(stats, clock, values, dt=1.0)
+    assert stats.suggested_lookback_sec is not None
+    assert sig_config.SIGNALS['LOOKBACK_SEC'] == 10000   # untouched

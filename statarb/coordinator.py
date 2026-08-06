@@ -1360,6 +1360,8 @@ class Coordinator:
                 'samples': len(stats.samples) if stats else 0,
                 'min_samples': self.config.SIGNALS.get('MIN_SAMPLES'),
                 'lookback': self.config.SIGNALS.get('LOOKBACK_SEC'),
+                'suggested_lookback_sec': (stats.suggested_lookback_sec
+                                           if stats else None),
                 'degenerate': bool(stats.degenerate) if stats else False,
                 'basis': md['actual_basis'],
                 'spread': md['spread'],

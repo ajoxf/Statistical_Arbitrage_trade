@@ -397,6 +397,10 @@ def status_to_ui(status, config_raw):
             # to a duration and never filled.
             'lookback': first.get('min_samples') or first.get('lookback'),
             'lookback_sec': first.get('lookback'),
+            # A window suggestion in the SAME unit as the setting —
+            # seconds. W3's tile showed "pts", a tick count, for a
+            # value this engine has never measured in ticks.
+            'suggested_lookback_sec': first.get('suggested_lookback_sec'),
             'data_ready': first.get('z') is not None,
             # Enough quotes but no usable z: the window's sigma has
             # collapsed. Without this the banner says "collecting data"

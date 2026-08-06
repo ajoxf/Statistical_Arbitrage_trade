@@ -169,7 +169,7 @@
                 </span>
                 <div>
                     <div id="trading-status-text" class="fw-bold">Collecting Data...</div>
-                    <small id="trading-status-detail" class="text-secondary">Waiting for lookback period</small>
+                    <small id="trading-status-detail" class="text-secondary">Waiting for enough quotes to measure the spread</small>
                 </div>
             </div>
             <div class="d-flex align-items-center flex-grow-1 mx-4">
@@ -565,7 +565,7 @@
                     <div class="col-6">
                         <div class="text-center p-1" style="background: var(--bg-tertiary); border-radius: 4px;">
                             <div class="fw-bold text-warning" style="font-size: 0.9rem;" id="suggested-lookback-value">—</div>
-                            <div style="font-size: 0.65rem;" class="text-secondary">Suggested Lookback</div>
+                            <div style="font-size: 0.65rem;" class="text-secondary">Suggested Window</div>
                         </div>
                     </div>
                 </div>
@@ -2358,7 +2358,7 @@
         hurstEl.classList.remove('price-up', 'price-down', 'price-neutral');
         hurstEl.classList.add(hurst < 0.5 ? 'price-up' : hurst > 0.5 ? 'price-down' : 'price-neutral');
 
-        // Half-Life and Suggested Lookback
+        // Half-Life and the window it suggests
         const hlEl = document.getElementById('half-life-value');
         const slEl = document.getElementById('suggested-lookback-value');
         if (hlEl) {
@@ -2372,8 +2372,22 @@
             }
         }
         if (slEl) {
-            const sl = data.suggested_lookback;
-            slEl.textContent = sl != null ? sl + ' pts' : '—';
+            const sl = data.suggested_lookback_sec;
+            slEl.textContent = sl != null ? windowLabel(Math.round(sl))
+                                                .replace(' window', '') : '—';
+            // Amber when the configured window is too short to contain the
+            // reversion we can actually measure — that is the setting that
+            // collapses sigma.
+            const configured = data.lookback_sec;
+            const tight = (sl != null && configured && configured < sl);
+            slEl.className = 'fw-bold ' + (tight ? 'text-danger' : 'text-warning');
+            if (slEl.parentElement) {
+                slEl.parentElement.title = sl == null
+                    ? 'Needs a measured half-life first'
+                    : 'From the measured half-life. Configured window: ' +
+                      windowLabel(configured) + '. Set it in Settings > ' +
+                      'Rolling Window.';
+            }
         }
 
         const regimeDisplayEl = document.getElementById('regime-display');
@@ -2602,13 +2616,25 @@
         timeEl.textContent = '—';
 
         if (!_cachedDataReady && _cachedLookback > 0) {
-            // STATE 2a — engine hasn't filled lookback yet, so it short-circuits
-            // and returns NONE without ever evaluating filters. Common confusion:
-            // user sees z past threshold but no block recorded. Make it explicit.
-            const pct = Math.min(100, Math.round((_cachedDataPoints / _cachedLookback) * 100));
-            reasonEl.innerHTML =
-                'Collecting data &mdash; ' + _cachedDataPoints + ' / ' + _cachedLookback +
-                ' ticks (' + pct + '%). Engine evaluates filters once lookback is full.';
+            // STATE 2a — no usable z yet, so the engine short-circuits and
+            // returns NONE without ever evaluating filters. Common
+            // confusion: user sees z past threshold but no block recorded.
+            // The minimum-samples ratio only means something while it is
+            // still being cleared; past that the cause is a collapsed
+            // sigma, not a shortage of quotes.
+            if (_cachedDataPoints < _cachedLookback) {
+                const pct = Math.min(100, Math.round(
+                    (_cachedDataPoints / _cachedLookback) * 100));
+                reasonEl.innerHTML =
+                    'Collecting data &mdash; ' + _cachedDataPoints.toLocaleString() +
+                    ' / ' + _cachedLookback.toLocaleString() + ' quotes (' + pct +
+                    '%). Filters are evaluated once there are enough.';
+            } else {
+                reasonEl.innerHTML =
+                    'No usable Z-score &mdash; ' + _cachedDataPoints.toLocaleString() +
+                    ' quotes collected, but the spread has barely moved, so ' +
+                    'sigma is too small to divide by.';
+            }
             reasonEl.className = 'text-warning';
             return;
         }

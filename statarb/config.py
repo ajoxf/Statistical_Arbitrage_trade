@@ -140,7 +140,13 @@ class AlgoTradingConfig:
             # 'spread' (spread crosses the mean frozen at entry),
             # 'hybrid' (either)
             'EXIT_MODE': 'zscore',
-            'LOOKBACK_SEC': 7200,
+            'LOOKBACK_SEC': 7200,      # window DURATION in seconds (not
+                                       # a tick count — the UI field is
+                                       # "Lookback Window (seconds)")
+            'LOOKBACK_HALF_LIVES': 6.0,  # suggestion only: the window the
+                                         # dashboard proposes = this many
+                                         # measured half-lives. Never
+                                         # applied automatically.
             'STATS_INTERVAL_SEC': 300, # freeze mu/sigma between refreshes
             'MIN_SAMPLES': 300,        # warm-up before any signal
             # Degenerate-window guards. A quiet spread (or a feed

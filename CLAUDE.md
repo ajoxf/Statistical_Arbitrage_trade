@@ -387,6 +387,17 @@ per-leg maker/taker fee split, backtest suite.
   SpreadStats holds a reference to config.SIGNALS and hot_apply
   updates that dict IN PLACE; regression-tested, because swapping it
   for a new dict would silently freeze the live window at old values.
+  FOLLOW-UP: three more places still spoke W3's "lookback = tick count"
+  vocabulary. The banner's initial line said "Waiting for lookback
+  period"; the signal-reason line repeated the same broken ratio worded
+  as "N / 300 ticks"; and the "Suggested Lookback" tile showed
+  `suggested_lookback` in "pts" — a value this engine NEVER published,
+  so it had read "—" since the port. It is now a real suggestion in the
+  same unit as the setting: `SpreadStats.suggested_lookback_sec` =
+  measured half-life x SIGNALS.LOOKBACK_HALF_LIVES (6), None without a
+  half-life, and it never changes LOOKBACK_SEC by itself. The tile goes
+  RED when the configured window is shorter than the suggestion —
+  that is the setting that collapses sigma.
 - The warm-up bar read "181 / 7,200": it compared a SAMPLE COUNT to
   LOOKBACK_SEC, a duration, so it could never fill. It now counts
   against MIN_SAMPLES, which is what actually gates trading. FOLLOW-UP

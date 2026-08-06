@@ -683,3 +683,33 @@ def test_the_fair_value_detail_names_the_setting(config):
                  futures_expiry=datetime.now() + timedelta(days=140))
     _, detail = fairvalue.fair_spread(asset, 4269.73, 4328.80, 1.0)
     assert 'carry rate' in detail and 'Pair Selection' in detail
+
+
+def test_the_window_suggestion_is_published_in_seconds():
+    ui = webapi.status_to_ui({'assets': [{
+        'asset': 'GOLD', 'z': 0.4, 'spread': 58.3, 'samples': 900,
+        'min_samples': 300, 'lookback': 7200,
+        'suggested_lookback_sec': 1980.0}]}, {})
+    assert ui['signal']['suggested_lookback_sec'] == 1980.0
+    assert ui['signal']['lookback_sec'] == 7200
+
+
+def test_the_tile_no_longer_calls_the_window_a_tick_count(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'Suggested Window' in page
+    assert 'Suggested Lookback' not in page
+    assert "sl + ' pts'" not in page
+
+
+def test_the_banner_no_longer_says_waiting_for_lookback_period(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'Waiting for lookback period' not in page
+    assert 'Waiting for enough quotes' in page
+
+
+def test_the_signal_reason_drops_the_ratio_once_it_is_cleared(client):
+    """The same "10,894 / 300" problem lived in the signal-reason line
+    too, worded as "ticks"."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'if (_cachedDataPoints < _cachedLookback)' in page
+    assert "' ticks (' + pct + '%)" not in page
