@@ -70,24 +70,8 @@
                                placeholder="e.g. XAUUSD" autocomplete="off"
                                oninput="suggestSymbols()">
                         <datalist id="symbol-options"></datalist>
-                        <small class="text-secondary">Exactly as this broker spells it</small>
-                    </div>
-
-                    <div class="col-md-4">
-                        <label class="form-label">Contract size</label>
-                        <input type="number" class="form-control" name="contract_size"
-                               step="0.01" placeholder="100">
-                        <small class="text-secondary">Units per lot (gold: 100 oz)</small>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Swap / day ($)</label>
-                        <input type="number" class="form-control" name="swap_charge"
-                               step="0.01" placeholder="0.00">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Futures expiry</label>
-                        <input type="date" class="form-control" name="futures_expiry">
-                        <small class="text-secondary">Futures leg only</small>
+                        <small class="text-secondary">Exactly as this broker spells it.
+                        Contract size, expiry and swap are read from the terminal.</small>
                     </div>
 
                     <div class="col-12"><hr class="my-1"></div>
@@ -353,9 +337,6 @@ function editBroker(name) {
     form.name.value = broker.id;
     form.role.value = broker.role === 'FUTURES' ? 'FUTURES' : 'SPOT';
     form.symbol.value = broker.symbol || '';
-    form.contract_size.value = broker.contract_size || '';
-    form.swap_charge.value = broker.swap_charge || '';
-    form.futures_expiry.value = broker.futures_expiry || '';
     form.terminal_path.value = broker.terminal_path || '';
     form.endpoint.value = broker.endpoint || '';
     form.login.value = broker.login || '';

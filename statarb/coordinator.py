@@ -241,6 +241,11 @@ class Coordinator:
 
         self.config.validate_expiries()
         if not self._setup_symbols():
+            logging.error(
+                "No tradable asset: not one configured pair resolved to "
+                "symbols that exist on BOTH accounts. Fix the symbols on "
+                "the Exchanges page (the log above lists what each "
+                "account offers), then restart the launcher.")
             return False
 
         for asset_key in self.active_assets:
@@ -285,6 +290,8 @@ class Coordinator:
                  if self.futures_leg.ensure_symbol(s).get('ok')), None)
 
             if spot_symbol and futures_symbol:
+                self._adopt_broker_specs(asset_key, asset_cfg,
+                                         spot_symbol, futures_symbol)
                 self.active_assets[asset_key] = {
                     'config': asset_cfg,
                     'spot_symbol': spot_symbol,
@@ -297,8 +304,115 @@ class Coordinator:
             else:
                 logging.warning("%s: missing symbols — spot: %s, futures: %s",
                                 asset_key, spot_symbol, futures_symbol)
+                for role, resolved, leg, candidates in (
+                        ('spot', spot_symbol, self.spot_leg,
+                         asset_cfg['spot_symbols']),
+                        ('futures', futures_symbol, self.futures_leg,
+                         asset_cfg['futures_symbols'])):
+                    if resolved:
+                        continue
+                    logging.warning(
+                        "  %s leg: none of %s exist on account '%s'",
+                        role, list(candidates), leg.name)
+                    self._suggest_symbols(asset_key, role, leg, candidates)
 
         return len(self.active_assets) > 0
+
+    def _adopt_broker_specs(self, asset_key, asset_cfg, spot_symbol,
+                            futures_symbol):
+        """Take contract size, expiry and swap from the TERMINAL rather
+        than from anything typed in. The broker's spec is what actually
+        determines P&L and margin, so a typed value can only ever be
+        right by luck — and wrong by 2x silently."""
+        reports = {}
+        for role, leg, symbol in (('spot', self.spot_leg, spot_symbol),
+                                  ('futures', self.futures_leg,
+                                   futures_symbol)):
+            reader = getattr(leg, 'symbol_report', None)
+            if reader is None:
+                continue
+            try:
+                report = reader(symbol)
+            except Exception as e:
+                logging.debug("No symbol specs for %s: %s", symbol, e)
+                continue
+            if report.get('found'):
+                reports[role] = report
+
+        spot_report = reports.get('spot')
+        if spot_report and spot_report.get('contract_size'):
+            broker_size = float(spot_report['contract_size'])
+            configured = asset_cfg.get('lot_size')
+            if configured and abs(broker_size - float(configured)) > 1e-9:
+                logging.warning(
+                    "%s: contract size is %g per lot on '%s' (config said "
+                    "%g) — using the broker's number for P&L and sizing",
+                    asset_key, broker_size, self.spot_leg.name,
+                    float(configured))
+            else:
+                logging.info("%s: contract size %g per lot (from %s)",
+                             asset_key, broker_size, spot_symbol)
+            asset_cfg['lot_size'] = broker_size
+
+        fut_report = reports.get('futures')
+        if fut_report:
+            fut_size = fut_report.get('contract_size')
+            spot_size = asset_cfg.get('lot_size')
+            if fut_size and spot_size and abs(fut_size - spot_size) > 1e-9:
+                implied = spot_size / fut_size
+                logging.warning(
+                    "%s: spot is %g/lot but futures is %g/lot — the hedge "
+                    "ratio implied by the contract specs is %.4f, "
+                    "HEDGE_RATIO is %.4f. Fix it on the Settings page "
+                    "before trading size.", asset_key, spot_size, fut_size,
+                    implied, self.config.TRADING.get('HEDGE_RATIO', 1.0))
+
+            expiry = fut_report.get('expiry')
+            if expiry and not asset_cfg.get('futures_expiry'):
+                asset_cfg['futures_expiry'] = datetime.fromtimestamp(expiry)
+                logging.info(
+                    "%s: futures contract expires %s (read from the "
+                    "broker) — the spread is carry-detrended", asset_key,
+                    asset_cfg['futures_expiry'].date())
+            swap = fut_report.get('swap_long')
+            if swap is not None and not asset_cfg.get('swap_charge'):
+                logging.info("%s: broker swap long/short %.2f/%.2f per lot "
+                             "per day", asset_key, swap,
+                             fut_report.get('swap_short') or 0.0)
+
+    def _suggest_symbols(self, asset_key, role, leg, candidates):
+        """Tell the operator what this broker DOES call the instrument —
+        a bare 'symbol not found' leaves them guessing, and broker
+        naming is the single most common setup failure."""
+        finder = getattr(leg, 'find_symbols', None)
+        if finder is None:
+            return
+        hints = {asset_key.upper()}
+        for candidate in candidates:
+            letters = ''.join(c for c in str(candidate) if c.isalpha())
+            if len(letters) >= 3:
+                hints.add(letters[:3].upper())
+        found = {}
+        for hint in hints:
+            try:
+                for row in (finder(hint, 12) or ()):
+                    found[row['symbol']] = row.get('description', '')
+            except Exception:
+                return
+        if not found:
+            logging.warning(
+                "    account '%s' has nothing matching %s — is this the "
+                "right account for the %s leg?",
+                leg.name, sorted(hints), role)
+            return
+        listing = ', '.join(f"{name} ({desc})" if desc else name
+                            for name, desc in list(found.items())[:8])
+        logging.warning(
+            "    account '%s' offers: %s", leg.name, listing)
+        logging.warning(
+            "    set the %s symbol to one of those on the Exchanges page "
+            "(the %s leg must point at the account that actually lists "
+            "the instrument)", role, role)
 
     # ------------------------------------------------------------------
     # Market data
@@ -1643,7 +1757,10 @@ def main():
         print(f"\nCannot start: {e}\n")
         sys.exit(1)
     if not coordinator.start():
-        print("Startup failed — are the leg runners started and logged in?")
+        print("\nStartup failed. The log above says which check failed — "
+              "usually a symbol that does not exist on that account, or a "
+              "terminal that is not logged in.\n"
+              "Run  python check_mt5.py  for a full report.\n")
         sys.exit(1)
 
     try:

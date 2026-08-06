@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  391 tests, all fakes, no MT5 (runs anywhere)
+tests/                  402 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -310,6 +310,16 @@ per-leg maker/taker fee split, backtest suite.
 - Symbols follow app.py's model: the symbol, contract size, swap and
   expiry live on the BROKER ROW with its leg, not in a separate panel.
   Saving a row writes leg_accounts[role] and assets[..]_symbols.
+- Contract size, expiry and swap are READ FROM THE TERMINAL at startup
+  (_adopt_broker_specs), not typed in — the owner asked why they were
+  on the form at all, and MT5 knows all three. The broker's number
+  wins and a contradiction with config is logged; legs with different
+  contract sizes log the implied HEDGE_RATIO. A real futures contract
+  brings its own expiry, so the carry adjustment switches itself on.
+- Symbol resolution failures now LIST WHAT THE ACCOUNT OFFERS
+  (_suggest_symbols via find_symbols) instead of just "missing
+  symbols", and say plainly when an account has nothing matching —
+  that account is probably the wrong leg.
 - futures_expiry is OPTIONAL (owner: "just pick up the symbols, don't
   get into expiry"). Missing expiry used to KeyError in
   validate_expiries and kill startup. Now: no expiry -> the engine

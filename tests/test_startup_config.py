@@ -434,3 +434,228 @@ def test_saving_a_broker_without_an_expiry_is_accepted(client):
         asset = json.load(f)['assets']['GOLD']
     assert asset['futures_symbols'] == ['XAUUSD.f']
     assert 'futures_expiry' not in asset
+
+
+# --- symbol resolution at startup ----------------------------------------
+
+class SymbolFakeLeg:
+    """A leg that only knows the symbols its broker actually lists."""
+
+    def __init__(self, name, available):
+        self.name = name
+        self.available = dict(available)   # symbol -> description
+
+    def connect(self):
+        return True
+
+    def ping(self):
+        return True
+
+    def account_info(self):
+        return {'account': self.name, 'login': 1, 'server': 'X',
+                'equity': 50000.0}
+
+    def ensure_symbol(self, symbol):
+        if symbol in self.available:
+            return {'ok': True, 'volume_min': 0.01, 'volume_step': 0.01,
+                    'volume_max': 50.0, 'point': 0.01, 'tick_size': 0.01}
+        return {'ok': False, 'error': f'{symbol} not found'}
+
+    def find_symbols(self, pattern, limit=40):
+        pattern = pattern.upper()
+        return [{'symbol': s, 'description': d}
+                for s, d in self.available.items()
+                if pattern in s.upper() or pattern in d.upper()][:limit]
+
+
+def symbol_coordinator(config, tmp_path, monkeypatch, spot_leg, fut_leg):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    coord = Coordinator(config, trading_mode='PAPER')
+    coord.spot_leg, coord.futures_leg = spot_leg, fut_leg
+    return coord
+
+
+def test_an_asset_resolves_when_both_legs_list_their_symbol(config, tmp_path,
+                                                            monkeypatch):
+    config.ASSETS = {'GOLD': dict(config.ASSETS['GOLD'],
+                                  spot_symbols=['XAUUSD_', 'XAUUSD'],
+                                  futures_symbols=['GC1225'])}
+    coord = symbol_coordinator(
+        config, tmp_path, monkeypatch,
+        SymbolFakeLeg('spot_acct', {'XAUUSD_': 'Gold spot'}),
+        SymbolFakeLeg('fut_acct', {'GC1225': 'Gold futures'}))
+    assert coord._setup_symbols() is True
+    assert coord.active_assets['GOLD']['spot_symbol'] == 'XAUUSD_'
+    assert coord.active_assets['GOLD']['futures_symbol'] == 'GC1225'
+
+
+def test_a_missing_futures_symbol_lists_what_the_account_does_offer(
+        config, tmp_path, monkeypatch, caplog):
+    """The operator's case: spot resolved, futures did not, and the log
+    said nothing about what the broker actually lists."""
+    config.ASSETS = {'GOLD': dict(config.ASSETS['GOLD'],
+                                  spot_symbols=['XAUUSD_'],
+                                  futures_symbols=['GC1225', 'XAUUSD.f'])}
+    coord = symbol_coordinator(
+        config, tmp_path, monkeypatch,
+        SymbolFakeLeg('Ut 2', {'XAUUSD_': 'Gold spot'}),
+        SymbolFakeLeg('Ut 2', {'XAUUSD_': 'Gold spot',
+                               'XAUUSD.fut': 'Gold futures Dec',
+                               'GOLDMINI': 'Gold mini'}))
+    with caplog.at_level('WARNING'):
+        assert coord._setup_symbols() is False
+    text = caplog.text
+    assert "none of ['GC1225', 'XAUUSD.f'] exist on account 'Ut 2'" in text
+    assert 'XAUUSD.fut' in text          # what the broker DOES offer
+    assert 'Exchanges page' in text
+
+
+def test_an_account_with_nothing_matching_says_so(config, tmp_path,
+                                                  monkeypatch, caplog):
+    """A CFD account with no futures at all — the answer is to point
+    the futures leg at the other account, not to keep guessing names."""
+    config.ASSETS = {'GOLD': dict(config.ASSETS['GOLD'],
+                                  spot_symbols=['XAUUSD_'],
+                                  futures_symbols=['GC1225'])}
+    coord = symbol_coordinator(
+        config, tmp_path, monkeypatch,
+        SymbolFakeLeg('spot_acct', {'XAUUSD_': 'Gold spot'}),
+        SymbolFakeLeg('spot_acct', {'EURUSD': 'Euro'}))
+    with caplog.at_level('WARNING'):
+        assert coord._setup_symbols() is False
+    assert 'is this the right account for the futures leg?' in caplog.text
+
+
+def test_one_working_asset_is_enough_to_start(config, tmp_path, monkeypatch):
+    """A stale SILVER default must not stop GOLD from trading."""
+    config.ASSETS = {
+        'GOLD': dict(config.ASSETS['GOLD'], spot_symbols=['XAUUSD_'],
+                     futures_symbols=['GC1225']),
+        'SILVER': dict(config.ASSETS['SILVER'], spot_symbols=['XAGUSD_'],
+                       futures_symbols=['SI1225'])}
+    coord = symbol_coordinator(
+        config, tmp_path, monkeypatch,
+        SymbolFakeLeg('spot_acct', {'XAUUSD_': 'Gold', 'XAGUSD_': 'Silver'}),
+        SymbolFakeLeg('fut_acct', {'GC1225': 'Gold futures'}))
+    assert coord._setup_symbols() is True
+    assert list(coord.active_assets) == ['GOLD']
+
+
+def test_disabled_assets_are_skipped(config, tmp_path, monkeypatch):
+    config.ASSETS = {
+        'GOLD': dict(config.ASSETS['GOLD'], spot_symbols=['XAUUSD_'],
+                     futures_symbols=['GC1225']),
+        'SILVER': dict(config.ASSETS['SILVER'], enabled=False)}
+    coord = symbol_coordinator(
+        config, tmp_path, monkeypatch,
+        SymbolFakeLeg('spot_acct', {'XAUUSD_': 'Gold'}),
+        SymbolFakeLeg('fut_acct', {'GC1225': 'Gold futures'}))
+    assert coord._setup_symbols() is True
+    assert list(coord.active_assets) == ['GOLD']
+
+
+# --- contract specs come from the terminal, not from typing --------------
+
+class SpecLeg(SymbolFakeLeg):
+    def __init__(self, name, available, specs=None):
+        super().__init__(name, available)
+        self.specs = specs or {}
+
+    def symbol_report(self, symbol):
+        if symbol not in self.available:
+            return {'symbol': symbol, 'found': False}
+        return dict({'symbol': symbol, 'found': True}, **self.specs)
+
+
+def spec_coordinator(config, tmp_path, monkeypatch, spot_leg, fut_leg):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    coord = Coordinator(config, trading_mode='PAPER')
+    coord.spot_leg, coord.futures_leg = spot_leg, fut_leg
+    coord._setup_symbols()
+    return coord
+
+
+def gold_only(config, **overrides):
+    config.ASSETS = {'GOLD': dict(config.ASSETS['GOLD'],
+                                  spot_symbols=['XAUUSD'],
+                                  futures_symbols=['GC1225'], **overrides)}
+    return config
+
+
+def test_contract_size_is_read_from_the_broker(config, tmp_path,
+                                               monkeypatch):
+    """The operator should never have to type this — MT5 knows it, and
+    a typed value can only be right by luck."""
+    config = gold_only(config, lot_size=1)
+    coord = spec_coordinator(
+        config, tmp_path, monkeypatch,
+        SpecLeg('spot', {'XAUUSD': 'Gold'}, {'contract_size': 100.0}),
+        SpecLeg('fut', {'GC1225': 'Gold fut'}, {'contract_size': 100.0}))
+    assert coord.config.ASSETS['GOLD']['lot_size'] == 100.0
+
+
+def test_a_contract_size_that_contradicts_the_config_is_flagged(
+        config, tmp_path, monkeypatch, caplog):
+    config = gold_only(config, lot_size=100)
+    with caplog.at_level('WARNING'):
+        coord = spec_coordinator(
+            config, tmp_path, monkeypatch,
+            SpecLeg('spot', {'XAUUSD': 'Gold'}, {'contract_size': 10.0}),
+            SpecLeg('fut', {'GC1225': 'Gold fut'}, {'contract_size': 10.0}))
+    assert coord.config.ASSETS['GOLD']['lot_size'] == 10.0
+    assert "using the broker's number" in caplog.text
+
+
+def test_legs_with_different_contract_sizes_warn_about_hedge_ratio(
+        config, tmp_path, monkeypatch, caplog):
+    config = gold_only(config)
+    config.TRADING['HEDGE_RATIO'] = 1.0
+    with caplog.at_level('WARNING'):
+        spec_coordinator(
+            config, tmp_path, monkeypatch,
+            SpecLeg('spot', {'XAUUSD': 'Gold'}, {'contract_size': 100.0}),
+            SpecLeg('fut', {'GC1225': 'Gold fut'}, {'contract_size': 50.0}))
+    assert 'implied by the contract specs is 2.0000' in caplog.text
+
+
+def test_a_real_futures_expiry_is_picked_up_from_the_broker(
+        config, tmp_path, monkeypatch):
+    """Set nothing: if the contract genuinely has an expiry, MT5 says
+    so and the spread becomes carry-detrended by itself."""
+    from datetime import datetime, timedelta
+    when = datetime.now() + timedelta(days=45)
+    config = gold_only(config)
+    config.ASSETS['GOLD'].pop('futures_expiry', None)
+    coord = spec_coordinator(
+        config, tmp_path, monkeypatch,
+        SpecLeg('spot', {'XAUUSD': 'Gold'}, {'contract_size': 100.0}),
+        SpecLeg('fut', {'GC1225': 'Gold fut'},
+                {'contract_size': 100.0, 'expiry': int(when.timestamp())}))
+    assert coord.config.ASSETS['GOLD']['futures_expiry'].date() == when.date()
+
+
+def test_a_rolling_contract_stays_on_the_raw_basis(config, tmp_path,
+                                                   monkeypatch):
+    config = gold_only(config)
+    config.ASSETS['GOLD'].pop('futures_expiry', None)
+    coord = spec_coordinator(
+        config, tmp_path, monkeypatch,
+        SpecLeg('spot', {'XAUUSD': 'Gold'}, {'contract_size': 100.0}),
+        SpecLeg('fut', {'GC1225': 'Gold CFD'},
+                {'contract_size': 100.0, 'expiry': 0}))
+    assert 'futures_expiry' not in coord.config.ASSETS['GOLD']
+
+
+def test_legs_without_symbol_reports_still_start(config, tmp_path,
+                                                 monkeypatch):
+    """Older leg runners have no symbol_report — resolution must not
+    depend on it."""
+    config = gold_only(config, lot_size=100)
+    coord = spec_coordinator(
+        config, tmp_path, monkeypatch,
+        SymbolFakeLeg('spot', {'XAUUSD': 'Gold'}),
+        SymbolFakeLeg('fut', {'GC1225': 'Gold fut'}))
+    assert 'GOLD' in coord.active_assets
+    assert coord.config.ASSETS['GOLD']['lot_size'] == 100
