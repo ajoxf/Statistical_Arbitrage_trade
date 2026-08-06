@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from .broker import BrokerSession
 from .config import AlgoTradingConfig
 from .database import DataLogger
-from .exits import ExitLadder, outcome_tag
+from .exits import ExitLadder, outcome_tag, overnight_exit
 from .legs import LocalLeg, RemoteLeg
 from .marketdata import compute_market_data
 from .models import Position, SignalType, Trade, OrderSide
@@ -112,6 +112,7 @@ class Coordinator:
         self._last_test_ts = 0
         self._last_recon_ts = 0
         self._test_results = None
+        self.manual_order = None       # armed Manual Spread Trade
         self.algo_enabled = True       # entries only; exits ALWAYS run
 
         self.spot_leg, self.futures_leg = self._resolve_legs()
@@ -306,6 +307,9 @@ class Coordinator:
         self._detect_sd_touches(asset_key, z, market_data['swap_diff'])
         self.shadow.update(asset_key, market_data['spot_price'],
                            market_data['futures_price'])
+        # An armed Manual Spread Trade watches the spread on every
+        # tick, independently of the algo switch.
+        self._check_manual_arm(asset_key, market_data)
 
         active = self.position_manager.get_positions_for_asset(asset_key)
 
@@ -348,6 +352,17 @@ class Coordinator:
             self._enter(asset_key, signal, market_data, stats, contract_size)
 
     def _exit_reason(self, position, z, market_data):
+        plan = position.exit_plan or {}
+        # Overnight rule from a manual trade — checked before the
+        # ladder so the session cutoff is never missed.
+        overnight = overnight_exit(
+            plan.get('overnight_mode'),
+            position.unrealized_pnl - plan.get('rt_cost_usd', 0.0),
+            datetime.now(),
+            self.config.MANUAL.get('OVERNIGHT_CLOSE_HOUR', 16),
+            self.config.MANUAL.get('OVERNIGHT_CLOSE_MINUTE', 55))
+        if overnight:
+            return overnight
         if self.use_z and position.exit_plan:
             age = (datetime.now() - position.entry_time).total_seconds()
             return self.exit_ladder.evaluate(
@@ -413,7 +428,8 @@ class Coordinator:
                             stats, contract_size)
 
     def _open_position(self, asset_key, signal_type, lots, market_data,
-                       stats, contract_size, manual=False):
+                       stats, contract_size, manual=False,
+                       exit_spread=None, overnight=None):
         """Shared entry path for signal and manual trades: exit plan
         BEFORE orders (a trade whose cost floor exceeds plausible
         reversion is refused), execute, attach frozen levels."""
@@ -429,6 +445,11 @@ class Coordinator:
                 return None
             if manual:
                 plan['source'] = 'MANUAL'
+                # The operator's own exit target and overnight rule
+                # travel with the trade.
+                if exit_spread is not None:
+                    plan['manual_exit_spread'] = float(exit_spread)
+                plan['overnight_mode'] = overnight or 'ALLOW'
 
         asset = self.active_assets[asset_key]
         success, spot_trade, futures_trade = \
@@ -613,11 +634,29 @@ class Coordinator:
 
         open_cmd = control.get('open') or {}
         ts = open_cmd.get('ts', 0)
-        if open_cmd.get('asset') and ts > self._last_open_ts:
+        if ts > self._last_open_ts:
             self._last_open_ts = ts
-            self._manual_open(open_cmd['asset'],
-                              open_cmd.get('direction', ''),
-                              open_cmd.get('lots'))
+            if not open_cmd.get('asset'):
+                if self.manual_order:
+                    logging.warning("Manual trade CANCELLED via web UI")
+                self.manual_order = None
+            elif open_cmd.get('entry_spread') is None:
+                # Fire now at market (immediate manual trade)
+                self._manual_open(open_cmd['asset'],
+                                  open_cmd.get('direction', ''),
+                                  open_cmd.get('lots'),
+                                  exit_spread=open_cmd.get('exit_spread'),
+                                  overnight=open_cmd.get('overnight'))
+            else:
+                # Arm it: wait for the spread to reach the entry level
+                self.manual_order = dict(open_cmd)
+                logging.warning(
+                    "Manual trade ARMED: %s %s at spread %.4f "
+                    "(exit %s, overnight %s)",
+                    open_cmd['asset'], open_cmd.get('direction'),
+                    float(open_cmd['entry_spread']),
+                    open_cmd.get('exit_spread'),
+                    open_cmd.get('overnight', 'ALLOW'))
 
         test_cmd = control.get('test') or {}
         ts = test_cmd.get('ts', 0)
@@ -740,7 +779,33 @@ class Coordinator:
                 add(leg.name, f'round trip close {symbol}',
                     reversed_order.get('ok'), 'netting-mode reverse')
 
-    def _manual_open(self, asset_key, direction, lots=None):
+    def _check_manual_arm(self, asset_key, market_data):
+        """An armed manual trade fires when the spread reaches the
+        operator's entry level, in the direction they chose."""
+        order = self.manual_order
+        if not order or order.get('asset') != asset_key:
+            return
+        if self.position_manager.get_positions_for_asset(asset_key):
+            return                       # already in the trade
+        spread = market_data.get('swap_diff')
+        entry = order.get('entry_spread')
+        if spread is None or entry is None:
+            return
+        direction = order.get('direction', '')
+        # SELL_BASIS profits as the spread falls -> arm above the level
+        reached = (spread >= float(entry) if direction == 'SELL_BASIS'
+                   else spread <= float(entry))
+        if not reached:
+            return
+        logging.warning("Manual trade TRIGGERED: spread %.4f reached %.4f",
+                        spread, float(entry))
+        self.manual_order = None
+        self._manual_open(asset_key, direction, order.get('lots'),
+                          exit_spread=order.get('exit_spread'),
+                          overnight=order.get('overnight'))
+
+    def _manual_open(self, asset_key, direction, lots=None,
+                     exit_spread=None, overnight=None):
         """Manual spread trade from the web UI: bypasses SIGNAL gates
         (z, trend, cooldowns, edge filter) but NEVER risk limits or
         circuit breakers. Exits are managed by the normal ladder."""
@@ -783,7 +848,8 @@ class Coordinator:
         logging.warning("MANUAL SPREAD TRADE via web UI: %s %s %.2f lots",
                         asset_key, signal_type.value, lots)
         self._open_position(asset_key, signal_type, lots, market_data,
-                            stats, contract_size, manual=True)
+                            stats, contract_size, manual=True,
+                            exit_spread=exit_spread, overnight=overnight)
 
     def _write_runtime_status(self, all_market_data):
         """Refresh runtime_status.json for the read-only dashboard.
@@ -846,6 +912,7 @@ class Coordinator:
                        'tracking': self.shadow.snapshot()},
             'test_results': self._test_results,
             'margin_breaker': self._margin_breaker_state(),
+            'manual_order': self.manual_order,
         }
         try:
             tmp = self.status_path + '.tmp'

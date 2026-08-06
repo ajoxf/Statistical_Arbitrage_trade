@@ -148,6 +148,11 @@ class AlgoTradingConfig:
             'SYNC_INTERVAL_SEC': 20,
             'STRIKES': 3,            # consecutive mismatches before acting
         }
+        # Manual Spread Trade (dashboard panel) + overnight handling
+        self.MANUAL = {
+            'OVERNIGHT_CLOSE_HOUR': 16,     # local broker-session hour
+            'OVERNIGHT_CLOSE_MINUTE': 55,
+        }
         # Token/chat id come from .env (TELEGRAM_BOT_TOKEN,
         # TELEGRAM_CHAT_ID) — these flags only gate what gets sent
         self.TELEGRAM = {
@@ -222,7 +227,8 @@ class AlgoTradingConfig:
                           ('costs', 'COSTS'),
                           ('exits', 'EXITS'),
                           ('reconcile', 'RECONCILE'),
-                          ('telegram', 'TELEGRAM')]:
+                          ('telegram', 'TELEGRAM'),
+                          ('manual', 'MANUAL')]:
             if key in raw:
                 getattr(cfg, attr).update(raw[key])
 
@@ -254,7 +260,8 @@ class AlgoTradingConfig:
     # fields (accounts, leg mapping, symbols, HEDGE_RATIO) change the
     # spread series or the topology and require flat book + restart.
     HOT_SECTIONS = ('SIGNAL_THRESHOLDS', 'SIGNALS', 'EXITS', 'COSTS',
-                    'RISK_LIMITS', 'EXECUTION', 'TELEGRAM', 'RECONCILE')
+                    'RISK_LIMITS', 'EXECUTION', 'TELEGRAM', 'RECONCILE',
+                    'MANUAL')
     HOT_TRADING_KEYS = ('CLIP_LOTS', 'SLICE_LOTS', 'DAILY_LOT_TARGET',
                         'POLL_INTERVAL_SEC')
 

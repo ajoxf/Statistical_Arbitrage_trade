@@ -35,11 +35,32 @@ from . import costs as costs_mod
 from .models import SignalType
 
 
+def overnight_exit(mode, net_pnl, now, close_hour, close_minute):
+    """Overnight handling for manual trades: ALLOW keeps the position
+    (and pays the swap), EXIT_IF_PROFIT flattens only in profit,
+    EXIT_ALWAYS flattens regardless — all at the session cutoff."""
+    if not mode or mode == 'ALLOW':
+        return None
+    cutoff = now.replace(hour=int(close_hour), minute=int(close_minute),
+                         second=0, microsecond=0)
+    if now < cutoff:
+        return None
+    if mode == 'EXIT_ALWAYS':
+        return 'OVERNIGHT_CLOSE'
+    if mode == 'EXIT_IF_PROFIT' and net_pnl is not None and net_pnl > 0:
+        return 'OVERNIGHT_CLOSE'
+    return None
+
+
 def outcome_tag(close_reason, z_reverted):
     """Deterministic post-trade outcome label (numbers-first review)."""
     reason = (close_reason or '').upper()
     if reason == 'TAKE_PROFIT':
         return 'TARGET_HIT'
+    if reason == 'MANUAL_TARGET':
+        return 'TARGET_HIT'
+    if reason in ('OVERNIGHT_CLOSE', 'MANUAL_CLOSE'):
+        return 'TIME_EXIT'
     if reason == 'REVERSION_EXIT':
         return 'REVERSION_BANKED'
     if reason in ('MAX_HOLD', 'TIME_STOP'):
@@ -201,6 +222,17 @@ class ExitLadder:
         if plan['stop_usd'] and gross_pnl is not None \
                 and gross_pnl <= -plan['stop_usd']:
             return 'DOLLAR_STOP'
+
+        # 1b. Manual trade: the operator named an exit SPREAD when
+        # arming it. That target outranks the signal machinery (it is
+        # why they placed the trade) but never outranks the stop.
+        target = plan.get('manual_exit_spread')
+        if target is not None and spread is not None:
+            reached = (spread <= target
+                       if position.signal_type == SignalType.SELL_BASIS
+                       else spread >= target)
+            if reached:
+                return 'MANUAL_TARGET'
 
         # 2. Take profit — ungated, NET money alone (BE + target)
         if plan['tp_usd'] and net_pnl is not None \

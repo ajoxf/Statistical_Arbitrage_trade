@@ -73,6 +73,63 @@
      never only the combined figure. -->
 <div id="accounts-strip" class="row g-2 mb-3" style="display:none;"></div>
 
+<!-- Manual Spread Trade -->
+<div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-bullseye me-2"></i>Manual Spread Trade</span>
+        <span class="badge bg-secondary" id="manual-trade-status-badge">IDLE</span>
+    </div>
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <span class="text-secondary small">Current Spread:</span>
+            <span class="fw-bold fs-5" id="manual-current-spread">—</span>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-6">
+                <label class="form-label small">Entry Spread <span class="text-secondary">(blank = now)</span></label>
+                <input type="number" class="form-control form-control-sm" id="manual-entry-spread" step="0.0001" placeholder="wait for this level">
+            </div>
+            <div class="col-6">
+                <label class="form-label small">Exit Spread <span class="text-secondary">(optional)</span></label>
+                <input type="number" class="form-control form-control-sm" id="manual-exit-spread" step="0.0001" placeholder="target">
+            </div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-6">
+                <label class="form-label small">Direction</label>
+                <select class="form-select form-select-sm" id="manual-trade-direction">
+                    <option value="SELL_BASIS">Short Spread (entry high &rarr; exit low)</option>
+                    <option value="BUY_BASIS">Long Spread (entry low &rarr; exit high)</option>
+                </select>
+            </div>
+            <div class="col-6">
+                <label class="form-label small">Lots <span class="text-secondary">(blank = clip)</span></label>
+                <input type="number" class="form-control form-control-sm" id="manual-lots" step="0.01" min="0.01">
+            </div>
+        </div>
+        <div class="mb-3">
+            <label class="form-label small">Overnight Handling</label>
+            <select class="form-select form-select-sm" id="manual-overnight-mode">
+                <option value="ALLOW">Allow overnight (accept swap)</option>
+                <option value="EXIT_IF_PROFIT">Exit before overnight if in profit</option>
+                <option value="EXIT_ALWAYS">Exit before overnight always</option>
+            </select>
+        </div>
+        <div class="d-grid gap-2">
+            <button class="btn btn-primary btn-sm" id="manual-trade-activate" onclick="activateManualTrade()">
+                <i class="bi bi-play-fill me-1"></i>Activate Trade
+            </button>
+            <button class="btn btn-danger btn-sm d-none" id="manual-trade-cancel" onclick="cancelManualTrade()">
+                <i class="bi bi-stop-fill me-1"></i>Cancel Armed Trade
+            </button>
+        </div>
+        <div class="mt-2 small text-secondary" id="manual-trade-info">
+            Set your target spreads and activate. Signal gates are bypassed;
+            risk limits, the margin breaker and the exit ladder still apply.
+        </div>
+    </div>
+</div>
+
 <!-- Latency Metrics Strip -->
 <div class="d-flex align-items-center gap-3 mb-3 px-1" style="font-size:0.72rem;color:#aaa;">
     <span><i class="bi bi-clock me-1"></i>Feed age: <span id="tick-age-ms" class="fw-bold text-light">—</span></span>
@@ -1282,6 +1339,80 @@
             badge.textContent = lvl == null ? 'N/A' : Number(lvl).toFixed(0) + '%';
         }
     }
+
+    // ===== Manual Spread Trade =====
+    // Arms an order at a target spread (or fires now if left blank).
+    // The engine bypasses only the SIGNAL gates — risk limits, the
+    // margin breaker and the exit ladder still govern the trade.
+    async function activateManualTrade() {
+        const entry = document.getElementById('manual-entry-spread').value;
+        const exit = document.getElementById('manual-exit-spread').value;
+        const lots = document.getElementById('manual-lots').value;
+        const direction = document.getElementById('manual-trade-direction').value;
+        const overnight = document.getElementById('manual-overnight-mode').value;
+        const asset = (window.__manualAsset || 'GOLD');
+        const how = entry === ''
+            ? 'open a pair NOW at market'
+            : `arm a pair to open when the spread reaches ${entry}`;
+        if (!confirm(`Manual trade on ${asset}: ${how}?`)) return;
+        const response = await fetch('/api/manual-trade', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                asset, direction, overnight,
+                lots: lots === '' ? null : parseFloat(lots),
+                entry_spread: entry === '' ? null : parseFloat(entry),
+                exit_spread: exit === '' ? null : parseFloat(exit)
+            })
+        });
+        const result = await response.json();
+        showToast(result.note || result.error ||
+                  (result.success ? 'Manual trade sent' : 'Failed'),
+                  result.success ? 'success' : 'danger');
+        refreshManualTrade();
+    }
+
+    async function cancelManualTrade() {
+        const response = await fetch('/api/manual-trade', {method: 'DELETE'});
+        const result = await response.json();
+        showToast(result.note || 'Cancelled', 'info');
+        refreshManualTrade();
+    }
+
+    async function refreshManualTrade() {
+        try {
+            const data = await (await fetch('/api/manual-trade')).json();
+            if (data.asset) window.__manualAsset = data.asset;
+            const spreadEl = document.getElementById('manual-current-spread');
+            if (spreadEl) {
+                spreadEl.textContent = data.current_spread == null ? '—'
+                    : Number(data.current_spread).toFixed(4);
+            }
+            const badge = document.getElementById('manual-trade-status-badge');
+            const activate = document.getElementById('manual-trade-activate');
+            const cancel = document.getElementById('manual-trade-cancel');
+            const info = document.getElementById('manual-trade-info');
+            if (data.armed && data.order) {
+                const o = data.order;
+                if (badge) { badge.textContent = 'ARMED'; badge.className = 'badge bg-warning text-dark'; }
+                if (activate) activate.classList.add('d-none');
+                if (cancel) cancel.classList.remove('d-none');
+                if (info) info.innerHTML =
+                    `<span class="text-warning">Waiting for spread
+                     ${Number(o.entry_spread).toFixed(4)}
+                     (${o.direction === 'SELL_BASIS' ? 'short' : 'long'} spread)` +
+                    (o.exit_spread != null ? ` &rarr; exit ${Number(o.exit_spread).toFixed(4)}` : '') +
+                    ` · overnight: ${o.overnight || 'ALLOW'}</span>`;
+            } else {
+                if (badge) { badge.textContent = 'IDLE'; badge.className = 'badge bg-secondary'; }
+                if (activate) activate.classList.remove('d-none');
+                if (cancel) cancel.classList.add('d-none');
+            }
+        } catch (e) { /* panel is best-effort */ }
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+        refreshManualTrade();
+        setInterval(refreshManualTrade, 3000);
+    });
 
     // Socket event handlers
     socket.on('tick', function(data) {

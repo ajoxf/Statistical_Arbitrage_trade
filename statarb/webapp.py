@@ -288,15 +288,48 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         return api_close_position()
 
     @app.route('/api/engine/open', methods=['POST'])
+    @app.route('/api/manual-trade', methods=['POST'])
     def api_open():
+        """Manual Spread Trade. With entry_spread the order is ARMED
+        and fires when the spread reaches that level; without it the
+        pair goes on immediately at market. exit_spread and overnight
+        travel with the trade."""
         payload = request.get_json(silent=True) or {}
         if not payload.get('asset') or not payload.get('direction'):
-            return jsonify({'error': 'asset and direction required'}), 400
-        write_control({'open': {'asset': payload['asset'],
-                                'direction': payload['direction'],
-                                'lots': payload.get('lots'),
-                                'ts': time.time()}})
-        return jsonify({'success': True})
+            return jsonify({'success': False,
+                            'error': 'asset and direction required'}), 400
+        write_control({'open': {
+            'asset': payload['asset'],
+            'direction': payload['direction'],
+            'lots': payload.get('lots'),
+            'entry_spread': payload.get('entry_spread'),
+            'exit_spread': payload.get('exit_spread'),
+            'overnight': payload.get('overnight', 'ALLOW'),
+            'ts': time.time()}})
+        armed = payload.get('entry_spread') is not None
+        return jsonify({'success': True, 'armed': armed,
+                        'note': ('Armed — waiting for the spread to reach '
+                                 'your entry level.' if armed else
+                                 'Sent — opening at market now.')})
+
+    @app.route('/api/manual-trade', methods=['DELETE'])
+    @app.route('/api/manual-trade/cancel', methods=['POST'])
+    def api_manual_cancel():
+        """Disarm a pending manual trade (does not touch open
+        positions — use the close button for those)."""
+        write_control({'open': {'asset': None, 'ts': time.time()}})
+        return jsonify({'success': True, 'note': 'Manual trade cancelled.'})
+
+    @app.route('/api/manual-trade', methods=['GET'])
+    def api_manual_status():
+        status = runtime_status()
+        order = status.get('manual_order')
+        first = (status.get('assets') or [{}])[0]
+        return jsonify({
+            'armed': bool(order), 'order': order,
+            'current_spread': first.get('swap_diff'),
+            'asset': first.get('asset'),
+        })
 
     @app.route('/api/engine/test', methods=['POST'])
     def api_test():
