@@ -119,19 +119,46 @@
             color: var(--text-primary);
         }
 
+        /* This app is a LIGHT theme, but several tables carry Bootstrap's
+           .table-dark. Overriding --bs-table-bg/-color alone was not
+           enough: .table-dark also ships near-black STRIPED, HOVER and
+           ACTIVE colours, and Bootstrap 5.3 paints those over the cell
+           with an inset box-shadow. The result was black bands with dark
+           text on them — unreadable (operator, 2026-08-06). Every state
+           colour has to be brought into the light theme, not just the
+           base one. */
         .table-dark {
             --bs-table-bg: var(--bg-secondary);
             --bs-table-color: var(--text-primary);
             --bs-table-border-color: var(--border-color);
+            --bs-table-striped-bg: var(--bg-tertiary);
+            --bs-table-striped-color: var(--text-primary);
+            --bs-table-hover-bg: var(--bg-tertiary);
+            --bs-table-hover-color: var(--text-primary);
+            --bs-table-active-bg: var(--bg-tertiary);
+            --bs-table-active-color: var(--text-primary);
         }
 
         .table-dark th, .table-dark td {
             color: var(--text-primary);
         }
 
+        /* --bs-table-bg-type / --bs-table-color-type are the exact hooks
+           Bootstrap 5.3 reads for the striped box-shadow, so setting them
+           here fixes the band whatever variant the table carries. */
         .table-striped > tbody > tr:nth-of-type(odd) > * {
+            --bs-table-bg-type: var(--bg-tertiary);
+            --bs-table-color-type: var(--text-primary);
             background-color: var(--bg-tertiary);
             color: var(--text-primary);
+        }
+
+        /* Muted text keeps its own colour inside a striped band, so it
+           must stay legible against the light stripe rather than against
+           the dark one it was picked for. */
+        .table-dark .text-secondary,
+        .table-striped .text-secondary {
+            color: var(--text-secondary) !important;
         }
 
         .badge-long {

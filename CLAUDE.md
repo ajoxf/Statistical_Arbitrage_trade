@@ -506,6 +506,19 @@ running the page in the bundled Chromium under Playwright and reading
   the modal itself instead of via `bootstrap.Modal` (the dialog that
   reports "could not save" must work when the network is what failed).
 
+- **Black bands with unreadable text in striped tables** (operator).
+  The app is a LIGHT theme, but several tables carry Bootstrap's
+  `.table-dark`. base.html overrode `--bs-table-bg`/`-color` but NOT
+  the STRIPED/HOVER/ACTIVE colours, which `.table-dark` ships as
+  near-black — and Bootstrap 5.3 paints those over the cell with an
+  `inset 0 0 0 9999px` box-shadow, so a plain `background-color`
+  override is invisible. Stripe #2c3034 under base.html's forced dark
+  `.table-dark td` colour measured **1.16:1**. Every state variable is
+  now mapped into the light theme AND the odd-row rule sets
+  `--bs-table-bg-type`/`--bs-table-color-type`, the hooks the box-shadow
+  actually reads: **13.01:1**, verified in Chromium with Bootstrap
+  5.3's real table rules injected.
+
 ## Dialogs (2026-08-06)
 
 Owner: "Make all the Dialog Boxes Professional and also Everytime new

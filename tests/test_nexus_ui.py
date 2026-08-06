@@ -972,3 +972,37 @@ def test_dialogs_do_not_depend_on_bootstrap_javascript(client):
                      if not line.strip().startswith('//'))
     assert 'bootstrap.Modal' not in code
     assert "modalEl.classList.add('show')" in code
+
+
+# ---------------------------------------------------------------------------
+# Table striping contrast
+# ---------------------------------------------------------------------------
+# Operator, 2026-08-06: "In the Black bands the text is not readable".
+# .table-dark ships near-black striped/hover colours, and Bootstrap 5.3
+# paints them over the cell with an inset box-shadow — so overriding
+# --bs-table-bg alone left black bands carrying dark text.
+
+def test_dark_tables_bring_every_state_colour_into_the_light_theme(client):
+    page = client.get('/').get_data(as_text=True)
+    block = page[page.index('.table-dark {'):page.index('.table-dark th')]
+    for variable in ('--bs-table-striped-bg', '--bs-table-striped-color',
+                     '--bs-table-hover-bg', '--bs-table-hover-color',
+                     '--bs-table-active-bg', '--bs-table-active-color'):
+        assert variable in block, variable
+    # ...and none of them may be left as a raw dark literal.
+    assert '#212529' not in block and '#2c3034' not in block
+
+
+def test_striped_rows_set_the_hooks_bootstrap_actually_reads(client):
+    """background-color alone is painted over by the inset box-shadow."""
+    page = client.get('/').get_data(as_text=True)
+    start = page.index('.table-striped > tbody > tr:nth-of-type(odd) > * {')
+    block = page[start:page.index('}', start)]
+    assert '--bs-table-bg-type' in block
+    assert '--bs-table-color-type' in block
+
+
+def test_the_scenario_table_is_striped_and_therefore_covered(client):
+    """The table in the screenshot: setup.html's order-test suite."""
+    page = client.get('/setup').get_data(as_text=True)
+    assert 'table-dark table-striped' in page
