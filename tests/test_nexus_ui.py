@@ -124,13 +124,26 @@ def client(tmp_path, monkeypatch):
 # Pages
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('route', ['/', '/analysis', '/settings', '/setup'])
+def nav_links():
+    """Every href the vendored navbar exposes — each must resolve."""
+    base = open(os.path.join(TEMPLATES, 'base.html'), encoding='utf-8').read()
+    return sorted(set(re.findall(r'href="(/[a-z-]*)"', base)))
+
+
+@pytest.mark.parametrize('route', ['/', '/dashboard', '/analysis',
+                                   '/settings', '/setup'])
 def test_every_page_renders(client, route):
     response = client.get(route)
     assert response.status_code == 200, route
     body = response.data.decode()
     assert 'Nexus' in body                      # the vendored W3 chrome
     assert 'jinja2' not in body.lower()
+
+
+@pytest.mark.parametrize('href', nav_links())
+def test_every_navbar_link_resolves(client, href):
+    """No dead links in the nav — this is what /dashboard 404'd on."""
+    assert client.get(href).status_code == 200, href
 
 
 def test_dashboard_is_the_nexus_template(client):
@@ -161,6 +174,16 @@ def test_all_pages_are_free_of_crypto_wording(client):
     for route in ('/', '/analysis', '/settings'):
         body = client.get(route).data.decode()
         assert 'okx' not in body.lower(), route
+
+
+def test_socketio_server_is_wired(client):
+    """The Nexus navbar shows Connected/Disconnected from a socket.io
+    session — without a server it sat on 'Disconnected' forever."""
+    pytest.importorskip("flask_socketio")
+    assert client.application.socketio is not None
+    handshake = client.get('/socket.io/?EIO=4&transport=polling')
+    assert handshake.status_code == 200
+    assert b'"sid"' in handshake.data          # engine.io session opened
 
 
 def test_static_assets_served(client):

@@ -180,9 +180,9 @@ def main():
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
         print(f"[launcher] control panel: {url}  (Ctrl+C stops everything)")
 
-        from statarb.webapp import create_app
-        create_app(config_path='config.json').run(
-            host='127.0.0.1', port=DASHBOARD_PORT)
+        from statarb.webapp import create_app, run_app
+        run_app(create_app(config_path='config.json'),
+                host='127.0.0.1', port=DASHBOARD_PORT)
     except KeyboardInterrupt:
         pass
     finally:

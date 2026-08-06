@@ -5,8 +5,10 @@ numpy
 pytz
 python-dotenv
 
-# Web dashboard (run_dashboard.py) — optional, read-only process
+# Web control panel (Nexus UI) — served by start.py
 flask
+flask-socketio
+simple-websocket
 
 # Development / testing (run anywhere, MT5 not required — tests use a fake broker)
 pytest

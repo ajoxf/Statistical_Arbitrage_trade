@@ -26,6 +26,11 @@ try:
 except ImportError:
     Flask = None
 
+try:
+    from flask_socketio import SocketIO
+except ImportError:
+    SocketIO = None            # UI falls back to polling
+
 from . import webapi
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -110,7 +115,9 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
     # ---------------- pages ----------------
 
+    # The vendored navbar links to both / and /dashboard — serve both.
     @app.route('/')
+    @app.route('/dashboard')
     def dashboard():
         return render_template('dashboard.html', config=ui_config_obj())
 
@@ -750,7 +757,69 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     def healthz():
         return jsonify({'ok': True, 'time': datetime.now().isoformat()})
 
+    # ---------------- live push (socket.io) ----------------
+    # The Nexus dashboard shows Connected/Disconnected from a socket.io
+    # session and refreshes prices on 'tick' / 'signal' events. The
+    # coordinator writes runtime_status.json; this thread turns that
+    # into the events the UI expects. Polling still works if
+    # flask-socketio is missing — the page just falls back to it.
+
+    app.socketio = None
+    if SocketIO is not None:
+        socketio = SocketIO(app, cors_allowed_origins='*',
+                            async_mode='threading', logger=False,
+                            engineio_logger=False)
+        app.socketio = socketio
+
+        def broadcast_loop():
+            last = None
+            while True:
+                socketio.sleep(1.0)
+                try:
+                    status = ui_status()
+                except Exception:
+                    continue
+                if not status.get('is_running'):
+                    continue
+                stamp = status.get('updated')
+                if stamp == last:
+                    continue          # coordinator hasn't refreshed yet
+                last = stamp
+                spot, futures = status.get('spot_tick'), \
+                    status.get('futures_tick')
+                if spot and futures:
+                    trade = status.get('open_trade') or {}
+                    socketio.emit('tick', {
+                        'spot': spot, 'futures': futures,
+                        'position_pnl': trade.get('unrealized_pnl'),
+                        'timestamp': stamp})
+                if status.get('signal'):
+                    socketio.emit('signal', status['signal'])
+                socketio.emit('status', {
+                    'is_running': True,
+                    'algo_enabled': status.get('algo_enabled'),
+                    'paper_trading': status.get('paper_trading')})
+
+        @socketio.on('connect')
+        def on_connect():
+            status = ui_status()
+            socketio.emit('status', {
+                'is_running': status.get('is_running'),
+                'algo_enabled': status.get('algo_enabled'),
+                'paper_trading': status.get('paper_trading')})
+
+        socketio.start_background_task(broadcast_loop)
+
     return app
+
+
+def run_app(app, host='127.0.0.1', port=8080):
+    """Serve with socket.io when available, plain Flask otherwise."""
+    if getattr(app, 'socketio', None) is not None:
+        app.socketio.run(app, host=host, port=port,
+                         allow_unsafe_werkzeug=True)
+    else:
+        app.run(host=host, port=port)
 
 
 def main():
@@ -768,7 +837,7 @@ def main():
     app = create_app(args.db, args.status, args.config, args.control,
                      args.env)
     print(f"Nexus control panel: http://{args.host}:{args.port}")
-    app.run(host=args.host, port=args.port)
+    run_app(app, args.host, args.port)
 
 
 if __name__ == '__main__':
