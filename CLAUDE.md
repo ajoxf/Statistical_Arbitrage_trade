@@ -77,7 +77,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  70 tests, all fakes, no MT5 (runs anywhere)
+tests/                  232 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -186,6 +186,16 @@ Web control panel (statarb/webapp.py, own process, file-bridge only):
   AlgoTradingConfig.hot_apply; STRUCTURAL fields (accounts, legs,
   symbols, HEDGE_RATIO) are blocked -> restart; beta change with a
   position open returns 409 (W3 rule).
+- Exchange Order Log (dashboard): BOTH accounts' raw MT5 activity in
+  one table, Account column first. Coordinator polls every leg's
+  `order_log()` every 30s into the `broker_orders` table (webapp is a
+  separate process and never touches MT5); filled deals + cancelled/
+  rejected history orders + resting orders; manual terminal trades are
+  included on purpose, `is_bot` marks ours. Resting rows are re-stated
+  per poll (deleted for the accounts read that pass) so a filled order
+  leaves no stale 'working' row; key is (account, order_id, deal_id)
+  because ticket numbers are only unique per terminal. CSV export at
+  /api/exchange-orders/csv.
 - Analysis: outcome + edge-quality tiles (win rate, PF, expectancy,
   break-even WR, max DD, P70 peak, median peak-minute), outcome-tag
   counts, excursions table (peak/trough $ @ minutes, capture %),

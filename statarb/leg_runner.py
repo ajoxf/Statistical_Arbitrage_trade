@@ -68,6 +68,9 @@ class LegServer:
             if cmd == 'positions':
                 return {'ok': True,
                         'positions': self.leg.positions(msg.get('symbol'))}
+            if cmd == 'order_log':
+                return {'ok': True,
+                        'orders': self.leg.order_log(msg.get('hours', 24))}
             if cmd == 'close_ticket':
                 return self.leg.close_ticket(
                     msg['symbol'], msg['ticket'], msg['volume'],

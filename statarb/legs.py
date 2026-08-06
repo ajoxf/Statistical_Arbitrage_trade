@@ -129,6 +129,13 @@ class LocalLeg:
     def positions(self, symbol=None):
         return self.broker.positions_by_magic(symbol)
 
+    def order_log(self, hours=24):
+        """This account's recent MT5 order/deal activity, each row
+        stamped with the account it came from so the Exchange Order Log
+        can show both accounts in one table."""
+        return [dict(row, account=self.name)
+                for row in (self.broker.order_log(hours) or ())]
+
 
 class RemoteLeg:
     def __init__(self, name, endpoint, timeout=10.0):
@@ -249,3 +256,10 @@ class RemoteLeg:
         if reply and reply.get('ok'):
             return reply['positions']
         return None    # None = unknown (IPC failure), NOT "flat"
+
+    def order_log(self, hours=24):
+        reply = self._request({'cmd': 'order_log', 'hours': hours})
+        if reply and reply.get('ok'):
+            return [dict(row, account=self.name)
+                    for row in (reply.get('orders') or ())]
+        return None    # None = unknown (IPC failure), NOT "no activity"

@@ -1039,6 +1039,7 @@
                     <table class="table table-sm table-striped table-hover mb-0" style="font-size: 0.72rem;">
                         <thead class="sticky-top" style="background: var(--bg-secondary);">
                             <tr>
+                                <th>Account</th>
                                 <th>Time</th>
                                 <th>Symbol</th>
                                 <th>Type</th>
@@ -1057,7 +1058,7 @@
                         </thead>
                         <tbody id="exchange-orders-table">
                             <tr>
-                                <td colspan="14" class="text-center text-secondary py-3">Click Refresh to load exchange orders</td>
+                                <td colspan="15" class="text-center text-secondary py-3">Click Refresh to load exchange orders</td>
                             </tr>
                         </tbody>
                     </table>
@@ -3861,14 +3862,17 @@ function updateFilterStatus(elementId, passed, value) {
     // ========== Exchange Order Log ==========
     function refreshExchangeOrders() {
         const tbody = document.getElementById('exchange-orders-table');
-        tbody.innerHTML = '<tr><td colspan="14" class="text-center text-secondary py-2"><i class="bi bi-hourglass-split me-1"></i>Loading...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="15" class="text-center text-secondary py-2"><i class="bi bi-hourglass-split me-1"></i>Loading...</td></tr>';
 
         fetch('/api/exchange-orders?limit=100')
             .then(r => r.json())
             .then(data => {
                 const orders = data.orders || [];
+                const badge = document.getElementById('exchange-order-badge');
+                const accounts = data.accounts || [];
+                if (badge) badge.textContent = accounts.length ? accounts.join(' + ') : 'MT5';
                 if (orders.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="14" class="text-center text-secondary py-3">No orders found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="15" class="text-center text-secondary py-3">No orders found</td></tr>';
                     return;
                 }
 
@@ -3881,8 +3885,10 @@ function updateFilterStatus(elementId, passed, value) {
                     const time = o.filled_at ? new Date(parseInt(o.filled_at)).toLocaleTimeString() : '-';
                     const date = o.filled_at ? new Date(parseInt(o.filled_at)).toLocaleDateString() : '';
 
+                    const acctTitle = (o.login ? 'Login ' + o.login : '') + (o.is_bot ? ' · placed by the algo' : ' · manual/terminal');
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
+                        <td title="${acctTitle}"><span class="badge ${o.is_bot ? 'bg-primary' : 'bg-secondary'}" style="font-size:0.6rem">${o.account || '-'}</span></td>
                         <td title="${date}">${time}</td>
                         <td>${o.symbol}</td>
                         <td><span class="badge bg-secondary" style="font-size:0.6rem">${o.inst_type}</span></td>
@@ -3902,7 +3908,7 @@ function updateFilterStatus(elementId, passed, value) {
                 });
             })
             .catch(err => {
-                tbody.innerHTML = `<tr><td colspan="14" class="text-center text-danger py-3">Error: ${err}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="15" class="text-center text-danger py-3">Error: ${err}</td></tr>`;
             });
     }
 </script>

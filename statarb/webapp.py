@@ -15,6 +15,8 @@ the trading loop:
     python run_dashboard.py    (standalone)
 """
 
+import csv
+import io
 import json
 import os
 import sqlite3
@@ -22,7 +24,7 @@ import time
 from datetime import datetime
 
 try:
-    from flask import Flask, jsonify, render_template, request
+    from flask import Flask, Response, jsonify, render_template, request
 except ImportError:
     Flask = None
 
@@ -709,9 +711,66 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     def api_spot_holdings():
         return jsonify({'holdings': []})
 
+    def exchange_orders(limit=100, account=None):
+        """Both accounts' MT5 activity in one list, newest first. The
+        coordinator polls each leg into broker_orders; leverage is
+        stitched in per account from the live status file."""
+        sql = 'SELECT * FROM broker_orders'
+        args = []
+        if account:
+            sql += ' WHERE account = ?'
+            args.append(account)
+        sql += ' ORDER BY filled_at DESC LIMIT ?'
+        args.append(limit)
+
+        accounts = runtime_status().get('accounts') or {}
+        rows = []
+        for row in query(sql, tuple(args)):
+            info = accounts.get(row.get('account')) or {}
+            row['leverage'] = info.get('leverage')
+            row['login'] = info.get('login')
+            row['is_bot'] = bool(row.get('is_bot'))
+            for key in ('quantity', 'fill_qty', 'fill_price', 'fee', 'pnl'):
+                row[key] = row.get(key) or 0.0
+            row['fee_ccy'] = row.get('fee_ccy') or info.get('currency') or ''
+            row['order_id'] = str(row.get('order_id') or '')
+            rows.append(row)
+        return rows
+
     @app.route('/api/exchange-orders')
     def api_exchange_orders():
-        return jsonify([])
+        limit = min(request.args.get('limit', 100, type=int), 1000)
+        rows = exchange_orders(limit, request.args.get('account'))
+        return jsonify({
+            'orders': rows,
+            'accounts': sorted({r['account'] for r in rows
+                                if r.get('account')}),
+            'count': len(rows),
+        })
+
+    @app.route('/api/exchange-orders/csv')
+    def api_exchange_orders_csv():
+        rows = exchange_orders(
+            min(request.args.get('limit', 1000, type=int), 5000),
+            request.args.get('account'))
+        columns = ['account', 'login', 'filled_at', 'symbol', 'inst_type',
+                   'side', 'pos_side', 'order_type', 'quantity', 'fill_qty',
+                   'fill_price', 'leverage', 'fee', 'fee_ccy', 'pnl',
+                   'state', 'order_id', 'deal_id', 'position_id', 'is_bot',
+                   'comment']
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=columns, extrasaction='ignore')
+        writer.writeheader()
+        for row in rows:
+            stamp = row.get('filled_at')
+            writer.writerow(dict(
+                row,
+                filled_at=(datetime.fromtimestamp(stamp / 1000).isoformat()
+                           if stamp else '')))
+        return Response(
+            out.getvalue(), mimetype='text/csv',
+            headers={'Content-Disposition':
+                     'attachment; filename=exchange_orders.csv'})
 
     # -- MT5 order tests (W3's test-order / test-suite panels) --
 

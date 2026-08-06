@@ -23,6 +23,7 @@ class FakeBroker:
         self.fill_states = {}     # ticket -> state
         self.pending_fill_after = {}   # symbol -> polls until fill
         self.live_positions = []       # for positions_by_magic
+        self.broker_order_log = []     # for order_log (Exchange Order Log)
         self.fail_symbols = set(fail_symbols or [])
         self.price = price
         self.next_ticket = 1000
@@ -106,6 +107,9 @@ class FakeBroker:
 
     def pending_orders_by_magic(self, symbol=None):
         return []
+
+    def order_log(self, hours=24):
+        return [dict(row) for row in self.broker_order_log]
 
     # --- methods used by LocalLeg / LegServer ---
 

@@ -111,6 +111,7 @@ class Coordinator:
         self._last_open_ts = 0
         self._last_test_ts = 0
         self._last_recon_ts = 0
+        self._last_order_log = 0.0
         self._test_results = None
         self.manual_order = None       # armed Manual Spread Trade
         self.algo_enabled = True       # entries only; exits ALWAYS run
@@ -922,6 +923,43 @@ class Coordinator:
         except OSError as e:
             logging.debug("Could not write runtime status: %s", e)
 
+    def _poll_order_logs(self, interval=30.0, hours=24):
+        """Pull each account's raw MT5 order/deal activity into the
+        broker_orders table so the dashboard's Exchange Order Log shows
+        BOTH accounts side by side. The web app is a separate process
+        and never touches MT5, so the coordinator is the only place
+        this can be read from.
+
+        Manual trades placed in the terminal are included on purpose —
+        an operator eyeballing the log wants to see everything the
+        account did, with `is_bot` distinguishing ours."""
+        now = time.time()
+        if now - self._last_order_log < interval:
+            return 0
+        self._last_order_log = now
+
+        rows, polled = [], set()
+        for leg in self._each_leg():
+            try:
+                fetched = leg.order_log(hours)
+            except Exception as e:
+                logging.warning("Order log unavailable for leg '%s': %s",
+                                leg.name, e)
+                continue
+            if fetched is None:        # IPC failure — not "no activity"
+                logging.debug("Order log unreadable for leg '%s'", leg.name)
+                continue
+            rows.extend(fetched)
+            polled.add(leg.name)
+
+        if not polled:
+            return 0
+        try:
+            return self.data_logger.record_broker_orders(rows, polled)
+        except Exception as e:
+            logging.error("Could not persist order log: %s", e)
+            return 0
+
     # -- Telegram command handlers (W3 command set, MT5-adapted) --------
 
     def _margin_breaker_state(self):
@@ -1208,6 +1246,7 @@ class Coordinator:
                 self._read_control()
                 if loop_count % 20 == 0:      # ~10s
                     self._maybe_reload_config()
+                self._poll_order_logs()
 
                 if self.reconciler and self.trading_mode == "LIVE" \
                         and self.reconciler.due():

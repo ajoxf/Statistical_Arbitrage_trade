@@ -10,7 +10,7 @@ config) so each such process can be pointed at its own terminal.
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .models import OrderSide
 
@@ -136,6 +136,113 @@ class BrokerSession:
 
     def symbol_tick(self, symbol):
         return mt5.symbol_info_tick(symbol) if mt5 else None
+
+    def order_log(self, hours=24):
+        """Everything this MT5 account did recently, normalised for the
+        Exchange Order Log: filled deals (with fee/swap/profit), plus
+        orders that never filled (cancelled/rejected) and anything
+        still resting. Includes manual trades placed in the terminal —
+        `is_bot` marks the ones this engine sent."""
+        if mt5 is None:
+            return []
+        rows = []
+        try:
+            since = datetime.now() - timedelta(hours=hours)
+            now = datetime.now() + timedelta(minutes=1)
+
+            deal_types = {0: 'buy', 1: 'sell'}
+            for deal in (mt5.history_deals_get(since, now) or ()):
+                if deal.type not in deal_types:
+                    continue          # balance/credit entries, not trades
+                rows.append({
+                    'order_id': str(deal.order or deal.ticket),
+                    'deal_id': str(deal.ticket),
+                    'symbol': deal.symbol,
+                    'inst_type': 'DEAL',
+                    'side': deal_types[deal.type],
+                    'pos_side': ('open' if deal.entry == mt5.DEAL_ENTRY_IN
+                                 else 'close'),
+                    'order_type': 'market/limit',
+                    'quantity': deal.volume,
+                    'fill_qty': deal.volume,
+                    'fill_price': deal.price,
+                    'fee': (deal.commission or 0.0) + (deal.swap or 0.0),
+                    'fee_ccy': '',
+                    'pnl': deal.profit or 0.0,
+                    'state': 'filled',
+                    'filled_at': int(deal.time) * 1000,
+                    'position_id': deal.position_id,
+                    'is_bot': deal.magic == MAGIC_NUMBER,
+                    'comment': deal.comment or '',
+                })
+
+            order_types = {
+                getattr(mt5, name, -1): label for name, label in [
+                    ('ORDER_TYPE_BUY', 'market buy'),
+                    ('ORDER_TYPE_SELL', 'market sell'),
+                    ('ORDER_TYPE_BUY_LIMIT', 'buy limit'),
+                    ('ORDER_TYPE_SELL_LIMIT', 'sell limit'),
+                    ('ORDER_TYPE_BUY_STOP', 'buy stop'),
+                    ('ORDER_TYPE_SELL_STOP', 'sell stop')]}
+            states = {
+                getattr(mt5, name, -1): label for name, label in [
+                    ('ORDER_STATE_STARTED', 'started'),
+                    ('ORDER_STATE_PLACED', 'placed'),
+                    ('ORDER_STATE_CANCELED', 'cancelled'),
+                    ('ORDER_STATE_PARTIAL', 'partial'),
+                    ('ORDER_STATE_FILLED', 'filled'),
+                    ('ORDER_STATE_REJECTED', 'rejected'),
+                    ('ORDER_STATE_EXPIRED', 'expired')]}
+
+            # Orders that never produced a deal still matter — a
+            # rejection or a cancel is exactly what you go looking for.
+            for order in (mt5.history_orders_get(since, now) or ()):
+                state = states.get(order.state, str(order.state))
+                if state in ('filled', 'partial'):
+                    continue          # already covered by its deal
+                rows.append({
+                    'order_id': str(order.ticket), 'deal_id': '',
+                    'symbol': order.symbol, 'inst_type': 'ORDER',
+                    'side': ('buy' if 'buy' in
+                             order_types.get(order.type, '') else 'sell'),
+                    'pos_side': '-',
+                    'order_type': order_types.get(order.type,
+                                                  str(order.type)),
+                    'quantity': order.volume_initial,
+                    'fill_qty': 0.0,
+                    'fill_price': order.price_open or 0.0,
+                    'fee': 0.0, 'fee_ccy': '', 'pnl': 0.0,
+                    'state': state,
+                    'filled_at': int(getattr(order, 'time_done',
+                                             order.time_setup)) * 1000,
+                    'position_id': order.position_id,
+                    'is_bot': order.magic == MAGIC_NUMBER,
+                    'comment': order.comment or '',
+                })
+
+            for order in (mt5.orders_get() or ()):
+                rows.append({
+                    'order_id': str(order.ticket), 'deal_id': '',
+                    'symbol': order.symbol, 'inst_type': 'PENDING',
+                    'side': ('buy' if 'buy' in
+                             order_types.get(order.type, '') else 'sell'),
+                    'pos_side': '-',
+                    'order_type': order_types.get(order.type,
+                                                  str(order.type)),
+                    'quantity': order.volume_initial,
+                    'fill_qty': (order.volume_initial
+                                 - order.volume_current),
+                    'fill_price': order.price_open or 0.0,
+                    'fee': 0.0, 'fee_ccy': '', 'pnl': 0.0,
+                    'state': 'working',
+                    'filled_at': int(order.time_setup) * 1000,
+                    'position_id': order.position_id,
+                    'is_bot': order.magic == MAGIC_NUMBER,
+                    'comment': order.comment or '',
+                })
+        except Exception as e:
+            logging.error("order_log failed: %s", e)
+        return rows
 
     def positions_by_magic(self, symbol=None):
         """Open positions created by THIS system (magic-scoped) —

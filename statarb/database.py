@@ -144,8 +144,87 @@ class DataLogger:
                 completed TEXT
             )
         ''')
+        # Exchange Order Log: raw MT5 order/deal activity per account,
+        # including trades placed by hand in the terminal. Keyed by
+        # (account, order, deal) so re-polling the same window updates
+        # rows in place instead of duplicating them.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS broker_orders (
+                account TEXT,
+                order_id TEXT,
+                deal_id TEXT,
+                symbol TEXT,
+                inst_type TEXT,
+                side TEXT,
+                pos_side TEXT,
+                order_type TEXT,
+                quantity REAL,
+                fill_qty REAL,
+                fill_price REAL,
+                fee REAL,
+                fee_ccy TEXT,
+                pnl REAL,
+                state TEXT,
+                filled_at INTEGER,
+                position_id TEXT,
+                is_bot INTEGER,
+                comment TEXT,
+                seen TEXT,
+                PRIMARY KEY (account, order_id, deal_id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_broker_orders_time '
+                       'ON broker_orders (filled_at DESC)')
         conn.commit()
         conn.close()
+
+    BROKER_ORDER_FIELDS = (
+        'account', 'order_id', 'deal_id', 'symbol', 'inst_type', 'side',
+        'pos_side', 'order_type', 'quantity', 'fill_qty', 'fill_price',
+        'fee', 'fee_ccy', 'pnl', 'state', 'filled_at', 'position_id',
+        'is_bot', 'comment')
+
+    def record_broker_orders(self, rows, accounts=None):
+        """Upsert a poll's worth of order-log rows.
+
+        `accounts` is the set of accounts this poll read successfully;
+        their resting orders are re-stated in full, so previously
+        'working' rows are cleared first. Without that, an order that
+        fills is stored again under its deal id and the stale resting
+        row would sit in the log forever. Accounts that were unreadable
+        this pass keep whatever they had."""
+        rows = rows or []
+        if accounts is None:
+            accounts = {row.get('account') for row in rows}
+        accounts = {a for a in accounts if a}
+        if not rows and not accounts:
+            return 0
+
+        seen = datetime.now().isoformat()
+        payload = [
+            tuple(row.get(f) for f in self.BROKER_ORDER_FIELDS) + (seen,)
+            for row in rows]
+        placeholders = ', '.join('?' * (len(self.BROKER_ORDER_FIELDS) + 1))
+        conn = sqlite3.connect(self.db_path)
+        conn.executemany(
+            "DELETE FROM broker_orders WHERE account = ? "
+            "AND state = 'working'",
+            [(account,) for account in sorted(accounts)])
+        if payload:
+            conn.executemany(
+                f'INSERT OR REPLACE INTO broker_orders VALUES '
+                f'({placeholders})', payload)
+        conn.commit()
+        conn.close()
+        return len(payload)
+
+    def recent_broker_orders(self, limit=100, account=None):
+        if account:
+            return self._query(
+                'SELECT * FROM broker_orders WHERE account = ? '
+                'ORDER BY filled_at DESC LIMIT ?', (account, limit))
+        return self._query('SELECT * FROM broker_orders '
+                           'ORDER BY filled_at DESC LIMIT ?', (limit,))
 
     def log_sd_touch(self, asset, sd_level, direction, zscore, spread):
         conn = sqlite3.connect(self.db_path)
