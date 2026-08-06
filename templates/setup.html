@@ -368,23 +368,31 @@ async function saveBroker(event) {
     const note = document.getElementById('broker-note');
     note.innerHTML = '<span class="text-secondary">Saving…</span>';
     try {
-        const d = await (await fetch('/api/exchanges', {
+        const response = await fetch('/api/exchanges', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body)})).json();
-        if (!d.success) {
-            note.innerHTML = `<span class="text-danger">${d.error}</span>`;
+            body: JSON.stringify(body)});
+        const d = await response.json().catch(() => ({}));
+        if (!response.ok || !d.success) {
+            note.textContent = '';
+            await showResult(false, 'The account was not saved.',
+                             d.error || ('HTTP ' + response.status));
             return;
         }
-        note.innerHTML = `<span class="text-warning">${d.note}</span>`;
+        note.innerHTML = `<span class="text-warning">${d.note || ''}</span>`;
         form.password.value = '';
         loadBrokers();
+        await showResult(true, 'Account saved.', d.note || null);
     } catch (e) {
-        note.innerHTML = `<span class="text-danger">Error: ${e}</span>`;
+        note.textContent = '';
+        await showResult(false, 'The account was not saved.',
+                         'The dashboard could not reach the server: ' + e);
     }
 }
 
 async function deleteBroker(name) {
-    if (!confirm(`Remove account "${name}" from the config?`)) return;
+    if (!await showConfirm(`Remove account "${name}" from the configuration?`,
+            {title: 'Remove account', variant: 'danger',
+             confirmText: 'Remove'})) return;
     await fetch(`/api/exchanges/${encodeURIComponent(name)}`, {method: 'DELETE'});
     loadBrokers();
 }

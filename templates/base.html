@@ -413,6 +413,30 @@
         </div>
     </div>
 
+    <!-- Shared dialog: every confirmation and every save result. -->
+    <div class="modal fade" id="appDialogModal" tabindex="-1"
+         aria-labelledby="appDialogLabel" aria-modal="true" role="dialog">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow">
+                <div class="modal-header py-3">
+                    <div class="d-flex align-items-center gap-2">
+                        <i id="appDialogIcon" class="bi fs-5"></i>
+                        <h6 class="modal-title mb-0 fw-semibold" id="appDialogLabel"></h6>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white"
+                            data-bs-dismiss="modal" aria-label="Cancel"></button>
+                </div>
+                <div class="modal-body px-4 py-3" id="appDialogBody"></div>
+                <div class="modal-footer border-top-0 pt-0 px-4 pb-3 gap-2">
+                    <button type="button" class="btn btn-sm btn-secondary px-3"
+                            data-bs-dismiss="modal" id="appDialogCancel">Cancel</button>
+                    <button type="button" class="btn btn-sm px-3 fw-semibold"
+                            id="appDialogConfirm">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <main class="container-fluid py-3">
         {% block content %}{% endblock %}
     </main>
@@ -423,8 +447,204 @@
     <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
 
     <script>
-        // Initialize Socket.IO connection
-        const socket = io();
+        // ── Notifications ─────────────────────────────────────────────
+        // Toasts stack in one container, carry an icon and a title, and
+        // can be dismissed. Errors do NOT auto-hide: a failure that
+        // vanishes after three seconds is a failure the operator misses.
+        const TOAST_STYLE = {
+            success: {icon: 'bi-check-circle-fill', title: 'Success',   ms: 4000},
+            danger:  {icon: 'bi-x-octagon-fill',    title: 'Error',     ms: 0},
+            warning: {icon: 'bi-exclamation-triangle-fill', title: 'Warning', ms: 8000},
+            info:    {icon: 'bi-info-circle-fill',  title: 'Notice',    ms: 5000},
+        };
+
+        function toastContainer() {
+            let el = document.getElementById('app-toast-container');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'app-toast-container';
+                el.className = 'toast-container position-fixed bottom-0 end-0 p-3';
+                el.style.zIndex = 1090;
+                document.body.appendChild(el);
+            }
+            return el;
+        }
+
+        function showToast(message, type = 'info', title = null) {
+            const style = TOAST_STYLE[type] || TOAST_STYLE.info;
+            const toast = document.createElement('div');
+            toast.className = `toast show align-items-start border-0 shadow mb-2 text-bg-${type}`;
+            toast.setAttribute('role', type === 'danger' ? 'alert' : 'status');
+            toast.setAttribute('aria-live', type === 'danger' ? 'assertive' : 'polite');
+
+            const header = document.createElement('div');
+            header.className = 'toast-header';
+            const icon = document.createElement('i');
+            icon.className = `bi ${style.icon} me-2 text-${type}`;
+            const strong = document.createElement('strong');
+            strong.className = 'me-auto';
+            strong.textContent = title || style.title;
+            const close = document.createElement('button');
+            close.type = 'button';
+            close.className = 'btn-close';
+            close.setAttribute('aria-label', 'Dismiss');
+            close.addEventListener('click', () => toast.remove());
+            header.append(icon, strong, close);
+
+            const body = document.createElement('div');
+            body.className = 'toast-body';
+            // textContent, not innerHTML — messages carry broker and
+            // server text that must never be parsed as markup.
+            body.textContent = message;
+
+            toast.append(header, body);
+            toastContainer().appendChild(toast);
+            if (style.ms) setTimeout(() => toast.remove(), style.ms);
+            return toast;
+        }
+
+        // ── Dialogs ───────────────────────────────────────────────────
+        // One Bootstrap modal serves every confirmation and every
+        // save result, so the app never falls back to the browser's own
+        // confirm() chrome. Returns a Promise<boolean>.
+        const DIALOG_STYLE = {
+            success: {icon: 'bi-check-circle-fill', header: 'bg-success text-white', btn: 'btn-success'},
+            danger:  {icon: 'bi-x-octagon-fill', header: 'bg-danger text-white', btn: 'btn-danger'},
+            warning: {icon: 'bi-exclamation-triangle-fill', header: 'bg-warning text-dark', btn: 'btn-warning'},
+            info:    {icon: 'bi-info-circle-fill', header: 'bg-primary text-white', btn: 'btn-primary'},
+        };
+
+        function showDialog(opts) {
+            const o = Object.assign({
+                title: 'Confirm', message: '', details: null, variant: 'info',
+                confirmText: 'OK', cancelText: 'Cancel', showCancel: true,
+            }, opts || {});
+            const style = DIALOG_STYLE[o.variant] || DIALOG_STYLE.info;
+            const modalEl = document.getElementById('appDialogModal');
+
+            modalEl.querySelector('.modal-header').className =
+                'modal-header py-3 ' + style.header;
+            modalEl.querySelector('#appDialogIcon').className = 'bi fs-5 ' + style.icon;
+            modalEl.querySelector('#appDialogLabel').textContent = o.title;
+
+            const body = modalEl.querySelector('#appDialogBody');
+            body.textContent = '';
+            o.message.split('\n').forEach(line => {
+                const p = document.createElement('p');
+                p.className = 'mb-2';
+                p.textContent = line;
+                body.appendChild(p);
+            });
+            if (o.details) {
+                const pre = document.createElement('pre');
+                pre.className = 'small text-secondary bg-body-tertiary ' +
+                                'rounded p-2 mb-0 mt-2';
+                pre.style.whiteSpace = 'pre-wrap';
+                pre.textContent = o.details;
+                body.appendChild(pre);
+            }
+
+            const cancelBtn = modalEl.querySelector('#appDialogCancel');
+            cancelBtn.textContent = o.cancelText;
+            cancelBtn.style.display = o.showCancel ? '' : 'none';
+            const confirmBtn = modalEl.querySelector('#appDialogConfirm');
+            confirmBtn.className = 'btn btn-sm px-3 fw-semibold ' + style.btn;
+            confirmBtn.textContent = o.confirmText;
+
+            // Shown and hidden by hand rather than through
+            // bootstrap.Modal. Bootstrap's JS comes from a CDN, and a
+            // dialog that reports "could not save" is exactly the thing
+            // that must still work when the network is against us.
+            // Bootstrap's CSS does the styling; only show/hide is ours.
+            return new Promise(resolve => {
+                let answer = false;
+                const backdrop = document.createElement('div');
+                backdrop.className = 'modal-backdrop fade show';
+
+                const close = () => {
+                    modalEl.classList.remove('show');
+                    modalEl.style.display = 'none';
+                    modalEl.removeAttribute('aria-modal');
+                    document.body.classList.remove('modal-open');
+                    backdrop.remove();
+                    document.removeEventListener('keydown', onKey);
+                    resolve(answer);
+                };
+                const onConfirm = () => { answer = true; close(); };
+                const onKey = (ev) => {
+                    if (ev.key === 'Escape') close();
+                    if (ev.key === 'Enter') onConfirm();
+                };
+
+                confirmBtn.onclick = onConfirm;
+                modalEl.querySelectorAll('[data-bs-dismiss="modal"]')
+                       .forEach(el => { el.onclick = close; });
+                backdrop.onclick = close;
+
+                document.body.appendChild(backdrop);
+                document.body.classList.add('modal-open');
+                modalEl.style.display = 'block';
+                modalEl.classList.add('show');
+                modalEl.setAttribute('aria-modal', 'true');
+                document.addEventListener('keydown', onKey);
+                setTimeout(() => confirmBtn.focus(), 50);
+            });
+        }
+
+        // Drop-in replacement for confirm(). Destructive actions pass
+        // variant 'danger' so the button colour matches the consequence.
+        function showConfirm(message, opts) {
+            return showDialog(Object.assign(
+                {title: 'Please confirm', message: message, variant: 'warning',
+                 confirmText: 'Continue'}, opts || {}));
+        }
+
+        // Acknowledgement — one button, no cancel. This is what every
+        // save reports through, success or failure.
+        function showResult(ok, message, details, title) {
+            return showDialog({
+                title: title || (ok ? 'Saved' : 'Not saved'),
+                message: message,
+                details: details || null,
+                variant: ok ? 'success' : 'danger',
+                confirmText: 'Close', showCancel: false,
+            });
+        }
+
+        // Every settings save funnels through here so the operator
+        // always gets an answer — including the server's notes about
+        // changes that need a restart.
+        function reportSave(response, data, what) {
+            const label = what || 'Settings';
+            if (response.ok && data && data.success !== false) {
+                const notes = [data.note, data.notes && data.notes.join('\n')]
+                    .filter(Boolean).join('\n');
+                return showResult(true, label + ' saved.', notes || null);
+            }
+            const err = (data && (data.error || data.message)) ||
+                        ('HTTP ' + response.status);
+            return showResult(false, label + ' were not saved.', err);
+        }
+
+        // Socket.IO is loaded from a CDN. If that CDN is blocked — a
+        // locked-down trading box, an offline machine, a corporate
+        // proxy — `io` is undefined and `io()` throws a ReferenceError
+        // that kills this ENTIRE script block, taking showToast,
+        // showDialog and every save handler defined below with it. The
+        // pages already poll as a fallback, so a missing socket must
+        // degrade to polling, never break the page.
+        const socket = (typeof io === 'function') ? io() : {
+            on() {}, emit() {}, connected: false, _stub: true,
+        };
+        if (socket._stub) {
+            console.warn('Socket.IO unavailable — falling back to polling.');
+            window.addEventListener('DOMContentLoaded', function() {
+                updateConnectionStatus('disconnected');
+                showToast('Live updates are unavailable, so the page is ' +
+                          'polling instead. Values still refresh, just ' +
+                          'less often.', 'warning', 'Live feed offline');
+            });
+        }
 
         socket.on('connect', function() {
             console.log('Connected to server');
@@ -563,16 +783,6 @@
             } else {
                 el.innerHTML = '<i class="bi bi-circle-fill me-1 status-disconnected"></i>Disconnected';
             }
-        }
-
-        function showToast(message, type = 'info') {
-            // Simple toast notification
-            const toast = document.createElement('div');
-            toast.className = `alert alert-${type} position-fixed bottom-0 end-0 m-3`;
-            toast.style.zIndex = 9999;
-            toast.innerHTML = message;
-            document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 3000);
         }
 
         function formatPrice(price, decimals = 2) {

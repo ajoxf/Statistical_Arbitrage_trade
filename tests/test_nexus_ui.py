@@ -753,3 +753,222 @@ def test_the_banner_names_the_time_gate_when_it_is_the_one_blocking(client):
     assert 'const needHistory = history < minHistory' in page
     assert 'minutes collected' in page
     assert 'more before trading can start' in page
+
+
+# ---------------------------------------------------------------------------
+# Dialogs
+# ---------------------------------------------------------------------------
+# Operator, 2026-08-06: "Make all the Dialog Boxes Professional and also
+# Everytime new settings are saved - a dialog box that confirms or gives
+# an error."
+
+TEMPLATE_FILES = ('base.html', 'dashboard.html', 'settings.html',
+                  'setup.html', 'analysis.html')
+
+
+def template_source(name):
+    return open(os.path.join(TEMPLATES, name), encoding='utf-8').read()
+
+
+def test_no_native_browser_dialogs_remain():
+    """confirm()/alert()/prompt() draw the browser's own chrome, which
+    cannot be styled and looks nothing like the rest of the app."""
+    offenders = []
+    for name in TEMPLATE_FILES:
+        for call in ('confirm(', 'alert(', 'prompt('):
+            for line in template_source(name).splitlines():
+                stripped = line.strip()
+                if stripped.startswith('//') or stripped.startswith('*'):
+                    continue
+                if call in line and 'showConfirm(' not in line \
+                        and 'showAlert' not in line:
+                    offenders.append(f'{name}: {stripped[:70]}')
+    assert not offenders, offenders
+
+
+def test_the_shared_dialog_is_on_every_page(client):
+    for path in ('/', '/settings', '/setup', '/analysis'):
+        page = client.get(path).get_data(as_text=True)
+        assert 'id="appDialogModal"' in page, path
+        assert 'function showConfirm' in page, path
+
+
+def test_toasts_never_render_the_message_as_markup():
+    """Toast text carries broker and server strings — parsing those as
+    HTML would be an injection route straight from a trade comment."""
+    source = template_source('base.html')
+    body = source[source.index('function showToast'):
+                  source.index('function showDialog')]
+    code = '\n'.join(line for line in body.splitlines()
+                     if not line.strip().startswith('//'))
+    assert 'body.textContent = message' in code
+    assert 'innerHTML' not in code
+
+
+def test_error_toasts_do_not_disappear_on_their_own():
+    """A failure that vanishes after three seconds is one the operator
+    misses. Errors wait to be dismissed."""
+    source = template_source('base.html')
+    assert "danger:  {icon: 'bi-x-octagon-fill',    title: 'Error',     ms: 0}" \
+        in source
+    assert 'if (style.ms) setTimeout' in source
+
+
+def test_destructive_confirmations_are_styled_as_destructive():
+    dashboard = template_source('dashboard.html')
+    for action in ('Close position', 'Reset everything', 'Delete trade record'):
+        index = dashboard.index(action)
+        assert "variant: 'danger'" in dashboard[index - 300:index + 300], action
+
+
+# --- every save answers with a dialog ------------------------------------
+
+def test_the_settings_save_reports_through_a_dialog(client):
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'reportSave(response, data, ' in page
+    assert 'showResult(false, ' in page          # network failure path
+    assert 'function reportSave' in page
+
+
+def test_the_save_dialog_carries_the_servers_note(client):
+    """The engine's "hot-reloads within ~10s" and any restart-required
+    notes must reach the operator, not just "saved"."""
+    page = client.get('/settings').get_data(as_text=True)
+    source = page[page.index('function reportSave'):]
+    assert 'data.note' in source[:800]
+
+
+def test_a_rejected_save_produces_an_error_dialog(client):
+    """A beta change with a position open returns 409 — the operator
+    must be told, not left thinking it applied."""
+    with open(client.tmp_path / 'runtime_status.json', 'w') as f:
+        json.dump({'positions': [{'position_id': 'POS_1'}]}, f)
+    response = client.post('/api/config', json={'hedge_ratio': 2.5})
+    assert response.status_code == 409
+    assert 'rejected' in response.get_json()['error']
+
+
+def test_a_successful_save_returns_a_note_to_show(client):
+    response = client.post('/api/config', json={'min_samples': 400})
+    assert response.status_code == 200
+    assert response.get_json()['note']
+
+
+def test_the_exchanges_save_reports_through_a_dialog(client):
+    page = client.get('/setup').get_data(as_text=True)
+    assert "showResult(true, 'Account saved.'" in page
+    assert "showResult(false, 'The account was not saved.'" in page
+
+
+# ---------------------------------------------------------------------------
+# The Save button that silently did nothing (2026-08-06)
+# ---------------------------------------------------------------------------
+# Operator: "changes are made on the Settings Page and clicked Save - The
+# settings are not getting saved - maybe when there is an error - but no
+# error shows up". Driven in Chromium, the page threw a temporal dead
+# zone ReferenceError partway through its script, so the submit handler
+# was never registered: no request, no error, nothing.
+
+def js_block(name, marker):
+    """The <script> block of a template that contains `marker`."""
+    source = template_source(name)
+    end = source.index(marker)
+    start = source.rindex('<script', 0, end)
+    return source[start:source.index('</script>', end)]
+
+
+def test_no_const_is_read_before_it_is_declared():
+    """A `const` used above its declaration is a ReferenceError that
+    kills the whole script block — and everything registered after it,
+    including the Save handler."""
+    block = js_block('settings.html', 'const instrumentCategories')
+    for name in ('instrumentCategories', '_betaSuggestionTimer'):
+        declaration = block.index(f'const {name}') if f'const {name}' in block \
+            else block.index(f'let {name}')
+        uses = [m for m in re.finditer(rf'\b{name}\b', block)]
+        top_level_calls = block.index('    updatePairLabel();')
+        assert top_level_calls > declaration, (
+            f'{name} is read at start-up before it is declared')
+
+
+def test_the_boot_calls_run_after_every_declaration():
+    block = js_block('settings.html', 'const instrumentCategories')
+    boot = block.index('    updatePairLabel();')
+    for decl in ('const instrumentCategories', 'let _betaSuggestionTimer'):
+        assert block.index(decl) < boot, decl
+
+
+def test_number_inputs_accept_the_engines_own_defaults(client):
+    """min/max/step that reject the shipped default make Chrome refuse
+    to submit the form — silently, with the offending field usually
+    scrolled out of view. That is how saving broke."""
+    from statarb.config import AlgoTradingConfig
+    from statarb import webapi
+    page = client.get('/settings').get_data(as_text=True)
+    defaults = webapi.to_ui_config({}, AlgoTradingConfig())
+    problems = []
+    for tag in re.findall(r'<input[^>]*type="number"[^>]*>', page):
+        ident = re.search(r'id="([^"]+)"', tag)
+        if not ident or ident.group(1) not in defaults:
+            continue
+        value = defaults[ident.group(1)]
+        if not isinstance(value, (int, float)):
+            continue
+        for attr, ok in (('min', lambda v, a: v >= a),
+                         ('max', lambda v, a: v <= a)):
+            found = re.search(rf'{attr}="([-\d.]+)"', tag)
+            if found and not ok(float(value), float(found.group(1))):
+                problems.append(f'{ident.group(1)}={value} violates '
+                                f'{attr}={found.group(1)}')
+        step = re.search(r'step="([\d.]+)"', tag)
+        if step:
+            size = float(step.group(1))
+            base = float((re.search(r'min="([-\d.]+)"', tag) or
+                          [None, '0'])[1])
+            offset = round((float(value) - base) / size, 6)
+            if abs(offset - round(offset)) > 1e-6:
+                problems.append(f'{ident.group(1)}={value} is not a '
+                                f'multiple of step={size}')
+    assert not problems, problems
+
+
+def test_a_form_that_fails_validation_reports_it(client):
+    """Belt and braces: even with the attributes right, a future
+    mismatch must produce a dialog rather than silence."""
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'if (!form.checkValidity())' in page
+    assert 'need fixing before' in page
+    assert 'scrollIntoView' in page
+
+
+def test_the_pair_label_never_becomes_the_asset_key(client):
+    """updatePairLabel() wrote a display label into #asset, so every
+    save created a SECOND enabled asset next to the real one."""
+    block = js_block('settings.html', 'function updatePairLabel')
+    body = block[block.index('function updatePairLabel'):]
+    body = body[:body.index('return label;')]
+    assert "getElementById('asset').value = label" not in body
+    assert "pair_label_display" in body
+
+
+def test_a_blocked_cdn_cannot_disable_the_page(client):
+    """`const socket = io()` threw when the Socket.IO CDN was
+    unreachable, killing base.html's script — and with it showToast,
+    showDialog and every save handler defined below."""
+    page = client.get('/').get_data(as_text=True)
+    assert "typeof io === 'function'" in page
+    assert 'falling back to polling' in page
+    # The helpers must be defined BEFORE anything that can throw.
+    assert page.index('function showToast') < page.index('const socket =')
+
+
+def test_dialogs_do_not_depend_on_bootstrap_javascript(client):
+    """The dialog that reports "could not save" has to work when the
+    network is the thing that failed."""
+    page = client.get('/').get_data(as_text=True)
+    source = page[page.index('function showDialog'):
+                  page.index('function showConfirm')]
+    code = '\n'.join(line for line in source.splitlines()
+                     if not line.strip().startswith('//'))
+    assert 'bootstrap.Modal' not in code
+    assert "modalEl.classList.add('show')" in code

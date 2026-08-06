@@ -467,6 +467,62 @@ per-leg maker/taker fee split, backtest suite.
   raw {leg, check, ok, detail} rows while the vendored template reads
   label/mode/order_type/status/detail. _test_state now maps them.
 
+## Web UI faults found by driving Chromium (2026-08-06)
+
+Operator: "changes are made on the Settings Page and clicked Save - The
+settings are not getting saved - ... but no error shows up". Found by
+running the page in the bundled Chromium under Playwright and reading
+`pageerror` — none of it is visible from Python tests alone.
+
+- **The Save handler was never registered.** settings.html called
+  `updatePairLabel(); checkPairWarning(); fetchBetaSuggestion();` at
+  template line ~1170, ~160 lines ABOVE the `const instrumentCategories`
+  / `let _betaSuggestionTimer` they read. A `const` read before its
+  initialiser is a temporal dead zone ReferenceError, which aborts the
+  WHOLE script block — and the submit listener sat further down, so it
+  never attached. Clicking Save did a native form submit (page reload,
+  values reset) with the error only in the dev console. Those three
+  calls now run LAST, in a "Boot" section at the end of the block.
+- **Two number inputs rejected the engine's own defaults**, so Chrome
+  refused to submit and fired no submit event at all — silently, since
+  the offending field is scrolled off a page this long.
+  `profit_target_min_cost_mult` had `step="0.25"` against a default of
+  1.2; `min_fill_ratio` had `min="0.5"` against MIN_MATCHED_FRACTION
+  0.4. Fixed, AND the submit handler now checks `form.checkValidity()`
+  itself and names the offending fields in a dialog, scrolling to the
+  first. tests/test_nexus_ui.py cross-checks every number input's
+  min/max/step against the shipped default.
+- **Saving fragmented the asset config.** `updatePairLabel()` wrote its
+  display label into the hidden `#asset` field, which is the asset KEY,
+  so every save created a second enabled asset ("XAUUSD_/GC1226") beside
+  the real "GOLD" — the new one missing lot_size. The label is now
+  display-only.
+- **A blocked CDN disabled the whole app.** `const socket = io();` in
+  base.html threw when cdn.socket.io was unreachable (locked-down box,
+  offline, corporate proxy), killing base's script block — and with it
+  showToast, showDialog and every save handler defined below. `io` is
+  now probed before use with a stub that degrades to polling, the
+  dialog/toast helpers are defined ABOVE it, and showDialog shows/hides
+  the modal itself instead of via `bootstrap.Modal` (the dialog that
+  reports "could not save" must work when the network is what failed).
+
+## Dialogs (2026-08-06)
+
+Owner: "Make all the Dialog Boxes Professional and also Everytime new
+settings are saved - a dialog box that confirms or gives an error."
+- One shared modal (`#appDialogModal` in base.html) behind
+  `showDialog()` / `showConfirm()` / `showResult()` / `reportSave()`.
+  All 14 native `confirm()` calls are gone; destructive actions get the
+  danger variant. A test fails the build if `confirm(`/`alert(`/
+  `prompt(` reappears in any template.
+- Toasts stack in one container with an icon, a title and a dismiss
+  button; ERRORS DO NOT AUTO-HIDE (ms: 0) because a failure that
+  vanishes in 3s is one the operator misses. Message text goes in via
+  textContent — it carries broker and server strings.
+- Every save answers with a dialog: `/api/config` and the Exchanges
+  account save both route through it, carrying the server's note
+  (hot-reload timing, restart-required, the 409 beta rejection).
+
 ## Live startup bugs found on the operator's box (2026-08-06)
 
 - Endpoint typed `127.0.0.1.9101` (dot, not colon) crashed BOTH the

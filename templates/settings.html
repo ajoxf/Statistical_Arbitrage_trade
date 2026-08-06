@@ -175,7 +175,7 @@
                     <div class="row mb-3">
                         <div class="col-md-4">
                             <label class="form-label">Profit Cost Floor (&times; fees)</label>
-                            <input type="number" class="form-control" id="profit_target_min_cost_mult" name="profit_target_min_cost_mult" value="{{ config.profit_target_min_cost_mult }}" step="0.25" min="0" max="10">
+                            <input type="number" class="form-control" id="profit_target_min_cost_mult" name="profit_target_min_cost_mult" value="{{ config.profit_target_min_cost_mult }}" step="0.05" min="0" max="10">
                             <small class="text-secondary"><strong>1.0</strong> recommended. <strong>0</strong> = off</small>
                         </div>
                         <div class="col-md-8 d-flex align-items-end">
@@ -714,7 +714,7 @@
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Min Fill Ratio</label>
-                            <input type="number" class="form-control" id="min_fill_ratio" name="min_fill_ratio" value="{{ config.min_fill_ratio }}" min="0.5" max="1.0" step="0.01">
+                            <input type="number" class="form-control" id="min_fill_ratio" name="min_fill_ratio" value="{{ config.min_fill_ratio }}" min="0.1" max="1.0" step="0.01">
                             <small class="text-secondary">Reject entry if fills &lt; this fraction (e.g. 0.95)</small>
                         </div>
                     </div>
@@ -1159,17 +1159,21 @@
         } else {
             label = spotBase || futBase || '';
         }
-        document.getElementById('asset').value = label;
+        // DISPLAY ONLY. #asset carries the asset KEY the engine stores
+        // its config under ("GOLD"); overwriting it with this label
+        // made every save create a SECOND, half-configured asset
+        // ("XAUUSD_/GC1226") alongside the real one, both enabled.
         document.getElementById('pair_label_display').textContent = label || '—';
         return label;
     }
 
-    // The symbols are read-only here — they belong to the account that
-    // trades the leg, on the Exchanges page. Label and beta suggestion
-    // are computed once from whatever they hold.
-    updatePairLabel();
-    checkPairWarning();
-    fetchBetaSuggestion();
+    // Per-instId category lookup, populated as the datalists fill.
+    // DECLARED HERE, above every caller: checkPairWarning() below reads
+    // it, and a `const` read before its initialiser runs is a temporal
+    // dead zone ReferenceError that kills the entire script block —
+    // which is what stopped the Save button from ever being wired up.
+    const instrumentCategories = new Map();
+
 
     // Live β suggestion = mid(Leg B) / mid(Leg A) from MT5
     // Debounced so typing doesn't fire a fetch per keystroke. Cleared whenever
@@ -1328,8 +1332,6 @@
         });
     })();
 
-    // Per-instId category lookup, populated as the datalists fill
-    const instrumentCategories = new Map();
 
     function formatExpiry(epochMs) {
         if (!epochMs) return '';
@@ -1538,6 +1540,34 @@
     document.getElementById('config-form').addEventListener('submit', function(e) {
         e.preventDefault();
 
+        // A field that fails HTML5 validation makes the browser refuse
+        // to submit — and on a page this long the offending input is
+        // usually scrolled out of sight, so nothing appears to happen
+        // at all. That is exactly how saving broke on 2026-08-06. Say
+        // which field, and go to it.
+        const form = e.target;
+        if (!form.checkValidity()) {
+            const bad = Array.from(form.elements)
+                .filter(el => el.willValidate && !el.checkValidity());
+            const detail = bad.map(el => {
+                const label = form.querySelector(`label[for="${el.id}"]`);
+                const name = (label ? label.textContent.trim() : el.id);
+                return `${name}: "${el.value}" — ${el.validationMessage}`;
+            }).join('\n');
+            showResult(false,
+                bad.length === 1 ? 'One field needs fixing before this can '
+                                   + 'be saved.'
+                                 : bad.length + ' fields need fixing before '
+                                   + 'this can be saved.',
+                detail, 'Nothing saved');
+            bad[0].scrollIntoView({behavior: 'smooth', block: 'center'});
+            bad[0].focus();
+            bad.forEach(el => el.classList.add('is-invalid'));
+            return;
+        }
+        form.querySelectorAll('.is-invalid')
+            .forEach(el => el.classList.remove('is-invalid'));
+
         const formData = {
             // Margin breaker (per-account M2M guard)
             margin_breaker_enabled: document.getElementById('margin_breaker_enabled').checked,
@@ -1616,23 +1646,27 @@
             daily_max_loss_usd: parseFloat(document.getElementById('daily_max_loss_usd').value) || 0,
         };
 
+        // Every save answers with a dialog — confirmation or error —
+        // so a setting is never silently not applied. The server's
+        // notes (hot-reload timing, changes needing a restart) come
+        // through with it.
+        const saveBtn = document.querySelector('#config-form [type="submit"]');
+        if (saveBtn) saveBtn.disabled = true;
         fetch('/api/config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(formData)
         })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showToast('Configuration saved successfully', 'success');
-            } else {
-                showToast('Error: ' + (data.error || 'Unknown error'), 'danger');
-            }
-        })
+        .then(response => response.json()
+            .catch(() => ({}))
+            .then(data => reportSave(response, data, 'Settings')))
         .catch(error => {
             console.error('Error:', error);
-            showToast('Error: ' + error.message, 'danger');
-        });
+            showResult(false, 'Settings were not saved.',
+                       'The dashboard could not reach the server: ' +
+                       error.message);
+        })
+        .finally(() => { if (saveBtn) saveBtn.disabled = false; });
     });
 
     // ========== Margin Breaker ==========
@@ -1728,7 +1762,9 @@
     }
 
     async function deleteBroker(id) {
-        if (!confirm(`Remove account ${id}?`)) return;
+        if (!await showConfirm(`Remove account ${id} from the configuration?`,
+                {title: 'Remove account', variant: 'danger',
+                 confirmText: 'Remove'})) return;
         await fetch(`/api/exchanges/${id}`, {method: 'DELETE'});
         showToast('Account removed', 'success');
         loadBrokers();
@@ -2326,18 +2362,21 @@
         const badge = document.getElementById('demo-mode-badge');
         const desc = document.getElementById('demo-mode-desc');
         const spinner = document.getElementById('demo-mode-spinner');
+        // This control is not on the page in every build. Calling
+        // addEventListener on null throws and takes the rest of the
+        // script with it.
+        if (!toggle) return;
 
-        toggle.addEventListener('change', function() {
+        toggle.addEventListener('change', async function() {
             const enableDemo = this.checked;
 
             if (!enableDemo) {
-                const ok = confirm(
-                    '⚠️  Switch to LIVE SERVER?\n\n' +
+                const ok = await showConfirm(
                     'This reconnects the engine to the real MT5 broker.\n' +
-                    'Ensure your API key has Trade permission and Paper Trading\n' +
-                    'is still ON if you do not want real orders placed.\n\n' +
-                    'Continue?'
-                );
+                    'Check that Paper Trading is still ON if you do not want ' +
+                    'real orders placed.',
+                    {title: 'Switch to LIVE server', variant: 'danger',
+                     confirmText: 'Switch to live'});
                 if (!ok) {
                     this.checked = true;
                     return;
@@ -2378,5 +2417,15 @@
             });
         });
     })();
+
+    // ── Boot ──────────────────────────────────────────────────────────
+    // Runs LAST, deliberately. These read `const`/`let` declared above
+    // in this same block; called earlier they hit the temporal dead
+    // zone and the ReferenceError kills the rest of the script —
+    // including the Save handler, which is why saving silently did
+    // nothing (2026-08-06).
+    updatePairLabel();
+    checkPairWarning();
+    fetchBetaSuggestion();
 </script>
 {% endblock %}
