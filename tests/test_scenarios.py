@@ -531,3 +531,41 @@ def test_a_leaked_fill_still_fails_the_scenario():
     runner, spot_leg, _ = make_runner()
     spot_leg.leak_on_cancel['XAUUSD'] = 0.01
     assert not runner.run('BUY_SPOT', 'LIMIT', 'cancel')['success']
+
+
+# --- a close is logged as the order that was actually sent ---------------
+# Live 2026-08-06: "[FUTURES SELL ...] leak cleanup ... fill=$4302.02"
+# where 4302.02 was the ASK. Only a BUY pays the ask; the line was
+# labelled with the side the position had been OPENED on.
+
+def test_closing_a_long_is_logged_as_a_sell():
+    runner, spot_leg, _ = make_runner()
+    runner.run('BUY_SPOT', 'MARKET', 'normal')
+    closes = [a for a in runner.actions if a['kind'] == 'close']
+    assert closes and closes[-1]['side'] == 'SELL'
+    assert closes[-1]['entry_side'] == 'BUY'
+    assert 'SELL' in closes[-1]['leg_label']
+
+
+def test_closing_a_short_is_logged_as_a_buy():
+    runner, spot_leg, _ = make_runner()
+    runner.run('SELL_SPOT', 'MARKET', 'normal')
+    closes = [a for a in runner.actions if a['kind'] == 'close']
+    assert closes and closes[-1]['side'] == 'BUY'
+    assert closes[-1]['entry_side'] == 'SELL'
+
+
+def test_the_leg_still_receives_the_entry_side():
+    """MT5 needs the side the POSITION is on to reverse it — only the
+    label changed."""
+    runner, spot_leg, _ = make_runner()
+    runner.run('BUY_SPOT', 'MARKET', 'normal')
+    assert spot_leg.closes[-1][3] == 'BUY'
+
+
+def test_a_leaked_fill_cleanup_is_labelled_by_its_own_direction():
+    runner, spot_leg, _ = make_runner()
+    spot_leg.leak_on_cancel['XAUUSD'] = 0.01
+    runner.run('BUY_SPOT', 'LIMIT', 'cancel')
+    cleanup = [a for a in runner.actions if a['kind'] == 'leak cleanup'][-1]
+    assert cleanup['side'] == 'SELL' and cleanup['entry_side'] == 'BUY'

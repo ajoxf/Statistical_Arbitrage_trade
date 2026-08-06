@@ -319,16 +319,25 @@ class ScenarioRunner:
         return self._record(action)
 
     def close(self, side_leg, open_action, kind='close'):
-        action = self._base(side_leg, kind, open_action['side'])
+        # Label the close with the direction actually SENT, not the one
+        # the position was opened on. Logging a close of a short as
+        # "FUTURES SELL ... fill=$4302.02" when 4302.02 is the ASK reads
+        # as a second sell at a price only a BUY could pay — the log has
+        # to say what happened. close_ticket still receives the ENTRY
+        # side, which is what MT5 needs to reverse the position.
+        entry_side = open_action['side']
+        closing_side = 'SELL' if entry_side == 'BUY' else 'BUY'
+        action = self._base(side_leg, kind, closing_side)
+        action['entry_side'] = entry_side
         tick = self._quote(side_leg, action)
         if tick:
-            action['tgt'] = (tick['bid'] if open_action['side'] == 'BUY'
+            action['tgt'] = (tick['bid'] if entry_side == 'BUY'
                              else tick['ask'])
         action['ticket'] = open_action.get('ticket')
         action['volume'] = open_action.get('volume')
         result = side_leg.leg.close_ticket(
             side_leg.symbol, open_action.get('ticket'),
-            open_action.get('volume'), open_action['side'],
+            open_action.get('volume'), entry_side,
             comment='SCENARIO close')
         if not result.get('ok'):
             action['error'] = result.get('error') or 'close rejected'

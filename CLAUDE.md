@@ -320,6 +320,42 @@ per-leg maker/taker fee split, backtest suite.
   adapter remains unported — the sole reason to keep that branch.
 - Other `claude/*` branches: session artifacts, superseded.
 
+## Measured execution costs (2026-08-06, CFI7-Demo, full order suite)
+
+The 40-scenario suite run against the real account. Every MARKET
+scenario passed, both legs MT5-confirmed, zero slippage (`Δtgt=0.000`
+every fill — market orders filled exactly at the quoted touch).
+
+- Spot XAUUSD_: **0.25/oz** spread. 0.01 lot round trip = -$0.25.
+- Futures GC1226: **0.34/oz** spread. 0.1 lot round trip = -$3.40.
+- Pair round trip (LONG_SPR/SHORT_SPR MARKET): **-$3.64 to -$3.68**
+  at 0.01 spot + 0.1 futures.
+- **Per 1 lot: spot $25 + futures $34 = $59 round trip**, before
+  commissions (COMMISSION_PER_LOT_* are still 0.0 and MUST be set).
+- Contract size confirmed 100 oz/lot on BOTH legs by arithmetic
+  (0.01 lot moved $0.25 at 0.25/oz = 1 oz), so **HEDGE_RATIO = 1.0 is
+  correct** — this closes open item 2 for this broker.
+- Minimum volumes DIFFER: spot 0.01, futures 0.1. The futures min is
+  10x the spot min, which constrains SLICE_LOTS and any partial fill.
+
+**The edge does not currently cover this.** Measured sigma on the
+spread was 0.063-0.073. At sigma 0.07 and z=3, expected capture is
+`TARGET_FRACTION(0.5) x 3 x 0.07 x 100 = $10.50/lot` against $59 of
+cost — the edge filter needs 1.5x cost ($88.50), so it is short by
+~8x and NO z inside [ENTRY_Z, MAX_ENTRY_Z=4.5] can clear it. Even a
+FULL 3-sigma reversion ($21/lot) is a third of the cost. The engine
+will therefore sit at NO_SIGNAL forever on this broker/window, which
+is the edge filter working correctly, not a bug. Break-even needs
+either sigma >= ~0.20/oz (3x today) or total spreads down from
+0.59/oz to ~0.20/oz (a raw/ECN account). Re-measure sigma over a full
+2h window before concluding — these readings came from a warm-up
+window.
+
+**Passive limits do not fill here.** Across ~10 LIMIT scenarios pegged
+at the touch, zero filled inside LIMIT_TIMEOUT_SEC (15s); three
+instead leaked during the cancel. So SPREAD_COST_FACTOR cannot be
+lowered on the strength of limit fills on this account — assume 1.0.
+
 ## Live LIVE-run bugs (2026-08-06, CFI7-Demo, engine streaming)
 
 - **z of +53,026 on a spread of 9.13.** Sigma collapsed (a quiet
