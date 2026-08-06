@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  421 tests, all fakes, no MT5 (runs anywhere)
+tests/                  427 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -305,6 +305,20 @@ per-leg maker/taker fee split, backtest suite.
   After RECONCILE.CLOSE_ATTEMPTS (3) failures the reconciler escalates
   ONCE with "CLOSE IT BY HAND" and stops hammering it; a later
   successful close clears the escalation.
+- **A cancel that actually FILLED reported a clean cancel.** A
+  scenario logged "cancelled (no fill in 15s)" and PASS; 11s later the
+  reconciler found a live position carrying that same ticket. MT5
+  turns a filled pending order into a POSITION with the ORDER's
+  ticket, and positions_get shows it before deal history does.
+  `cancel_pending` now checks positions_get when the fill reads zero
+  (flagging `leaked_fill`), and a scenario that leaks FAILS and
+  flattens the position instead of passing. This protects the live
+  path too: PairExecutor's cancel+verify would have believed the leg
+  was flat and left a naked position.
+- LegServer served ONE client at a time, so the UI's direct leg-runner
+  calls timed out whenever the coordinator was attached. It now
+  accepts several clients, each in a thread, with the MT5 work
+  serialised behind a lock.
 - The Settings suite table rendered "undefined" rows: it was fed the
   raw {leg, check, ok, detail} rows while the vendored template reads
   label/mode/order_type/status/detail. _test_state now maps them.

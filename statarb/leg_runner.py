@@ -14,6 +14,7 @@ import argparse
 import logging
 import socket
 import sys
+import threading
 
 from .broker import BrokerSession
 from .config import AlgoTradingConfig
@@ -25,13 +26,23 @@ class LegServer:
     def __init__(self, broker, host='127.0.0.1', port=0):
         self.leg = LocalLeg(broker)
         self._stop = False
+        # One MT5 connection, so requests are handled one at a time —
+        # but SEVERAL clients may be attached: the coordinator streams
+        # while the web UI asks for symbols or a diagnosis. With a
+        # single-client accept loop the UI just timed out whenever the
+        # coordinator was connected.
+        self._lock = threading.Lock()
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.bind((host, port))
-        self.server.listen(1)
+        self.server.listen(8)
         self.host, self.port = self.server.getsockname()
 
     def handle(self, msg):
+        with self._lock:
+            return self._handle(msg)
+
+    def _handle(self, msg):
         cmd = msg.get('cmd')
         try:
             if cmd == 'ping':
@@ -102,19 +113,23 @@ class LegServer:
                 conn, addr = self.server.accept()
             except OSError:
                 break  # socket closed by stop()
-            logging.info("Coordinator connected from %s", addr)
-            js = JsonLineSocket(conn)
-            try:
-                while not self._stop:
-                    msg = js.recv()
-                    if msg is None:
-                        break
-                    js.send(self.handle(msg))
-            except (OSError, ValueError) as e:
-                logging.warning("Coordinator connection dropped: %s", e)
-            finally:
-                js.close()
-                logging.info("Coordinator disconnected; waiting for next connection")
+            logging.info("Client connected from %s", addr)
+            threading.Thread(target=self._serve_client, args=(conn, addr),
+                             daemon=True).start()
+
+    def _serve_client(self, conn, addr):
+        js = JsonLineSocket(conn)
+        try:
+            while not self._stop:
+                msg = js.recv()
+                if msg is None:
+                    break
+                js.send(self.handle(msg))
+        except (OSError, ValueError) as e:
+            logging.warning("Client %s dropped: %s", addr, e)
+        finally:
+            js.close()
+            logging.info("Client %s disconnected", addr)
 
     def stop(self):
         self._stop = True

@@ -609,6 +609,23 @@ class BrokerSession:
             if state['filled_volume'] == 0 and not state['still_open']:
                 time.sleep(0.05)   # deal history lag after cancel
                 state = self.order_fill_state(ticket)
+            if state['filled_volume'] == 0:
+                # Deal history can still be behind. MT5 turns a filled
+                # pending order into a POSITION carrying the same
+                # ticket, and positions_get never lags — this is the
+                # authoritative "it actually filled" check. Missing it
+                # reports a clean cancel while a live position sits on
+                # the book (seen 2026-08-06: a 'cancelled' scenario
+                # order reappeared as an orphan seconds later).
+                for position in (mt5.positions_get(ticket=int(ticket))
+                                 or ()):
+                    state.update({
+                        'filled_volume': position.volume,
+                        'price': position.price_open,
+                        'position_tickets': [position.ticket],
+                        'still_open': False,
+                        'leaked_fill': True,
+                    })
             state['cancelled'] = (result is not None and
                                   result.retcode == mt5.TRADE_RETCODE_DONE)
             return state

@@ -278,11 +278,31 @@ class ScenarioRunner:
         # Deal history lags a cancel: a fill that leaked through is the
         # thing we most need to see here, so report it rather than a
         # clean-looking pass.
+        if not state.get('filled_volume'):
+            # Ask the terminal directly — a filled pending order becomes
+            # a POSITION with the same ticket, and that shows up before
+            # the deal does.
+            found = side_leg.verify(order_ticket)
+            if found and found.get('position_open'):
+                state = dict(state, filled_volume=found.get('volume') or 0.0,
+                             price=found.get('price'),
+                             position_tickets=[order_ticket],
+                             leaked_fill=True)
+
         if state.get('filled_volume'):
             action['error'] = (f"order filled {state['filled_volume']} "
                                f"before the cancel landed")
             action['leaked'] = state
-        elif state.get('cancelled') or not state.get('still_open'):
+            self._record(action)
+            # Never leave it on the book: flatten what leaked through.
+            tickets = state.get('position_tickets') or [order_ticket]
+            self.close(side_leg, {
+                'ok': True, 'ticket': tickets[0],
+                'volume': state['filled_volume'],
+                'side': side_leg.label('').strip() or 'BUY',
+                'kind': 'open'}, kind='leak cleanup')
+            return action
+        if state.get('cancelled') or not state.get('still_open'):
             action['ok'] = True
         else:
             action['error'] = state.get('error') or 'still open after cancel'
@@ -367,7 +387,6 @@ class ScenarioRunner:
             return self._result(False, open_stats)
         opened = self.wait_for_fill(side_leg, placed)
         if not opened:
-            self._record(placed)
             cancelled = self.cancel(side_leg, placed['order'],
                                     reason=f'no fill in '
                                            f'{self.fill_timeout:.0f}s')

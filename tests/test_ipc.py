@@ -63,3 +63,52 @@ def test_order_failure_propagates(fake_broker):
     finally:
         leg.close()
         server.stop()
+
+
+def test_two_clients_can_use_one_leg_runner(fake_broker):
+    """The coordinator streams while the web UI asks for symbols or a
+    diagnosis. A single-client accept loop made the UI time out
+    whenever the coordinator was attached (seen live 2026-08-06)."""
+    server = start_server(fake_broker)
+    coordinator = RemoteLeg('account_a', f'127.0.0.1:{server.port}')
+    dashboard = RemoteLeg('account_a', f'127.0.0.1:{server.port}')
+    try:
+        assert coordinator.connect(retries=3, delay=0.1)
+        assert dashboard.connect(retries=3, delay=0.1)
+        # Both stay usable, interleaved
+        assert coordinator.tick('XAUUSD')['bid'] > 0
+        assert dashboard.ping()
+        assert dashboard.account_info()['server'] == 'FakeServer'
+        assert coordinator.tick('XAUUSD')['ask'] > 0
+    finally:
+        coordinator.close()
+        dashboard.close()
+        server.stop()
+
+
+def test_requests_are_serialised_across_clients(fake_broker):
+    """One MT5 connection: concurrent clients must not interleave
+    inside a request."""
+    import threading
+    server = start_server(fake_broker)
+    errors = []
+
+    def hammer():
+        leg = RemoteLeg('c', f'127.0.0.1:{server.port}')
+        try:
+            if not leg.connect(retries=3, delay=0.1):
+                errors.append('connect failed')
+                return
+            for _ in range(20):
+                if not leg.tick('XAUUSD'):
+                    errors.append('bad tick')
+        finally:
+            leg.close()
+
+    threads = [threading.Thread(target=hammer) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    server.stop()
+    assert not errors

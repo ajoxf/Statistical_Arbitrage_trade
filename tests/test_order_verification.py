@@ -460,3 +460,91 @@ def test_exhausting_every_mode_says_what_the_broker_allows(mt5):
     assert not result.success
     assert 'tried every filling mode' in result.error
     assert 'broker allows FOK' in result.error
+
+
+# --- a cancel that did not really cancel ---------------------------------
+# Live on CFI: a scenario reported "cancelled (no fill in 15s)" and
+# PASS; eleven seconds later the reconciler found a live position with
+# that same ticket. MT5 turns a filled pending order into a POSITION
+# carrying the order's ticket, and positions_get shows it before the
+# deal history does.
+
+class LeakyCancelMT5:
+    TRADE_ACTION_REMOVE = 8
+    TRADE_RETCODE_DONE = 10009
+
+    def __init__(self, position=None):
+        self.position = position
+
+    def order_send(self, request):
+        return SimpleNamespace(retcode=self.TRADE_RETCODE_DONE,
+                               comment='Done', order=request.get('order', 0),
+                               price=0.0, volume=0.0)
+
+    def history_deals_get(self, *args, **kwargs):
+        return ()                       # history has not caught up
+
+    def orders_get(self, ticket=None):
+        return ()                       # no longer resting
+
+    def positions_get(self, ticket=None):
+        if self.position and self.position.ticket == ticket:
+            return (self.position,)
+        return ()
+
+    def last_error(self):
+        return (0, 'ok')
+
+
+def test_a_cancel_that_actually_filled_is_reported_as_filled(mt5):
+    mt5(LeakyCancelMT5(position=SimpleNamespace(
+        ticket=102269437, volume=0.01, price_open=4259.915,
+        symbol='XAUUSD_')))
+    state = session().cancel_pending(102269437)
+    assert state['filled_volume'] == 0.01
+    assert state['position_tickets'] == [102269437]
+    assert state['leaked_fill'] is True
+    assert state['price'] == 4259.915
+
+
+def test_a_genuinely_cancelled_order_reports_no_fill(mt5):
+    mt5(LeakyCancelMT5(position=None))
+    state = session().cancel_pending(102269440)
+    assert state['filled_volume'] == 0
+    assert state['cancelled'] is True
+    assert not state.get('leaked_fill')
+
+
+class LeakyLeg(VerifyingLeg):
+    """Cancel says 'clean', but the terminal has an open position."""
+
+    def cancel_order(self, ticket):
+        self.cancels.append(ticket)
+        return {'ok': True, 'cancelled': True, 'filled_volume': 0.0,
+                'price': None, 'position_tickets': [], 'still_open': False,
+                'error': None}
+
+    def verify_order(self, ticket):
+        return {'ticket': ticket, 'confirmed': True, 'position_open': True,
+                'volume': 0.01, 'price': self.price, 'deals': []}
+
+
+def test_a_leaked_fill_fails_the_scenario_and_is_flattened():
+    """This is the one that must never pass quietly — it left a real
+    naked position on the account."""
+    leg = LeakyLeg('account_a', limit_fill_polls={'XAUUSD': None})
+    run, leg, _ = runner(spot_leg=leg)
+    out = run.run('BUY_SPOT', 'LIMIT', variant='cancel')
+    assert not out['success']
+    assert 'before the cancel landed' in out['detail']
+    assert leg.closed_tickets, 'the leaked position must be closed'
+    assert 'leak cleanup' in out['detail']
+
+
+def test_the_placement_is_logged_once_not_twice():
+    """The report printed the same 'place @' line twice on a no-fill."""
+    leg = VerifyingLeg('account_a', limit_fill_polls={'XAUUSD': None})
+    run, _, _ = runner(spot_leg=leg)
+    out = run.run('BUY_SPOT', 'LIMIT')
+    assert out['detail'].count('place @') == 1
+    assert 'no fill in 15s' in out['detail']
