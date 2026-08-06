@@ -73,7 +73,8 @@ def fair_spread(asset_cfg, spot_price, futures_price, hedge_ratio=1.0,
     beta = float(hedge_ratio or 1.0)
     rate = asset_cfg.get('risk_free_rate')
     if rate is None:
-        return None, 'no carry rate configured'
+        return None, ('no carry rate configured — set it in '
+                      'Settings > Pair Selection')
     rate = float(rate)
 
     far = years_until(asset_cfg.get('futures_expiry'), now)
@@ -90,12 +91,14 @@ def fair_spread(asset_cfg, spot_price, futures_price, hedge_ratio=1.0,
         if gap <= 0:
             return None, 'Leg A expires after Leg B — check the symbols'
         fair_far = spot_price * math.exp(rate * gap)
-        detail = (f'Leg A {spot_price:.2f} compounded at {rate * 100:.2f}% '
-                  f'over {gap * 365.25:.0f} days between expiries')
+        detail = (f'Leg A {spot_price:.2f} compounded at the '
+                  f'{rate * 100:.2f}% carry rate over {gap * 365.25:.0f} '
+                  f'days between expiries (Settings > Pair Selection)')
     else:
         fair_far = spot_price * math.exp(rate * far)
-        detail = (f'spot {spot_price:.2f} compounded at {rate * 100:.2f}% '
-                  f'over {far * 365.25:.0f} days to expiry')
+        detail = (f'spot {spot_price:.2f} compounded at the '
+                  f'{rate * 100:.2f}% carry rate over {far * 365.25:.0f} '
+                  f'days to expiry (Settings > Pair Selection)')
 
     return fair_far - beta * spot_price, detail
 

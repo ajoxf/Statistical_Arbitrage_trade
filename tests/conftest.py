@@ -20,6 +20,7 @@ class FakeBroker:
         self.pending = []         # (symbol, side_value, volume, price)
         self.modifies = []        # (ticket, new_price)
         self.closed_tickets = []  # (symbol, ticket, volume)
+        self.closes = []          # + entry_side
         self.fill_states = {}     # ticket -> state
         self.pending_fill_after = {}   # symbol -> polls until fill
         self.live_positions = []       # for positions_by_magic
@@ -98,6 +99,9 @@ class FakeBroker:
         if symbol in self.fail_symbols:
             return OrderResult(False, error="forced failure")
         self.closed_tickets.append((symbol, ticket, volume))
+        # entry_side too: the fake used to DROP it, which is how
+        # a leg role ('SPOT') reached OrderSide() unnoticed.
+        self.closes.append((symbol, ticket, volume, entry_side))
         return OrderResult(True, executed_price=self.price,
                            ticket=ticket, volume=volume)
 

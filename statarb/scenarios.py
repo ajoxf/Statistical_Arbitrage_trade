@@ -268,7 +268,17 @@ class ScenarioRunner:
                       else place_action['order'])
         return self._record(self._verify(side_leg, action))
 
-    def cancel(self, side_leg, order_ticket, reason=None):
+    def cancel(self, side_leg, place_action, reason=None):
+        """Cancel a resting order, and flatten it if it filled first.
+
+        Takes the whole PLACE action rather than just its ticket,
+        because a leaked fill has to be closed on the side it was
+        OPENED — and that side only exists here. Passing the leg's role
+        instead ('SPOT') reached OrderSide('SPOT'), which raised inside
+        the leg runner, so the leaked position stayed open and turned
+        into an orphan (live 2026-08-06, ticket 102279299).
+        """
+        order_ticket = place_action['order']
         action = {'ok': False, 'kind': 'cancel', 'order': order_ticket,
                   'leg_label': side_leg.label(''), 'time': self._stamp(),
                   'account': side_leg.account}
@@ -299,7 +309,7 @@ class ScenarioRunner:
             self.close(side_leg, {
                 'ok': True, 'ticket': tickets[0],
                 'volume': state['filled_volume'],
-                'side': side_leg.label('').strip() or 'BUY',
+                'side': place_action['side'],
                 'kind': 'open'}, kind='leak cleanup')
             return action
         if state.get('cancelled') or not state.get('still_open'):
@@ -378,7 +388,7 @@ class ScenarioRunner:
             if not placed['ok']:
                 return self._result(False)
             self.sleep(0.3)
-            cancelled = self.cancel(side_leg, placed['order'])
+            cancelled = self.cancel(side_leg, placed)
             return self._result(cancelled['ok'])
 
         open_stats = self.spread_stats()
@@ -387,7 +397,7 @@ class ScenarioRunner:
             return self._result(False, open_stats)
         opened = self.wait_for_fill(side_leg, placed)
         if not opened:
-            cancelled = self.cancel(side_leg, placed['order'],
+            cancelled = self.cancel(side_leg, placed,
                                     reason=f'no fill in '
                                            f'{self.fill_timeout:.0f}s')
             return self._result(cancelled['ok'], open_stats)
@@ -451,11 +461,11 @@ class ScenarioRunner:
         fut_place = self.place_limit(self.futures, fut_side, marketable=False,
                                      comment='SCENARIO LMT spr/fut cancel')
         if not fut_place['ok']:
-            self.cancel(self.spot, spot_place['order'], reason='rollback')
+            self.cancel(self.spot, spot_place, reason='rollback')
             return self._result(False)
         self.sleep(0.3)
-        self.cancel(self.spot, spot_place['order'])
-        self.cancel(self.futures, fut_place['order'])
+        self.cancel(self.spot, spot_place)
+        self.cancel(self.futures, fut_place)
         return self._result(True)
 
     def _spread_limit(self, spot_side, fut_side):
@@ -467,16 +477,16 @@ class ScenarioRunner:
         fut_place = self.place_limit(self.futures, fut_side, marketable=True,
                                      comment='SCENARIO LMT spr/fut')
         if not fut_place['ok']:
-            self.cancel(self.spot, spot_place['order'], reason='rollback')
+            self.cancel(self.spot, spot_place, reason='rollback')
             return self._result(False, open_stats)
 
         spot_open = self.wait_for_fill(self.spot, spot_place)
         fut_open = self.wait_for_fill(self.futures, fut_place)
         if not spot_open:
-            self.cancel(self.spot, spot_place['order'],
+            self.cancel(self.spot, spot_place,
                         reason=f'no fill in {self.fill_timeout:.0f}s')
         if not fut_open:
-            self.cancel(self.futures, fut_place['order'],
+            self.cancel(self.futures, fut_place,
                         reason=f'no fill in {self.fill_timeout:.0f}s')
 
         legs = []

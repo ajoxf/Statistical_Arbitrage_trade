@@ -665,3 +665,21 @@ def test_the_ui_payload_carries_the_degenerate_flag():
     assert ui['signal']['data_ready'] is False
     assert ui['signal']['lookback'] == 300        # threshold
     assert ui['signal']['lookback_sec'] == 7200   # window duration
+
+
+def test_the_fair_value_links_to_where_its_inputs_live(client):
+    """"Give a link where this can be configured" — the carry rate and
+    pair type are on Settings, not obvious from a number on a card."""
+    page = client.get('/').get_data(as_text=True)
+    assert '/settings#pair-selection' in page
+    settings = client.get('/settings').get_data(as_text=True)
+    assert 'id="pair-selection"' in settings
+
+
+def test_the_fair_value_detail_names_the_setting(config):
+    from datetime import datetime, timedelta
+    from statarb import fairvalue
+    asset = dict(config.ASSETS['GOLD'],
+                 futures_expiry=datetime.now() + timedelta(days=140))
+    _, detail = fairvalue.fair_spread(asset, 4269.73, 4328.80, 1.0)
+    assert 'carry rate' in detail and 'Pair Selection' in detail

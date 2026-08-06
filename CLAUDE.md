@@ -409,6 +409,16 @@ per-leg maker/taker fee split, backtest suite.
   After RECONCILE.CLOSE_ATTEMPTS (3) failures the reconciler escalates
   ONCE with "CLOSE IT BY HAND" and stops hammering it; a later
   successful close clears the escalation.
+- **A leaked fill's cleanup passed the leg ROLE where a SIDE belonged.**
+  Live: `cancel FAILED: order filled 0.01 before the cancel landed` ->
+  `leak cleanup FAILED: 'SPOT' is not a valid OrderSide` -> orphan
+  ticket 102279299. `ScenarioRunner.cancel` built the close from
+  `side_leg.label('').strip()`, which is the ROLE ('SPOT'/'FUT'), so
+  `OrderSide('SPOT')` raised inside the leg runner and the leaked
+  position stayed open. cancel() now takes the whole PLACE action and
+  closes on `place_action['side']`. The test fakes had DROPPED
+  entry_side when recording closes, which is why nothing caught it —
+  they now record it and a test runs `OrderSide()` over every close.
 - **A cancel that actually FILLED reported a clean cancel.** A
   scenario logged "cancelled (no fill in 15s)" and PASS; 11s later the
   reconciler found a live position carrying that same ticket. MT5

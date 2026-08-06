@@ -43,6 +43,7 @@ class LimitFakeLeg:
         self.cancels = []
         self.market_orders = []         # (symbol, side, volume)
         self.closed_tickets = []        # (symbol, ticket, volume)
+        self.closes = []                # + entry_side
         self.stale_orders = []          # for pending_orders()
         self.states = {}
         self.next_ticket = 500
@@ -134,6 +135,9 @@ class LimitFakeLeg:
     def close_ticket(self, symbol, ticket, volume, entry_side,
                      slippage_points=1.0, comment=""):
         self.closed_tickets.append((symbol, ticket, volume))
+        # entry_side too: the fake used to DROP it, which is how
+        # a leg role ('SPOT') reached OrderSide() unnoticed.
+        self.closes.append((symbol, ticket, volume, entry_side))
         return {'ok': True, 'filled_volume': volume, 'price': self.price,
                 'error': None}
 

@@ -484,3 +484,50 @@ def test_an_unreadable_book_is_not_assumed_flat(coordinator):
     assert not result['success']
     assert 'refusing to place test orders blind' in result['detail']
     assert not coordinator.spot_leg.market_orders
+
+
+# --- a leaked fill must be closed on the side it was OPENED --------------
+# Live 2026-08-06:
+#   [SPOT @ ...] cancel FAILED: order filled 0.01 before the cancel landed
+#   [SPOT SPOT @ ...] leak cleanup FAILED: 'SPOT' is not a valid OrderSide
+#   Reconcile: orphan position ticket 102279299 BUY 0.01 XAUUSD_
+# The cleanup passed the leg's ROLE where a side belonged, so the close
+# raised inside the leg runner and the leaked position stayed open.
+
+def test_a_leaked_fill_is_closed_with_the_orders_own_side():
+    runner, spot_leg, _ = make_runner()
+    spot_leg.leak_on_cancel['XAUUSD'] = 0.01
+    runner.run('BUY_SPOT', 'LIMIT', 'cancel')
+
+    assert spot_leg.closes, 'the leaked position was never closed'
+    symbol, ticket, volume, entry_side = spot_leg.closes[-1][:4]
+    assert entry_side == 'BUY'          # not 'SPOT'
+    assert volume == 0.01
+
+
+def test_a_leaked_sell_is_closed_as_a_sell():
+    runner, spot_leg, _ = make_runner()
+    spot_leg.leak_on_cancel['XAUUSD'] = 0.01
+    runner.run('SELL_SPOT', 'LIMIT', 'cancel')
+    assert spot_leg.closes[-1][3] == 'SELL'
+
+
+def test_the_side_passed_to_the_leg_is_always_a_real_order_side():
+    """OrderSide('SPOT') is what raised inside the leg runner."""
+    from statarb.models import OrderSide
+    runner, spot_leg, fut_leg = make_runner()
+    spot_leg.leak_on_cancel['XAUUSD'] = 0.01
+    fut_leg.leak_on_cancel['GC1225'] = 0.01
+    for s_type in ('BUY_SPOT', 'SELL_SPOT', 'BUY_FUT', 'SELL_FUT'):
+        runner.run(s_type, 'LIMIT', 'cancel')
+    for leg in (spot_leg, fut_leg):
+        for call in leg.closes:
+            OrderSide(call[3])          # raises if a role leaked through
+
+
+def test_a_leaked_fill_still_fails_the_scenario():
+    """Cleaning up is not passing — a fill that beat the cancel means
+    the scenario did not do what it set out to do."""
+    runner, spot_leg, _ = make_runner()
+    spot_leg.leak_on_cancel['XAUUSD'] = 0.01
+    assert not runner.run('BUY_SPOT', 'LIMIT', 'cancel')['success']
