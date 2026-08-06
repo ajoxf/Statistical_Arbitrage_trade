@@ -39,6 +39,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
+# How often the socket bridge looks for a fresh runtime_status.json.
+# The dashboard's own UPDATE_INTERVAL is 300ms; this has to be at least
+# that quick or the screen updates at THIS rate instead.
+BROADCAST_INTERVAL_SEC = 0.2
+
 
 def env_var_name(prefix, name):
     """A .env key that dotenv can actually read. An account called
@@ -1457,9 +1462,12 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         app.socketio = socketio
 
         def broadcast_loop():
+            # Reads runtime_status.json and pushes what changed. Sleep
+            # shorter than the coordinator's poll, or this thread — not
+            # the feed — becomes what sets the dashboard's frame rate.
             last = None
             while True:
-                socketio.sleep(1.0)
+                socketio.sleep(BROADCAST_INTERVAL_SEC)
                 try:
                     status = ui_status()
                 except Exception:

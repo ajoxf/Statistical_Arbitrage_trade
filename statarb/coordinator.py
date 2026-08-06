@@ -146,6 +146,8 @@ class Coordinator:
         self.notifier.command_handler = self._telegram_command
         self._was_halted = False
         self.status_path = 'runtime_status.json'
+        self._accounts_cache = None    # (accounts, equity) — see
+        self._accounts_at = 0.0        # _account_snapshot
         self.shadow = ShadowTracker(self.data_logger)
         self._last_z = {}          # asset -> z (for SD-touch detection)
 
@@ -1268,6 +1270,41 @@ class Coordinator:
                             stats, contract_size, manual=True,
                             exit_spread=exit_spread, overnight=overnight)
 
+    # Balance/equity is one IPC round-trip per account into MT5. The
+    # status file is now written on every poll (a few times a second) so
+    # the operator's prices are live; account figures do not move at
+    # that rate and must not be re-fetched at it. The margin breaker
+    # reads this cache, so keep the interval well inside a reconcile.
+    ACCOUNT_REFRESH_SEC = 5.0
+    STATUS_LOG_SEC = 10.0        # the one-line status in the log
+    CONFIG_RELOAD_SEC = 10.0     # hot-apply of the safe config sections
+
+    def _account_snapshot(self):
+        """(accounts, equity), refreshed at most every few seconds."""
+        now = time.time()
+        if (self._accounts_cache is not None
+                and now - self._accounts_at < self.ACCOUNT_REFRESH_SEC):
+            return self._accounts_cache
+        roles = {}
+        for role, leg in (('spot', self.spot_leg),
+                          ('futures', self.futures_leg)):
+            roles.setdefault(leg.name, []).append(role)
+        accounts, equity = {}, None
+        for leg in self._each_leg():
+            info = leg.account_info()
+            if info:
+                info = dict(info)
+                info['account'] = leg.name
+                info['roles'] = roles.get(leg.name, [])
+                accounts[leg.name] = info
+                equity = (equity or 0) + (info.get('equity') or 0)
+        # The margin breaker acts on the weakest account, so it gets the
+        # per-account picture every time this actually refreshes.
+        self.risk_manager.update_accounts(accounts)
+        self._accounts_cache = (accounts, equity)
+        self._accounts_at = now
+        return self._accounts_cache
+
     def _write_runtime_status(self, all_market_data):
         """Refresh runtime_status.json for the read-only dashboard.
         Atomic replace so the dashboard never reads a half-written file."""
@@ -1299,25 +1336,13 @@ class Coordinator:
                 'lots_today': self.risk_manager.lots_traded_today(asset_key),
                 'lot_target': target,
             })
-        accounts, equity = {}, None
-        roles = {}
-        for role, leg in (('spot', self.spot_leg),
-                          ('futures', self.futures_leg)):
-            roles.setdefault(leg.name, []).append(role)
-        for leg in self._each_leg():
-            info = leg.account_info()
-            if info:
-                info = dict(info)
-                info['account'] = leg.name
-                info['roles'] = roles.get(leg.name, [])
-                accounts[leg.name] = info
-                equity = (equity or 0) + (info.get('equity') or 0)
-        # The margin breaker acts on the weakest account, so it needs
-        # the live per-account picture every status tick.
-        self.risk_manager.update_accounts(accounts)
+        accounts, equity = self._account_snapshot()
         payload = {
             'mode': self.trading_mode,
-            'updated': datetime.now().strftime('%H:%M:%S'),
+            # Milliseconds matter: the webapp's socket bridge only emits
+            # when this stamp CHANGES, so a whole-second stamp would cap
+            # the dashboard at one price update per second.
+            'updated': datetime.now().strftime('%H:%M:%S.%f')[:-3],
             'algo_enabled': self.algo_enabled,
             'halted': halted,
             'halt_reason': why,
@@ -1662,7 +1687,9 @@ class Coordinator:
         return f"🚨 CLOSEALL: {count} position(s) sent to market close"
 
     def log_status(self, all_market_data):
-        self._write_runtime_status(all_market_data)
+        """The LOG line only — the dashboard's status file is written on
+        every poll (see run()), because a price the operator watches has
+        to move at the feed's rate, not at the log's."""
         target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
         halted, why = self.risk_manager.halted()
         for asset_key, md in all_market_data.items():
@@ -1687,15 +1714,17 @@ class Coordinator:
 
     def run(self):
         self.is_running = True
-        poll = self.config.TRADING.get('POLL_INTERVAL_SEC', 0.5)
-        loop_count = 0
+        poll = self.config.TRADING.get('POLL_INTERVAL_SEC', 0.3)
         consecutive_errors = 0
+        # Housekeeping runs on the CLOCK, not on a loop count — otherwise
+        # changing the poll rate silently changes how often the status
+        # line is logged and how often config is re-read.
+        last_log = last_reload = 0.0
 
         logging.info("Coordinator loop started (poll %.2fs)", poll)
         while self.is_running:
             try:
                 started = time.time()
-                loop_count += 1
 
                 all_market_data = self.get_all_market_data()
                 if all_market_data:
@@ -1703,7 +1732,11 @@ class Coordinator:
                     self.last_data = all_market_data
                     for asset_key, md in all_market_data.items():
                         self.process_asset(asset_key, md)
-                    if loop_count % 20 == 1:
+                    # Every poll: the dashboard reads this file, so its
+                    # prices are only as live as this write.
+                    self._write_runtime_status(all_market_data)
+                    if started - last_log >= self.STATUS_LOG_SEC:
+                        last_log = started
                         self.log_status(all_market_data)
                 else:
                     consecutive_errors += 1
@@ -1717,7 +1750,8 @@ class Coordinator:
                         consecutive_errors = 0
 
                 self._read_control()
-                if loop_count % 20 == 0:      # ~10s
+                if started - last_reload >= self.CONFIG_RELOAD_SEC:
+                    last_reload = started
                     self._maybe_reload_config()
                 self._poll_order_logs()
 
@@ -1727,7 +1761,10 @@ class Coordinator:
                         self.notifier.notify_reconcile(action, leg_name,
                                                        str(detail))
 
-                time.sleep(max(poll - (time.time() - started), 0.05))
+                # Re-read each pass: POLL_INTERVAL_SEC is hot-reloadable
+                # and a value captured before the loop could never apply.
+                poll = self.config.TRADING.get('POLL_INTERVAL_SEC', 0.3)
+                time.sleep(max(poll - (time.time() - started), 0.02))
 
             except KeyboardInterrupt:
                 break

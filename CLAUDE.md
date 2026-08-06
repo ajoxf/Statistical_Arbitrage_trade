@@ -315,6 +315,25 @@ per-leg maker/taker fee split, backtest suite.
   that stops ticking drains out of the window and goes cold rather
   than freezing a stale z. This also shrinks — but does not remove —
   the MIN_SIGMA residual risk above.
+- **The dashboard price only moved every 10s** (operator: "not
+  refreshing every 0.3 secs"). Nothing in the browser was at fault —
+  the chain is coordinator poll -> runtime_status.json -> webapp
+  socket bridge -> page, and the slowest link sets the rate. Three
+  links were slow: `_write_runtime_status` was called only from
+  `log_status` (every 20th loop = 10s), the `updated` stamp the socket
+  bridge diffs on had whole-SECOND resolution (a 1Hz cap on its own),
+  and that bridge slept 1.0s. Now: status written EVERY poll, stamp
+  carries milliseconds, bridge sleeps `BROADCAST_INTERVAL_SEC` (0.2s),
+  POLL_INTERVAL_SEC default 0.5 -> 0.3 to match the page's
+  UPDATE_INTERVAL — safe only because quote_id dedup (above) made
+  sigma poll-rate invariant. account_info() is an IPC round-trip per
+  account, so it is CACHED (`ACCOUNT_REFRESH_SEC` 5s) rather than
+  re-fetched 3x/second; the margin breaker updates on each refresh.
+  Housekeeping (status log, config hot-reload) moved from loop counts
+  to the clock, so changing the poll rate no longer changes how often
+  the log prints. `run()` also re-reads POLL_INTERVAL_SEC each pass —
+  it is in HOT_TRADING_KEYS but was captured once before the loop, so
+  hot-reloading it did nothing.
 - The warm-up bar read "181 / 7,200": it compared a SAMPLE COUNT to
   LOOKBACK_SEC, a duration, so it could never fill. It now counts
   against MIN_SAMPLES, which is what actually gates trading.

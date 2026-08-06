@@ -223,7 +223,11 @@ class AlgoTradingConfig:
             'SLICE_LOTS': 0.0,         # child-order size; 0 = no slicing
             'DAILY_LOT_TARGET': 0.0,   # throughput target/day (NOT a cap)
             'HEDGE_RATIO': 1.0,        # futures lots per spot lot
-            'POLL_INTERVAL_SEC': 0.5,
+            # Feed cadence, and therefore the dashboard's: the status
+            # file is written once per poll. Matches the dashboard's own
+            # 300ms refresh. Safe to run this fast since SpreadStats
+            # dedups by quote_id — extra polls no longer touch sigma.
+            'POLL_INTERVAL_SEC': 0.3,
         }
         self.ASSETS = copy.deepcopy(DEFAULT_ASSETS)
         # Attaches to whatever terminal is already running when no
