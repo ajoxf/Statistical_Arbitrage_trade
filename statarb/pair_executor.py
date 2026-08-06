@@ -313,7 +313,7 @@ class PairExecutor:
     # ------------------------------------------------------------------
 
     def execute_trade_pair(self, asset, signal_type, lot_size,
-                           spot_symbol, futures_symbol):
+                           spot_symbol, futures_symbol, tag='BASIS_ARB'):
         if signal_type == SignalType.SELL_BASIS:
             spot_side, futures_side = OrderSide.BUY, OrderSide.SELL
         elif signal_type == SignalType.BUY_BASIS:
@@ -323,7 +323,10 @@ class PairExecutor:
 
         execution = self.config.EXECUTION
         entry_style = execution.get('ENTRY_STYLE', 'market')
-        comment = f"BASIS_ARB_{uuid.uuid4().hex[:8]}"
+        # The comment travels to MT5 and comes back in the
+        # order log, so the operator can tell an algo entry
+        # from a manual one in the terminal itself.
+        comment = f"{tag}_{uuid.uuid4().hex[:8]}"
         spot_trade = Trade(spot_symbol, spot_side, 0.0)
         futures_trade = Trade(futures_symbol, futures_side, 0.0)
 

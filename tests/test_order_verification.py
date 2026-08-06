@@ -1,0 +1,347 @@
+"""Proof that an order reached MT5.
+
+`order_send` returning success is only the broker acknowledging the
+request. These tests cover the read-back: after placing, the engine
+asks MT5 what IT holds for that ticket, says so in the log, and pulls
+the terminal's own rows into the Exchange Order Log immediately.
+"""
+
+import json
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from statarb import broker as broker_module
+from statarb import scenarios
+from tests.test_limit_execution import FakeClock
+from tests.test_scenarios import ScenarioFakeLeg
+
+
+# --- BrokerSession.verify_ticket -----------------------------------------
+
+class VerifyMT5:
+    def __init__(self, positions=(), deals=(), orders=(), deals_after=0):
+        self._positions = list(positions)
+        self._deals = list(deals)
+        self._orders = list(orders)
+        self.deals_after = deals_after      # reads before history shows up
+        self.deal_reads = 0
+
+    def positions_get(self, ticket=None):
+        return [p for p in self._positions if p.ticket == ticket]
+
+    def history_deals_get(self, position=None, ticket=None):
+        self.deal_reads += 1
+        if self.deal_reads <= self.deals_after:
+            return ()
+        key = position if position is not None else ticket
+        return [d for d in self._deals if d.position_id == key]
+
+    def history_orders_get(self, ticket=None):
+        return [o for o in self._orders if o.ticket == ticket]
+
+
+def a_deal(**kwargs):
+    base = dict(ticket=5001, order=4001, symbol='XAUUSD', volume=0.01,
+                price=3300.5, commission=-0.07, profit=0.0,
+                time=1_760_000_000, position_id=7001, comment='SCENARIO MKT')
+    base.update(kwargs)
+    return SimpleNamespace(**base)
+
+
+def a_position(**kwargs):
+    base = dict(ticket=7001, symbol='XAUUSD', volume=0.01, price_open=3300.5,
+                time=1_760_000_000, magic=broker_module.MAGIC_NUMBER,
+                comment='SCENARIO MKT')
+    base.update(kwargs)
+    return SimpleNamespace(**base)
+
+
+def session():
+    return broker_module.BrokerSession(
+        SimpleNamespace(name='account_a', terminal_path=None, login=1,
+                        server='FxPro', password_env=None))
+
+
+@pytest.fixture
+def mt5(monkeypatch):
+    def install(fake):
+        monkeypatch.setattr(broker_module, 'mt5', fake)
+        return fake
+    return install
+
+
+def test_a_filled_order_is_confirmed_from_deal_history(mt5):
+    mt5(VerifyMT5(deals=[a_deal()]))
+    found = session().verify_ticket(7001)
+    assert found['confirmed'] and found['source'] == 'deal history'
+    assert found['deals'][0]['deal_id'] == 5001
+    assert found['deals'][0]['order_id'] == 4001
+    assert found['price'] == 3300.5
+
+
+def test_an_open_position_is_confirmation_too(mt5):
+    mt5(VerifyMT5(positions=[a_position()]))
+    found = session().verify_ticket(7001)
+    assert found['confirmed'] and found['position_open'] is True
+    assert found['comment'] == 'SCENARIO MKT'
+
+
+def test_history_lag_is_retried_before_being_believed(mt5):
+    """Deal history appears a moment after the fill — a single empty
+    read must not be reported as 'the order never reached MT5'."""
+    fake = mt5(VerifyMT5(deals=[a_deal()], deals_after=2))
+    found = session().verify_ticket(7001, attempts=4, delay=0.01)
+    assert found['confirmed'] and fake.deal_reads > 2
+
+
+def test_a_ticket_mt5_has_never_heard_of_is_not_confirmed(mt5):
+    mt5(VerifyMT5())
+    found = session().verify_ticket(9999, attempts=2, delay=0.01)
+    assert not found['confirmed'] and 'not found' in found['error']
+
+
+def test_verification_without_the_mt5_package_says_so(monkeypatch):
+    monkeypatch.setattr(broker_module, 'mt5', None)
+    found = session().verify_ticket(7001)
+    assert not found['confirmed'] and 'not installed' in found['error']
+
+
+# --- scenarios confirm every ticket ---------------------------------------
+
+class VerifyingLeg(ScenarioFakeLeg):
+    """Fake leg that can answer 'what does MT5 hold for this ticket'."""
+
+    def __init__(self, *args, confirm=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.confirm = confirm
+        self.verified = []
+
+    def verify_order(self, ticket):
+        self.verified.append(ticket)
+        if not self.confirm:
+            return {'ticket': ticket, 'confirmed': False,
+                    'error': 'not found in MT5 positions, deals or orders'}
+        return {'ticket': ticket, 'confirmed': True, 'source': 'deal history',
+                'deals': [{'deal_id': 5000 + ticket, 'order_id': 4000 + ticket,
+                           'symbol': 'XAUUSD', 'volume': 0.01,
+                           'price': self.price, 'commission': -0.07,
+                           'profit': 0.0, 'time': 1_760_000_000,
+                           'comment': 'SCENARIO'}],
+                'position_open': False}
+
+
+def runner(spot_leg=None, futures_leg=None):
+    spot_leg = spot_leg or VerifyingLeg('account_a', price=3300.0)
+    futures_leg = futures_leg or VerifyingLeg('account_b', price=3320.0)
+    spot = scenarios.Leg(spot_leg, 'XAUUSD', 'SPOT', 100.0, 6.0)
+    futures = scenarios.Leg(futures_leg, 'GC1225', 'FUTURES', 100.0, 4.0)
+    clock = FakeClock()
+    return (scenarios.ScenarioRunner(spot, futures, clock=clock,
+                                     sleep=clock.sleep),
+            spot_leg, futures_leg)
+
+
+def test_every_scenario_ticket_is_read_back_out_of_mt5():
+    run, spot_leg, fut_leg = runner()
+    out = run.run('LONG_SPR', 'MARKET')
+    assert out['success']
+    # Two opens and two closes, each confirmed against the terminal
+    assert len(spot_leg.verified) == 2 and len(fut_leg.verified) == 2
+    assert out['detail'].count('✓ MT5 confirms') == 4
+    assert 'deal 5' in out['detail'] and 'commission -0.07' in out['detail']
+
+
+def test_an_order_mt5_cannot_confirm_fails_the_scenario():
+    """The dangerous case: our side thinks it placed an order, the
+    terminal has no record. That must never read as a pass."""
+    run, spot_leg, _ = runner(spot_leg=VerifyingLeg('account_a',
+                                                    confirm=False))
+    out = run.run('BUY_SPOT', 'MARKET')
+    assert not out['success']
+    assert '✗ NOT FOUND IN MT5' in out['detail']
+
+
+def test_limit_fills_are_confirmed_too():
+    spot_leg = VerifyingLeg('account_a', limit_fill_polls={'XAUUSD': 2})
+    run, spot_leg, _ = runner(spot_leg=spot_leg)
+    out = run.run('BUY_SPOT', 'LIMIT')
+    assert out['success'] and out['detail'].count('✓ MT5 confirms') == 2
+
+
+def test_a_leg_that_cannot_verify_still_runs_the_scenario():
+    """Paper fakes and older leg runners have no verify_order — the
+    scenario runs, it just does not claim confirmation."""
+    run, _, _ = runner(spot_leg=ScenarioFakeLeg('account_a'),
+                       futures_leg=ScenarioFakeLeg('account_b'))
+    out = run.run('BUY_SPOT', 'MARKET')
+    assert out['success'] and 'MT5 confirms' not in out['detail']
+
+
+def test_a_verifier_that_raises_does_not_break_the_scenario():
+    class Boom(ScenarioFakeLeg):
+        def verify_order(self, ticket):
+            raise RuntimeError('terminal gone')
+
+    run, _, _ = runner(spot_leg=Boom('account_a'))
+    out = run.run('BUY_SPOT', 'MARKET')
+    assert not out['success'] and 'terminal gone' in out['detail']
+
+
+# --- the coordinator confirms live entries and exits ----------------------
+
+@pytest.fixture
+def coordinator(tmp_path, monkeypatch, config):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    config.TRADING.update({'CLIP_LOTS': 1.0, 'SLICE_LOTS': 1.0})
+    coord = Coordinator(config, trading_mode='PAPER')
+    coord.spot_leg = VerifyingLeg('account_a', price=3300.0)
+    coord.futures_leg = VerifyingLeg('account_b', price=3320.0)
+    coord.spot_leg.broker_order_log = [
+        {'account': 'account_a', 'order_id': '4001', 'deal_id': '5001',
+         'symbol': 'XAUUSD', 'state': 'filled', 'is_bot': True,
+         'comment': 'MANUAL_ab12', 'filled_at': 1_760_000_000_000}]
+    coord.spot_leg.order_log = lambda hours=24: [
+        dict(r) for r in coord.spot_leg.broker_order_log]
+    coord.futures_leg.order_log = lambda hours=24: []
+    coord.active_assets['GOLD'] = {
+        'config': config.ASSETS['GOLD'], 'spot_symbol': 'XAUUSD',
+        'futures_symbol': 'GC1225', 'last_data': None}
+    return coord
+
+
+def make_position(asset='GOLD'):
+    from statarb.models import OrderSide, Position, SignalType, Trade
+    spot = Trade('XAUUSD', OrderSide.BUY, 1.0)
+    spot.position_tickets = [7001]
+    fut = Trade('GC1225', OrderSide.SELL, 1.0)
+    fut.position_tickets = [7002]
+    return Position('POS_0001', asset, SignalType.SELL_BASIS, spot, fut)
+
+
+def test_entry_tickets_are_confirmed_against_both_terminals(coordinator,
+                                                            caplog):
+    with caplog.at_level('INFO'):
+        found = coordinator._confirm_with_mt5(make_position(), 'entry')
+    assert [f['confirmed'] for f in found] == [True, True]
+    assert 'MT5 CONFIRMED' in caplog.text
+    assert coordinator._last_confirmation['confirmed'] == 2
+    assert coordinator._last_confirmation['total'] == 2
+
+
+def test_an_unconfirmed_ticket_is_logged_as_an_error(coordinator, caplog):
+    coordinator.futures_leg.confirm = False
+    with caplog.at_level('ERROR'):
+        coordinator._confirm_with_mt5(make_position(), 'entry')
+    assert 'MT5 NOT CONFIRMED' in caplog.text
+    assert 'terminal has no record' in caplog.text
+    assert coordinator._last_confirmation['confirmed'] == 1
+
+
+def test_confirming_pulls_the_terminals_rows_into_the_log_at_once(
+        coordinator):
+    """No waiting for the 30s poll: after an order, the Exchange Order
+    Log has the broker's own rows."""
+    coordinator._confirm_with_mt5(make_position(), 'entry')
+    rows = coordinator.data_logger.recent_broker_orders()
+    assert [r['order_id'] for r in rows] == ['4001']
+    assert rows[0]['comment'] == 'MANUAL_ab12'
+
+
+def test_the_confirmation_reaches_runtime_status(coordinator, tmp_path):
+    coordinator._confirm_with_mt5(make_position(), 'entry')
+    coordinator._write_runtime_status({})
+    with open(tmp_path / "runtime_status.json") as f:
+        published = json.load(f)['order_confirmation']
+    assert published['confirmed'] == 2 and published['what'] == 'entry'
+
+
+def test_paper_mode_does_not_claim_mt5_confirmations(coordinator):
+    """Paper fills never reach a terminal — confirming them would be a
+    lie. _open_position only verifies in LIVE."""
+    from statarb.coordinator import PaperExecutor
+    coordinator.executor = PaperExecutor(coordinator.spot_leg,
+                                         coordinator.futures_leg)
+    coordinator.stats['GOLD'] = None
+    market = {'swap_diff': 1.5, 'spot_price': 3300.0,
+              'futures_price': 3320.0, 'actual_basis': 20.0,
+              'swap_premium_pct': 5.0, 'spot_bid': 3299.9,
+              'spot_ask': 3300.1, 'futures_bid': 3319.9,
+              'futures_ask': 3320.1}
+    from statarb.models import SignalType
+    position = coordinator._open_position(
+        'GOLD', SignalType.SELL_BASIS, 1.0, market, None, 100.0, manual=True)
+    assert position is not None            # the trade really did open
+    assert coordinator._last_confirmation is None
+
+
+# --- the log says where each order came from ------------------------------
+
+pytest.importorskip("flask")
+
+from statarb.database import DataLogger                  # noqa: E402
+from statarb.webapp import create_app                    # noqa: E402
+
+
+def row(**kwargs):
+    base = {'account': 'account_a', 'order_id': '4001', 'deal_id': '5001',
+            'symbol': 'XAUUSD', 'inst_type': 'DEAL', 'side': 'buy',
+            'pos_side': 'open', 'order_type': 'market/limit',
+            'quantity': 0.01, 'fill_qty': 0.01, 'fill_price': 3300.5,
+            'fee': -0.07, 'fee_ccy': 'USD', 'pnl': 0.0, 'state': 'filled',
+            'filled_at': 1_760_000_000_000, 'position_id': 7001,
+            'is_bot': True, 'comment': 'BASIS_ARB_ab12'}
+    base.update(kwargs)
+    return base
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    db = DataLogger(db_path=str(tmp_path / "algo.db"))
+    db.record_broker_orders([
+        row(order_id='1', deal_id='1', comment='BASIS_ARB_ab12'),
+        row(order_id='2', deal_id='2', comment='MANUAL_cd34'),
+        row(order_id='3', deal_id='3', comment='SCENARIO MKT spr/spot'),
+        row(order_id='4', deal_id='4', comment='ORDER_TEST'),
+        row(order_id='5', deal_id='5', comment='my own click', is_bot=False),
+    ])
+    (tmp_path / "runtime_status.json").write_text(json.dumps({}))
+    (tmp_path / "config.json").write_text(json.dumps({}))
+    app = create_app(db_path=str(tmp_path / "algo.db"),
+                     status_path=str(tmp_path / "runtime_status.json"),
+                     config_path=str(tmp_path / "config.json"),
+                     control_path=str(tmp_path / "control.json"),
+                     env_path=str(tmp_path / ".env"))
+    app.config['TESTING'] = True
+    client = app.test_client()
+    client.tmp_path = tmp_path
+    return client
+
+
+def test_every_row_says_where_the_order_came_from(client):
+    data = client.get('/api/exchange-orders').get_json()
+    by_id = {o['order_id']: o['source'] for o in data['orders']}
+    assert by_id == {'1': 'ALGO', '2': 'MANUAL TRADE', '3': 'TEST SUITE',
+                     '4': 'ORDER TEST', '5': 'MANUAL (terminal)'}
+    assert 'TEST SUITE' in data['sources']
+
+
+def test_the_log_can_be_filtered_to_one_source(client):
+    data = client.get('/api/exchange-orders?source=TEST SUITE').get_json()
+    assert data['count'] == 1 and data['orders'][0]['order_id'] == '3'
+
+
+def test_the_csv_carries_the_source_column(client):
+    body = client.get('/api/exchange-orders/csv').get_data(as_text=True)
+    assert 'source' in body.splitlines()[0]
+    assert 'TEST SUITE' in body and 'MANUAL TRADE' in body
+
+
+def test_the_dashboard_table_shows_the_source(client):
+    page = client.get('/').get_data(as_text=True)
+    log = page.split('Exchange Order Log', 1)[1]
+    assert '<th>Source</th>' in log.split('</thead>', 1)[0]
+    assert 'SOURCE_STYLE' in page

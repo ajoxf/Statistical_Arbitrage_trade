@@ -712,7 +712,22 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     def api_spot_holdings():
         return jsonify({'holdings': []})
 
-    def exchange_orders(limit=100, account=None):
+    def order_source(row):
+        """Who sent this order — read off the comment MT5 stored, so
+        the answer comes from the terminal's own record rather than
+        from anything the app remembers."""
+        comment = (row.get('comment') or '').upper()
+        if not row.get('is_bot'):
+            return 'MANUAL (terminal)'
+        if comment.startswith('SCENARIO'):
+            return 'TEST SUITE'
+        if comment.startswith('ORDER_TEST'):
+            return 'ORDER TEST'
+        if comment.startswith('MANUAL'):
+            return 'MANUAL TRADE'
+        return 'ALGO'
+
+    def exchange_orders(limit=100, account=None, source_filter=None):
         """Both accounts' MT5 activity in one list, newest first. The
         coordinator polls each leg into broker_orders; leverage is
         stitched in per account from the live status file."""
@@ -735,17 +750,22 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 row[key] = row.get(key) or 0.0
             row['fee_ccy'] = row.get('fee_ccy') or info.get('currency') or ''
             row['order_id'] = str(row.get('order_id') or '')
+            row['source'] = order_source(row)
             rows.append(row)
+        if source_filter:
+            rows = [r for r in rows if r['source'] == source_filter]
         return rows
 
     @app.route('/api/exchange-orders')
     def api_exchange_orders():
         limit = min(request.args.get('limit', 100, type=int), 1000)
-        rows = exchange_orders(limit, request.args.get('account'))
+        rows = exchange_orders(limit, request.args.get('account'),
+                               request.args.get('source'))
         return jsonify({
             'orders': rows,
             'accounts': sorted({r['account'] for r in rows
                                 if r.get('account')}),
+            'sources': sorted({r['source'] for r in rows}),
             'count': len(rows),
         })
 
@@ -753,8 +773,9 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     def api_exchange_orders_csv():
         rows = exchange_orders(
             min(request.args.get('limit', 1000, type=int), 5000),
-            request.args.get('account'))
-        columns = ['account', 'login', 'filled_at', 'symbol', 'inst_type',
+            request.args.get('account'), request.args.get('source'))
+        columns = ['account', 'login', 'filled_at', 'source', 'symbol',
+                   'inst_type',
                    'side', 'pos_side', 'order_type', 'quantity', 'fill_qty',
                    'fill_price', 'leverage', 'fee', 'fee_ccy', 'pnl',
                    'state', 'order_id', 'deal_id', 'position_id', 'is_bot',

@@ -76,6 +76,9 @@ class LegServer:
             if cmd == 'symbol_report':
                 return {'ok': True,
                         'report': self.leg.symbol_report(msg['symbol'])}
+            if cmd == 'verify_order':
+                return {'ok': True,
+                        'verification': self.leg.verify_order(msg['ticket'])}
             if cmd == 'find_symbols':
                 return {'ok': True,
                         'symbols': self.leg.find_symbols(

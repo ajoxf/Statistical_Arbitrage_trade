@@ -207,6 +207,76 @@ class BrokerSession:
             'swap_short': getattr(info, 'swap_short', None),
         }
 
+    def verify_ticket(self, ticket, attempts=3, delay=0.4):
+        """Ask MT5 what IT has for this ticket — the independent proof
+        that an order really reached the broker rather than just
+        returning success from order_send.
+
+        Looks for the position (still open), then the deals it
+        produced, then the order record. Deal history lags a fill by a
+        moment, so a miss is retried before it is believed."""
+        if mt5 is None:
+            return {'ticket': ticket, 'confirmed': False,
+                    'error': 'MetaTrader5 package not installed'}
+        found = {'ticket': ticket, 'confirmed': False, 'deals': [],
+                 'position_open': False}
+        for attempt in range(attempts):
+            try:
+                positions = mt5.positions_get(ticket=int(ticket)) or ()
+                for position in positions:
+                    found.update({
+                        'confirmed': True, 'position_open': True,
+                        'symbol': position.symbol,
+                        'volume': position.volume,
+                        'price': position.price_open,
+                        'time': int(position.time),
+                        'magic': position.magic,
+                        'comment': position.comment or '',
+                        'source': 'open position'})
+
+                deals = (mt5.history_deals_get(position=int(ticket))
+                         or mt5.history_deals_get(ticket=int(ticket)) or ())
+                for deal in deals:
+                    found['deals'].append({
+                        'deal_id': deal.ticket, 'order_id': deal.order,
+                        'symbol': deal.symbol, 'volume': deal.volume,
+                        'price': deal.price,
+                        'commission': deal.commission,
+                        'profit': deal.profit,
+                        'time': int(deal.time),
+                        'comment': deal.comment or ''})
+                if deals:
+                    last = found['deals'][-1]
+                    found.update({'confirmed': True,
+                                  'symbol': last['symbol'],
+                                  'volume': last['volume'],
+                                  'price': last['price'],
+                                  'time': last['time'],
+                                  'source': 'deal history'})
+
+                if not found['confirmed']:
+                    orders = (mt5.history_orders_get(ticket=int(ticket))
+                              or ())
+                    for order in orders:
+                        found.update({
+                            'confirmed': True, 'symbol': order.symbol,
+                            'volume': order.volume_initial,
+                            'price': order.price_open,
+                            'time': int(getattr(order, 'time_done',
+                                                order.time_setup)),
+                            'state': order.state,
+                            'comment': order.comment or '',
+                            'source': 'order history'})
+            except Exception as e:
+                found['error'] = str(e)
+            if found['confirmed'] or attempt == attempts - 1:
+                break
+            time.sleep(delay)          # history lags a fill briefly
+        if not found['confirmed']:
+            found.setdefault('error', 'not found in MT5 positions, deals '
+                                      'or order history')
+        return found
+
     def terminal_report(self):
         """Terminal- and account-level facts the checklist reports:
         whether the terminal is attached, who is logged in, whether

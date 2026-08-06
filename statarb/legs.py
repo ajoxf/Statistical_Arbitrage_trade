@@ -145,6 +145,11 @@ class LocalLeg:
     def find_symbols(self, pattern, limit=40):
         return self.broker.find_symbols(pattern, limit)
 
+    def verify_order(self, ticket):
+        """What MT5 itself holds for this ticket — proof the order
+        reached the broker, not just that order_send returned ok."""
+        return dict(self.broker.verify_ticket(ticket), account=self.name)
+
 
 class RemoteLeg:
     def __init__(self, name, endpoint, timeout=10.0):
@@ -293,3 +298,10 @@ class RemoteLeg:
         if reply and reply.get('ok'):
             return reply['symbols']
         return None
+
+    def verify_order(self, ticket):
+        reply = self._request({'cmd': 'verify_order', 'ticket': ticket})
+        if reply and reply.get('ok'):
+            return dict(reply['verification'], account=self.name)
+        return {'account': self.name, 'ticket': ticket, 'confirmed': False,
+                'error': 'leg runner not reachable'}

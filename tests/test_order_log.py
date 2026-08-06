@@ -400,7 +400,7 @@ def test_api_survives_a_database_with_no_log_yet(tmp_path, monkeypatch):
                      env_path=str(tmp_path / ".env"))
     app.config['TESTING'] = True
     data = app.test_client().get('/api/exchange-orders').get_json()
-    assert data == {'orders': [], 'accounts': [], 'count': 0}
+    assert data == {'orders': [], 'accounts': [], 'sources': [], 'count': 0}
 
 
 def test_csv_export_names_the_account_on_every_row(client):
@@ -421,7 +421,7 @@ def test_dashboard_table_has_an_account_column(client):
     page = client.get('/').get_data(as_text=True)
     log = page.split('Exchange Order Log', 1)[1]
     header = log.split('</thead>', 1)[0]
-    assert '<th>Account</th>' in header
-    # 15 columns now — every placeholder row must span them all
-    assert header.count('<th>') == 15
-    assert 'colspan="14"' not in log
+    assert '<th>Account</th>' in header and '<th>Source</th>' in header
+    # 16 columns now — every placeholder row must span them all
+    assert header.count('<th>') == 16
+    assert 'colspan="14"' not in log and 'colspan="15"' not in log

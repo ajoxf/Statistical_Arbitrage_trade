@@ -106,6 +106,18 @@ class Leg:
             self.meta = self.leg.ensure_symbol(self.symbol) or {'ok': False}
         return self.meta
 
+    def verify(self, ticket):
+        """Read the ticket back OUT of MT5. A leg that cannot answer
+        (paper fakes, older runners) returns None and verification is
+        simply not claimed."""
+        verifier = getattr(self.leg, 'verify_order', None)
+        if verifier is None or ticket is None:
+            return None
+        try:
+            return verifier(ticket)
+        except Exception as e:                    # never break the test
+            return {'ticket': ticket, 'confirmed': False, 'error': str(e)}
+
     def round_trip_fee(self, volume, price):
         """($ , bps) for open+close on this leg. Commission in config is
         quoted round-turn per lot, so one round trip is one charge."""
@@ -149,6 +161,18 @@ class ScenarioRunner:
         self.actions.append(action)
         return action
 
+    def _verify(self, side_leg, action):
+        """Confirm with MT5 that the ticket we think we created really
+        exists there. `order_send` returning success is the broker's
+        acknowledgement; this is the broker's RECORD."""
+        if not action.get('ok') or not action.get('ticket'):
+            return action
+        result = side_leg.verify(action['ticket'])
+        if result is not None:
+            action['verification'] = result
+            action['verified'] = bool(result.get('confirmed'))
+        return action
+
     def _quote(self, side_leg, action):
         tick = side_leg.leg.tick(side_leg.symbol)
         if tick:
@@ -189,7 +213,7 @@ class ScenarioRunner:
                       volume=result.get('filled_volume') or volume,
                       ticket=(result.get('position_tickets') or
                               [result.get('ticket')])[0])
-        return self._record(action)
+        return self._record(self._verify(side_leg, action))
 
     def place_limit(self, side_leg, side, marketable,
                     comment='SCENARIO LMT'):
@@ -242,7 +266,7 @@ class ScenarioRunner:
                       volume=state['filled_volume'],
                       ticket=tickets[0] if tickets
                       else place_action['order'])
-        return self._record(action)
+        return self._record(self._verify(side_leg, action))
 
     def cancel(self, side_leg, order_ticket, reason=None):
         action = {'ok': False, 'kind': 'cancel', 'order': order_ticket,
@@ -280,7 +304,7 @@ class ScenarioRunner:
             action['error'] = result.get('error') or 'close rejected'
             return self._record(action)
         action.update(ok=True, fill=result.get('price'))
-        return self._record(action)
+        return self._record(self._verify(side_leg, action))
 
     # -- scenarios ------------------------------------------------------
 
@@ -309,8 +333,10 @@ class ScenarioRunner:
     def _result(self, success, open_stats=None, close_stats=None,
                 legs=()):
         """legs: (side_leg, side, open_action, close_action) tuples."""
-        return {'success': success and all(a.get('ok', True)
-                                           for a in self.actions),
+        return {'success': (success
+                            and all(a.get('ok', True) for a in self.actions)
+                            and all(a.get('verified', True)
+                                    for a in self.actions)),
                 'open_stats': open_stats, 'close_stats': close_stats,
                 'legs': list(legs)}
 
@@ -480,7 +506,32 @@ class ScenarioRunner:
             line += f' ({", ".join(deltas)})'
         if action.get('ticket'):
             line += f' ticket {action["ticket"]}'
+        if 'verified' in action:
+            line += '\n    ' + self._fmt_verification(action)
         return line
+
+    @staticmethod
+    def _fmt_verification(action):
+        """The line that answers "did this actually reach MT5?" —
+        read back from the terminal, not from our own return value."""
+        found = action.get('verification') or {}
+        if not action.get('verified'):
+            return (f'✗ NOT FOUND IN MT5: {found.get("error", "unknown")} '
+                    f'(ticket {action.get("ticket")})')
+        facts = []
+        deals = found.get('deals') or []
+        if deals:
+            last = deals[-1]
+            facts.append(f'deal {last["deal_id"]} order {last["order_id"]}')
+            facts.append(f'{last["volume"]} @ {last["price"]}')
+            if last.get('commission'):
+                facts.append(f'commission {last["commission"]}')
+        elif found.get('volume') is not None:
+            facts.append(f'{found["volume"]} @ {found.get("price")}')
+        if found.get('position_open'):
+            facts.append('position OPEN')
+        head = f'✓ MT5 confirms via {found.get("source", "terminal")}'
+        return f'{head}: {", ".join(facts)}' if facts else head
 
     def _fmt_spread(self, label, stats):
         if not stats:

@@ -1040,6 +1040,7 @@
                         <thead class="sticky-top" style="background: var(--bg-secondary);">
                             <tr>
                                 <th>Account</th>
+                                <th>Source</th>
                                 <th>Time</th>
                                 <th>Symbol</th>
                                 <th>Type</th>
@@ -1058,7 +1059,7 @@
                         </thead>
                         <tbody id="exchange-orders-table">
                             <tr>
-                                <td colspan="15" class="text-center text-secondary py-3">Click Refresh to load exchange orders</td>
+                                <td colspan="16" class="text-center text-secondary py-3">Click Refresh to load exchange orders</td>
                             </tr>
                         </tbody>
                     </table>
@@ -3860,9 +3861,17 @@ function updateFilterStatus(elementId, passed, value) {
     }
 
     // ========== Exchange Order Log ==========
+    // Where the order came FROM, read off the comment MT5 stored.
+    const SOURCE_STYLE = {
+        'ALGO': 'bg-primary',
+        'MANUAL TRADE': 'bg-info text-dark',
+        'TEST SUITE': 'bg-warning text-dark',
+        'ORDER TEST': 'bg-warning text-dark',
+        'MANUAL (terminal)': 'bg-secondary',
+    };
     function refreshExchangeOrders() {
         const tbody = document.getElementById('exchange-orders-table');
-        tbody.innerHTML = '<tr><td colspan="15" class="text-center text-secondary py-2"><i class="bi bi-hourglass-split me-1"></i>Loading...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="16" class="text-center text-secondary py-2"><i class="bi bi-hourglass-split me-1"></i>Loading...</td></tr>';
 
         fetch('/api/exchange-orders?limit=100')
             .then(r => r.json())
@@ -3872,7 +3881,7 @@ function updateFilterStatus(elementId, passed, value) {
                 const accounts = data.accounts || [];
                 if (badge) badge.textContent = accounts.length ? accounts.join(' + ') : 'MT5';
                 if (orders.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="15" class="text-center text-secondary py-3">No orders found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="16" class="text-center text-secondary py-3">No orders found</td></tr>';
                     return;
                 }
 
@@ -3889,6 +3898,7 @@ function updateFilterStatus(elementId, passed, value) {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
                         <td title="${acctTitle}"><span class="badge ${o.is_bot ? 'bg-primary' : 'bg-secondary'}" style="font-size:0.6rem">${o.account || '-'}</span></td>
+                        <td title="MT5 comment: ${o.comment || ''}"><span class="badge ${SOURCE_STYLE[o.source] || 'bg-secondary'}" style="font-size:0.6rem">${o.source || '-'}</span></td>
                         <td title="${date}">${time}</td>
                         <td>${o.symbol}</td>
                         <td><span class="badge bg-secondary" style="font-size:0.6rem">${o.inst_type}</span></td>
@@ -3908,7 +3918,7 @@ function updateFilterStatus(elementId, passed, value) {
                 });
             })
             .catch(err => {
-                tbody.innerHTML = `<tr><td colspan="15" class="text-center text-danger py-3">Error: ${err}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="16" class="text-center text-danger py-3">Error: ${err}</td></tr>`;
             });
     }
 </script>

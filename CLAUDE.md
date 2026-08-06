@@ -77,7 +77,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  326 tests, all fakes, no MT5 (runs anywhere)
+tests/                  345 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -225,6 +225,16 @@ Web control panel (statarb/webapp.py, own process, file-bridge only):
   runtime_status.scenario_result; /api/scenario-test writes the
   request and waits for that answer, /api/scenario-catalogue serves
   the table. Refused unless the algo is stopped and the book flat.
+- Order proof (owner asked "how do we know orders reach MT5?"):
+  BrokerSession.verify_ticket reads the ticket back OUT of MT5
+  (positions -> deal history -> order history, retried because history
+  lags a fill). Scenarios verify every open/close and FAIL when the
+  terminal has no record; LIVE entries/exits log [MT5 CONFIRMED] /
+  [MT5 NOT CONFIRMED] with deal+order ids; the order test adds an
+  'MT5 record' check row. After any order the coordinator polls the
+  order log immediately (interval=0) so the rows appear at once. The
+  MT5 comment carries the source (BASIS_ARB / MANUAL / SCENARIO /
+  ORDER_TEST) and the log's Source column reads it back.
 - Exchange Order Log (dashboard): BOTH accounts' raw MT5 activity in
   one table, Account column first. Coordinator polls every leg's
   `order_log()` every 30s into the `broker_orders` table (webapp is a

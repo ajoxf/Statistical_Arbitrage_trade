@@ -53,7 +53,7 @@ class PaperExecutor:
         return tick['ask'] if side is OrderSide.BUY else tick['bid']
 
     def execute_trade_pair(self, asset, signal_type, lot_size,
-                           spot_symbol, futures_symbol):
+                           spot_symbol, futures_symbol, tag='BASIS_ARB'):
         if signal_type == SignalType.SELL_BASIS:
             spot_side, fut_side = OrderSide.BUY, OrderSide.SELL
         elif signal_type == SignalType.BUY_BASIS:
@@ -116,6 +116,7 @@ class Coordinator:
         self._last_diag_ts = 0
         self._last_order_log = 0.0
         self._scenario_result = None   # last round-trip scenario outcome
+        self._last_confirmation = None  # last MT5 ticket read-back
         self._diagnostics = None       # last connectivity checklist
         self._symbol_search = None     # last symbol lookup for the UI
         self._test_results = None
@@ -462,7 +463,8 @@ class Coordinator:
         success, spot_trade, futures_trade = \
             self.executor.execute_trade_pair(
                 asset_key, signal_type, lots,
-                asset['spot_symbol'], asset['futures_symbol'])
+                asset['spot_symbol'], asset['futures_symbol'],
+                tag='MANUAL' if manual else 'BASIS_ARB')
         if not success:
             logging.error("Pair entry failed for %s %s", asset_key,
                           signal_type.value)
@@ -496,6 +498,8 @@ class Coordinator:
         logging.info("Position opened: %s (%.2f lots, %s%s)",
                      position.position_id, spot_trade.lot_size,
                      self.trading_mode, ", MANUAL" if manual else "")
+        if self.trading_mode == "LIVE":
+            self._confirm_with_mt5(position, 'entry')
         return position
 
     def _close(self, position_id, position, reason, contract_size, z,
@@ -539,6 +543,8 @@ class Coordinator:
                      position_id, reason, tag, position.realized_pnl,
                      extremes, self.risk_manager.consecutive_losses,
                      self.risk_manager.daily_realized_pnl)
+        if self.trading_mode == "LIVE":
+            self._confirm_with_mt5(position, 'exit')
 
     # ------------------------------------------------------------------
     # Status
@@ -758,6 +764,8 @@ class Coordinator:
 
         self._test_results = {'kind': kind, 'results': results,
                               'ts': datetime.now().strftime('%H:%M:%S')}
+        if kind == 'orders':
+            self._poll_order_logs(interval=0, hours=1)
         passed = sum(1 for r in results if r['ok'])
         self.notifier.notify_error(
             f"Self-test '{kind}': {passed}/{len(results)} checks passed") \
@@ -787,6 +795,17 @@ class Coordinator:
             f"@ {opened.get('price')}")
         if opened.get('ok'):
             tickets = opened.get('position_tickets') or []
+            # Read it back out of the terminal — the proof that the
+            # order reached MT5 and is not just our own return value.
+            verifier = getattr(leg, 'verify_order', None)
+            if verifier and tickets:
+                found = verifier(tickets[0])
+                deals = (found or {}).get('deals') or []
+                add(leg.name, f'MT5 record {symbol}',
+                    (found or {}).get('confirmed'),
+                    (f"deal {deals[-1]['deal_id']} order "
+                     f"{deals[-1]['order_id']} @ {deals[-1]['price']}"
+                     if deals else (found or {}).get('error', 'no record')))
             if tickets:
                 closed = leg.close_ticket(
                     symbol, tickets[0],
@@ -940,6 +959,11 @@ class Coordinator:
             }
             logging.warning("[SCENARIO] %s: %s", name,
                             'PASS' if success else 'FAIL')
+            for line in (detail or '').splitlines():
+                logging.info("[SCENARIO]   %s", line)
+            # Whatever just hit the terminal belongs in the Exchange
+            # Order Log NOW, not at the next 30s poll.
+            self._poll_order_logs(interval=0, hours=1)
             # The UI is waiting on this one result, and the routine
             # status refresh is ~10s away — publish it now.
             self._write_runtime_status(self.last_data or {})
@@ -1105,6 +1129,7 @@ class Coordinator:
                        'tracking': self.shadow.snapshot()},
             'test_results': self._test_results,
             'scenario_result': self._scenario_result,
+            'order_confirmation': self._last_confirmation,
             'diagnostics': self._diagnostics,
             'symbol_search': self._symbol_search,
             'margin_breaker': self._margin_breaker_state(),
@@ -1117,6 +1142,56 @@ class Coordinator:
             os.replace(tmp, self.status_path)
         except OSError as e:
             logging.debug("Could not write runtime status: %s", e)
+
+    def _confirm_with_mt5(self, position, what='entry'):
+        """After we place orders, read the tickets back OUT of MT5 and
+        say so in the log. `order_send` returning success is only the
+        broker acknowledging the request; this is its RECORD of the
+        deal — the difference matters when an operator is asking
+        whether the orders really went to the terminal."""
+        confirmations = []
+        for leg, trade in ((self.spot_leg, position.spot_trade),
+                           (self.futures_leg, position.futures_trade)):
+            verifier = getattr(leg, 'verify_order', None)
+            if verifier is None:
+                continue
+            for ticket in (trade.position_tickets or []):
+                try:
+                    found = verifier(ticket)
+                except Exception as e:
+                    found = {'ticket': ticket, 'confirmed': False,
+                             'error': str(e)}
+                confirmations.append(found)
+                if found.get('confirmed'):
+                    deals = found.get('deals') or []
+                    detail = (f"deal {deals[-1]['deal_id']} order "
+                              f"{deals[-1]['order_id']} "
+                              f"{deals[-1]['volume']} @ {deals[-1]['price']}"
+                              if deals else
+                              f"{found.get('volume')} @ {found.get('price')}")
+                    logging.info(
+                        "[MT5 CONFIRMED] %s %s ticket %s on %s — %s",
+                        position.position_id, what, ticket, leg.name, detail)
+                else:
+                    logging.error(
+                        "[MT5 NOT CONFIRMED] %s %s ticket %s on %s — %s. "
+                        "The engine thinks this order exists but the "
+                        "terminal has no record of it.",
+                        position.position_id, what, ticket, leg.name,
+                        found.get('error', 'no record'))
+        if confirmations:
+            self._last_confirmation = {
+                'position_id': position.position_id, 'what': what,
+                'at': datetime.now().strftime('%H:%M:%S'),
+                'confirmed': sum(1 for c in confirmations
+                                 if c.get('confirmed')),
+                'total': len(confirmations),
+                'tickets': confirmations,
+            }
+        # The rows are in MT5 now — pull them straight into the
+        # Exchange Order Log instead of waiting for the 30s poll.
+        self._poll_order_logs(interval=0, hours=1)
+        return confirmations
 
     def _poll_order_logs(self, interval=30.0, hours=24):
         """Pull each account's raw MT5 order/deal activity into the
