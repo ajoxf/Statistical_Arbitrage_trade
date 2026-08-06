@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  402 tests, all fakes, no MT5 (runs anywhere)
+tests/                  408 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -310,6 +310,13 @@ per-leg maker/taker fee split, backtest suite.
 - Symbols follow app.py's model: the symbol, contract size, swap and
   expiry live on the BROKER ROW with its leg, not in a separate panel.
   Saving a row writes leg_accounts[role] and assets[..]_symbols.
+- leg_accounts must map BOTH legs. An empty/stale mapping used to
+  KeyError('default') in _resolve_legs — a raw crash loop that also
+  bypassed main()'s clean ValueError exit. Now it names the missing
+  leg, the accounts that DO exist, and where to fix it; the Exchanges
+  page shows a red banner before the operator restarts, and
+  check_mt5.py reports the mapping. Deleting an account clears its
+  leg role — that is how the mapping goes missing.
 - Contract size, expiry and swap are READ FROM THE TERMINAL at startup
   (_adopt_broker_specs), not typed in — the owner asked why they were
   on the form at all, and MT5 knows all three. The broker's number

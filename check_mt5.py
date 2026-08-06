@@ -141,6 +141,26 @@ def check_config_files(config, env_path='.env'):
     from statarb import ipc
 
     header("Configuration files")
+    legs = config.leg_accounts or {}
+    for role in ('spot', 'futures'):
+        name = legs.get(role)
+        if not name:
+            line('fail', f"No account is mapped to the {role.upper()} leg",
+                 [f"Exchanges page: edit an account and set its Leg to "
+                  f"{role.title()}",
+                  "The coordinator cannot start until both legs are mapped"])
+        elif name not in config.accounts:
+            line('fail', f"The {role.upper()} leg points at '{name}', "
+                         f"which is not a configured account",
+                 [f"Configured: {', '.join(config.accounts) or 'none'}",
+                  "Re-assign the leg on the Exchanges page"])
+        else:
+            line('ok', f"{role.upper()} leg -> {name}")
+    if legs.get('spot') and legs.get('spot') == legs.get('futures'):
+        line('warn', f"Both legs are mapped to '{legs['spot']}' — one "
+                     f"account carries the whole spread",
+             ["Fine for testing; for the two-broker strategy map each leg "
+              "to its own account"])
     for name, account in config.accounts.items():
         if not account.endpoint:
             continue

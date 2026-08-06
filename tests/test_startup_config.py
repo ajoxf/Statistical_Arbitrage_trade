@@ -659,3 +659,73 @@ def test_legs_without_symbol_reports_still_start(config, tmp_path,
         SymbolFakeLeg('fut', {'GC1225': 'Gold fut'}))
     assert 'GOLD' in coord.active_assets
     assert coord.config.ASSETS['GOLD']['lot_size'] == 100
+
+
+# --- leg mapping: the engine cannot start without one --------------------
+
+def account_ns(name, endpoint='127.0.0.1:9101'):
+    from types import SimpleNamespace
+    return SimpleNamespace(name=name, login=1, server='X', password=None,
+                           password_env='A', terminal_path=None,
+                           endpoint=endpoint)
+
+
+def coordinator_with(config, tmp_path, monkeypatch, accounts, legs):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    config.accounts = accounts
+    config.leg_accounts = legs
+    return Coordinator(config, trading_mode='PAPER')
+
+
+def test_an_unmapped_leg_says_what_to_do_not_keyerror(config, tmp_path,
+                                                      monkeypatch):
+    """The operator deleted and re-added an account, which cleared the
+    leg mapping. It crashed with KeyError: 'default' in a restart loop."""
+    with pytest.raises(ValueError) as excinfo:
+        coordinator_with(config, tmp_path, monkeypatch,
+                         {'Ut 2': account_ns('Ut 2')}, {})
+    message = str(excinfo.value)
+    assert 'No account is mapped to the SPOT leg' in message
+    assert 'Exchanges page' in message
+    assert 'Ut 2' in message              # names what IS configured
+
+
+def test_only_the_futures_leg_missing_is_named(config, tmp_path,
+                                               monkeypatch):
+    with pytest.raises(ValueError) as excinfo:
+        coordinator_with(config, tmp_path, monkeypatch,
+                         {'a': account_ns('a')}, {'spot': 'a'})
+    assert 'FUTURES leg' in str(excinfo.value)
+
+
+def test_a_leg_pointing_at_a_deleted_account_is_explained(config, tmp_path,
+                                                          monkeypatch):
+    with pytest.raises(ValueError) as excinfo:
+        coordinator_with(config, tmp_path, monkeypatch,
+                         {'a': account_ns('a')},
+                         {'spot': 'a', 'futures': 'gone'})
+    message = str(excinfo.value)
+    assert "'gone', which no longer exists" in message
+
+
+def test_no_accounts_at_all_says_add_one(config, tmp_path, monkeypatch):
+    with pytest.raises(ValueError) as excinfo:
+        coordinator_with(config, tmp_path, monkeypatch, {}, {})
+    assert 'No MT5 accounts configured' in str(excinfo.value)
+
+
+def test_a_valid_mapping_still_builds_both_legs(config, tmp_path,
+                                                monkeypatch):
+    coord = coordinator_with(
+        config, tmp_path, monkeypatch,
+        {'a': account_ns('a', '127.0.0.1:9101'),
+         'b': account_ns('b', '127.0.0.1:9102')},
+        {'spot': 'a', 'futures': 'b'})
+    assert coord.spot_leg.name == 'a' and coord.futures_leg.name == 'b'
+
+
+def test_the_exchanges_page_warns_before_it_becomes_a_crash_loop(client):
+    page = client.get('/setup').get_data(as_text=True)
+    assert 'leg-mapping-warning' in page
+    assert 'cannot start' in page

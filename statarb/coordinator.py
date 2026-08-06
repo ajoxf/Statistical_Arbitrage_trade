@@ -159,8 +159,32 @@ class Coordinator:
                      'z-score' if self.use_z else 'fixed premium')
 
     def _resolve_legs(self):
-        spot_name = self.config.leg_accounts.get('spot', 'default')
-        fut_name = self.config.leg_accounts.get('futures', 'default')
+        accounts = self.config.accounts
+        legs = self.config.leg_accounts or {}
+        if not accounts:
+            raise ValueError(
+                "No MT5 accounts configured. Add one on the Exchanges "
+                "page (Add / Edit MT5 Broker), then restart the launcher.")
+
+        names = {}
+        for role in ('spot', 'futures'):
+            name = legs.get(role)
+            if not name:
+                raise ValueError(
+                    f"No account is mapped to the {role.upper()} leg. On "
+                    f"the Exchanges page, edit an account and set its Leg "
+                    f"to {'Spot' if role == 'spot' else 'Futures'} "
+                    f"(configured accounts: {', '.join(accounts) or 'none'})"
+                    f". Then restart the launcher.")
+            if name not in accounts:
+                raise ValueError(
+                    f"The {role.upper()} leg is mapped to account "
+                    f"'{name}', which no longer exists (configured: "
+                    f"{', '.join(accounts)}). Re-assign the leg on the "
+                    f"Exchanges page and restart the launcher.")
+            names[role] = name
+
+        spot_name, fut_name = names['spot'], names['futures']
         spot_acct = self.config.accounts[spot_name]
         fut_acct = self.config.accounts[fut_name]
 

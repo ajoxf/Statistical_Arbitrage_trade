@@ -18,6 +18,7 @@
             </button>
         </div>
         <div class="card-body">
+            <div id="leg-mapping-warning"></div>
             <div id="brokers-list"></div>
             <p class="text-secondary small mb-0 mt-3">
                 Edit a row to change its leg, symbol or credentials. Passwords
@@ -197,6 +198,18 @@ async function loadBrokers() {
         LIVE_ACCOUNTS = {};
         (info.accounts || []).forEach(a => { LIVE_ACCOUNTS[a.account] = a; });
     } catch (e) { /* dashboard still usable without live figures */ }
+
+    // The engine cannot start unless BOTH legs are mapped to an account.
+    const mapped = new Set(brokers.filter(b => b.role !== 'NONE').map(b => b.role));
+    const missing = ['SPOT', 'FUTURES'].filter(r => !mapped.has(r));
+    document.getElementById('leg-mapping-warning').innerHTML =
+        (brokers.length && missing.length) ? `
+        <div class="alert alert-danger py-2 small">
+            <i class="bi bi-exclamation-octagon me-2"></i>
+            No account is mapped to the <strong>${missing.join(' or ')}</strong>
+            leg — the coordinator cannot start. Edit an account below and set
+            its <strong>Leg</strong>, then restart the launcher.
+        </div>` : '';
 
     document.getElementById('brokers-list').innerHTML = brokers.length ? `
         <table class="table table-sm table-dark align-middle mb-0">
