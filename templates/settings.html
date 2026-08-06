@@ -263,10 +263,19 @@
                             std collapses, which is what produces an absurd z.</small>
                         </div>
                         <div class="col-md-4">
+                            <label class="form-label">Minimum History (seconds)</label>
+                            <input type="number" class="form-control" id="min_history_sec" name="min_history_sec" value="{{ config.min_history_sec }}" min="0" max="100000">
+                            <small class="text-secondary">Collect for at least this long before trading &mdash;
+                            <strong>7200 = 120 minutes</strong>. A quote count alone is not the same
+                            thing: 300 quotes arrive in about 3 minutes on a live gold feed. Capped
+                            at the Lookback Window, since older data is discarded anyway.
+                            0 = no time gate.</small>
+                        </div>
+                        <div class="col-md-4">
                             <label class="form-label">Minimum Samples</label>
                             <input type="number" class="form-control" id="min_samples" name="min_samples" value="{{ config.min_samples }}" min="20" max="100000">
-                            <small class="text-secondary">Quotes needed inside the window before trading starts. THIS is
-                            what the dashboard's warm-up bar counts against. Repeated quotes
+                            <small class="text-secondary">Quotes needed inside the window before trading starts.
+                            Both this AND Minimum History must clear. Repeated quotes
                             don't count &mdash; only ones the broker actually moved.</small>
                         </div>
                         <div class="col-md-4">
@@ -1561,6 +1570,7 @@
             exit_profit_gate_pct: parseFloat(document.getElementById('exit_profit_gate_pct').value) || 0,
             lookback_period: parseInt(document.getElementById('lookback_period').value),
             min_samples: parseInt(document.getElementById('min_samples').value),
+            min_history_sec: parseInt(document.getElementById('min_history_sec').value),
             pair_type: document.getElementById('pair_type').value,
             carry_rate_pct: parseFloat(document.getElementById('carry_rate_pct').value),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
@@ -1848,6 +1858,7 @@
                 document.getElementById('exit_profit_gate_pct').value = config.exit_profit_gate_pct || 0;
                 document.getElementById('lookback_period').value = config.lookback_period;
                 document.getElementById('min_samples').value = config.min_samples;
+                document.getElementById('min_history_sec').value = config.min_history_sec;
                 document.getElementById('pair_type').value = config.pair_type || 'SPOT_FUTURE';
                 document.getElementById('carry_rate_pct').value = config.carry_rate_pct;
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;

@@ -21,6 +21,7 @@ class SpreadStats:
         self.last_refresh = 0.0
         self.last_value = None
         self.last_quote_id = None
+        self.collecting_since = None    # see history_sec
 
     # ------------------------------------------------------------------
 
@@ -41,12 +42,19 @@ class SpreadStats:
         fresh = quote_id is None or quote_id != self.last_quote_id
         if fresh:
             self.last_quote_id = quote_id
+            if self.collecting_since is None:
+                self.collecting_since = now
             self.samples.append((now, value))
             self.last_value = value
 
         horizon = now - self.cfg['LOOKBACK_SEC']
         while self.samples and self.samples[0][0] < horizon:
             self.samples.popleft()
+        if not self.samples:
+            # The feed died and everything aged out. Whatever history we
+            # had is gone, so the clock starts again rather than
+            # crediting time nobody was collecting through.
+            self.collecting_since = None
 
         if (now - self.last_refresh >= self.cfg['STATS_INTERVAL_SEC']
                 or self.mu is None):
@@ -123,8 +131,32 @@ class SpreadStats:
         return self.half_life_sec * multiple
 
     @property
+    def history_sec(self):
+        """How long we have been collecting, in seconds.
+
+        Deliberately measured from when collection STARTED rather than
+        as the span of the window: samples older than LOOKBACK_SEC are
+        dropped, so the span can approach but never reach the window
+        width, and a "wait for a full window" gate written against the
+        span would never be satisfied. Resets if the feed dies and the
+        window empties.
+        """
+        if self.collecting_since is None:
+            return 0.0
+        return max(0.0, self.clock() - self.collecting_since)
+
+    @property
+    def min_history_sec(self):
+        """Seconds of data required before trading. Capped at the
+        window width — asking for more history than the window keeps
+        would be asking for data that has already been discarded."""
+        required = self.cfg.get('MIN_HISTORY_SEC', 0.0) or 0.0
+        return min(float(required), float(self.cfg['LOOKBACK_SEC']))
+
+    @property
     def warm(self):
         return (len(self.samples) >= self.cfg['MIN_SAMPLES']
+                and self.history_sec >= self.min_history_sec
                 and self.sigma is not None and not self.degenerate)
 
     @property

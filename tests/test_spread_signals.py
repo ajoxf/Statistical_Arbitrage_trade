@@ -28,6 +28,9 @@ def sig_config(config):
         'ENTRY_Z': 2.0, 'EXIT_Z': 0.5, 'STOP_Z': 4.0, 'MAX_ENTRY_Z': 4.0,
         'LOOKBACK_SEC': 10000, 'STATS_INTERVAL_SEC': 5,
         'MIN_SAMPLES': 50, 'TREND_WINDOW_SEC': 100,
+        # The elapsed-time gate has its own tests below; these feed a
+        # fake clock a few seconds at a time and are about other things.
+        'MIN_HISTORY_SEC': 0,
         'TREND_FILTER': False,
         'ENTRY_COOLDOWN_SEC': 60, 'STOP_COOLDOWN_SEC': 300,
     })
@@ -421,3 +424,80 @@ def test_the_suggestion_never_changes_the_configured_window(sig_config):
     feed(stats, clock, values, dt=1.0)
     assert stats.suggested_lookback_sec is not None
     assert sig_config.SIGNALS['LOOKBACK_SEC'] == 10000   # untouched
+
+
+# --- the SECOND warm-up gate: elapsed collection time -------------------
+# Owner, 2026-08-06: "I would the system to take 120 minutes (not hard
+# coded) of data - calculate mean and standard deviation before going
+# ahead". A quote COUNT is not that — 300 quotes arrive in ~3 minutes on
+# a live gold feed.
+
+def history_config(cfg, minutes=120):
+    cfg.SIGNALS['MIN_HISTORY_SEC'] = minutes * 60
+    cfg.SIGNALS['MIN_SAMPLES'] = 50
+    cfg.SIGNALS['LOOKBACK_SEC'] = 4 * 60 * 60
+    return cfg
+
+
+def test_enough_quotes_is_not_enough_without_the_time(sig_config):
+    """This is the operator's case exactly: the samples arrive fast, so
+    the count clears in minutes while the history gate does not."""
+    clock = FakeClock()
+    stats = make_stats(history_config(sig_config), clock)
+    feed(stats, clock, [8.5, 8.7, 9.0, 9.3] * 50, dt=1.0)   # 200s, 200 quotes
+    assert len(stats.samples) >= stats.cfg['MIN_SAMPLES']
+    assert stats.sigma > 0 and not stats.degenerate
+    assert not stats.warm and stats.z is None                # time gate holds
+
+
+def test_trading_starts_once_the_history_is_there(sig_config):
+    clock = FakeClock()
+    stats = make_stats(history_config(sig_config), clock)
+    feed(stats, clock, [8.5, 8.7, 9.0, 9.3] * 2000, dt=1.0)  # 8000s > 7200
+    assert stats.history_sec >= 7200
+    assert stats.warm and stats.z is not None
+
+
+def test_the_requirement_is_configurable_not_hard_coded(sig_config):
+    clock = FakeClock()
+    stats = make_stats(history_config(sig_config, minutes=5), clock)
+    feed(stats, clock, [8.5, 8.7, 9.0, 9.3] * 50, dt=1.0)    # 200s
+    assert not stats.warm
+    sig_config.SIGNALS['MIN_HISTORY_SEC'] = 60               # hot-applied
+    assert stats.warm
+
+
+def test_no_time_gate_when_set_to_zero(sig_config):
+    clock = FakeClock()
+    stats = make_stats(history_config(sig_config, minutes=0), clock)
+    feed(stats, clock, [8.5, 8.7, 9.0, 9.3] * 20, dt=1.0)
+    assert stats.warm
+
+
+def test_asking_for_more_history_than_the_window_keeps_is_capped(sig_config):
+    """Otherwise the gate could never be met: samples older than the
+    window are discarded, so that history never exists."""
+    clock = FakeClock()
+    sig_config.SIGNALS['LOOKBACK_SEC'] = 600
+    sig_config.SIGNALS['MIN_HISTORY_SEC'] = 999999
+    sig_config.SIGNALS['MIN_SAMPLES'] = 50
+    stats = make_stats(sig_config, clock)
+    assert stats.min_history_sec == 600
+    feed(stats, clock, [8.5, 8.7, 9.0, 9.3] * 200, dt=1.0)   # 800s elapsed
+    assert stats.warm
+
+
+def test_a_dead_feed_restarts_the_history_clock(sig_config):
+    """Time nobody was collecting through must not count. The window
+    empties, so the credit goes with it."""
+    clock = FakeClock()
+    stats = make_stats(history_config(sig_config, minutes=10), clock)
+    sig_config.SIGNALS['LOOKBACK_SEC'] = 300
+    feed(stats, clock, [8.5, 8.7, 9.0, 9.3] * 50, dt=1.0)
+    assert stats.history_sec > 0
+
+    for _ in range(800):                  # feed stops; window drains
+        clock.t += 1
+        stats.update(9.0, quote_id='frozen')
+    assert not stats.samples
+    assert stats.history_sec == 0.0 and not stats.warm

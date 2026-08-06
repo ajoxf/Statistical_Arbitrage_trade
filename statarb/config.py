@@ -148,7 +148,14 @@ class AlgoTradingConfig:
                                          # measured half-lives. Never
                                          # applied automatically.
             'STATS_INTERVAL_SEC': 300, # freeze mu/sigma between refreshes
-            'MIN_SAMPLES': 300,        # warm-up before any signal
+            'MIN_SAMPLES': 300,        # warm-up: quotes needed
+            # ...AND this much elapsed collection time. Owner, 2026-08-06:
+            # "take 120 minutes of data - calculate mean and standard
+            # deviation before going ahead". A quote COUNT alone is not
+            # that: 300 quotes arrive in ~3 minutes on a live gold feed,
+            # which is nothing like 2 hours of spread behaviour. Capped
+            # at LOOKBACK_SEC (older data is discarded anyway).
+            'MIN_HISTORY_SEC': 7200,   # 120 minutes
             # Degenerate-window guards. A quiet spread (or a feed
             # polled faster than it ticks) gives a sigma near zero and
             # a z in the thousands — meaningless, and a merely small

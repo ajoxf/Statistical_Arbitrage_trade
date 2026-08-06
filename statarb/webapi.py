@@ -20,6 +20,7 @@ FIELD_MAP = {
     'lookback_period': ('SIGNALS', 'LOOKBACK_SEC'),
     'stats_update_interval': ('SIGNALS', 'STATS_INTERVAL_SEC'),
     'min_samples': ('SIGNALS', 'MIN_SAMPLES'),
+    'min_history_sec': ('SIGNALS', 'MIN_HISTORY_SEC'),
     'trend_direction_filter': ('SIGNALS', 'TREND_FILTER'),
     'trend_window_sec': ('SIGNALS', 'TREND_WINDOW_SEC'),
     'entry_cooldown_seconds': ('SIGNALS', 'ENTRY_COOLDOWN_SEC'),
@@ -172,6 +173,7 @@ def apply_ui_config(raw, payload):
                 value = float(value)
                 if value == int(value) and key in (
                         'MIN_SAMPLES', 'LOOKBACK_SEC', 'STATS_INTERVAL_SEC',
+                        'MIN_HISTORY_SEC',
                         'MAX_POSITIONS_PER_ASSET', 'MAX_DAILY_TRADES',
                         'LOSS_STREAK_REDUCE', 'LOSS_STREAK_PAUSE',
                         'SYNC_INTERVAL_SEC', 'STRIKES', 'TREND_WINDOW_SEC',
@@ -397,6 +399,10 @@ def status_to_ui(status, config_raw):
             # to a duration and never filled.
             'lookback': first.get('min_samples') or first.get('lookback'),
             'lookback_sec': first.get('lookback'),
+            # The SECOND warm-up gate: elapsed collection time. Both
+            # must clear, and the banner names whichever is binding.
+            'history_sec': first.get('history_sec'),
+            'min_history_sec': first.get('min_history_sec'),
             # A window suggestion in the SAME unit as the setting —
             # seconds. W3's tile showed "pts", a tick count, for a
             # value this engine has never measured in ticks.

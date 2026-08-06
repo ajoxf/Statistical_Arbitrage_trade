@@ -1362,6 +1362,8 @@ class Coordinator:
                 'lookback': self.config.SIGNALS.get('LOOKBACK_SEC'),
                 'suggested_lookback_sec': (stats.suggested_lookback_sec
                                            if stats else None),
+                'history_sec': stats.history_sec if stats else 0.0,
+                'min_history_sec': (stats.min_history_sec if stats else 0.0),
                 'degenerate': bool(stats.degenerate) if stats else False,
                 'basis': md['actual_basis'],
                 'spread': md['spread'],

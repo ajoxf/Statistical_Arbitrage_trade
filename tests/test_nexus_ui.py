@@ -713,3 +713,43 @@ def test_the_signal_reason_drops_the_ratio_once_it_is_cleared(client):
     page = client.get('/').get_data(as_text=True)
     assert 'if (_cachedDataPoints < _cachedLookback)' in page
     assert "' ticks (' + pct + '%)" not in page
+
+
+# ---------------------------------------------------------------------------
+# "take 120 minutes of data ... before going ahead"
+# ---------------------------------------------------------------------------
+
+def test_minimum_history_has_a_control(client):
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'id="min_history_sec"' in page
+    assert 'Minimum History (seconds)' in page
+    assert '7200 = 120 minutes' in page
+
+
+def test_saving_minimum_history_reaches_the_config(client):
+    client.post('/api/config', json={'min_history_sec': 3600})
+    with open(client.tmp_path / 'config.json') as f:
+        assert json.load(f)['signals']['MIN_HISTORY_SEC'] == 3600
+
+
+def test_the_default_is_two_hours(config):
+    assert config.SIGNALS['MIN_HISTORY_SEC'] == 7200
+
+
+def test_the_ui_payload_carries_both_warm_up_gates():
+    ui = webapi.status_to_ui({'assets': [{
+        'asset': 'GOLD', 'z': None, 'spread': 58.3, 'samples': 10894,
+        'min_samples': 300, 'lookback': 7200,
+        'history_sec': 1800.0, 'min_history_sec': 7200.0}]}, {})
+    signal = ui['signal']
+    assert signal['history_sec'] == 1800.0
+    assert signal['min_history_sec'] == 7200.0
+    assert signal['data_points'] == 10894      # count already cleared...
+    assert signal['lookback'] == 300           # ...so time is what blocks
+
+
+def test_the_banner_names_the_time_gate_when_it_is_the_one_blocking(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'const needHistory = history < minHistory' in page
+    assert 'minutes collected' in page
+    assert 'more before trading can start' in page

@@ -398,6 +398,20 @@ per-leg maker/taker fee split, backtest suite.
   half-life, and it never changes LOOKBACK_SEC by itself. The tile goes
   RED when the configured window is shorter than the suggestion —
   that is the setting that collapses sigma.
+- **Warm-up has TWO gates now** (owner, 2026-08-06: "I would the system
+  to take 120 minutes (not hard coded) of data - calculate mean and
+  standard deviation before going ahead"). MIN_SAMPLES alone was not
+  that: 300 quotes arrive in ~3 minutes on a live gold feed, so the
+  Lookback Window looked "not changeable" — it sets the window width
+  but never gated when trading STARTS. `SIGNALS.MIN_HISTORY_SEC`
+  (default 7200 = 120 min, 0 = off) requires that much elapsed
+  collection before `warm`. It is measured from when collecting
+  STARTED, not as the window's span: samples older than LOOKBACK_SEC
+  are dropped so the span can approach but never reach the window
+  width, and a gate written against the span would deadlock. Capped at
+  LOOKBACK_SEC for the same reason. Resets if the feed dies and the
+  window empties. The banner names WHICHEVER gate is binding
+  ("45 of 120 minutes collected" vs "118 more quotes").
 - The warm-up bar read "181 / 7,200": it compared a SAMPLE COUNT to
   LOOKBACK_SEC, a duration, so it could never fill. It now counts
   against MIN_SAMPLES, which is what actually gates trading. FOLLOW-UP

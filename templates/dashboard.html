@@ -2437,7 +2437,8 @@
         // Update Trading Status Banner
         updateTradingStatus(dataPoints, lookback, data.data_ready,
                             data.hurst_ok, data.std_filter_ok,
-                            data.lookback_sec, data.degenerate);
+                            data.lookback_sec, data.degenerate,
+                            data.history_sec, data.min_history_sec);
 
         updateFilterStatus('hurst-status', data.hurst_ok, data.hurst);
         updateFilterStatus('std-status', data.std_filter_ok);
@@ -2914,7 +2915,8 @@ function updateFilterStatus(elementId, passed, value) {
     }
 
     function updateTradingStatus(dataPoints, minSamples, dataReady, hurstOk,
-                                 stdOk, lookbackSec, degenerate) {
+                                 stdOk, lookbackSec, degenerate,
+                                 history, minHistory) {
         const statusCard = document.getElementById('trading-status-card');
         const statusIcon = document.getElementById('trading-status-icon');
         const statusText = document.getElementById('trading-status-text');
@@ -2927,12 +2929,25 @@ function updateFilterStatus(elementId, passed, value) {
         // minSamples is a THRESHOLD to clear, not a target to hold at.
         // Once cleared, "10,894 / 300" reads like a broken denominator —
         // so the ratio is only shown while it still means something.
+        history = history || 0;
+        minHistory = minHistory || 0;
+        // TWO gates: enough quotes AND enough elapsed time. The bar
+        // tracks whichever is further from being met.
+        const needHistory = history < minHistory;
         const warming = dataPoints < minSamples;
-        const percent = warming
-            ? Math.min(100, (dataPoints / minSamples) * 100) : 100;
+        const quotePct = Math.min(100, (dataPoints / minSamples) * 100);
+        const timePct = minHistory ? Math.min(100, (history / minHistory) * 100)
+                                   : 100;
+        const percent = (needHistory || warming)
+            ? Math.min(quotePct, timePct) : 100;
 
         progressBar.style.width = percent + '%';
-        if (warming) {
+        if (needHistory) {
+            progressText.textContent = Math.round(percent) + '%';
+            dataCountDisplay.textContent = Math.floor(history / 60) + ' / ' +
+                Math.round(minHistory / 60);
+            if (dataCountLabel) dataCountLabel.textContent = 'minutes collected';
+        } else if (warming) {
             progressText.textContent = Math.round(percent) + '%';
             dataCountDisplay.textContent = dataPoints.toLocaleString() +
                 ' / ' + minSamples.toLocaleString();
@@ -2951,7 +2966,16 @@ function updateFilterStatus(elementId, passed, value) {
             statusIcon.innerHTML = '<i class="bi bi-hourglass-split text-warning"></i>';
             statusText.className = 'fw-bold text-warning';
             progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-warning';
-            if (warming) {
+            if (needHistory) {
+                // Time gate, not the quote count — say which one is
+                // actually holding trading up.
+                statusText.textContent = 'Collecting Data...';
+                const left = Math.ceil((minHistory - history) / 60);
+                statusDetail.textContent =
+                    Math.floor(history / 60) + ' of ' +
+                    Math.round(minHistory / 60) + ' minutes collected — ' +
+                    left + ' more before trading can start';
+            } else if (warming) {
                 statusText.textContent = 'Collecting Data...';
                 statusDetail.textContent = (minSamples - dataPoints)
                     .toLocaleString() + ' more quotes before trading can start';
