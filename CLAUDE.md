@@ -77,7 +77,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  269 tests, all fakes, no MT5 (runs anywhere)
+tests/                  326 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -186,6 +186,31 @@ Web control panel (statarb/webapp.py, own process, file-bridge only):
   AlgoTradingConfig.hot_apply; STRUCTURAL fields (accounts, legs,
   symbols, HEDGE_RATIO) are blocked -> restart; beta change with a
   position open returns 409 (W3 rule).
+- Connectivity checklist (Exchanges page, statarb/diagnostics.py):
+  per-account [Test] + [Diagnose] and a page-level Run Full
+  Connectivity Check, ported from app.py's broker diagnose panel and
+  widened for two accounts. Per leg: terminal attached, broker
+  connected, logged in as the CONFIGURED login, algo trading on,
+  trading permitted (investor password caught), hedging vs netting,
+  leverage vs Settings, symbol found/visible/priced/tradable, order
+  sizes against volume min-step-max, contract size vs configured
+  lot_size, futures expiry. Pair: topology, account currency, both
+  symbols distinct, HEDGE_RATIO vs the two contract sizes (this is
+  CLAUDE.md open item 2, now automated), live basis, quote freshness.
+  Read-only, so it runs with the algo trading; request via
+  control.json {'diagnose': {...}} -> runtime_status.diagnostics.
+- Symbols (Exchanges page): per-leg symbol with Find — searches THAT
+  account's symbol list by name or description (brokers spell gold
+  XAUUSD / GOLD / XAUUSD.r) via control.json {'diagnose':
+  {'find_symbols': ...}} -> runtime_status.symbol_search. Saving
+  writes config assets and says a launcher restart is needed
+  (symbols are structural).
+- Per-leg leverage: EXITS SPOT_LEVERAGE / FUT_LEVERAGE (Settings' Leg
+  A/Leg B selectors, now up to 500x and actually persisted — they were
+  dead controls). ExitLadder._capital_at_risk divides EACH leg's
+  notional by ITS account's leverage; both fall back to LEVERAGE.
+  MT5 leverage is broker-side — the config only mirrors it, and the
+  checklist warns when they disagree.
 - Full Order Test Suite (Exchanges page, statarb/scenarios.py): the
   40-scenario round-trip matrix ported from the old app.py — 18 LIMIT
   (6 order types x 3, third a cancel) + 18 MARKET (third a
@@ -278,7 +303,11 @@ per-leg maker/taker fee split, backtest suite.
 1. Owner's real "working config" (symbols, brokers) was never pushed.
 2. HEDGE_RATIO must be verified against both brokers' actual contract
    specs (spot lot = 100 oz vs futures contract size) before LIVE.
-3. Futures expiry dates in config must be set to the live contract.
+   The Exchanges page's connectivity check now computes the implied
+   ratio from both symbols and FAILS on a mismatch — run it against
+   the real brokers.
+3. Futures expiry dates in config must be set to the live contract
+   (the same check flags an expired or disagreeing expiry).
 4. Latency budget: coordinator polls at 0.5s; if the basis edge decays
    faster, consider push-streaming ticks from leg runners.
 

@@ -175,6 +175,13 @@ class AlgoTradingConfig:
             'RR': 0.3,                  # stop also capped at TP/RR
             'LEVERAGE': 0.0,            # enables %-capital forms; capital =
                                         # total notional / leverage
+            # Per-leg leverage as set BY THE BROKER on each account
+            # (MT5 leverage is broker-side; these mirror it so margin
+            # and %-of-capital levels are right when the two accounts
+            # differ — e.g. 100x spot, 500x futures). 0 = fall back to
+            # LEVERAGE for both legs.
+            'SPOT_LEVERAGE': 0.0,
+            'FUT_LEVERAGE': 0.0,
             'M2M_BUFFER_PCT': 0.0,      # margin buffer on capital_at_risk
             # Reversion gate: floor decays to break-even past 1x max-hold,
             # releases entirely past 2x (deadlock fix — a fully reverted

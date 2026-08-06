@@ -31,7 +31,7 @@ from .performance import PerformanceTracker
 from .positions import PositionManager
 from .reconcile import Reconciler
 from .risk import RiskManager
-from . import scenarios
+from . import diagnostics, scenarios
 from .shadow import ShadowTracker
 from .signals import SignalGenerator, ZSignalGenerator
 from .spread import SpreadStats
@@ -113,8 +113,11 @@ class Coordinator:
         self._last_test_ts = 0
         self._last_recon_ts = 0
         self._last_scenario_ts = 0
+        self._last_diag_ts = 0
         self._last_order_log = 0.0
         self._scenario_result = None   # last round-trip scenario outcome
+        self._diagnostics = None       # last connectivity checklist
+        self._symbol_search = None     # last symbol lookup for the UI
         self._test_results = None
         self.manual_order = None       # armed Manual Spread Trade
         self.algo_enabled = True       # entries only; exits ALWAYS run
@@ -671,6 +674,15 @@ class Coordinator:
             else:
                 self._test_results = None      # UI cleared the results
 
+        diag_cmd = control.get('diagnose') or {}
+        ts = diag_cmd.get('ts', 0)
+        if ts > self._last_diag_ts:
+            self._last_diag_ts = ts
+            if diag_cmd.get('find_symbols') is not None:
+                self._find_symbols(diag_cmd)
+            else:
+                self._run_diagnostics(diag_cmd)
+
         scenario_cmd = control.get('scenario') or {}
         ts = scenario_cmd.get('ts', 0)
         if ts > self._last_scenario_ts:
@@ -791,6 +803,87 @@ class Coordinator:
                                            comment='ORDER_TEST')
                 add(leg.name, f'round trip close {symbol}',
                     reversed_order.get('ok'), 'netting-mode reverse')
+
+    # ------------------------------------------------------------------
+    # Connectivity checklist (Exchanges page)
+    # ------------------------------------------------------------------
+
+    def _diag_asset(self, asset_key=None):
+        if not self.active_assets:
+            return None, None
+        key = (asset_key if asset_key in self.active_assets
+               else next(iter(self.active_assets)))
+        return key, self.active_assets[key]
+
+    def _run_diagnostics(self, spec):
+        """Ask both terminals what they are, what they allow and what
+        their symbols look like, then check the pair fits together.
+        Read-only — this places no orders, so it may run at any time."""
+        ts = spec.get('ts')
+        asset_key, asset = self._diag_asset(spec.get('asset'))
+        if not asset:
+            self._diagnostics = {
+                'ts': ts, 'overall': 'FAIL', 'checks': [
+                    {'scope': 'ENGINE', 'name': 'Assets', 'status': 'FAIL',
+                     'message': 'No active asset — the coordinator has not '
+                                'connected to its legs yet.'}],
+                'passed': 0, 'warnings': 0, 'failed': 1, 'info': 0,
+                'ran_at': datetime.now().strftime('%H:%M:%S'), 'legs': {}}
+            self._write_runtime_status(self.last_data or {})
+            return self._diagnostics
+
+        asset_cfg = self.config.ASSETS.get(asset_key, {})
+        sides, raw = {}, {}
+        for role, leg, symbol_key in (('spot', self.spot_leg, 'spot_symbol'),
+                                      ('futures', self.futures_leg,
+                                       'futures_symbol')):
+            symbol = asset[symbol_key]
+            terminal = leg.terminal_report()
+            symbol_report = leg.symbol_report(symbol)
+            sides[role] = {'account': leg.name, 'role': role,
+                           'terminal': terminal, 'symbol': symbol_report,
+                           'asset': asset_cfg}
+            raw[leg.name] = {'terminal': terminal, 'symbol': symbol_report,
+                             'role': role}
+
+        expected = {name: acct.login
+                    for name, acct in self.config.accounts.items()
+                    if getattr(acct, 'login', None)}
+        report = diagnostics.build_report(
+            self.config, sides['spot'], sides['futures'],
+            expected_logins=expected,
+            leverages={'spot': self.config.EXITS.get('SPOT_LEVERAGE')
+                       or self.config.EXITS.get('LEVERAGE'),
+                       'futures': self.config.EXITS.get('FUT_LEVERAGE')
+                       or self.config.EXITS.get('LEVERAGE')})
+        report.update({'ts': ts, 'asset': asset_key, 'legs': raw})
+        self._diagnostics = report
+        logging.info("[DIAGNOSE] %s: %d pass, %d warn, %d fail",
+                     report['overall'], report['passed'],
+                     report['warnings'], report['failed'])
+        self._write_runtime_status(self.last_data or {})
+        return report
+
+    def _find_symbols(self, spec):
+        """Symbol search on one account — brokers name gold half a dozen
+        ways, so the operator looks it up instead of guessing."""
+        pattern = spec.get('find_symbols') or ''
+        role = spec.get('leg', 'spot')
+        leg = self.futures_leg if role == 'futures' else self.spot_leg
+        try:
+            found = leg.find_symbols(pattern, spec.get('limit', 40))
+        except Exception as e:
+            logging.warning("Symbol search failed on '%s': %s", leg.name, e)
+            found = None
+        self._symbol_search = {
+            'ts': spec.get('ts'), 'leg': role, 'account': leg.name,
+            'pattern': pattern,
+            'symbols': found or [],
+            'error': None if found is not None else
+            f"Could not read symbols from '{leg.name}'",
+        }
+        self._write_runtime_status(self.last_data or {})
+        return self._symbol_search
 
     def _scenario_legs(self, asset_key=None):
         """Build the spot/futures pair the scenario runner acts on:
@@ -1012,6 +1105,8 @@ class Coordinator:
                        'tracking': self.shadow.snapshot()},
             'test_results': self._test_results,
             'scenario_result': self._scenario_result,
+            'diagnostics': self._diagnostics,
+            'symbol_search': self._symbol_search,
             'margin_breaker': self._margin_breaker_state(),
             'manual_order': self.manual_order,
         }

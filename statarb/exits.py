@@ -79,16 +79,23 @@ class ExitLadder:
     # ------------------------------------------------------------------
 
     def _capital_at_risk(self, lots, contract_size, market_data):
-        """Sum of leg notionals / leverage, with an m2m buffer. None
-        when LEVERAGE is unset — %-capital forms are then disabled."""
-        leverage = self.config.EXITS.get('LEVERAGE', 0)
-        if not leverage:
+        """Margin the pair ties up: each leg's notional over THAT
+        account's leverage, plus an m2m buffer. The two accounts can be
+        levered differently (100x spot, 500x futures), so the legs are
+        divided separately; SPOT/FUT_LEVERAGE fall back to the single
+        LEVERAGE knob. None when no leverage is set at all — the
+        %-capital forms are then disabled."""
+        exits = self.config.EXITS
+        shared = exits.get('LEVERAGE', 0) or 0
+        spot_lev = exits.get('SPOT_LEVERAGE', 0) or shared
+        fut_lev = exits.get('FUT_LEVERAGE', 0) or shared
+        if not (spot_lev and fut_lev):
             return None
         oz = lots * contract_size
-        notional = (market_data['spot_price']
-                    + market_data['futures_price']) * oz
-        buffer = 1 + self.config.EXITS.get('M2M_BUFFER_PCT', 0) / 100
-        return notional / leverage * buffer
+        margin = (market_data['spot_price'] * oz / spot_lev
+                  + market_data['futures_price'] * oz / fut_lev)
+        buffer = 1 + exits.get('M2M_BUFFER_PCT', 0) / 100
+        return margin * buffer
 
     def build_plan(self, lots, contract_size, entry_z, sigma, half_life_sec,
                    market_data):

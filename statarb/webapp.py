@@ -61,7 +61,8 @@ def update_env_file(path, updates):
 
 def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                config_path="config.json", control_path="control.json",
-               env_path=".env", scenario_timeout=90.0):
+               env_path=".env", scenario_timeout=90.0,
+               diagnose_timeout=45.0):
     if Flask is None:
         raise RuntimeError("Flask not installed — pip install flask")
     app = Flask(__name__, template_folder=TEMPLATE_DIR,
@@ -816,6 +817,152 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         is nothing to stop — this clears the displayed results."""
         write_control({'test': {'kind': None, 'ts': time.time()}})
         return jsonify({'success': True, 'running': False})
+
+    # -- connectivity checklist + symbol lookup (Exchanges page) --
+
+    def ask_coordinator(payload, key, timeout=None):
+        """Post a read-only request into control.json and wait for the
+        coordinator to answer in runtime_status. Same file bridge the
+        scenarios use — the web app never touches MT5 itself."""
+        ts = time.time()
+        write_control({'diagnose': dict(payload, ts=ts)})
+        deadline = time.time() + (timeout or diagnose_timeout)
+        while time.time() < deadline:
+            answer = runtime_status().get(key) or {}
+            if answer.get('ts') == ts:
+                return answer
+            time.sleep(0.3)
+        return None
+
+    @app.route('/api/brokers/diagnose', methods=['POST'])
+    @app.route('/api/brokers/<account>/diagnose', methods=['POST'])
+    def api_broker_diagnose(account=None):
+        """The full connectivity checklist: each terminal (attached,
+        logged in, algo trading, permissions, margin mode, leverage),
+        each symbol (found, in Market Watch, priced, sizes, contract
+        specs) and the pair (currency, hedge ratio, live basis)."""
+        body = request.get_json(silent=True) or {}
+        report = ask_coordinator({'asset': body.get('asset')},
+                                 'diagnostics')
+        if report is None:
+            return jsonify({
+                'success': False, 'overall': 'FAIL', 'checks': [
+                    {'scope': 'ENGINE', 'name': 'Coordinator', 'status':
+                     'FAIL', 'message': 'No answer from the coordinator — '
+                     'is it running? Start it with start.py.'}],
+                'passed': 0, 'warnings': 0, 'failed': 1})
+        if account:
+            report = dict(report, checks=[
+                c for c in report['checks']
+                if account in c.get('scope', '') or c['scope'] == 'PAIR'])
+        report['success'] = report.get('overall') != 'FAIL'
+        return jsonify(report)
+
+    @app.route('/api/brokers/<account>/test', methods=['POST'])
+    def api_broker_test(account):
+        """Quick connection test for one account, in the old app's
+        shape: latency, who is logged in, and a live price."""
+        report = ask_coordinator({}, 'diagnostics')
+        if report is None:
+            return jsonify({'success': False,
+                            'error': 'No answer from the coordinator — is '
+                                     'it running?'})
+        leg = (report.get('legs') or {}).get(account)
+        if not leg:
+            return jsonify({'success': False,
+                            'error': f"'{account}' is not mapped to a leg. "
+                                     f"Map it on the Settings page."})
+        terminal, symbol = leg['terminal'], leg['symbol']
+        if not terminal.get('logged_in'):
+            return jsonify({'success': False,
+                            'error': terminal.get('error')
+                            or 'Terminal not attached or not logged in'})
+        result = {
+            'success': True,
+            'latency_ms': round(terminal.get('ping_ms') or 0),
+            'account_info': {
+                'login': terminal.get('login'),
+                'server': terminal.get('server'),
+                'balance': terminal.get('balance'),
+                'equity': terminal.get('equity'),
+                'currency': terminal.get('currency'),
+                'leverage': terminal.get('leverage'),
+            },
+        }
+        if symbol.get('bid'):
+            result['price_info'] = {'symbol': symbol['symbol'],
+                                    'bid': symbol['bid'],
+                                    'ask': symbol['ask']}
+        elif not symbol.get('found'):
+            result['warning'] = (f"Symbol \"{symbol.get('symbol')}\" not "
+                                 f"found on this account.")
+        else:
+            result['warning'] = (f"{symbol['symbol']} has no quotes right "
+                                 f"now (market closed?).")
+        return jsonify(result)
+
+    @app.route('/api/symbols/search')
+    def api_symbol_search():
+        """Search one account's symbol list — brokers name the same
+        instrument differently, so the operator looks it up here rather
+        than guessing at the spelling."""
+        pattern = request.args.get('q', '')
+        leg = request.args.get('leg', 'spot')
+        answer = ask_coordinator({'find_symbols': pattern, 'leg': leg},
+                                 'symbol_search')
+        if answer is None:
+            return jsonify({'symbols': [], 'error': 'No answer from the '
+                                                    'coordinator.'})
+        return jsonify(answer)
+
+    @app.route('/api/leg-symbols', methods=['GET', 'POST'])
+    def api_leg_symbols():
+        """Read/write the symbol each leg trades. Symbols are
+        structural — the engine picks them up on the next launcher
+        restart, which is what the response says."""
+        raw = load_config_raw()
+        assets = raw.get('assets') or {}
+        asset_key = (request.get_json(silent=True) or {}).get('asset') \
+            if request.method == 'POST' else request.args.get('asset')
+        asset_key = asset_key or next(
+            (k for k, v in assets.items() if v.get('enabled', True)), 'GOLD')
+        legs = raw.get('leg_accounts') or {}
+
+        if request.method == 'GET':
+            asset = assets.get(asset_key) or {}
+            return jsonify({
+                'asset': asset_key,
+                'spot_symbol': (asset.get('spot_symbols') or [''])[0],
+                'futures_symbol': (asset.get('futures_symbols') or [''])[0],
+                'spot_account': legs.get('spot'),
+                'futures_account': legs.get('futures'),
+                'assets': sorted(assets),
+            })
+
+        body = request.get_json(silent=True) or {}
+        asset = assets.setdefault(asset_key, {'name': asset_key,
+                                              'enabled': True})
+        changed = []
+        for field, key in (('spot_symbol', 'spot_symbols'),
+                           ('futures_symbol', 'futures_symbols')):
+            value = (body.get(field) or '').strip()
+            if value and [value] != asset.get(key):
+                asset[key] = [value]
+                changed.append(f'{field} -> {value}')
+        if body.get('futures_expiry'):
+            asset['futures_expiry'] = body['futures_expiry']
+            changed.append(f"expiry -> {body['futures_expiry']}")
+        if body.get('contract_size'):
+            asset['lot_size'] = float(body['contract_size'])
+            changed.append(f"contract size -> {body['contract_size']}")
+        if not changed:
+            return jsonify({'success': True, 'note': 'Nothing changed.'})
+        raw['assets'] = assets
+        save_config_raw(raw)
+        return jsonify({'success': True, 'changed': changed,
+                        'note': 'Saved. Symbols are structural — restart '
+                                'the launcher (start.py) for the engine to '
+                                'trade them.'})
 
     # -- round-trip order scenarios (Exchanges page) --
 

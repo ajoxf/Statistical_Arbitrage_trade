@@ -71,6 +71,15 @@ class LegServer:
             if cmd == 'order_log':
                 return {'ok': True,
                         'orders': self.leg.order_log(msg.get('hours', 24))}
+            if cmd == 'terminal_report':
+                return {'ok': True, 'report': self.leg.terminal_report()}
+            if cmd == 'symbol_report':
+                return {'ok': True,
+                        'report': self.leg.symbol_report(msg['symbol'])}
+            if cmd == 'find_symbols':
+                return {'ok': True,
+                        'symbols': self.leg.find_symbols(
+                            msg.get('pattern', ''), msg.get('limit', 40))}
             if cmd == 'close_ticket':
                 return self.leg.close_ticket(
                     msg['symbol'], msg['ticket'], msg['volume'],

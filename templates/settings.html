@@ -494,31 +494,39 @@
                                 <option value="3" {% if config.spot_leverage == 3 %}selected{% endif %}>3x</option>
                                 <option value="5" {% if config.spot_leverage == 5 %}selected{% endif %}>5x</option>
                                 <option value="10" {% if config.spot_leverage == 10 %}selected{% endif %}>10x</option>
-                                <option value="15" {% if config.spot_leverage == 15 %}selected{% endif %}>15x</option>
                                 <option value="20" {% if config.spot_leverage == 20 %}selected{% endif %}>20x</option>
                                 <option value="25" {% if config.spot_leverage == 25 %}selected{% endif %}>25x</option>
                                 <option value="30" {% if config.spot_leverage == 30 %}selected{% endif %}>30x</option>
-                                <option value="40" {% if config.spot_leverage == 40 %}selected{% endif %}>40x</option>
+                                <option value="33" {% if config.spot_leverage == 33 %}selected{% endif %}>33x</option>
                                 <option value="50" {% if config.spot_leverage == 50 %}selected{% endif %}>50x</option>
+                                <option value="100" {% if config.spot_leverage == 100 %}selected{% endif %}>100x (typical MT5 gold)</option>
+                                <option value="200" {% if config.spot_leverage == 200 %}selected{% endif %}>200x</option>
+                                <option value="300" {% if config.spot_leverage == 300 %}selected{% endif %}>300x</option>
+                                <option value="400" {% if config.spot_leverage == 400 %}selected{% endif %}>400x</option>
+                                <option value="500" {% if config.spot_leverage == 500 %}selected{% endif %}>500x</option>
                             </select>
-                            <small class="text-secondary">Applies to the account's margin. Used by the %-of-capital target and stop.</small>
+                            <small class="text-secondary">Mirror of the leverage the BROKER set on the Leg A account (MT5 leverage cannot be changed from here). Used for margin and the %-of-capital target and stop. The Exchanges page flags a mismatch against the live account.</small>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Leg B Leverage</label>
                             <select class="form-select" id="futures_leverage" name="futures_leverage">
-                                <option value="1" {% if config.futures_leverage == 1 %}selected{% endif %}>1x</option>
+                                <option value="1" {% if config.futures_leverage == 1 %}selected{% endif %}>1x (Cash / No Margin)</option>
                                 <option value="2" {% if config.futures_leverage == 2 %}selected{% endif %}>2x</option>
-                                <option value="3" {% if config.futures_leverage == 3 %}selected{% endif %}>3x (recommended)</option>
+                                <option value="3" {% if config.futures_leverage == 3 %}selected{% endif %}>3x</option>
                                 <option value="5" {% if config.futures_leverage == 5 %}selected{% endif %}>5x</option>
                                 <option value="10" {% if config.futures_leverage == 10 %}selected{% endif %}>10x</option>
-                                <option value="15" {% if config.futures_leverage == 15 %}selected{% endif %}>15x</option>
                                 <option value="20" {% if config.futures_leverage == 20 %}selected{% endif %}>20x</option>
                                 <option value="25" {% if config.futures_leverage == 25 %}selected{% endif %}>25x</option>
                                 <option value="30" {% if config.futures_leverage == 30 %}selected{% endif %}>30x</option>
-                                <option value="40" {% if config.futures_leverage == 40 %}selected{% endif %}>40x</option>
+                                <option value="33" {% if config.futures_leverage == 33 %}selected{% endif %}>33x</option>
                                 <option value="50" {% if config.futures_leverage == 50 %}selected{% endif %}>50x</option>
+                                <option value="100" {% if config.futures_leverage == 100 %}selected{% endif %}>100x (typical MT5 gold)</option>
+                                <option value="200" {% if config.futures_leverage == 200 %}selected{% endif %}>200x</option>
+                                <option value="300" {% if config.futures_leverage == 300 %}selected{% endif %}>300x</option>
+                                <option value="400" {% if config.futures_leverage == 400 %}selected{% endif %}>400x</option>
+                                <option value="500" {% if config.futures_leverage == 500 %}selected{% endif %}>500x</option>
                             </select>
-                            <small class="text-secondary">Used by the %-of-capital target and stop. Leave at 1x to disable those forms.</small>
+                            <small class="text-secondary">Mirror of the leverage the BROKER set on the Leg B account &mdash; it can differ from Leg A (e.g. 100x spot, 500x futures); each leg's margin is computed on its own.</small>
                         </div>
                     </div>
 

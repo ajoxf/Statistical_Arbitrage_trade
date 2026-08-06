@@ -137,6 +137,119 @@ class BrokerSession:
     def symbol_tick(self, symbol):
         return mt5.symbol_info_tick(symbol) if mt5 else None
 
+    def find_symbols(self, pattern, limit=40):
+        """Symbols on THIS broker whose name or description matches —
+        brokers name the same instrument differently (XAUUSD, GOLD,
+        XAUUSD.r), so the operator needs to search rather than guess."""
+        if mt5 is None:
+            return []
+        needle = (pattern or '').strip().upper()
+        found = []
+        for info in (mt5.symbols_get() or ()):
+            name = info.name.upper()
+            description = (getattr(info, 'description', '') or '').upper()
+            if needle and needle not in name and needle not in description:
+                continue
+            found.append({
+                'symbol': info.name,
+                'description': getattr(info, 'description', ''),
+                'path': getattr(info, 'path', ''),
+                'visible': bool(info.visible),
+                'contract_size': getattr(info, 'trade_contract_size', None),
+                'volume_min': getattr(info, 'volume_min', None),
+                'volume_max': getattr(info, 'volume_max', None),
+                'volume_step': getattr(info, 'volume_step', None),
+                'currency': getattr(info, 'currency_profit', ''),
+                'expiry': getattr(info, 'expiration_time', 0),
+            })
+            if len(found) >= limit:
+                break
+        return found
+
+    def symbol_report(self, symbol):
+        """Everything the connectivity checklist needs about one symbol
+        on this account: does it exist, is it in Market Watch, is it
+        priced, and what are the contract specs the sizing math and the
+        hedge ratio depend on."""
+        if mt5 is None:
+            return {'symbol': symbol, 'found': False,
+                    'error': 'MetaTrader5 package not installed'}
+        info = self.ensure_symbol(symbol)
+        if info is None:
+            return {'symbol': symbol, 'found': False,
+                    'error': f'{symbol} does not exist on this broker'}
+        tick = mt5.symbol_info_tick(symbol)
+        trade_mode = getattr(info, 'trade_mode', None)
+        return {
+            'symbol': symbol, 'found': True,
+            'description': getattr(info, 'description', ''),
+            'visible': bool(info.visible),
+            'bid': tick.bid if tick else None,
+            'ask': tick.ask if tick else None,
+            'tick_time': int(getattr(tick, 'time', 0)) if tick else None,
+            'digits': getattr(info, 'digits', None),
+            'point': getattr(info, 'point', None),
+            'tick_size': (getattr(info, 'trade_tick_size', 0)
+                          or getattr(info, 'point', None)),
+            'contract_size': getattr(info, 'trade_contract_size', None),
+            'volume_min': getattr(info, 'volume_min', None),
+            'volume_max': getattr(info, 'volume_max', None),
+            'volume_step': getattr(info, 'volume_step', None),
+            'currency': getattr(info, 'currency_profit', ''),
+            'filling_mode': getattr(info, 'filling_mode', None),
+            'trade_mode': trade_mode,
+            'trade_allowed': (trade_mode not in
+                              (getattr(mt5, 'SYMBOL_TRADE_MODE_DISABLED', 0),
+                               getattr(mt5, 'SYMBOL_TRADE_MODE_CLOSEONLY',
+                                       -1))),
+            'expiry': int(getattr(info, 'expiration_time', 0) or 0),
+            'swap_long': getattr(info, 'swap_long', None),
+            'swap_short': getattr(info, 'swap_short', None),
+        }
+
+    def terminal_report(self):
+        """Terminal- and account-level facts the checklist reports:
+        whether the terminal is attached, who is logged in, whether
+        algo trading is switched on, and the account's margin mode."""
+        if mt5 is None:
+            return {'library': False, 'terminal': False,
+                    'error': 'MetaTrader5 package not installed '
+                             '(Windows only)'}
+        report = {'library': True, 'terminal': False}
+        terminal = mt5.terminal_info()
+        if terminal is None:
+            report['error'] = str(mt5.last_error())
+            return report
+        report.update({
+            'terminal': True,
+            'terminal_name': getattr(terminal, 'name', ''),
+            'terminal_path': getattr(terminal, 'path', ''),
+            'terminal_connected': bool(getattr(terminal, 'connected', False)),
+            'algo_trading': bool(getattr(terminal, 'trade_allowed', False)),
+            'ping_ms': (getattr(terminal, 'ping_last', 0) or 0) / 1000.0,
+        })
+        info = mt5.account_info()
+        if info is None:
+            report['logged_in'] = False
+            return report
+        margin_mode = getattr(info, 'margin_mode', None)
+        report.update({
+            'logged_in': True,
+            'login': info.login, 'server': info.server,
+            'name': getattr(info, 'name', ''),
+            'currency': getattr(info, 'currency', ''),
+            'leverage': getattr(info, 'leverage', None),
+            'balance': getattr(info, 'balance', 0.0),
+            'equity': getattr(info, 'equity', 0.0),
+            'margin_free': getattr(info, 'margin_free', 0.0),
+            'trade_allowed': bool(getattr(info, 'trade_allowed', False)),
+            'trade_expert': bool(getattr(info, 'trade_expert', False)),
+            'margin_mode': margin_mode,
+            'hedging': margin_mode == getattr(
+                mt5, 'ACCOUNT_MARGIN_MODE_RETAIL_HEDGING', 2),
+        })
+        return report
+
     def order_log(self, hours=24):
         """Everything this MT5 account did recently, normalised for the
         Exchange Order Log: filled deals (with fee/swap/profit), plus

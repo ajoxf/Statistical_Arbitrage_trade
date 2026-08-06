@@ -43,6 +43,8 @@ FIELD_MAP = {
     'exit_profit_gate_usd': ('EXITS', 'GATE_FLOOR_USD'),
     'm2m_buffer_pct': ('EXITS', 'M2M_BUFFER_PCT'),
     'leverage': ('EXITS', 'LEVERAGE'),
+    'spot_leverage': ('EXITS', 'SPOT_LEVERAGE'),
+    'futures_leverage': ('EXITS', 'FUT_LEVERAGE'),
 
     # Costs / edge filter
     'profit_target_sigma_frac': ('COSTS', 'TARGET_FRACTION'),

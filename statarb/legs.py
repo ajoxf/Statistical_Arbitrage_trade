@@ -136,6 +136,15 @@ class LocalLeg:
         return [dict(row, account=self.name)
                 for row in (self.broker.order_log(hours) or ())]
 
+    def terminal_report(self):
+        return dict(self.broker.terminal_report(), account=self.name)
+
+    def symbol_report(self, symbol):
+        return dict(self.broker.symbol_report(symbol), account=self.name)
+
+    def find_symbols(self, pattern, limit=40):
+        return self.broker.find_symbols(pattern, limit)
+
 
 class RemoteLeg:
     def __init__(self, name, endpoint, timeout=10.0):
@@ -263,3 +272,24 @@ class RemoteLeg:
             return [dict(row, account=self.name)
                     for row in (reply.get('orders') or ())]
         return None    # None = unknown (IPC failure), NOT "no activity"
+
+    def terminal_report(self):
+        reply = self._request({'cmd': 'terminal_report'})
+        if reply and reply.get('ok'):
+            return dict(reply['report'], account=self.name)
+        return {'account': self.name, 'library': None, 'terminal': False,
+                'error': 'leg runner not reachable'}
+
+    def symbol_report(self, symbol):
+        reply = self._request({'cmd': 'symbol_report', 'symbol': symbol})
+        if reply and reply.get('ok'):
+            return dict(reply['report'], account=self.name)
+        return {'account': self.name, 'symbol': symbol, 'found': False,
+                'error': 'leg runner not reachable'}
+
+    def find_symbols(self, pattern, limit=40):
+        reply = self._request({'cmd': 'find_symbols', 'pattern': pattern,
+                               'limit': limit})
+        if reply and reply.get('ok'):
+            return reply['symbols']
+        return None
