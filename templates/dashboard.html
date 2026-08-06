@@ -68,6 +68,11 @@
     </div>
 </div>
 
+<!-- Per-account breakdown: with two brokers, margin lives on each
+     account separately, so both accounts and their margin are shown —
+     never only the combined figure. -->
+<div id="accounts-strip" class="row g-2 mb-3" style="display:none;"></div>
+
 <!-- Latency Metrics Strip -->
 <div class="d-flex align-items-center gap-3 mb-3 px-1" style="font-size:0.72rem;color:#aaa;">
     <span><i class="bi bi-clock me-1"></i>Feed age: <span id="tick-age-ms" class="fw-bold text-light">—</span></span>
@@ -807,6 +812,10 @@
                     <span class="text-secondary">Margin Ratio:</span>
                     <span id="margin-ratio">0%</span>
                 </div>
+                <hr class="my-2">
+                <div class="text-secondary mb-1" style="font-size:0.72rem;">PER-ACCOUNT MARGIN (M2M)</div>
+                <div id="accounts-margin-table"></div>
+                <div id="accounts-margin-warning" class="mt-1" style="display:none;"></div>
                 <div class="d-flex justify-content-between mb-1" id="leg-a-liq-row"
                      title="Leg A liquidation price, shown with its current mark (mark → liq). A hedged pair's two legs liquidate in OPPOSITE directions — the short leg above its mark, the long leg below.">
                     <span class="text-secondary" id="leg-a-liq-label">Leg A Liq:</span>
@@ -1160,6 +1169,119 @@
     // Actual leverage (from exchange) - updated from API
     let actualSpotLeverage = 1;  // Spot on MT5 is typically 1x (cash)
     let actualFuturesLeverage = {{ config.futures_leverage }};  // Will be updated from API
+
+    // ===== Per-account equity & margin =====
+    // The pair trades across two MT5 accounts. Margin is posted and
+    // called on each account SEPARATELY, so the roll-up alone can look
+    // healthy while one leg is close to a margin call. Both accounts
+    // are always shown, and the WEAKEST margin level drives the badge.
+    function fmtMoney(v, ccy) {
+        if (v == null) return '—';
+        const sym = (!ccy || ccy === 'USD') ? '$' : '';
+        return sym + Number(v).toLocaleString(undefined,
+            {minimumFractionDigits: 2, maximumFractionDigits: 2}) +
+            (sym ? '' : ' ' + ccy);
+    }
+
+    function marginClass(level) {
+        if (level == null) return 'bg-secondary';
+        if (level >= 500) return 'bg-success';
+        if (level >= 200) return 'bg-warning text-dark';
+        return 'bg-danger';
+    }
+
+    function renderAccountsStrip(data) {
+        const accounts = data.accounts || [];
+        const strip = document.getElementById('accounts-strip');
+        if (strip) {
+            // One card per account when more than one is configured.
+            strip.style.display = accounts.length > 1 ? '' : 'none';
+            strip.innerHTML = accounts.map(a => {
+                const roles = (a.roles || []).map(r =>
+                    `<span class="badge bg-primary ms-1" style="font-size:0.6rem;">${r.toUpperCase()}</span>`).join('');
+                const lvl = a.margin_level;
+                return `
+                <div class="col-md-6">
+                  <div class="card h-100">
+                    <div class="card-body py-2 px-3">
+                      <div class="d-flex justify-content-between align-items-center mb-1">
+                        <div>
+                          <strong>${a.account || '—'}</strong>${roles}
+                          ${a.connected === false
+                            ? '<span class="badge bg-secondary ms-1" style="font-size:0.6rem;">NOT CONNECTED</span>' : ''}
+                        </div>
+                        <span class="badge ${marginClass(lvl)}">
+                          ${lvl == null ? 'N/A' : Number(lvl).toFixed(0) + '%'}
+                        </span>
+                      </div>
+                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
+                        <span>Login</span><span class="font-monospace text-light">${a.login || '—'}</span>
+                      </div>
+                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
+                        <span>Server</span><span class="text-light">${a.server || '—'}</span>
+                      </div>
+                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
+                        <span>Balance</span><span class="text-light">${fmtMoney(a.balance, a.currency)}</span>
+                      </div>
+                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
+                        <span>Equity</span><span class="text-light">${fmtMoney(a.equity, a.currency)}</span>
+                      </div>
+                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
+                        <span>Margin used</span><span class="text-light">${fmtMoney(a.margin, a.currency)}</span>
+                      </div>
+                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
+                        <span>Free margin</span><span class="text-light">${fmtMoney(a.margin_free, a.currency)}</span>
+                      </div>
+                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
+                        <span>Open P&L</span>
+                        <span class="${(a.profit || 0) >= 0 ? 'price-up' : 'price-down'}">${fmtMoney(a.profit, a.currency)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>`;
+            }).join('');
+        }
+
+        // Compact per-account rows inside Margin Details.
+        const table = document.getElementById('accounts-margin-table');
+        if (table) {
+            table.innerHTML = accounts.length ? accounts.map(a => `
+                <div class="d-flex justify-content-between mb-1" style="font-size:0.72rem;"
+                     title="${a.account}: equity ${fmtMoney(a.equity, a.currency)}, margin used ${fmtMoney(a.margin, a.currency)}, free ${fmtMoney(a.margin_free, a.currency)}">
+                    <span class="text-secondary">${a.account}
+                        ${(a.roles || []).length ? '(' + a.roles.join('/') + ')' : ''}</span>
+                    <span>${fmtMoney(a.margin, a.currency)} used ·
+                        <span class="${marginClass(a.margin_level).includes('danger') ? 'text-danger' : ''}">${a.margin_level == null ? 'N/A' : Number(a.margin_level).toFixed(0) + '%'}</span>
+                    </span>
+                </div>`).join('')
+                : '<div class="text-secondary" style="font-size:0.72rem;">No accounts connected</div>';
+        }
+
+        // Margin-call warning keys off the WEAKEST account, not the sum.
+        const warn = document.getElementById('accounts-margin-warning');
+        if (warn) {
+            const weakest = data.weakest;
+            if (weakest && weakest.margin_level != null && weakest.margin_level < 200) {
+                warn.style.display = '';
+                warn.innerHTML = `<span class="text-danger" style="font-size:0.72rem;">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                    ${weakest.account} margin level ${Number(weakest.margin_level).toFixed(0)}%
+                    — top up or reduce that leg</span>`;
+            } else {
+                warn.style.display = 'none';
+            }
+        }
+
+        // Header badge reflects the weakest account.
+        const badge = document.getElementById('margin-health-badge');
+        if (badge) {
+            const lvl = (data.weakest && data.weakest.margin_level != null)
+                ? data.weakest.margin_level
+                : (data.margin_level != null ? data.margin_level : null);
+            badge.className = 'badge ' + marginClass(lvl);
+            badge.textContent = lvl == null ? 'N/A' : Number(lvl).toFixed(0) + '%';
+        }
+    }
 
     // Socket event handlers
     socket.on('tick', function(data) {
@@ -3102,6 +3224,9 @@ function updateFilterStatus(elementId, passed, value) {
                 }
 
                 updateElement('account-uid', data.uid || '-');
+
+                // ---- Per-account view (two brokers => two margins) ----
+                renderAccountsStrip(data);
 
                 const levelEl = document.getElementById('account-level');
                 if (levelEl) {

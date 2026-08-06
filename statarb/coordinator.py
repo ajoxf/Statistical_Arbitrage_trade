@@ -814,9 +814,16 @@ class Coordinator:
                 'lot_target': target,
             })
         accounts, equity = {}, None
+        roles = {}
+        for role, leg in (('spot', self.spot_leg),
+                          ('futures', self.futures_leg)):
+            roles.setdefault(leg.name, []).append(role)
         for leg in self._each_leg():
             info = leg.account_info()
             if info:
+                info = dict(info)
+                info['account'] = leg.name
+                info['roles'] = roles.get(leg.name, [])
                 accounts[leg.name] = info
                 equity = (equity or 0) + (info.get('equity') or 0)
         payload = {

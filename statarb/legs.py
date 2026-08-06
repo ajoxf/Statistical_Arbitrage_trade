@@ -32,12 +32,30 @@ class LocalLeg:
         return self.broker.is_alive()
 
     def account_info(self):
+        """Full margin picture per account — with two brokers, M2M is
+        managed per account, so every field the risk view needs comes
+        from here rather than being aggregated away."""
         info = self.broker.account_info()
         if not info:
             return None
-        return {'login': info.login, 'server': info.server,
-                'name': info.name, 'balance': info.balance,
-                'equity': info.equity}
+        equity = getattr(info, 'equity', 0.0) or 0.0
+        margin = getattr(info, 'margin', 0.0) or 0.0
+        return {
+            'account': self.name,
+            'login': info.login, 'server': info.server,
+            'name': getattr(info, 'name', ''),
+            'currency': getattr(info, 'currency', 'USD'),
+            'leverage': getattr(info, 'leverage', None),
+            'balance': getattr(info, 'balance', 0.0),
+            'equity': equity,
+            'margin': margin,
+            'margin_free': getattr(info, 'margin_free', 0.0),
+            'margin_level': (getattr(info, 'margin_level', None)
+                             or (100 * equity / margin if margin else None)),
+            'margin_so_call': getattr(info, 'margin_so_call', None),
+            'margin_so_so': getattr(info, 'margin_so_so', None),
+            'profit': getattr(info, 'profit', 0.0),
+        }
 
     def ensure_symbol(self, symbol):
         info = self.broker.ensure_symbol(symbol)

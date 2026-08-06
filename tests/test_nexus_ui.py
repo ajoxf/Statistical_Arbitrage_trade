@@ -176,6 +176,66 @@ def test_all_pages_are_free_of_crypto_wording(client):
         assert 'okx' not in body.lower(), route
 
 
+def test_account_info_exposes_both_accounts_and_margins(client, tmp_path):
+    """Two brokers means two margin pools — M2M is managed per account,
+    so both must be visible, never only the combined figure."""
+    status = json.loads((tmp_path / "runtime_status.json").read_text())
+    status['accounts'] = {
+        'account_a': {'account': 'account_a', 'login': 591805111,
+                      'server': 'FxPro-MT5 Demo', 'currency': 'USD',
+                      'roles': ['spot'], 'balance': 100000.0,
+                      'equity': 98000.0, 'margin': 20000.0,
+                      'margin_free': 78000.0, 'margin_level': 490.0,
+                      'profit': -2000.0},
+        'account_b': {'account': 'account_b', 'login': 887766,
+                      'server': 'CFI-MT5 Demo', 'currency': 'USD',
+                      'roles': ['futures'], 'balance': 50000.0,
+                      'equity': 51500.0, 'margin': 40000.0,
+                      'margin_free': 11500.0, 'margin_level': 128.75,
+                      'profit': 1500.0},
+    }
+    (tmp_path / "runtime_status.json").write_text(json.dumps(status))
+
+    data = client.get('/api/account-info').get_json()
+    accounts = {a['account']: a for a in data['accounts']}
+    assert set(accounts) == {'account_a', 'account_b'}
+    # Both logins and balances surface
+    assert accounts['account_a']['login'] == 591805111
+    assert accounts['account_b']['login'] == 887766
+    assert accounts['account_a']['balance'] == 100000.0
+    assert accounts['account_b']['balance'] == 50000.0
+    # Per-account margin detail
+    assert accounts['account_a']['margin'] == 20000.0
+    assert accounts['account_b']['margin_free'] == 11500.0
+    assert accounts['account_a']['roles'] == ['spot']
+    # Combined roll-up
+    assert data['totals']['equity'] == pytest.approx(149500.0)
+    assert data['totals']['margin'] == pytest.approx(60000.0)
+    assert data['totals']['margin_level'] == pytest.approx(249.17, rel=1e-3)
+    # The WEAKEST account drives the risk view — a healthy combined
+    # 249% must not mask account_b sitting at 129%
+    assert data['weakest']['account'] == 'account_b'
+    assert data['weakest']['margin_level'] == pytest.approx(128.75)
+    assert '591805111' in data['uid'] and '887766' in data['uid']
+
+
+def test_account_info_lists_accounts_before_connection(client):
+    """Before MT5 connects, both configured accounts still appear so
+    the operator can see what the engine will connect to."""
+    data = client.get('/api/account-info').get_json()
+    accounts = {a['account'] for a in data['accounts']}
+    assert accounts == {'account_a', 'account_b'}
+    assert all(a['connected'] is False for a in data['accounts'])
+
+
+def test_dashboard_renders_per_account_margin(client):
+    body = client.get('/').data.decode()
+    assert 'accounts-strip' in body            # per-account cards
+    assert 'accounts-margin-table' in body     # per-account margin rows
+    assert 'PER-ACCOUNT MARGIN' in body
+    assert 'renderAccountsStrip' in body
+
+
 def test_socketio_server_is_wired(client):
     """The Nexus navbar shows Connected/Disconnected from a socket.io
     session — without a server it sat on 'Disconnected' forever."""

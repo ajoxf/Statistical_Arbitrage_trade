@@ -403,7 +403,50 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
     @app.route('/api/account-info')
     def api_account_info():
-        return jsonify(runtime_status().get('accounts') or {})
+        """Per-account margin picture. With two brokers, margin is
+        managed separately on each account — the UI shows both, plus a
+        combined roll-up, and flags the WEAKEST margin level (that is
+        the one that gets you liquidated)."""
+        status = runtime_status()
+        accounts = list((status.get('accounts') or {}).values())
+        raw = load_config_raw()
+        legs = raw.get('leg_accounts') or {}
+        if not accounts:                       # not connected yet
+            for name in dict.fromkeys(
+                    [legs.get('spot'), legs.get('futures')]):
+                if name:
+                    accounts.append({'account': name, 'login': None,
+                                     'roles': [r for r, n in legs.items()
+                                               if n == name],
+                                     'connected': False})
+        totals = {'equity': 0.0, 'balance': 0.0, 'margin': 0.0,
+                  'margin_free': 0.0, 'profit': 0.0}
+        weakest = None
+        for acct in accounts:
+            acct.setdefault('connected', acct.get('login') is not None)
+            for key in totals:
+                totals[key] += acct.get(key) or 0.0
+            level = acct.get('margin_level')
+            if level and (weakest is None or level < weakest['margin_level']):
+                weakest = {'account': acct.get('account'),
+                           'margin_level': level}
+        totals['margin_level'] = (100 * totals['equity'] / totals['margin']
+                                  if totals['margin'] else None)
+        return jsonify({
+            'exchange': 'MT5',
+            'connected': any(a.get('connected') for a in accounts),
+            'has_api_keys': True, 'has_adapters': bool(accounts),
+            'is_demo': status.get('mode') != 'LIVE',
+            'accounts': accounts, 'totals': totals, 'weakest': weakest,
+            # Flat roll-up for the single-account header widgets
+            'uid': ' / '.join(str(a.get('login')) for a in accounts
+                              if a.get('login')) or '-',
+            'equity': totals['equity'], 'available': totals['margin_free'],
+            'balance': totals['balance'], 'margin': totals['margin'],
+            'margin_free': totals['margin_free'],
+            'margin_level': totals['margin_level'],
+            'unrealized_pnl': totals['profit'],
+        })
 
     @app.route('/api/active-orders')
     def api_active_orders():
