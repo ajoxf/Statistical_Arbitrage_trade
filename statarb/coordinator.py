@@ -1147,6 +1147,33 @@ class Coordinator:
         if self.position_manager.get_active_positions():
             return finish(False, 'Close open positions first — scenarios '
                                  'need a flat book.')
+
+        # The engine's book being empty is not enough: a leaked fill or
+        # a failed close leaves a position the ENGINE does not know
+        # about, and running more scenarios on top just piles them up
+        # (seen 2026-08-06: eleven orphans accumulated while the suite
+        # kept reporting PASS). Ask the BROKER.
+        stranded = []
+        for leg in self._each_leg():
+            try:
+                live = leg.positions()
+            except Exception:
+                live = None
+            if live is None:
+                return finish(False, f"Cannot read {leg.name}'s open "
+                                     f"positions — refusing to place test "
+                                     f"orders blind.")
+            stranded += [f"{p['symbol']} {p['side']} {p['volume']} "
+                         f"(ticket {p['ticket']}) on {leg.name}"
+                         for p in live]
+        if stranded:
+            return finish(
+                False,
+                f"{len(stranded)} bot position(s) are still open on the "
+                f"broker — close them before running more scenarios, or "
+                f"every run adds to the pile:\n  "
+                + "\n  ".join(stranded[:10])
+                + ("\n  …" if len(stranded) > 10 else ""))
         for leg in self._each_leg():
             if not leg.ping():
                 return finish(False, f"Leg '{leg.name}' is not connected.")

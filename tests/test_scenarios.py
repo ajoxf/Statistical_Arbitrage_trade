@@ -21,6 +21,11 @@ class ScenarioFakeLeg(LimitFakeLeg):
     def __init__(self, *args, fail_close=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fail_close = set(fail_close or [])
+        self.live_positions = []       # what the BROKER shows as open
+
+    def positions(self, symbol=None):
+        return [p for p in self.live_positions
+                if symbol is None or p['symbol'] == symbol]
 
     def account_info(self):
         return {'account': self.name, 'login': 1, 'equity': 1e6}
@@ -447,3 +452,35 @@ def test_exchanges_page_renders_the_suite(client):
     assert '/api/scenario-catalogue' in page
     assert '/api/scenario-test' in page
     assert 'REAL orders' in page
+
+
+# --- the broker's book, not just the engine's ----------------------------
+# Live 2026-08-06: leaked fills left positions the ENGINE did not know
+# about, so the flat-book precondition passed and every further run
+# added to the pile — eleven orphans, all reporting PASS.
+
+def test_scenarios_refuse_to_run_on_top_of_stranded_positions(coordinator):
+    coordinator.spot_leg.live_positions = [
+        {'ticket': 102269437, 'symbol': 'XAUUSD_', 'side': 'BUY',
+         'volume': 0.01, 'price_open': 4259.9},
+        {'ticket': 102269457, 'symbol': 'GC1226', 'side': 'SELL',
+         'volume': 0.10, 'price_open': 4318.0}]
+    result = request_scenario(coordinator)
+    assert not result['success']
+    assert 'still open on the broker' in result['detail']
+    assert '102269437' in result['detail'] and 'GC1226' in result['detail']
+    assert not coordinator.spot_leg.market_orders
+
+
+def test_a_flat_broker_book_lets_scenarios_run(coordinator):
+    assert request_scenario(coordinator)['success']
+
+
+def test_an_unreadable_book_is_not_assumed_flat(coordinator):
+    """None means 'could not read', not 'nothing there' — placing test
+    orders blind is exactly how the pile started."""
+    coordinator.spot_leg.positions = lambda symbol=None: None
+    result = request_scenario(coordinator)
+    assert not result['success']
+    assert 'refusing to place test orders blind' in result['detail']
+    assert not coordinator.spot_leg.market_orders

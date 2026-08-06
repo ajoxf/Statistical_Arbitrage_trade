@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  427 tests, all fakes, no MT5 (runs anywhere)
+tests/                  430 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -315,6 +315,11 @@ per-leg maker/taker fee split, backtest suite.
   flattens the position instead of passing. This protects the live
   path too: PairExecutor's cancel+verify would have believed the leg
   was flat and left a naked position.
+- Scenario preconditions check the BROKER's book, not just the
+  engine's: leaked fills left positions the engine never knew about,
+  the flat-book test passed, and every further run piled on (eleven
+  orphans in one session, all reporting PASS). An unreadable book is
+  refused too — never place test orders blind.
 - LegServer served ONE client at a time, so the UI's direct leg-runner
   calls timed out whenever the coordinator was attached. It now
   accepts several clients, each in a thread, with the MT5 work
