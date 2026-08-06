@@ -65,68 +65,9 @@
                 </div>
             </div>
         </div>
-    </div>
-</div>
-
-<!-- Per-account breakdown: with two brokers, margin lives on each
-     account separately, so both accounts and their margin are shown —
-     never only the combined figure. -->
-<div id="accounts-strip" class="row g-2 mb-3" style="display:none;"></div>
-
-<!-- Manual Spread Trade -->
-<div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-bullseye me-2"></i>Manual Spread Trade</span>
-        <span class="badge bg-secondary" id="manual-trade-status-badge">IDLE</span>
-    </div>
-    <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-            <span class="text-secondary small">Current Spread:</span>
-            <span class="fw-bold fs-5" id="manual-current-spread">—</span>
-        </div>
-        <div class="row g-2 mb-3">
-            <div class="col-6">
-                <label class="form-label small">Entry Spread <span class="text-secondary">(blank = now)</span></label>
-                <input type="number" class="form-control form-control-sm" id="manual-entry-spread" step="0.0001" placeholder="wait for this level">
-            </div>
-            <div class="col-6">
-                <label class="form-label small">Exit Spread <span class="text-secondary">(optional)</span></label>
-                <input type="number" class="form-control form-control-sm" id="manual-exit-spread" step="0.0001" placeholder="target">
-            </div>
-        </div>
-        <div class="row g-2 mb-3">
-            <div class="col-6">
-                <label class="form-label small">Direction</label>
-                <select class="form-select form-select-sm" id="manual-trade-direction">
-                    <option value="SELL_BASIS">Short Spread (entry high &rarr; exit low)</option>
-                    <option value="BUY_BASIS">Long Spread (entry low &rarr; exit high)</option>
-                </select>
-            </div>
-            <div class="col-6">
-                <label class="form-label small">Lots <span class="text-secondary">(blank = clip)</span></label>
-                <input type="number" class="form-control form-control-sm" id="manual-lots" step="0.01" min="0.01">
-            </div>
-        </div>
-        <div class="mb-3">
-            <label class="form-label small">Overnight Handling</label>
-            <select class="form-select form-select-sm" id="manual-overnight-mode">
-                <option value="ALLOW">Allow overnight (accept swap)</option>
-                <option value="EXIT_IF_PROFIT">Exit before overnight if in profit</option>
-                <option value="EXIT_ALWAYS">Exit before overnight always</option>
-            </select>
-        </div>
-        <div class="d-grid gap-2">
-            <button class="btn btn-primary btn-sm" id="manual-trade-activate" onclick="activateManualTrade()">
-                <i class="bi bi-play-fill me-1"></i>Activate Trade
-            </button>
-            <button class="btn btn-danger btn-sm d-none" id="manual-trade-cancel" onclick="cancelManualTrade()">
-                <i class="bi bi-stop-fill me-1"></i>Cancel Armed Trade
-            </button>
-        </div>
-        <div class="mt-2 small text-secondary" id="manual-trade-info">
-            Set your target spreads and activate. Signal gates are bypassed;
-            risk limits, the margin breaker and the exit ladder still apply.
-        </div>
+        <!-- One row per MT5 account: with two brokers each posts its own
+             margin, so both are always listed under the combined bar. -->
+        <div id="accounts-strip" class="mt-2"></div>
     </div>
 </div>
 
@@ -869,10 +810,6 @@
                     <span class="text-secondary">Margin Ratio:</span>
                     <span id="margin-ratio">0%</span>
                 </div>
-                <hr class="my-2">
-                <div class="text-secondary mb-1" style="font-size:0.72rem;">PER-ACCOUNT MARGIN (M2M)</div>
-                <div id="accounts-margin-table"></div>
-                <div id="accounts-margin-warning" class="mt-1" style="display:none;"></div>
                 <div class="d-flex justify-content-between mb-1" id="leg-a-liq-row"
                      title="Leg A liquidation price, shown with its current mark (mark → liq). A hedged pair's two legs liquidate in OPPOSITE directions — the short leg above its mark, the long leg below.">
                     <span class="text-secondary" id="leg-a-liq-label">Leg A Liq:</span>
@@ -883,6 +820,12 @@
                     <span class="text-secondary" id="leg-b-liq-label">Leg B Liq:</span>
                     <span><span id="leg-b-mark-price" class="text-secondary" style="font-size:0.72rem;"></span> <span id="leg-b-liq-price" class="text-danger">-</span></span>
                 </div>
+                <hr class="my-2">
+                <div class="text-secondary mb-1" style="font-size:0.72rem;">
+                    PER-ACCOUNT MARGIN (M2M)
+                </div>
+                <div id="accounts-margin-table"></div>
+                <div id="accounts-margin-warning" class="mt-1" style="display:none;"></div>
                 <div class="text-secondary mt-2"
                      style="font-size: 0.65rem; border-top: 1px solid var(--border-color); padding-top: 4px;">
                     IMR/MMR/Margin Ratio/Mark/Liq are per-position metrics
@@ -993,6 +936,63 @@
                         <span class="text-secondary" id="vip-volume-label">—</span>
                         <span class="text-secondary" id="vip-volume-next">—</span>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Manual Spread Trade -->
+        <div class="card mb-3">
+            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                <small><i class="bi bi-bullseye me-2"></i>Manual Spread Trade</small>
+                <span class="badge bg-secondary" id="manual-trade-status-badge" style="font-size:0.6rem;">IDLE</span>
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="text-secondary">Current Spread:</span>
+                    <span class="fw-bold" id="manual-current-spread">&mdash;</span>
+                </div>
+                <div class="row g-1 mb-2">
+                    <div class="col-6">
+                        <label class="form-label mb-0" style="font-size:0.65rem;">Entry <span class="text-secondary">(blank=now)</span></label>
+                        <input type="number" class="form-control form-control-sm py-0" id="manual-entry-spread" step="0.0001" style="font-size:0.75rem;">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label mb-0" style="font-size:0.65rem;">Exit <span class="text-secondary">(target)</span></label>
+                        <input type="number" class="form-control form-control-sm py-0" id="manual-exit-spread" step="0.0001" style="font-size:0.75rem;">
+                    </div>
+                </div>
+                <div class="row g-1 mb-2">
+                    <div class="col-7">
+                        <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>
+                        <select class="form-select form-select-sm py-0" id="manual-trade-direction" style="font-size:0.72rem;">
+                            <option value="SELL_BASIS">Short Spread</option>
+                            <option value="BUY_BASIS">Long Spread</option>
+                        </select>
+                    </div>
+                    <div class="col-5">
+                        <label class="form-label mb-0" style="font-size:0.65rem;">Lots</label>
+                        <input type="number" class="form-control form-control-sm py-0" id="manual-lots" step="0.01" min="0.01" placeholder="clip" style="font-size:0.75rem;">
+                    </div>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label mb-0" style="font-size:0.65rem;">Overnight</label>
+                    <select class="form-select form-select-sm py-0" id="manual-overnight-mode" style="font-size:0.72rem;">
+                        <option value="ALLOW">Allow (accept swap)</option>
+                        <option value="EXIT_IF_PROFIT">Exit if in profit</option>
+                        <option value="EXIT_ALWAYS">Exit always</option>
+                    </select>
+                </div>
+                <div class="d-grid gap-1">
+                    <button class="btn btn-primary btn-sm py-1" id="manual-trade-activate" onclick="activateManualTrade()" style="font-size:0.75rem;">
+                        <i class="bi bi-play-fill me-1"></i>Activate Trade
+                    </button>
+                    <button class="btn btn-danger btn-sm py-1 d-none" id="manual-trade-cancel" onclick="cancelManualTrade()" style="font-size:0.75rem;">
+                        <i class="bi bi-stop-fill me-1"></i>Cancel Armed
+                    </button>
+                </div>
+                <div class="text-secondary mt-2" id="manual-trade-info" style="font-size:0.65rem;">
+                    Signal gates bypassed; risk limits, margin breaker and the
+                    exit ladder still apply.
                 </div>
             </div>
         </div>
@@ -1251,66 +1251,60 @@
         const accounts = data.accounts || [];
         const strip = document.getElementById('accounts-strip');
         if (strip) {
-            // One card per account when more than one is configured.
-            strip.style.display = accounts.length > 1 ? '' : 'none';
-            strip.innerHTML = accounts.map(a => {
-                const roles = (a.roles || []).map(r =>
-                    `<span class="badge bg-primary ms-1" style="font-size:0.6rem;">${r.toUpperCase()}</span>`).join('');
-                const lvl = a.margin_level;
-                return `
-                <div class="col-md-6">
-                  <div class="card h-100">
-                    <div class="card-body py-2 px-3">
-                      <div class="d-flex justify-content-between align-items-center mb-1">
-                        <div>
-                          <strong>${a.account || '—'}</strong>${roles}
-                          ${a.connected === false
-                            ? '<span class="badge bg-secondary ms-1" style="font-size:0.6rem;">NOT CONNECTED</span>' : ''}
-                        </div>
-                        <span class="badge ${marginClass(lvl)}">
-                          ${lvl == null ? 'N/A' : Number(lvl).toFixed(0) + '%'}
-                        </span>
-                      </div>
-                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
-                        <span>Login</span><span class="font-monospace text-light">${a.login || '—'}</span>
-                      </div>
-                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
-                        <span>Server</span><span class="text-light">${a.server || '—'}</span>
-                      </div>
-                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
-                        <span>Balance</span><span class="text-light">${fmtMoney(a.balance, a.currency)}</span>
-                      </div>
-                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
-                        <span>Equity</span><span class="text-light">${fmtMoney(a.equity, a.currency)}</span>
-                      </div>
-                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
-                        <span>Margin used</span><span class="text-light">${fmtMoney(a.margin, a.currency)}</span>
-                      </div>
-                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
-                        <span>Free margin</span><span class="text-light">${fmtMoney(a.margin_free, a.currency)}</span>
-                      </div>
-                      <div class="d-flex justify-content-between text-secondary" style="font-size:0.72rem;">
-                        <span>Open P&L</span>
-                        <span class="${(a.profit || 0) >= 0 ? 'price-up' : 'price-down'}">${fmtMoney(a.profit, a.currency)}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>`;
-            }).join('');
+            // One compact row per account, inside the exchange card.
+            // Always shown — the operator needs to see WHICH accounts
+            // the engine is pointed at, connected or not.
+            strip.innerHTML = accounts.length ? `
+                <table class="table table-sm mb-0" style="font-size:0.72rem;">
+                    <thead><tr class="text-secondary">
+                        <th style="font-weight:500;">Account</th>
+                        <th style="font-weight:500;">Login</th>
+                        <th style="font-weight:500;">Server</th>
+                        <th class="text-end" style="font-weight:500;">Balance</th>
+                        <th class="text-end" style="font-weight:500;">Equity</th>
+                        <th class="text-end" style="font-weight:500;">Margin used</th>
+                        <th class="text-end" style="font-weight:500;">Free</th>
+                        <th class="text-end" style="font-weight:500;">Open P&L</th>
+                        <th class="text-end" style="font-weight:500;">Level</th>
+                    </tr></thead>
+                    <tbody>${accounts.map(a => {
+                        const roles = (a.roles || []).map(r =>
+                            `<span class="badge bg-primary ms-1" style="font-size:0.55rem;">${r.toUpperCase()}</span>`).join('');
+                        const lvl = a.margin_level;
+                        return `<tr>
+                            <td><strong>${a.account || '—'}</strong>${roles}
+                                ${a.connected === false
+                                  ? '<span class="badge bg-secondary ms-1" style="font-size:0.55rem;">NOT CONNECTED</span>' : ''}</td>
+                            <td class="font-monospace">${a.login || '—'}</td>
+                            <td>${a.server || '—'}</td>
+                            <td class="text-end">${fmtMoney(a.balance, a.currency)}</td>
+                            <td class="text-end">${fmtMoney(a.equity, a.currency)}</td>
+                            <td class="text-end">${fmtMoney(a.margin, a.currency)}</td>
+                            <td class="text-end">${fmtMoney(a.margin_free, a.currency)}</td>
+                            <td class="text-end ${(a.profit || 0) >= 0 ? 'price-up' : 'price-down'}">${fmtMoney(a.profit, a.currency)}</td>
+                            <td class="text-end"><span class="badge ${marginClass(lvl)}" style="font-size:0.6rem;">
+                                ${lvl == null ? 'N/A' : Number(lvl).toFixed(0) + '%'}</span></td>
+                        </tr>`;
+                    }).join('')}</tbody>
+                </table>`
+                : '<div class="text-secondary" style="font-size:0.72rem;">No accounts configured — add them in Settings.</div>';
         }
 
         // Compact per-account rows inside Margin Details.
         const table = document.getElementById('accounts-margin-table');
         if (table) {
-            table.innerHTML = accounts.length ? accounts.map(a => `
+            table.innerHTML = accounts.length ? accounts.map(a => {
+                const lvl = a.margin_level;
+                const detail = lvl == null
+                    ? '<span class="text-secondary">no margin posted</span>'
+                    : `${fmtMoney(a.margin, a.currency)} used · <span class="${marginClass(lvl).includes('danger') ? 'text-danger' : ''}">${Number(lvl).toFixed(0)}%</span>`;
+                return `
                 <div class="d-flex justify-content-between mb-1" style="font-size:0.72rem;"
                      title="${a.account}: equity ${fmtMoney(a.equity, a.currency)}, margin used ${fmtMoney(a.margin, a.currency)}, free ${fmtMoney(a.margin_free, a.currency)}">
-                    <span class="text-secondary">${a.account}
-                        ${(a.roles || []).length ? '(' + a.roles.join('/') + ')' : ''}</span>
-                    <span>${fmtMoney(a.margin, a.currency)} used ·
-                        <span class="${marginClass(a.margin_level).includes('danger') ? 'text-danger' : ''}">${a.margin_level == null ? 'N/A' : Number(a.margin_level).toFixed(0) + '%'}</span>
-                    </span>
-                </div>`).join('')
+                    <span class="text-secondary">${a.account}${(a.roles || []).length ? ' (' + a.roles.join('/') + ')' : ''}</span>
+                    <span>${detail}</span>
+                </div>`;
+            }).join('')
                 : '<div class="text-secondary" style="font-size:0.72rem;">No accounts connected</div>';
         }
 
@@ -1320,9 +1314,9 @@
             const weakest = data.weakest;
             if (weakest && weakest.margin_level != null && weakest.margin_level < 200) {
                 warn.style.display = '';
-                warn.innerHTML = `<span class="text-danger" style="font-size:0.72rem;">
+                warn.innerHTML = `<span class="text-danger" style="font-size:0.7rem;">
                     <i class="bi bi-exclamation-triangle-fill me-1"></i>
-                    ${weakest.account} margin level ${Number(weakest.margin_level).toFixed(0)}%
+                    ${weakest.account} at ${Number(weakest.margin_level).toFixed(0)}%
                     — top up or reduce that leg</span>`;
             } else {
                 warn.style.display = 'none';

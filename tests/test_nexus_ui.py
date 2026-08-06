@@ -226,6 +226,42 @@ def test_account_info_lists_accounts_before_connection(client):
     accounts = {a['account'] for a in data['accounts']}
     assert accounts == {'account_a', 'account_b'}
     assert all(a['connected'] is False for a in data['accounts'])
+    # Config values show through even unconnected
+    by_name = {a['account']: a for a in data['accounts']}
+    assert by_name['account_a']['login'] == 111
+    assert by_name['account_a']['roles'] == ['spot']
+
+
+def test_every_configured_account_is_listed_even_if_unused(client, tmp_path):
+    """A configured account no leg points at must still be visible —
+    otherwise it silently disappears from the dashboard (this is what
+    left the operator seeing a single row)."""
+    raw = json.loads((tmp_path / "config.json").read_text())
+    raw['leg_accounts'] = {'spot': 'account_a', 'futures': 'account_a'}
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+
+    data = client.get('/api/account-info').get_json()
+    by_name = {a['account']: a for a in data['accounts']}
+    assert set(by_name) == {'account_a', 'account_b'}
+    assert by_name['account_a']['roles'] == ['spot', 'futures']
+    assert by_name['account_b']['roles'] == []      # configured, unused
+
+
+def test_dashboard_layout_order(client):
+    """Per-account margin sits AFTER the liquidation rows (it was
+    landing above them, so the Leg A/B Liq lines read as if they were
+    the per-account breakdown), and Manual Spread Trade is a compact
+    card directly above Reset."""
+    body = client.get('/').data.decode()
+    liq = body.index('id="leg-b-liq-row"')
+    per_account = body.index('PER-ACCOUNT MARGIN')
+    assert liq < per_account, 'per-account block must follow the liq rows'
+
+    manual = body.index('Manual Spread Trade')
+    reset = body.index('Reset Controls')
+    assert manual < reset, 'manual trade card belongs above Reset'
+    # ...and inside the right-hand column, not the full-width top area
+    assert body.index('accounts-strip') < manual
 
 
 def test_dashboard_renders_per_account_margin(client):

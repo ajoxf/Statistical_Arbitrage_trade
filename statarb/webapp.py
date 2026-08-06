@@ -441,22 +441,33 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         combined roll-up, and flags the WEAKEST margin level (that is
         the one that gets you liquidated)."""
         status = runtime_status()
-        accounts = list((status.get('accounts') or {}).values())
+        live = status.get('accounts') or {}
         raw = load_config_raw()
         legs = raw.get('leg_accounts') or {}
-        if not accounts:                       # not connected yet
-            for name in dict.fromkeys(
-                    [legs.get('spot'), legs.get('futures')]):
-                if name:
-                    accounts.append({'account': name, 'login': None,
-                                     'roles': [r for r, n in legs.items()
-                                               if n == name],
-                                     'connected': False})
+        configured = raw.get('accounts') or {}
+
+        # Every CONFIGURED account is listed, whether or not a leg
+        # currently points at it and whether or not it has connected —
+        # the operator needs to see what the engine knows about.
+        accounts = []
+        for name, cfg in configured.items():
+            entry = dict(live.get(name) or {})
+            entry.setdefault('account', name)
+            entry.setdefault('login', cfg.get('login'))
+            entry.setdefault('server', cfg.get('server'))
+            entry['roles'] = [role for role, n in legs.items() if n == name]
+            entry['connected'] = name in live
+            accounts.append(entry)
+        for name, info in live.items():        # anything live but unlisted
+            if name not in configured:
+                entry = dict(info)
+                entry['connected'] = True
+                entry['roles'] = [r for r, n in legs.items() if n == name]
+                accounts.append(entry)
         totals = {'equity': 0.0, 'balance': 0.0, 'margin': 0.0,
                   'margin_free': 0.0, 'profit': 0.0}
         weakest = None
         for acct in accounts:
-            acct.setdefault('connected', acct.get('login') is not None)
             for key in totals:
                 totals[key] += acct.get(key) or 0.0
             level = acct.get('margin_level')
