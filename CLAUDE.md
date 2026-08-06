@@ -77,7 +77,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  232 tests, all fakes, no MT5 (runs anywhere)
+tests/                  269 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -186,6 +186,20 @@ Web control panel (statarb/webapp.py, own process, file-bridge only):
   AlgoTradingConfig.hot_apply; STRUCTURAL fields (accounts, legs,
   symbols, HEDGE_RATIO) are blocked -> restart; beta change with a
   position open returns 409 (W3 rule).
+- Full Order Test Suite (Exchanges page, statarb/scenarios.py): the
+  40-scenario round-trip matrix ported from the old app.py — 18 LIMIT
+  (6 order types x 3, third a cancel) + 18 MARKET (third a
+  quick-close) + 4 partial-fill recoveries, every one a complete round
+  trip at MINIMUM lot. Spot goes to the spot account and futures to
+  the futures account (app.py had one connection and could place both
+  itself). Spread scenarios ROLL BACK the first leg if the second
+  fails — a test must never leave a naked position. A fill that leaks
+  through a cancel FAILS the scenario. Runs INLINE in the coordinator
+  loop (a RemoteLeg has one socket; a thread would interleave on it),
+  requested via control.json {'scenario': {...}} and answered in
+  runtime_status.scenario_result; /api/scenario-test writes the
+  request and waits for that answer, /api/scenario-catalogue serves
+  the table. Refused unless the algo is stopped and the book flat.
 - Exchange Order Log (dashboard): BOTH accounts' raw MT5 activity in
   one table, Account column first. Coordinator polls every leg's
   `order_log()` every 30s into the `broker_orders` table (webapp is a

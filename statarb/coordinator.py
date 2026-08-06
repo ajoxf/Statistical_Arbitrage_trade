@@ -31,6 +31,7 @@ from .performance import PerformanceTracker
 from .positions import PositionManager
 from .reconcile import Reconciler
 from .risk import RiskManager
+from . import scenarios
 from .shadow import ShadowTracker
 from .signals import SignalGenerator, ZSignalGenerator
 from .spread import SpreadStats
@@ -111,7 +112,9 @@ class Coordinator:
         self._last_open_ts = 0
         self._last_test_ts = 0
         self._last_recon_ts = 0
+        self._last_scenario_ts = 0
         self._last_order_log = 0.0
+        self._scenario_result = None   # last round-trip scenario outcome
         self._test_results = None
         self.manual_order = None       # armed Manual Spread Trade
         self.algo_enabled = True       # entries only; exits ALWAYS run
@@ -668,6 +671,15 @@ class Coordinator:
             else:
                 self._test_results = None      # UI cleared the results
 
+        scenario_cmd = control.get('scenario') or {}
+        ts = scenario_cmd.get('ts', 0)
+        if ts > self._last_scenario_ts:
+            self._last_scenario_ts = ts
+            if scenario_cmd.get('type'):
+                self._run_scenario(scenario_cmd)
+            else:
+                self._scenario_result = None   # UI cleared the results
+
         recon_cmd = control.get('reconcile') or {}
         ts = recon_cmd.get('ts', 0)
         if ts > self._last_recon_ts:
@@ -779,6 +791,93 @@ class Coordinator:
                                            comment='ORDER_TEST')
                 add(leg.name, f'round trip close {symbol}',
                     reversed_order.get('ok'), 'netting-mode reverse')
+
+    def _scenario_legs(self, asset_key=None):
+        """Build the spot/futures pair the scenario runner acts on:
+        each leg's account, its symbol on that account, the asset's
+        contract size and that leg's commission."""
+        if not self.active_assets:
+            return None, None, 'No active asset — is the coordinator '\
+                               'connected to both legs?'
+        asset_key = (asset_key if asset_key in self.active_assets
+                     else next(iter(self.active_assets)))
+        asset = self.active_assets[asset_key]
+        contract = self.config.ASSETS.get(asset_key, {}).get('lot_size', 100.0)
+        spot = scenarios.Leg(
+            self.spot_leg, asset['spot_symbol'], 'SPOT', contract,
+            self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0))
+        futures = scenarios.Leg(
+            self.futures_leg, asset['futures_symbol'], 'FUTURES', contract,
+            self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0))
+        return spot, futures, None
+
+    def _scenario_stats(self, asset_key):
+        """The live spread and its z, so the scenario report carries
+        the same numbers the strategy would have acted on."""
+        def snapshot():
+            data = self.get_market_data(asset_key)
+            if not data:
+                return None
+            stats = self.stats.get(asset_key)
+            return (data['swap_diff'],
+                    stats.mu if stats else None,
+                    stats.sigma if stats else None,
+                    stats.z if stats else None)
+        return snapshot
+
+    def _run_scenario(self, spec):
+        """Run ONE round-trip scenario at minimum volume on the real
+        accounts (the Exchanges page's suite). Runs INLINE in the
+        trading loop on purpose: a RemoteLeg holds a single socket, so
+        a background thread would interleave requests on it. Scenarios
+        are bounded (a limit waits at most ~15s) and the whole feature
+        requires the algo stopped and a flat book anyway."""
+        started = datetime.now()
+        name = (f"{spec.get('type')} {spec.get('mode')} "
+                f"{spec.get('variant', 'normal')}")
+
+        def finish(success, detail):
+            self._scenario_result = {
+                'id': spec.get('id'), 'type': spec.get('type'),
+                'mode': spec.get('mode'),
+                'variant': spec.get('variant', 'normal'),
+                'ts': spec.get('ts'), 'success': bool(success),
+                'detail': detail,
+                'ran_at': started.strftime('%H:%M:%S'),
+            }
+            logging.warning("[SCENARIO] %s: %s", name,
+                            'PASS' if success else 'FAIL')
+            # The UI is waiting on this one result, and the routine
+            # status refresh is ~10s away — publish it now.
+            self._write_runtime_status(self.last_data or {})
+            return self._scenario_result
+
+        if self.algo_enabled:
+            return finish(False, 'Stop the algo before running order '
+                                 'scenarios — they place REAL orders.')
+        if self.position_manager.get_active_positions():
+            return finish(False, 'Close open positions first — scenarios '
+                                 'need a flat book.')
+        for leg in self._each_leg():
+            if not leg.ping():
+                return finish(False, f"Leg '{leg.name}' is not connected.")
+
+        spot, futures, error = self._scenario_legs(spec.get('asset'))
+        if error:
+            return finish(False, error)
+
+        asset_key = (spec.get('asset') if spec.get('asset')
+                     in self.active_assets
+                     else next(iter(self.active_assets)))
+        runner = scenarios.ScenarioRunner(
+            spot, futures, spread_stats=self._scenario_stats(asset_key))
+        try:
+            outcome = runner.run(spec['type'], spec.get('mode', 'MARKET'),
+                                 spec.get('variant', 'normal'))
+        except Exception as e:
+            logging.error("Scenario %s blew up: %s", name, e)
+            return finish(False, f'Scenario error: {e}')
+        return finish(outcome['success'], outcome['detail'])
 
     def _check_manual_arm(self, asset_key, market_data):
         """An armed manual trade fires when the spread reaches the
@@ -912,6 +1011,7 @@ class Coordinator:
             'shadow': {'active': len(self.shadow.active),
                        'tracking': self.shadow.snapshot()},
             'test_results': self._test_results,
+            'scenario_result': self._scenario_result,
             'margin_breaker': self._margin_breaker_state(),
             'manual_order': self.manual_order,
         }

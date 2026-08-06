@@ -936,6 +936,14 @@
                             <strong>Run</strong> next to any row to execute a single scenario on demand.
                             LIMIT scenarios are spaced ~20 s apart; MARKET ~5 s apart.
                         </small>
+                        <div class="alert alert-info py-2 small">
+                            <i class="bi bi-arrow-right-circle me-2"></i>
+                            The spot &amp; futures round-trip matrix runs on the
+                            <a href="/setup">Exchanges</a> page, where both accounts'
+                            connection state is in view. The button below runs the
+                            shorter per-leg order check (place → cancel, open → close
+                            by ticket) on each connected account.
+                        </div>
                         <div class="d-flex gap-2 mb-3 flex-wrap">
                             <button type="button" class="btn btn-primary" id="btn-run-suite" onclick="startTestSuite()">
                                 <i class="bi bi-play-circle me-1"></i>Run Full Test Suite

@@ -33,7 +33,7 @@ try:
 except ImportError:
     SocketIO = None            # UI falls back to polling
 
-from . import webapi
+from . import scenarios, webapi
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
@@ -61,7 +61,7 @@ def update_env_file(path, updates):
 
 def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                config_path="config.json", control_path="control.json",
-               env_path=".env"):
+               env_path=".env", scenario_timeout=90.0):
     if Flask is None:
         raise RuntimeError("Flask not installed — pip install flask")
     app = Flask(__name__, template_folder=TEMPLATE_DIR,
@@ -816,6 +816,50 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         is nothing to stop — this clears the displayed results."""
         write_control({'test': {'kind': None, 'ts': time.time()}})
         return jsonify({'success': True, 'running': False})
+
+    # -- round-trip order scenarios (Exchanges page) --
+
+    @app.route('/api/scenario-catalogue')
+    def api_scenario_catalogue():
+        """The scenario matrix the Exchanges page renders. Served from
+        the engine so the table can never drift from what actually
+        runs."""
+        return jsonify({'scenarios': scenarios.CATALOGUE,
+                        'spacing_sec': scenarios.RUN_SPACING_SEC})
+
+    @app.route('/api/scenario-test', methods=['POST'])
+    def api_scenario_test():
+        """Run ONE round-trip scenario on the live accounts.
+
+        The web app never touches MT5, so this hands the scenario to
+        the coordinator through control.json and waits for it to
+        publish the outcome — the caller still gets one synchronous
+        {success, detail}, which is what the suite table expects."""
+        spec = request.get_json(silent=True) or {}
+        if not spec.get('type'):
+            return jsonify({'success': False,
+                            'detail': 'No scenario type given'}), 400
+        ts = time.time()
+        write_control({'scenario': {
+            'id': spec.get('id'), 'type': spec['type'],
+            'mode': spec.get('mode', 'MARKET'),
+            'variant': spec.get('variant', 'normal'),
+            'asset': spec.get('asset'), 'ts': ts}})
+
+        deadline = time.time() + scenario_timeout
+        while time.time() < deadline:
+            result = runtime_status().get('scenario_result') or {}
+            if result.get('ts') == ts:
+                return jsonify(result)
+            time.sleep(0.4)
+        return jsonify({
+            'success': False,
+            'detail': 'No answer from the coordinator. Is it running? '
+                      'Scenarios need the algo stopped and a flat book.'})
+
+    @app.route('/api/scenario-test/status')
+    def api_scenario_status():
+        return jsonify(runtime_status().get('scenario_result') or {})
 
     # -- position/broker maintenance (MT5 equivalents of W3's crypto
     # housekeeping endpoints) --
