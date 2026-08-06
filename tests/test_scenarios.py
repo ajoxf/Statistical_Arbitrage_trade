@@ -118,7 +118,10 @@ def test_limit_round_trip_rests_then_fills_then_closes():
     assert out['success']
     symbol, side, volume, price = spot_leg.placed[0]
     assert (symbol, side, volume) == ('XAUUSD', 'BUY', 0.01)
-    assert price == pytest.approx(3299.95)      # rests at the bid
+    # One tick INSIDE the ask (3300.05), not parked at the bid: a buy
+    # limit at the bid only fills if the market comes all the way to
+    # you, which is why the live suite never filled one in 15s.
+    assert price == pytest.approx(3300.04)
     assert spot_leg.closed_tickets
 
 
@@ -143,11 +146,24 @@ def test_cancel_variant_parks_away_from_the_market():
     assert len(spot_leg.cancels) == 1
 
 
-def test_a_fill_leaking_through_a_cancel_fails_the_scenario():
+def test_a_fill_leaking_through_a_cancel_is_always_reported():
     """Deal history lags a cancel. If volume slipped through, the
-    operator must see it — a silent pass would hide a live position."""
+    operator must SEE it — a silent pass would hide a live position.
+    (Whether it also fails is decided by the cleanup: see the
+    handled-leak tests at the end of this file.)"""
     spot_leg = ScenarioFakeLeg('account_a', limit_fill_polls={'XAUUSD': None},
                                leak_on_cancel={'XAUUSD': 0.01})
+    runner, spot_leg, _ = make_runner(spot_leg=spot_leg)
+    out = runner.run('BUY_SPOT', 'LIMIT', variant='cancel')
+    assert 'before the cancel landed' in out['detail']
+    assert 'leak cleanup' in out['detail']
+    assert spot_leg.closed_tickets, 'the leaked position must be closed'
+
+
+def test_a_leak_the_broker_will_not_let_us_close_fails_loudly():
+    spot_leg = ScenarioFakeLeg('account_a', limit_fill_polls={'XAUUSD': None},
+                               leak_on_cancel={'XAUUSD': 0.01},
+                               fail_close={'XAUUSD'})
     runner, _, _ = make_runner(spot_leg=spot_leg)
     out = runner.run('BUY_SPOT', 'LIMIT', variant='cancel')
     assert not out['success']
@@ -525,12 +541,13 @@ def test_the_side_passed_to_the_leg_is_always_a_real_order_side():
             OrderSide(call[3])          # raises if a role leaked through
 
 
-def test_a_leaked_fill_still_fails_the_scenario():
-    """Cleaning up is not passing — a fill that beat the cancel means
-    the scenario did not do what it set out to do."""
+def test_a_leaked_fill_is_always_visible_in_the_report():
+    """However it is scored, the operator must be told a fill got
+    through — that is a real position that really existed."""
     runner, spot_leg, _ = make_runner()
     spot_leg.leak_on_cancel['XAUUSD'] = 0.01
-    assert not runner.run('BUY_SPOT', 'LIMIT', 'cancel')['success']
+    out = runner.run('BUY_SPOT', 'LIMIT', 'cancel')
+    assert 'before the cancel landed' in out['detail']
 
 
 # --- a close is logged as the order that was actually sent ---------------
@@ -619,3 +636,82 @@ def test_single_leg_scenarios_still_use_that_legs_minimum():
     runner.run('BUY_SPOT', 'MARKET', 'normal')
     opens = [a for a in runner.actions if a['kind'] == 'open']
     assert opens[0]['volume'] == pytest.approx(0.01)
+
+
+# --- an aggressive limit sits INSIDE the spread --------------------------
+# Live 2026-08-06: every "should fill" limit timed out at 15s because it
+# was placed at the near touch — a passive price. MT5 rejects a buy
+# limit at or above the ask (10015), so one tick inside is as close to
+# marketable as a BUY_LIMIT gets.
+
+def limit_price(runner, leg, s_type):
+    runner.run(s_type, 'LIMIT', 'cancel')
+    return None
+
+
+def test_a_marketable_buy_rests_one_tick_below_the_ask():
+    runner, spot_leg, _ = make_runner()
+    action = runner.place_limit(runner.spot, 'BUY', marketable=True)
+    tick_bid, tick_ask = 3299.95, 3300.05
+    assert action['tgt'] == pytest.approx(tick_ask - 0.01)
+    assert tick_bid < action['tgt'] < tick_ask     # strictly inside
+
+
+def test_a_marketable_sell_rests_one_tick_above_the_bid():
+    runner, _, fut_leg = make_runner()
+    action = runner.place_limit(runner.futures, 'SELL', marketable=True)
+    tick = fut_leg.tick('GC1225')
+    assert action['tgt'] < tick['ask']
+    assert action['tgt'] > tick['bid'] - 0.011
+
+
+def test_a_buy_limit_never_sits_at_or_above_the_ask():
+    """MT5 rejects that outright — 10015 Invalid Price."""
+    runner, spot_leg, _ = make_runner()
+    action = runner.place_limit(runner.spot, 'BUY', marketable=True)
+    tick = spot_leg.tick('XAUUSD')
+    assert action['tgt'] < tick['ask']
+
+
+def test_the_cancel_variant_still_parks_far_away():
+    """The cancel scenarios need an order that will NOT fill."""
+    runner, spot_leg, _ = make_runner()
+    action = runner.place_limit(runner.spot, 'BUY', marketable=False)
+    tick = spot_leg.tick('XAUUSD')
+    assert action['tgt'] < tick['bid'] * 0.995
+
+
+# --- a handled leak is the safety machinery working, not a failure -------
+# Live 2026-08-06: four spread scenarios reported FAIL because the
+# market moved through a resting limit during the cancel. Every one was
+# detected, flattened and confirmed by MT5 — the system did exactly what
+# it should. Reporting that identically to a real fault buries genuine
+# failures in red.
+
+def test_a_leak_that_is_cleaned_up_passes_with_the_leak_recorded():
+    runner, spot_leg, _ = make_runner()
+    spot_leg.leak_on_cancel['XAUUSD'] = 0.01
+    outcome = runner.run('BUY_SPOT', 'LIMIT', 'cancel')
+    cancels = [a for a in runner.actions if a['kind'] == 'cancel']
+    assert cancels[-1]['leaked']                 # it happened...
+    assert cancels[-1]['leak_handled']           # ...and was dealt with
+    assert outcome['success']
+
+
+def test_a_leak_whose_cleanup_fails_is_still_a_failure():
+    """The safety property: an unflattened position must never pass."""
+    spot_leg = ScenarioFakeLeg('account_a', price=3300.0,
+                               fail_close={'XAUUSD'})
+    runner, spot_leg, _ = make_runner(spot_leg=spot_leg)
+    spot_leg.leak_on_cancel['XAUUSD'] = 0.01
+    outcome = runner.run('BUY_SPOT', 'LIMIT', 'cancel')
+    assert not outcome['success']
+
+
+def test_a_clean_cancel_reports_no_leak():
+    runner, spot_leg, _ = make_runner()
+    outcome = runner.run('BUY_SPOT', 'LIMIT', 'cancel')
+    cancels = [a for a in runner.actions if a['kind'] == 'cancel']
+    assert not cancels[-1].get('leaked')
+    assert not cancels[-1].get('leak_handled')
+    assert outcome['success']

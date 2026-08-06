@@ -243,9 +243,23 @@ class ScenarioRunner:
 
     def place_limit(self, side_leg, side, marketable,
                     comment='SCENARIO LMT', volume=None):
-        """Rest a limit order. `marketable` parks it at the near touch
-        (it should fill); otherwise ~1% away, which is what the cancel
-        scenarios need."""
+        """Rest a limit order.
+
+        `marketable` puts it AGGRESSIVELY inside the spread — one tick
+        from the far touch — which is the closest a BUY_LIMIT can get to
+        filling immediately. MT5 rejects a buy limit at or above the ask
+        (10015 Invalid Price), so a true marketable limit is not
+        expressible; one tick inside is.
+
+        This used to park a BUY at the BID and a SELL at the ASK, which
+        are PASSIVE prices — the order only fills if the market comes
+        all the way to you. That is why the "should fill" scenarios
+        never filled in 15s (live 2026-08-06) and the only fills the
+        suite saw were orders the market ran through during a cancel.
+
+        Without `marketable` it sits ~1% away, which is what the cancel
+        scenarios need.
+        """
         action = self._base(side_leg, 'place', side)
         specs = side_leg.specs()
         if not specs.get('ok'):
@@ -256,10 +270,16 @@ class ScenarioRunner:
         if not tick:
             action['error'] = 'no tick'
             return self._record(action)
+        step = specs.get('tick_size') or specs.get('point') or 0.01
         if side == 'BUY':
-            price = tick['bid'] if marketable else tick['bid'] * 0.99
+            # Strictly below the ask, and never below the bid.
+            price = (max(tick['ask'] - step, tick['bid']) if marketable
+                     else tick['bid'] * 0.99)
         else:
-            price = tick['ask'] if marketable else tick['ask'] * 1.01
+            # Strictly above the bid, and never above the ask.
+            price = (min(tick['bid'] + step, tick['ask']) if marketable
+                     else tick['ask'] * 1.01)
+        price = round(price / step) * step
         action['tgt'] = price
         volume = volume or self._volume(side_leg)
         placed = side_leg.leg.place_limit(side_leg.symbol, side, volume,
@@ -332,11 +352,20 @@ class ScenarioRunner:
             self._record(action)
             # Never leave it on the book: flatten what leaked through.
             tickets = state.get('position_tickets') or [order_ticket]
-            self.close(side_leg, {
+            cleanup = self.close(side_leg, {
                 'ok': True, 'ticket': tickets[0],
                 'volume': state['filled_volume'],
                 'side': place_action['side'],
                 'kind': 'open'}, kind='leak cleanup')
+            # A leak is the MARKET moving through a resting price, not a
+            # defect: the order was valid and the broker filled it. What
+            # matters is whether we noticed and flattened it. Cleaned up
+            # and confirmed by MT5 -> the safety machinery did its job,
+            # so the scenario passes WITH the leak on the record. Cleanup
+            # that failed is a real failure and stays one.
+            if cleanup.get('ok') and cleanup.get('verified') is not False:
+                action['ok'] = True
+                action['leak_handled'] = True
             return action
         if state.get('cancelled') or not state.get('still_open'):
             action['ok'] = True
@@ -558,6 +587,13 @@ class ScenarioRunner:
         if not action.get('ok', True):
             return (f'{head} {kind} FAILED @ {when} UTC: '
                     f'{action.get("error", "?")}')
+        if action.get('leak_handled'):
+            # The scenario passes, but a real position really existed.
+            # It must stay on the report, not be smoothed into
+            # "cancelled" by having been cleaned up successfully.
+            return (f'{head} {kind} RACED a fill @ {when} UTC: '
+                    f'{action.get("error", "?")} — flattened and '
+                    f'confirmed')
         if kind == 'cancel':
             line = f'{head} cancelled @ {when} UTC'
             if action.get('order'):

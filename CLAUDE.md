@@ -359,10 +359,24 @@ either sigma >= ~0.20/oz (3x today) or total spreads down from
 2h window before concluding — these readings came from a warm-up
 window.
 
-**Passive limits do not fill here.** Across ~10 LIMIT scenarios pegged
-at the touch, zero filled inside LIMIT_TIMEOUT_SEC (15s); three
-instead leaked during the cancel. So SPREAD_COST_FACTOR cannot be
-lowered on the strength of limit fills on this account — assume 1.0.
+**Passive limits do not fill here** — but the suite was also asking
+the wrong question. `place_limit(marketable=True)` put a BUY at the
+BID and a SELL at the ASK: those are PASSIVE prices, so the "should
+fill" scenarios could only fill by luck, and all four LIMIT spread
+scenarios failed on a leg the market happened to run through. MT5
+rejects a buy limit at/above the ask (10015), so a true marketable
+limit is not expressible; it now places ONE TICK inside the far touch,
+which is as aggressive as BUY_LIMIT gets. Re-run before drawing
+conclusions about fill rates.
+A leaked fill is now scored precisely: the market moving through a
+resting price is not a defect, so a leak that is flattened AND
+confirmed by MT5 PASSES, with the line rendered "RACED a fill ... —
+flattened and confirmed" so it never disappears from the report. A
+leak whose cleanup fails is still a FAIL. (Before: any leak = FAIL,
+which buried genuine faults in red; before that: any leak = silent
+PASS, which left orphans.)
+SPREAD_COST_FACTOR still cannot be lowered on the strength of limit
+fills on this account — assume 1.0 until measured.
 
 ## Live LIVE-run bugs (2026-08-06, CFI7-Demo, engine streaming)
 
