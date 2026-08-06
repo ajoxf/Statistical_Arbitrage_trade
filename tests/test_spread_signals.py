@@ -260,3 +260,70 @@ def test_an_absolute_sigma_floor_can_be_set(sig_config):
 
 def test_the_floor_is_off_by_default(sig_config):
     assert sig_config.SIGNALS['MIN_SIGMA'] == 0.0
+
+
+# --- the window is a series of QUOTES, not of poll iterations ------------
+# Root cause of that collapsed sigma: the coordinator polls every 0.5s,
+# faster than either broker ticks, so the same quote was sampled over and
+# over until the window held almost no variation.
+
+def test_a_repeated_quote_adds_no_sample(sig_config):
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    for _ in range(200):
+        clock.t += 0.5
+        stats.update(9.13, quote_id='t1|9.13')
+    assert len(stats.samples) == 1
+    assert not stats.warm
+
+
+def test_each_new_quote_adds_one_sample(sig_config):
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    for i in range(60):
+        for _ in range(8):                    # polled 8x per quote
+            clock.t += 0.5
+            stats.update(9.0 + 0.1 * (i % 5), quote_id=f'q{i}')
+    assert len(stats.samples) == 60
+    assert stats.warm and stats.z is not None
+
+
+def test_oversampling_no_longer_collapses_sigma(sig_config):
+    """The same six quotes, polled once each vs polled twenty times
+    each, must give the SAME sigma."""
+    clock_a, clock_b = FakeClock(), FakeClock()
+    once, many = make_stats(sig_config, clock_a), make_stats(sig_config, clock_b)
+    values = [8.5, 8.7, 9.0, 9.3, 8.9, 9.1] * 10
+    for i, value in enumerate(values):
+        clock_a.t += 10
+        once.update(value, quote_id=f'q{i}')
+        for _ in range(20):
+            clock_b.t += 0.5
+            many.update(value, quote_id=f'q{i}')
+    assert many.sigma == pytest.approx(once.sigma)
+    assert many.warm and not many.degenerate
+
+
+def test_a_feed_that_stops_ticking_goes_cold(sig_config):
+    """Ageing runs on every poll, not only on new quotes — a dead feed
+    must drain out of the window instead of freezing a stale z."""
+    sig_config.SIGNALS['LOOKBACK_SEC'] = 300
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    for i in range(60):
+        clock.t += 1
+        stats.update(9.0 + 0.1 * (i % 5), quote_id=f'q{i}')
+    assert stats.warm
+    for _ in range(800):                      # feed frozen, poll continues
+        clock.t += 0.5
+        stats.update(9.2, quote_id='q59')
+    assert not stats.samples and not stats.warm and stats.z is None
+
+
+def test_without_a_quote_id_every_call_is_a_sample(sig_config):
+    """Callers that have no quote identity (tests, the legacy path)
+    keep the old behaviour."""
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    feed(stats, clock, [9.0, 9.2] * 30)
+    assert len(stats.samples) == 60

@@ -480,7 +480,8 @@ class Coordinator:
         stats = self.stats.get(asset_key)
         z = None
         if stats is not None:
-            stats.update(market_data['swap_diff'])
+            stats.update(market_data['swap_diff'],
+                         market_data.get('quote_id'))
             z = stats.z
             self.z_gen.update(asset_key, z)
 

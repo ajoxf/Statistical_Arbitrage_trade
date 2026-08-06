@@ -381,6 +381,26 @@ def market_data(config, expiry='unset'):
     return compute_market_data(asset, spot, fut)
 
 
+def test_a_snapshot_carries_the_identity_of_its_two_quotes(config):
+    """SpreadStats dedups on this: two polls that read the same pair of
+    ticks are ONE observation, however many times we looked."""
+    from types import SimpleNamespace
+    from statarb.marketdata import compute_market_data
+    asset = dict(config.ASSETS['GOLD'])
+    spot = SimpleNamespace(bid=3299.9, ask=3300.1, last=3300.0, time=1000)
+    fut = SimpleNamespace(bid=3319.9, ask=3320.1, last=3320.0, time=1000)
+    first = compute_market_data(asset, spot, fut)
+    assert compute_market_data(asset, spot, fut)['quote_id'] == \
+        first['quote_id']
+
+    moved = SimpleNamespace(bid=3319.9, ask=3320.3, last=3320.1, time=1000)
+    assert compute_market_data(asset, spot, moved)['quote_id'] != \
+        first['quote_id']       # same second, new price
+    later = SimpleNamespace(bid=3319.9, ask=3320.1, last=3320.0, time=1001)
+    assert compute_market_data(asset, spot, later)['quote_id'] != \
+        first['quote_id']       # same price, new tick
+
+
 def test_an_asset_with_no_expiry_does_not_crash_the_engine(config):
     """The operator's config had no futures_expiry and startup died
     with KeyError before the coordinator ever ran."""

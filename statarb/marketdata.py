@@ -24,6 +24,16 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
     """
     multiplier = asset_cfg.get('multiplier', 1.0)
 
+    # Identity of the two quotes this snapshot was built from. Two polls
+    # that read the same pair of ticks are ONE observation of the
+    # spread, however many times we looked; SpreadStats uses this to
+    # keep its window a series of quote events rather than of poll
+    # iterations. Prices join the tick times because some brokers stamp
+    # ticks only to the second.
+    quote_id = "{}:{}/{}|{}:{}/{}".format(
+        getattr(spot_tick, 'time', ''), spot_tick.bid, spot_tick.ask,
+        getattr(futures_tick, 'time', ''), futures_tick.bid, futures_tick.ask)
+
     spot_price = (spot_tick.last if spot_tick.last > 0
                   else (spot_tick.bid + spot_tick.ask) / 2)
     futures_price = (futures_tick.last if futures_tick.last > 0
@@ -62,6 +72,7 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
     return {
         'asset_name': asset_cfg['name'],
         'timestamp': datetime.now(),
+        'quote_id': quote_id,
         'spot_price': spot_price,
         'futures_price': futures_price,
         'swap_futures_price': swap_futures_price,

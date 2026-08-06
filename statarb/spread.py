@@ -26,14 +26,29 @@ class SpreadStats:
         self.half_life_sec = None
         self.last_refresh = 0.0
         self.last_value = None
+        self.last_quote_id = None
 
     # ------------------------------------------------------------------
 
-    def update(self, value):
-        """Feed one spread observation; refresh frozen stats when due."""
+    def update(self, value, quote_id=None):
+        """Feed one spread observation; refresh frozen stats when due.
+
+        quote_id identifies the market quote the value came from. The
+        coordinator polls on a fixed clock, faster than either broker
+        actually ticks, so without it the window fills with the SAME
+        quote sampled over and over: sigma collapses toward zero and z
+        explodes (live 2026-08-06: z +53026 on a 9.13 spread). The
+        statistics belong to quote EVENTS, not to poll iterations, so a
+        repeated quote adds no sample. Ageing still runs on every call
+        — a feed that stops ticking must drain out of the window and
+        go cold, not freeze a stale mu/sigma in place.
+        """
         now = self.clock()
-        self.samples.append((now, value))
-        self.last_value = value
+        fresh = quote_id is None or quote_id != self.last_quote_id
+        if fresh:
+            self.last_quote_id = quote_id
+            self.samples.append((now, value))
+            self.last_value = value
 
         horizon = now - self.cfg['LOOKBACK_SEC']
         while self.samples and self.samples[0][0] < horizon:

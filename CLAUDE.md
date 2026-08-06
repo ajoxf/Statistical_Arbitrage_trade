@@ -303,6 +303,18 @@ per-leg maker/taker fee split, backtest suite.
   spread sits still |z| stays ~1, but a SMALL-not-absurd sigma can put
   z inside [ENTRY_Z, MAX_ENTRY_Z) on noise — MIN_SIGMA is the only
   defence and must be set once the spread's real sigma is known.
+- **Root cause of that collapsed sigma: the window was a series of
+  POLLS, not of quotes.** The coordinator polls every 0.5s, faster
+  than either broker ticks, so the same quote was appended over and
+  over and the window held almost no variation. compute_market_data
+  now stamps each snapshot with a `quote_id` (both tick times AND both
+  bid/asks — some brokers stamp only to the second) and
+  `SpreadStats.update(value, quote_id)` ignores a repeat. Sigma is now
+  invariant to poll rate (regression-tested: same quotes polled 1x and
+  20x give the same sigma). Ageing still runs on EVERY call, so a feed
+  that stops ticking drains out of the window and goes cold rather
+  than freezing a stale z. This also shrinks — but does not remove —
+  the MIN_SIGMA residual risk above.
 - The warm-up bar read "181 / 7,200": it compared a SAMPLE COUNT to
   LOOKBACK_SEC, a duration, so it could never fill. It now counts
   against MIN_SAMPLES, which is what actually gates trading.
