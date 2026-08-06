@@ -205,3 +205,58 @@ def test_no_entry_while_position_open(sig_config):
     gen = ZSignalGenerator(sig_config, clock=clock)
     assert gen.entry_signal('GOLD', stats, market_data(),
                             {'POS_0001': object()}, 50.0, 100) is None
+
+
+# --- degenerate windows: a sigma near zero is not a signal ---------------
+# Live 2026-08-06: "swap_diff +9.13 | z +53026.30". Sigma had collapsed
+# because the spread barely moved in the window, and dividing by it
+# produced a number with no meaning.
+
+def test_a_flat_window_alone_is_not_yet_dangerous(sig_config):
+    """While the spread sits still, z stays around 1 however small
+    sigma is — no entry fires on that. The danger starts when the
+    value LEAVES the collapsed anchor."""
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    feed(stats, clock, [9.13, 9.1300001] * 30)
+    assert stats.sigma < 1e-4
+    assert abs(stats.z) < 2
+
+
+def test_the_absurd_z_the_operator_saw_is_refused(sig_config):
+    """swap_diff +9.13 with z +53026: sigma had collapsed, then the
+    spread moved. That number reached the log and the dashboard."""
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    feed(stats, clock, [9.13, 9.1300001] * 30)
+    stats.last_value = 9.13 + 5.0        # spread leaves the anchor
+    assert abs((stats.last_value - stats.mu) / stats.sigma) > 25
+    assert stats.degenerate and stats.z is None
+
+
+def test_a_healthy_window_still_gives_a_z(sig_config):
+    clock = FakeClock()
+    stats = make_stats(sig_config, clock)
+    feed(stats, clock, [8.5, 8.7, 9.0, 9.3, 8.9, 9.1] * 10)
+    assert not stats.degenerate
+    assert stats.warm and stats.z is not None
+    assert abs(stats.z) < 25
+
+
+def test_an_absolute_sigma_floor_can_be_set(sig_config):
+    """The only guard against a SMALL-but-not-absurd sigma putting z
+    inside the entry band on noise — the operator sets it once the
+    spread's real sigma is known."""
+    clock = FakeClock()
+    sig_config.SIGNALS['MIN_SIGMA'] = 0.05
+    stats = make_stats(sig_config, clock)
+    feed(stats, clock, [9.10, 9.11, 9.12, 9.13] * 20)   # sigma ~0.011
+    assert stats.sigma < 0.05
+    assert stats.degenerate and stats.z is None
+
+    sig_config.SIGNALS['MIN_SIGMA'] = 0.001
+    assert not stats.degenerate and stats.z is not None
+
+
+def test_the_floor_is_off_by_default(sig_config):
+    assert sig_config.SIGNALS['MIN_SIGMA'] == 0.0

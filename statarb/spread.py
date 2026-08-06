@@ -78,9 +78,30 @@ class SpreadStats:
     # ------------------------------------------------------------------
 
     @property
+    def degenerate(self):
+        """True when the window cannot support a z-score.
+
+        A spread that barely moved — or a feed that repeated the same
+        number while we polled faster than it ticked — gives a sigma
+        near zero, and dividing by it produces a meaningless z in the
+        tens of thousands (seen live 2026-08-06: z +53026 on a spread
+        of 9.13). Anything computed from that is noise: the entry
+        ceiling would block the absurd values, but a merely SMALL sigma
+        lands z inside the entry band on nothing at all."""
+        if self.sigma is None or self.sigma <= 0:
+            return True
+        floor = self.cfg.get('MIN_SIGMA', 0.0) or 0.0
+        if floor and self.sigma < floor:
+            return True
+        raw = ((self.last_value - self.mu) / self.sigma
+               if self.last_value is not None and self.mu is not None
+               else 0.0)
+        return abs(raw) > self.cfg.get('MAX_ABS_Z', 25.0)
+
+    @property
     def warm(self):
         return (len(self.samples) >= self.cfg['MIN_SAMPLES']
-                and self.sigma is not None and self.sigma > 1e-12)
+                and self.sigma is not None and not self.degenerate)
 
     @property
     def z(self):

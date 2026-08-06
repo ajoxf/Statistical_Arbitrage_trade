@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  432 tests, all fakes, no MT5 (runs anywhere)
+tests/                  437 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -294,6 +294,18 @@ per-leg maker/taker fee split, backtest suite.
 
 ## Live LIVE-run bugs (2026-08-06, CFI7-Demo, engine streaming)
 
+- **z of +53,026 on a spread of 9.13.** Sigma collapsed (a quiet
+  window / polling faster than the feed ticks) and z is a division by
+  it. SpreadStats.degenerate now refuses a window whose implied |z|
+  exceeds SIGNALS.MAX_ABS_Z (25) or whose sigma is below the OPT-IN
+  SIGNALS.MIN_SIGMA floor; degenerate windows report warm-up, not a
+  number. Note the residual risk the guards cannot remove: while the
+  spread sits still |z| stays ~1, but a SMALL-not-absurd sigma can put
+  z inside [ENTRY_Z, MAX_ENTRY_Z) on noise — MIN_SIGMA is the only
+  defence and must be set once the spread's real sigma is known.
+- The warm-up bar read "181 / 7,200": it compared a SAMPLE COUNT to
+  LOOKBACK_SEC, a duration, so it could never fill. It now counts
+  against MIN_SAMPLES, which is what actually gates trading.
 - **Filling mode**: `close_position_ticket` and `send_market_order`
   hardcoded ORDER_FILLING_IOC, so on a FOK-only broker EVERY close came
   back `10030 Unsupported filling mode` — the engine could open and

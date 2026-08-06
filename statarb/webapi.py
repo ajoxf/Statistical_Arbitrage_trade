@@ -366,7 +366,12 @@ def status_to_ui(status, config_raw):
             'half_life': first.get('half_life_min'),
             'hurst': None, 'regime': first.get('regime'),
             'data_points': first.get('samples'),
-            'lookback': first.get('lookback'),
+            # What the warm-up bar must count against: MIN_SAMPLES is
+            # what actually gates trading. LOOKBACK_SEC is a window in
+            # SECONDS — showing "181 / 7,200" compared a sample count
+            # to a duration and never filled.
+            'lookback': first.get('min_samples') or first.get('lookback'),
+            'lookback_sec': first.get('lookback'),
             'data_ready': first.get('z') is not None,
             'hedge_ratio': (config_raw.get('trading') or {}).get(
                 'HEDGE_RATIO', 1.0),

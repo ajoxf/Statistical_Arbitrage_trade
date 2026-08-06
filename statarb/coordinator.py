@@ -1284,7 +1284,9 @@ class Coordinator:
                 'half_life_min': ((stats.half_life_sec / 60)
                                   if stats and stats.half_life_sec else None),
                 'samples': len(stats.samples) if stats else 0,
+                'min_samples': self.config.SIGNALS.get('MIN_SAMPLES'),
                 'lookback': self.config.SIGNALS.get('LOOKBACK_SEC'),
+                'degenerate': bool(stats.degenerate) if stats else False,
                 'basis': md['actual_basis'],
                 'swap_diff': md['swap_diff'],
                 'carry_adjusted': md.get('carry_adjusted', True),

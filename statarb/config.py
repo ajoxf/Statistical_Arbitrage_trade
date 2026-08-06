@@ -132,6 +132,16 @@ class AlgoTradingConfig:
             'LOOKBACK_SEC': 7200,
             'STATS_INTERVAL_SEC': 300, # freeze mu/sigma between refreshes
             'MIN_SAMPLES': 300,        # warm-up before any signal
+            # Degenerate-window guards. A quiet spread (or a feed
+            # polled faster than it ticks) gives a sigma near zero and
+            # a z in the thousands — meaningless, and a merely small
+            # sigma puts z inside the entry band on noise.
+            'MIN_SIGMA': 0.0,          # absolute floor (0 = off); set it
+                                       # once the spread's real sigma is
+                                       # known — it is the only guard
+                                       # against a SMALL sigma putting z
+                                       # inside the entry band on noise
+            'MAX_ABS_Z': 25.0,         # beyond this the stats are junk
             'TREND_FILTER': True,      # rising S -> SHORT-only, etc.
             'TREND_WINDOW_SEC': 900,
             'ENTRY_COOLDOWN_SEC': 60,
