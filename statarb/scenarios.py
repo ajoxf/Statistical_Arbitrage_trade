@@ -18,6 +18,7 @@ z at open and close, fees, gross/net), because that block is what the
 operator reads to decide the plumbing is sound.
 """
 
+import math
 import time
 
 SCENARIO_TYPES = [
@@ -143,9 +144,12 @@ class ScenarioRunner:
 
     def __init__(self, spot, futures, spread_stats=None,
                  clock=time.time, sleep=time.sleep,
-                 fill_timeout=LIMIT_FILL_TIMEOUT_SEC):
+                 fill_timeout=LIMIT_FILL_TIMEOUT_SEC, hedge_ratio=1.0):
         self.spot = spot
         self.futures = futures
+        # Spread scenarios size Leg B against Leg A with this, so a
+        # test pair carries the same exposure a real one would.
+        self.hedge_ratio = float(hedge_ratio or 1.0)
         self.spread_stats = spread_stats or (lambda: None)
         self.clock = clock
         self.sleep = sleep
@@ -191,7 +195,29 @@ class ScenarioRunner:
     def _volume(self, side_leg):
         return side_leg.specs().get('volume_min') or 0.01
 
-    def open_market(self, side_leg, side, comment='SCENARIO MKT'):
+    def pair_volumes(self):
+        """(spot lots, futures lots) for a SPREAD scenario, matched.
+
+        Each leg's own minimum is the right size for a single-leg test,
+        but using it on both legs of a pair is not a hedge: on CFI the
+        spot minimum is 0.01 (1 oz) and the futures minimum is 0.1
+        (10 oz), so a "LONG_SPR" built that way is 9 oz net short, and
+        its reported cost is ~94% one leg. Size up the smaller leg until
+        both clear their minimum at the configured hedge ratio.
+        """
+        ratio = float(self.hedge_ratio or 1.0)
+        spot_min = self._volume(self.spot)
+        fut_min = self._volume(self.futures)
+        step = self.spot.specs().get('volume_step') or 0.01
+        spot_lots = max(spot_min, fut_min / ratio if ratio else fut_min)
+        # Round UP to the spot step so the minimum is never undercut.
+        spot_lots = math.ceil(spot_lots / step - 1e-9) * step
+        fut_step = self.futures.specs().get('volume_step') or 0.01
+        fut_lots = math.ceil(spot_lots * ratio / fut_step - 1e-9) * fut_step
+        return round(spot_lots, 8), round(fut_lots, 8)
+
+    def open_market(self, side_leg, side, comment='SCENARIO MKT',
+                    volume=None):
         action = self._base(side_leg, 'open', side)
         specs = side_leg.specs()
         if not specs.get('ok'):
@@ -202,7 +228,7 @@ class ScenarioRunner:
         if not tick:
             action['error'] = 'no tick'
             return self._record(action)
-        volume = self._volume(side_leg)
+        volume = volume or self._volume(side_leg)
         action['tgt'] = tick['ask'] if side == 'BUY' else tick['bid']
         result = side_leg.leg.order(side_leg.symbol, side, volume,
                                     comment=comment)
@@ -216,7 +242,7 @@ class ScenarioRunner:
         return self._record(self._verify(side_leg, action))
 
     def place_limit(self, side_leg, side, marketable,
-                    comment='SCENARIO LMT'):
+                    comment='SCENARIO LMT', volume=None):
         """Rest a limit order. `marketable` parks it at the near touch
         (it should fill); otherwise ~1% away, which is what the cancel
         scenarios need."""
@@ -235,7 +261,7 @@ class ScenarioRunner:
         else:
             price = tick['ask'] if marketable else tick['ask'] * 1.01
         action['tgt'] = price
-        volume = self._volume(side_leg)
+        volume = volume or self._volume(side_leg)
         placed = side_leg.leg.place_limit(side_leg.symbol, side, volume,
                                           price, comment=comment)
         if not placed.get('ok'):
@@ -442,12 +468,15 @@ class ScenarioRunner:
 
     def _spread_market(self, spot_side, fut_side, variant):
         open_stats = self.spread_stats()
+        spot_lots, fut_lots = self.pair_volumes()
         spot_open = self.open_market(self.spot, spot_side,
-                                     comment='SCENARIO MKT spr/spot')
+                                     comment='SCENARIO MKT spr/spot',
+                                     volume=spot_lots)
         if not spot_open['ok']:
             return self._result(False, open_stats)
         fut_open = self.open_market(self.futures, fut_side,
-                                    comment='SCENARIO MKT spr/fut')
+                                    comment='SCENARIO MKT spr/fut',
+                                    volume=fut_lots)
         if not fut_open['ok']:
             # Never leave the filled leg naked because the hedge failed.
             self.close(self.spot, spot_open, kind='rollback close')
@@ -463,12 +492,15 @@ class ScenarioRunner:
              (self.futures, fut_side, fut_open, fut_close)])
 
     def _spread_cancel(self, spot_side, fut_side):
+        spot_lots, fut_lots = self.pair_volumes()
         spot_place = self.place_limit(self.spot, spot_side, marketable=False,
-                                      comment='SCENARIO LMT spr/spot cancel')
+                                      comment='SCENARIO LMT spr/spot cancel',
+                                      volume=spot_lots)
         if not spot_place['ok']:
             return self._result(False)
         fut_place = self.place_limit(self.futures, fut_side, marketable=False,
-                                     comment='SCENARIO LMT spr/fut cancel')
+                                     comment='SCENARIO LMT spr/fut cancel',
+                                     volume=fut_lots)
         if not fut_place['ok']:
             self.cancel(self.spot, spot_place, reason='rollback')
             return self._result(False)
@@ -479,12 +511,15 @@ class ScenarioRunner:
 
     def _spread_limit(self, spot_side, fut_side):
         open_stats = self.spread_stats()
+        spot_lots, fut_lots = self.pair_volumes()
         spot_place = self.place_limit(self.spot, spot_side, marketable=True,
-                                      comment='SCENARIO LMT spr/spot')
+                                      comment='SCENARIO LMT spr/spot',
+                                      volume=spot_lots)
         if not spot_place['ok']:
             return self._result(False, open_stats)
         fut_place = self.place_limit(self.futures, fut_side, marketable=True,
-                                     comment='SCENARIO LMT spr/fut')
+                                     comment='SCENARIO LMT spr/fut',
+                                     volume=fut_lots)
         if not fut_place['ok']:
             self.cancel(self.spot, spot_place, reason='rollback')
             return self._result(False, open_stats)

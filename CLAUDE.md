@@ -337,6 +337,14 @@ every fill — market orders filled exactly at the quoted touch).
   correct** — this closes open item 2 for this broker.
 - Minimum volumes DIFFER: spot 0.01, futures 0.1. The futures min is
   10x the spot min, which constrains SLICE_LOTS and any partial fill.
+  LIVE trading was already correct here (`PairExecutor._precheck_pair`
+  rejects a pair whose CHILD order is under either leg's minimum, and
+  the hedge is `round_step(spot_filled x HEDGE_RATIO, fut_step)`), but
+  the SCENARIO suite took each leg's own minimum, making "LONG_SPR"
+  1 oz long vs 10 oz short — 9 oz net directional, with a reported
+  cost ~94% one leg. `ScenarioRunner.pair_volumes()` now sizes the
+  smaller leg up until BOTH clear their minimum at HEDGE_RATIO;
+  single-leg scenarios still use that leg's own minimum.
 
 **The edge does not currently cover this.** Measured sigma on the
 spread was 0.063-0.073. At sigma 0.07 and z=3, expected capture is

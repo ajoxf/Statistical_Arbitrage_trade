@@ -42,6 +42,7 @@ class LimitFakeLeg:
         self.modifies = []              # (ticket, price)
         self.cancels = []
         self.market_orders = []         # (symbol, side, volume)
+        self.volume_min = 0.01
         self.closed_tickets = []        # (symbol, ticket, volume)
         self.closes = []                # + entry_side
         self.stale_orders = []          # for pending_orders()
@@ -49,8 +50,11 @@ class LimitFakeLeg:
         self.next_ticket = 500
 
     def ensure_symbol(self, symbol):
-        return {'ok': True, 'volume_min': 0.01, 'volume_max': 100.0,
-                'volume_step': 0.01, 'point': 0.01, 'tick_size': 0.01}
+        # volume_min is overridable: the two legs of a real pair often
+        # have DIFFERENT minimums (CFI: spot 0.01, futures 0.1).
+        return {'ok': True, 'volume_min': self.volume_min,
+                'volume_max': 100.0, 'volume_step': 0.01,
+                'point': 0.01, 'tick_size': 0.01}
 
     def pending_orders(self, symbol=None):
         return [o for o in self.stale_orders

@@ -569,3 +569,53 @@ def test_a_leaked_fill_cleanup_is_labelled_by_its_own_direction():
     runner.run('BUY_SPOT', 'LIMIT', 'cancel')
     cleanup = [a for a in runner.actions if a['kind'] == 'leak cleanup'][-1]
     assert cleanup['side'] == 'SELL' and cleanup['entry_side'] == 'BUY'
+
+
+# --- a spread scenario must actually be hedged ---------------------------
+# Live 2026-08-06: CFI's spot minimum is 0.01 (1 oz) and its futures
+# minimum is 0.1 (10 oz). Taking each leg's own minimum made "LONG_SPR"
+# 1 oz long against 10 oz short — 9 oz net directional, and a reported
+# cost that was ~94% one leg.
+
+def test_a_spread_scenario_carries_matched_notional():
+    runner, spot_leg, fut_leg = make_runner()
+    spot_leg.volume_min, fut_leg.volume_min = 0.01, 0.1
+    runner.spot.meta = runner.futures.meta = None      # re-read specs
+    spot_lots, fut_lots = runner.pair_volumes()
+    assert spot_lots == pytest.approx(0.1)
+    assert fut_lots == pytest.approx(0.1)
+
+
+def test_the_hedge_ratio_scales_leg_b():
+    runner, spot_leg, fut_leg = make_runner()
+    runner.hedge_ratio = 2.0
+    spot_lots, fut_lots = runner.pair_volumes()
+    assert fut_lots == pytest.approx(spot_lots * 2.0)
+
+
+def test_neither_leg_is_sized_below_its_minimum():
+    runner, spot_leg, fut_leg = make_runner()
+    spot_leg.volume_min, fut_leg.volume_min = 0.05, 0.1
+    runner.spot.meta = runner.futures.meta = None
+    spot_lots, fut_lots = runner.pair_volumes()
+    assert spot_lots >= 0.05 and fut_lots >= 0.1
+
+
+def test_the_spread_scenario_sends_the_matched_volumes():
+    runner, spot_leg, fut_leg = make_runner()
+    spot_leg.volume_min, fut_leg.volume_min = 0.01, 0.1
+    runner.spot.meta = runner.futures.meta = None
+    runner.run('LONG_SPR', 'MARKET', 'normal')
+    opens = [a for a in runner.actions if a['kind'] == 'open']
+    assert len(opens) == 2
+    assert opens[0]['volume'] == pytest.approx(opens[1]['volume'])
+
+
+def test_single_leg_scenarios_still_use_that_legs_minimum():
+    """A one-leg test should stay as small as the broker allows."""
+    runner, spot_leg, _ = make_runner()
+    spot_leg.volume_min = 0.01
+    runner.spot.meta = None
+    runner.run('BUY_SPOT', 'MARKET', 'normal')
+    opens = [a for a in runner.actions if a['kind'] == 'open']
+    assert opens[0]['volume'] == pytest.approx(0.01)

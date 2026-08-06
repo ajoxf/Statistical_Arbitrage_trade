@@ -1225,7 +1225,8 @@ class Coordinator:
                      in self.active_assets
                      else next(iter(self.active_assets)))
         runner = scenarios.ScenarioRunner(
-            spot, futures, spread_stats=self._scenario_stats(asset_key))
+            spot, futures, spread_stats=self._scenario_stats(asset_key),
+            hedge_ratio=self.config.TRADING.get('HEDGE_RATIO', 1.0))
         try:
             outcome = runner.run(spec['type'], spec.get('mode', 'MARKET'),
                                  spec.get('variant', 'normal'))
