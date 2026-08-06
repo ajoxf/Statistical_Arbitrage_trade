@@ -61,7 +61,12 @@ class DataLogger:
         # when the spread stopped being carry-detrended (2026-08); older
         # databases keep the old columns and gain the new ones empty.
         for column, ddl in (('z', 'z REAL'), ('spread', 'spread REAL'),
-                            ('basis_pct', 'basis_pct REAL')):
+                            ('basis_pct', 'basis_pct REAL'),
+                            # Identifies WHICH spread series a row belongs
+                            # to (symbols + hedge ratio). A warm start must
+                            # never seed the window with spreads computed
+                            # under a different definition.
+                            ('series_key', 'series_key TEXT')):
             try:
                 cursor.execute(
                     f'ALTER TABLE market_data ADD COLUMN {ddl}')
@@ -366,19 +371,54 @@ class DataLogger:
         conn.commit()
         conn.close()
 
-    def log_market_data(self, asset, market_data, signal, z=None):
+    def log_market_data(self, asset, market_data, signal, z=None,
+                        series_key=None):
         signal_str = signal.value if hasattr(signal, 'value') else str(signal)
         conn = sqlite3.connect(self.db_path)
         conn.execute('''
             INSERT INTO market_data
                 (timestamp, asset, spot_price, futures_price, actual_basis,
-                 spread, basis_pct, signal, z)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 spread, basis_pct, signal, z, series_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             datetime.now().isoformat(), asset, market_data['spot_price'],
             market_data['futures_price'], market_data['actual_basis'],
             market_data['spread'], market_data.get('basis_pct'),
-            signal_str, z,
+            signal_str, z, series_key,
         ))
         conn.commit()
         conn.close()
+
+    def recent_spreads(self, asset, series_key, since):
+        """[(epoch_seconds, spread)] for a warm start, oldest first.
+
+        Restarting used to reset the rolling window to zero, so the
+        engine re-served its whole warm-up — two hours before it could
+        trade again after a config change or a crash. The quotes were
+        already in this table; nothing read them back.
+
+        `series_key` is matched exactly: a row logged under different
+        symbols or a different HEDGE_RATIO is a different series, and
+        seeding the window with it would produce a mean the current
+        spread has no relationship to. Rows predating the column are
+        NULL and are therefore never reused.
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                'SELECT timestamp, spread FROM market_data '
+                'WHERE asset=? AND series_key=? AND spread IS NOT NULL '
+                'AND timestamp >= ? ORDER BY timestamp',
+                (asset, series_key, since.isoformat())).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+        finally:
+            conn.close()
+        out = []
+        for stamp, spread in rows:
+            try:
+                out.append((datetime.fromisoformat(stamp).timestamp(),
+                            float(spread)))
+            except (TypeError, ValueError):
+                continue
+        return out

@@ -60,6 +60,36 @@ class SpreadStats:
                 or self.mu is None):
             self._refresh(now)
 
+    def seed(self, samples):
+        """Prime the window from persisted quotes, oldest first.
+
+        `samples` is [(epoch_seconds, spread)]. Restarting is otherwise
+        a full re-warm — with MIN_HISTORY_SEC at 120 minutes, every
+        config change or crash costs two hours before the engine can
+        trade again, even though the quotes were on disk the whole
+        time.
+
+        Collection is credited from the OLDEST seeded sample, so
+        history_sec reflects when data collection really began rather
+        than when this process started. Anything already outside the
+        window is dropped on the first update, exactly as if it had
+        arrived live.
+        """
+        if not samples:
+            return 0
+        now = self.clock()
+        horizon = now - self.cfg['LOOKBACK_SEC']
+        fresh = [(t, v) for t, v in samples if t >= horizon]
+        if not fresh:
+            return 0
+        fresh.sort(key=lambda row: row[0])
+        self.samples.extend(fresh)
+        self.last_value = fresh[-1][1]
+        self.collecting_since = (fresh[0][0] if self.collecting_since is None
+                                 else min(self.collecting_since, fresh[0][0]))
+        self._refresh(now)
+        return len(fresh)
+
     def _refresh(self, now):
         if len(self.samples) < 2:
             return

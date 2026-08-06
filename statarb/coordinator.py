@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from .broker import BrokerSession
@@ -278,6 +278,7 @@ class Coordinator:
         for asset_key in self.active_assets:
             self.stats[asset_key] = SpreadStats(self.config.SIGNALS,
                                                 clock=time.time)
+            self._warm_start(asset_key)
 
         self.reconciler = Reconciler(
             self.config, self.position_manager, self.data_logger,
@@ -433,6 +434,43 @@ class Coordinator:
                          "dashboard for REFERENCE, never used as a signal",
                          asset_key, pair_type)
 
+    def _series_key(self, asset_key):
+        """Which spread series this is: the two symbols and the hedge
+        ratio. Change any of them and the old numbers describe a
+        different series that must not seed the new one."""
+        asset = self.active_assets.get(asset_key) or {}
+        beta = self.config.TRADING.get('HEDGE_RATIO', 1.0)
+        # Defensive: this only labels a log row, and must never be the
+        # reason the trading loop raises.
+        return (f"{asset.get('spot_symbol', '?')}|"
+                f"{asset.get('futures_symbol', '?')}|{beta:.6f}")
+
+    def _warm_start(self, asset_key):
+        """Refill the rolling window from quotes already on disk."""
+        stats = self.stats.get(asset_key)
+        if stats is None:
+            return 0
+        window = self.config.SIGNALS.get('LOOKBACK_SEC', 7200)
+        since = datetime.now() - timedelta(seconds=window)
+        try:
+            rows = self.data_logger.recent_spreads(
+                asset_key, self._series_key(asset_key), since)
+        except Exception as e:
+            logging.warning("%s: could not read stored quotes (%s) — "
+                            "starting the window empty", asset_key, e)
+            return 0
+        seeded = stats.seed(rows)
+        if not seeded:
+            logging.info(
+                "%s: no stored quotes inside the %.0f-minute window — "
+                "warming up from scratch", asset_key, window / 60)
+            return 0
+        logging.info(
+            "%s: warm start — %d stored quotes recovered, %.0f minutes of "
+            "history, mu=%.4f sigma=%.4f", asset_key, seeded,
+            stats.history_sec / 60, stats.mu or 0.0, stats.sigma or 0.0)
+        return seeded
+
     def _log_spread_definition(self, asset_key):
         """Say in the log exactly what the number on the dashboard is.
         "The spread seems incorrect" is usually the operator checking it
@@ -558,15 +596,17 @@ class Coordinator:
         # always run — stopping the algo never abandons a position) --
         if not self.algo_enabled:
             self.last_signals[asset_key] = SignalType.NO_SIGNAL
-            self.data_logger.log_market_data(asset_key, market_data,
-                                             SignalType.NO_SIGNAL, z=z)
+            self.data_logger.log_market_data(
+                asset_key, market_data, SignalType.NO_SIGNAL, z=z,
+                series_key=self._series_key(asset_key))
             return
         active = self.position_manager.get_positions_for_asset(asset_key)
         signal = self._entry_signal(asset_key, stats, market_data, active,
                                     contract_size)
         self.last_signals[asset_key] = signal or SignalType.NO_SIGNAL
-        self.data_logger.log_market_data(asset_key, market_data,
-                                         self.last_signals[asset_key], z=z)
+        self.data_logger.log_market_data(
+            asset_key, market_data, self.last_signals[asset_key], z=z,
+            series_key=self._series_key(asset_key))
         if signal:
             self._enter(asset_key, signal, market_data, stats, contract_size)
 

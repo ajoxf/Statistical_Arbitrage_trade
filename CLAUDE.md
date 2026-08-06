@@ -456,6 +456,22 @@ fills on this account — assume 1.0 until measured.
   half-life, and it never changes LOOKBACK_SEC by itself. The tile goes
   RED when the configured window is shorter than the suggestion —
   that is the setting that collapses sigma.
+- **A restart used to throw the whole window away** (operator: "every
+  time we start the program the Data Collection goes to 0"). Every
+  quote was already being written to `market_data`; nothing read it
+  back, so MIN_HISTORY_SEC 7200 meant two hours before trading after
+  any crash or config change. `DataLogger.recent_spreads` +
+  `SpreadStats.seed` now refill the window at startup
+  (`Coordinator._warm_start`), crediting `collecting_since` from the
+  OLDEST recovered sample so history reflects when collection really
+  began. Same approach app.py took, whose comment names the identical
+  symptom. SAFETY: rows carry a `series_key` (spot|futures|beta) and
+  only an exact match is reused — seeding a beta=2 window with beta=1
+  history would give a mean the live spread never visits, which the
+  engine would read as an enormous z. Rows predating the column are
+  NULL and never reused. Note a warm start cannot credit MORE than
+  LOOKBACK_SEC (older samples are gone), so with MIN_HISTORY_SEC ==
+  LOOKBACK_SEC expect a short top-up of minutes, not hours.
 - **Warm-up has TWO gates now** (owner, 2026-08-06: "I would the system
   to take 120 minutes (not hard coded) of data - calculate mean and
   standard deviation before going ahead"). MIN_SAMPLES alone was not
