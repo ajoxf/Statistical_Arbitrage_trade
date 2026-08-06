@@ -179,8 +179,36 @@ class Coordinator:
             else:
                 legs[acct.name] = LocalLeg(BrokerSession(acct))
 
+        # Two accounts at the SAME broker still need two separate
+        # terminal INSTALLATIONS — one terminal holds one login, and a
+        # second instance of the same install shares its data folder.
+        paths = {}
+        for acct in (spot_acct, fut_acct):
+            path = (getattr(acct, 'terminal_path', None) or '').strip()
+            if path:
+                paths.setdefault(path.lower(), []).append(acct.name)
+        for path, names in paths.items():
+            if len(set(names)) > 1:
+                raise ValueError(
+                    f"Accounts {' and '.join(sorted(set(names)))} both "
+                    f"point at the same MT5 installation ({path}). One "
+                    f"terminal serves ONE account — install a second copy "
+                    f"of MetaTrader 5 (or a portable copy) for the other "
+                    f"account and give it its own path on the Exchanges "
+                    f"page.")
+
         local_count = sum(1 for leg in legs.values()
                           if isinstance(leg, LocalLeg))
+        if len(legs) > 1 and local_count == 1:
+            local = next(leg.name for leg in legs.values()
+                         if isinstance(leg, LocalLeg))
+            logging.warning(
+                "Account '%s' has no leg runner endpoint, so the "
+                "coordinator holds its MT5 connection itself. That works, "
+                "but its terminal must be logged in BEFORE the coordinator "
+                "starts and a coordinator restart drops the session. Give "
+                "it an endpoint (e.g. 127.0.0.1:9102) for a clean split.",
+                local)
         if len(legs) > 1 and local_count > 1:
             raise ValueError(
                 "Both accounts are configured without endpoints, but one "
@@ -1094,6 +1122,7 @@ class Coordinator:
                 'lookback': self.config.SIGNALS.get('LOOKBACK_SEC'),
                 'basis': md['actual_basis'],
                 'swap_diff': md['swap_diff'],
+                'carry_adjusted': md.get('carry_adjusted', True),
                 'spot_price': md['spot_price'],
                 'spot_bid': md['spot_bid'], 'spot_ask': md['spot_ask'],
                 'futures_price': md['futures_price'],

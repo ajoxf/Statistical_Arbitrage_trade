@@ -663,3 +663,61 @@ def test_exchanges_page_has_the_connectivity_controls(client):
     # The symbol lives on the broker row, as it did in the old app
     assert 'Add / Edit MT5 Broker' in page
     assert 'Save Broker' in page
+
+
+# --- same broker vs different broker (both supported) --------------------
+
+def test_two_accounts_on_one_terminal_install_is_a_hard_failure(cfg):
+    """Two accounts at the same broker is fine; two accounts sharing one
+    MT5 INSTALLATION is not — one terminal holds one login."""
+    shared = 'C:/Program Files/MetaTrader 5/terminal64.exe'
+    spot = side(term=terminal(terminal_path=shared))
+    futures = side('futures', 'account_b',
+                   term=terminal(login=222, terminal_path=shared),
+                   sym=symbol(symbol='GC1225'))
+    check = find(report(cfg, spot=spot, futures=futures),
+                 'Terminal installations')
+    assert check['status'] == 'FAIL'
+    assert any('second copy' in step for step in check['fix'])
+
+
+def test_separate_installations_pass(cfg):
+    spot = side(term=terminal(terminal_path='C:/MT5-A/terminal64.exe'))
+    futures = side('futures', 'account_b',
+                   term=terminal(login=222,
+                                 terminal_path='C:/MT5-B/terminal64.exe'),
+                   sym=symbol(symbol='GC1225'))
+    assert find(report(cfg, spot=spot, futures=futures),
+                'Terminal installations')['status'] == 'PASS'
+
+
+def test_both_terminals_on_the_same_login_is_not_two_accounts(cfg):
+    spot = side(term=terminal(login=111,
+                              terminal_path='C:/MT5-A/terminal64.exe'))
+    futures = side('futures', 'account_b',
+                   term=terminal(login=111,
+                                 terminal_path='C:/MT5-B/terminal64.exe'),
+                   sym=symbol(symbol='GC1225'))
+    check = find(report(cfg, spot=spot, futures=futures), 'Logins')
+    assert check['status'] == 'FAIL' and '111' in check['message']
+
+
+def test_same_broker_two_logins_is_reported_as_supported(cfg):
+    spot = side(term=terminal(login=111, server='FxPro-Live',
+                              terminal_path='C:/MT5-A/terminal64.exe'))
+    futures = side('futures', 'account_b',
+                   term=terminal(login=222, server='FxPro-Live',
+                                 terminal_path='C:/MT5-B/terminal64.exe'),
+                   sym=symbol(symbol='GC1225'))
+    check = find(report(cfg, spot=spot, futures=futures), 'Broker')
+    assert check['status'] == 'INFO' and 'FxPro-Live' in check['message']
+
+
+def test_different_brokers_need_no_broker_note(cfg):
+    spot = side(term=terminal(server='FxPro-Live',
+                              terminal_path='C:/MT5-A/terminal64.exe'))
+    futures = side('futures', 'account_b',
+                   term=terminal(login=222, server='CFI-Live',
+                                 terminal_path='C:/MT5-B/terminal64.exe'),
+                   sym=symbol(symbol='GC1225'))
+    assert find(report(cfg, spot=spot, futures=futures), 'Broker') is None

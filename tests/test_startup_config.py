@@ -299,3 +299,138 @@ def test_editing_a_broker_keeps_the_other_legs_symbol(client):
         asset = json.load(f)['assets']['GOLD']
     assert asset['spot_symbols'] == ['GOLD']
     assert asset['futures_symbols'] == ['GC1225']
+
+
+# --- two accounts: same broker or different, but never one terminal ------
+
+def two_account_config(config, spot_path=None, fut_path=None,
+                       spot_endpoint='127.0.0.1:9101',
+                       fut_endpoint='127.0.0.1:9102'):
+    from types import SimpleNamespace
+    config.accounts = {
+        'spot_acct': SimpleNamespace(name='spot_acct', login=111,
+                                     server='FxPro', password=None,
+                                     password_env='A',
+                                     terminal_path=spot_path,
+                                     endpoint=spot_endpoint),
+        'fut_acct': SimpleNamespace(name='fut_acct', login=222,
+                                    server='FxPro', password=None,
+                                    password_env='B',
+                                    terminal_path=fut_path,
+                                    endpoint=fut_endpoint)}
+    config.leg_accounts = {'spot': 'spot_acct', 'futures': 'fut_acct'}
+    return config
+
+
+def test_two_accounts_at_the_same_broker_are_fine(config, monkeypatch,
+                                                  tmp_path):
+    """Same broker, two logins, two terminal installations — the whole
+    point of the two-account topology."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    coord = Coordinator(two_account_config(
+        config, spot_path='C:/MT5-A/terminal64.exe',
+        fut_path='C:/MT5-B/terminal64.exe'), trading_mode='PAPER')
+    assert coord.spot_leg.name == 'spot_acct'
+    assert coord.futures_leg.name == 'fut_acct'
+    assert coord.spot_leg is not coord.futures_leg
+
+
+def test_two_accounts_sharing_one_terminal_install_is_refused(
+        config, monkeypatch, tmp_path):
+    """A terminal holds ONE login — both leg runners would end up
+    trading the same account."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    shared = 'C:/Program Files/MetaTrader 5/terminal64.exe'
+    with pytest.raises(ValueError) as excinfo:
+        Coordinator(two_account_config(config, spot_path=shared,
+                                       fut_path=shared),
+                    trading_mode='PAPER')
+    message = str(excinfo.value)
+    assert 'same MT5 installation' in message
+    assert 'second copy' in message
+
+
+def test_a_half_configured_split_warns_but_still_runs(config, monkeypatch,
+                                                      tmp_path, caplog):
+    """One endpoint, one blank: the coordinator holds that account's MT5
+    connection itself. Legal, but the operator should know."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    with caplog.at_level('WARNING'):
+        coord = Coordinator(two_account_config(config, fut_endpoint=None),
+                            trading_mode='PAPER')
+    assert coord.spot_leg is not coord.futures_leg
+    assert 'no leg runner endpoint' in caplog.text
+    assert 'coordinator holds its MT5 connection itself' in caplog.text
+
+
+# --- expiry is optional: just pick up the symbols -------------------------
+
+def market_data(config, expiry='unset'):
+    from types import SimpleNamespace
+    from statarb.marketdata import compute_market_data
+    asset = dict(config.ASSETS['GOLD'])
+    if expiry == 'unset':
+        asset.pop('futures_expiry', None)
+    else:
+        asset['futures_expiry'] = expiry
+    spot = SimpleNamespace(bid=3299.9, ask=3300.1, last=3300.0)
+    fut = SimpleNamespace(bid=3319.9, ask=3320.1, last=3320.0)
+    return compute_market_data(asset, spot, fut)
+
+
+def test_an_asset_with_no_expiry_does_not_crash_the_engine(config):
+    """The operator's config had no futures_expiry and startup died
+    with KeyError before the coordinator ever ran."""
+    asset = dict(config.ASSETS['GOLD'])
+    asset.pop('futures_expiry', None)
+    config.ASSETS = {'GOLD': asset}
+    assert config.validate_expiries() == []      # no crash, nothing stale
+
+
+def test_without_an_expiry_the_engine_trades_the_raw_basis(config):
+    """A zero spread would mean z never moves and nothing ever trades —
+    indistinguishable from a dead engine. The raw basis is the spread."""
+    data = market_data(config, expiry='unset')
+    assert data['swap_diff'] == pytest.approx(20.0)     # 3320 - 3300
+    assert data['actual_basis'] == pytest.approx(20.0)
+    assert data['carry_adjusted'] is False
+    assert data['swap_basis'] == 0
+
+
+def test_an_expiry_in_the_future_still_detrends_the_carry(config):
+    from datetime import datetime, timedelta
+    asset = dict(config.ASSETS['GOLD'])
+    asset['swap_charge'] = 45.0
+    config.ASSETS = {'GOLD': asset}
+    data = market_data(config, expiry=datetime.now() + timedelta(days=90))
+    assert data['carry_adjusted'] is True
+    assert data['swap_basis'] != 0
+    assert data['swap_diff'] != data['actual_basis']
+
+
+def test_a_past_expiry_warns_but_keeps_a_live_spread(config):
+    """It used to zero the spread silently. Now it warns and falls back
+    to the raw basis, so the failure is visible instead of mute."""
+    from datetime import datetime, timedelta
+    stale = datetime.now() - timedelta(days=5)
+    config.ASSETS = {'GOLD': dict(config.ASSETS['GOLD'],
+                                  futures_expiry=stale)}
+    assert config.validate_expiries() == ['GOLD']
+    data = market_data(config, expiry=stale)
+    assert data['swap_diff'] == pytest.approx(20.0)
+    assert data['carry_adjusted'] is False
+
+
+def test_saving_a_broker_without_an_expiry_is_accepted(client):
+    """The Exchanges page must not require an expiry to save a leg."""
+    response = client.post('/api/exchanges', json={
+        'name': 'fut', 'role': 'FUTURES', 'symbol': 'XAUUSD.f',
+        'endpoint': '127.0.0.1:9102'})
+    assert response.status_code == 200
+    with open(client.tmp_path / "config.json") as f:
+        asset = json.load(f)['assets']['GOLD']
+    assert asset['futures_symbols'] == ['XAUUSD.f']
+    assert 'futures_expiry' not in asset

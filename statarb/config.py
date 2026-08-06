@@ -312,12 +312,21 @@ class AlgoTradingConfig:
         return applied, blocked
 
     def validate_expiries(self):
-        """Warn about expired futures contracts (they disable signals)."""
-        stale = [k for k, a in self.ASSETS.items()
-                 if a.get('enabled') and a['futures_expiry'] <= datetime.now()]
-        for k in stale:
-            logging.warning(
-                "%s futures_expiry %s is in the past — swap basis will be 0 "
-                "and no signals will fire. Update the contract in config.",
-                k, self.ASSETS[k]['futures_expiry'].date())
+        """Warn about expired futures contracts.
+
+        Expiry is OPTIONAL — leave it unset for a rolling contract and
+        the engine trades the raw basis instead of the carry-detrended
+        spread. Only a date that has PASSED is worth a warning."""
+        stale = []
+        for key, asset in self.ASSETS.items():
+            expiry = asset.get('futures_expiry')
+            if not asset.get('enabled') or not expiry:
+                continue
+            if expiry <= datetime.now():
+                stale.append(key)
+                logging.warning(
+                    "%s futures_expiry %s has passed — the carry "
+                    "adjustment is off and the engine is trading the RAW "
+                    "basis. Set the live contract's expiry, or clear it "
+                    "for a rolling contract.", key, expiry.date())
         return stale

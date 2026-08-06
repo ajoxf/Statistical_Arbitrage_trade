@@ -31,11 +31,18 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
 
     actual_basis = futures_price - spot_price
 
-    time_to_expiry = (asset_cfg['futures_expiry'] - datetime.now()
-                      ).total_seconds() / (365.25 * 24 * 3600)
-    days_to_expiry = time_to_expiry * 365.25
+    # Expiry is OPTIONAL. With one, the spread is carry-detrended:
+    # swap_diff = basis - the basis the swap cost implies. Without one
+    # (a rolling/perpetual contract, or simply not configured), the
+    # strategy trades the RAW basis. It must never silently become
+    # zero — a zero spread means z never moves and nothing ever
+    # trades, which looks identical to a dead engine.
+    expiry = asset_cfg.get('futures_expiry')
+    time_to_expiry = ((expiry - datetime.now()).total_seconds()
+                      / (365.25 * 24 * 3600)) if expiry else None
+    days_to_expiry = time_to_expiry * 365.25 if time_to_expiry else 0
 
-    if time_to_expiry > 0:
+    if time_to_expiry and time_to_expiry > 0:
         swap_futures_price, swap_basis, annual_swap_rate = \
             calculate_swap_basis(asset_cfg, spot_price, time_to_expiry)
         if abs(swap_basis) > 0.001:
@@ -44,10 +51,13 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
         else:
             swap_premium_pct = (actual_basis / spot_price) * 100
         swap_diff = actual_basis - swap_basis
+        carry_adjusted = True
     else:
         swap_futures_price = futures_price
-        swap_basis = swap_premium_pct = swap_diff = 0
-        annual_swap_rate = days_to_expiry = 0
+        swap_basis = annual_swap_rate = 0
+        swap_diff = actual_basis          # trade the raw basis
+        swap_premium_pct = (actual_basis / spot_price) * 100
+        carry_adjusted = False
 
     return {
         'asset_name': asset_cfg['name'],
@@ -69,4 +79,5 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
         'annual_swap_rate': annual_swap_rate,
         'time_to_expiry': time_to_expiry,
         'days_to_expiry': days_to_expiry,
+        'carry_adjusted': carry_adjusted,
     }

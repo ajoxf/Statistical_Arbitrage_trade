@@ -294,6 +294,11 @@ def _check_expiry(checklist, scope, report, asset):
         checklist.add(scope, 'Futures expiry', PASS,
                       f'Configured expiry {configured.date()} '
                       f'({(configured - now).days} days away)')
+    else:
+        checklist.add(scope, 'Futures expiry', INFO,
+                      'No expiry set — the engine trades the RAW basis '
+                      '(futures minus spot). Set one only if you want the '
+                      'spread carry-detrended by the swap cost.')
 
 
 def check_pair(checklist, spot, futures, config):
@@ -309,6 +314,40 @@ def check_pair(checklist, spot, futures, config):
         checklist.add('PAIR', 'Topology', PASS,
                       f"Leg A (spot) on {spot['account']}, Leg B (futures) "
                       f"on {futures['account']} — one leg runner each")
+
+    # Two accounts at one broker is fine; two accounts sharing one
+    # TERMINAL is not — a terminal holds a single login, so both legs
+    # would trade the same account.
+    spot_path = (spot_term.get('terminal_path') or '').strip().lower()
+    fut_path = (fut_term.get('terminal_path') or '').strip().lower()
+    if spot['account'] != futures['account'] and spot_path and fut_path:
+        if spot_path == fut_path:
+            checklist.add(
+                'PAIR', 'Terminal installations', FAIL,
+                f'Both accounts are running from the same MT5 '
+                f'installation ({spot_path}) — one terminal serves one '
+                f'login, so both legs would hit the same account',
+                fix=['Install a second copy of MetaTrader 5 (the broker '
+                     'installer allows a second folder, or use a '
+                     'portable copy)',
+                     'Point each account at its own terminal on the '
+                     'Exchanges page'])
+        else:
+            checklist.add('PAIR', 'Terminal installations', PASS,
+                          'Each account has its own MT5 installation')
+        if spot_term.get('login') and \
+                spot_term.get('login') == fut_term.get('login'):
+            checklist.add(
+                'PAIR', 'Logins', FAIL,
+                f"Both terminals are logged into {spot_term['login']} — "
+                f"there is only one account here, not two",
+                fix=['Log the second terminal into the other account'])
+        elif spot_term.get('server') and \
+                spot_term.get('server') == fut_term.get('server'):
+            checklist.add('PAIR', 'Broker', INFO,
+                          f"Both accounts are at the same broker "
+                          f"({spot_term['server']}) — supported; the basis "
+                          f"is then that broker's own spot vs futures")
 
     spot_ccy = spot_term.get('currency')
     fut_ccy = fut_term.get('currency')

@@ -83,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  378 tests, all fakes, no MT5 (runs anywhere)
+tests/                  391 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
@@ -310,6 +310,16 @@ per-leg maker/taker fee split, backtest suite.
 - Symbols follow app.py's model: the symbol, contract size, swap and
   expiry live on the BROKER ROW with its leg, not in a separate panel.
   Saving a row writes leg_accounts[role] and assets[..]_symbols.
+- futures_expiry is OPTIONAL (owner: "just pick up the symbols, don't
+  get into expiry"). Missing expiry used to KeyError in
+  validate_expiries and kill startup. Now: no expiry -> the engine
+  trades the RAW basis (swap_diff = futures - spot, carry_adjusted
+  False); an expiry in the future -> carry-detrended as before; a PAST
+  expiry -> warns AND falls back to the raw basis instead of zeroing
+  the spread (a zero spread means z never moves — a dead engine that
+  looks alive). Two accounts at the SAME broker need two separate MT5
+  INSTALLATIONS; sharing one is refused at startup and by the
+  checklist, since one terminal holds one login.
 
 ## Bugs already found and fixed (2026-07) — don't reintroduce
 
