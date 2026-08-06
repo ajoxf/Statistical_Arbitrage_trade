@@ -359,6 +359,13 @@
                         <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
                              id="spread-breakdown"
                              title="What the engine z-scores: Leg B (futures) minus the hedge ratio times Leg A (spot)."></div>
+                        <div class="mt-1" style="font-size: 0.6rem; display:none;" id="fair-value-row"
+                             title="Theoretical value of the spread from cost of carry. REFERENCE ONLY — the signal is the z-score on the spread and never reads this. A large gap usually means the contract month, multiplier or contract size is wrong, not that the trade is good.">
+                            <span class="text-secondary">fair</span>
+                            <span class="text-info" id="fair-value">&mdash;</span>
+                            <span class="text-secondary" id="fair-gap"></span>
+                            <span class="badge bg-secondary ms-1" style="font-size: 0.5rem;">ref only</span>
+                        </div>
                     </div>
                     <div class="col-4 text-center">
                         <div class="d-flex align-items-center justify-content-center gap-2">
@@ -2214,6 +2221,28 @@
         if (breakdownEl && data.spread_formula) {
             breakdownEl.textContent = data.spread_formula;
             breakdownEl.style.display = '';
+        }
+
+        // Theoretical fair value — REFERENCE ONLY. Shown so the operator
+        // can sanity-check that the mean the z-score is anchored on is
+        // in the region carry says it should be; a big gap points at the
+        // contract month or contract size, not at the trade. Hidden
+        // entirely when the pair has no fair value (two different
+        // instruments) rather than showing a misleading zero.
+        const fairRow = document.getElementById('fair-value-row');
+        if (fairRow) {
+            if (data.fair_value != null) {
+                document.getElementById('fair-value').textContent =
+                    data.fair_value.toFixed(2);
+                const gapEl = document.getElementById('fair-gap');
+                const gap = data.fair_gap;
+                gapEl.textContent = (gap != null)
+                    ? '(' + (gap >= 0 ? '+' : '') + gap.toFixed(2) + ')' : '';
+                fairRow.title = data.fair_detail || fairRow.title;
+                fairRow.style.display = '';
+            } else {
+                fairRow.style.display = 'none';
+            }
         }
 
         // Position Δ Spread — how far the spread has moved since entry, colored

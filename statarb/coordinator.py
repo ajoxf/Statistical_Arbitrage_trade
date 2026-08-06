@@ -23,6 +23,7 @@ from .config import AlgoTradingConfig
 from .database import DataLogger
 from .exits import ExitLadder, outcome_tag, overnight_exit
 from .legs import LocalLeg, RemoteLeg
+from . import fairvalue
 from .marketdata import compute_market_data
 from .models import Position, SignalType, Trade, OrderSide
 from .notify import TelegramNotifier
@@ -400,7 +401,37 @@ class Coordinator:
                     "%s: futures contract expires %s (read from the broker)",
                     asset_key, asset_cfg['futures_expiry'].date())
 
+        # Leg A's expiry, for a FUTURE_FUTURE calendar spread. A spot
+        # symbol reports none, which is how the fair value knows the
+        # pair is spot-vs-future without being told twice.
+        leg_a_expiry = (spot_report or {}).get('expiry')
+        if leg_a_expiry and not asset_cfg.get('spot_expiry'):
+            asset_cfg['spot_expiry'] = datetime.fromtimestamp(leg_a_expiry)
+            logging.info("%s: Leg A contract expires %s (read from the "
+                         "broker)", asset_key,
+                         asset_cfg['spot_expiry'].date())
+
         self._log_spread_definition(asset_key)
+        self._log_fair_value(asset_key, asset_cfg)
+
+    def _log_fair_value(self, asset_key, asset_cfg):
+        """Reference only — say once at startup whether a fair value is
+        available and why not when it isn't."""
+        pair_type = (asset_cfg.get('pair_type') or 'SPOT_FUTURE').upper()
+        if pair_type not in fairvalue.BASIS_TYPES:
+            logging.info("%s: pair type %s — no theoretical fair value "
+                         "(no arbitrage ties the two legs together)",
+                         asset_key, pair_type)
+            return
+        value, detail = fairvalue.fair_spread(
+            asset_cfg, 1.0, 1.0, self.config.TRADING.get('HEDGE_RATIO', 1.0))
+        if value is None:
+            logging.info("%s: pair type %s, but no fair value — %s",
+                         asset_key, pair_type, detail)
+        else:
+            logging.info("%s: pair type %s — fair value shown on the "
+                         "dashboard for REFERENCE, never used as a signal",
+                         asset_key, pair_type)
 
     def _log_spread_definition(self, asset_key):
         """Say in the log exactly what the number on the dashboard is.
@@ -1334,6 +1365,11 @@ class Coordinator:
                 'spread': md['spread'],
                 'hedge_ratio': md.get('hedge_ratio', 1.0),
                 'spread_formula': md.get('spread_formula'),
+                # Reference only — see fairvalue.py.
+                'pair_type': md.get('pair_type'),
+                'fair_value': md.get('fair_value'),
+                'fair_gap': md.get('fair_gap'),
+                'fair_detail': md.get('fair_detail'),
                 'spot_price': md['spot_price'],
                 'spot_bid': md['spot_bid'], 'spot_ask': md['spot_ask'],
                 'futures_price': md['futures_price'],

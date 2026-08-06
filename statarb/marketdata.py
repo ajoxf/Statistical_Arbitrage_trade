@@ -20,6 +20,8 @@ number nobody could verify.
 
 from datetime import datetime
 
+from .fairvalue import fair_value_block
+
 
 def compute_market_data(asset_cfg, spot_tick, futures_tick,
                         hedge_ratio=1.0):
@@ -57,7 +59,7 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick,
                       / (365.25 * 24 * 3600)) if expiry else None
     days_to_expiry = time_to_expiry * 365.25 if time_to_expiry else 0
 
-    return {
+    snapshot = {
         'asset_name': asset_cfg['name'],
         'timestamp': datetime.now(),
         'quote_id': quote_id,
@@ -80,3 +82,8 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick,
         # the two prices beside it.
         'spread_formula': f"spread = futures - {beta:g} x spot",
     }
+    # Reference only. Nothing in the signal, sizing or exit path reads
+    # these keys — the traded spread above is already final.
+    snapshot.update(fair_value_block(asset_cfg, spot_price, futures_price,
+                                     spread, beta))
+    return snapshot

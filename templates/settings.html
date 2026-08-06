@@ -40,6 +40,31 @@
                             <small class="text-secondary">from the Leg B account &mdash;
                                 <a href="/setup">change on Exchanges</a></small>
                         </div>
+                        <div class="col-md-6 mt-3">
+                            <label class="form-label">Pair Type</label>
+                            <select class="form-select" id="pair_type" name="pair_type">
+                                <option value="SPOT_FUTURE" {% if config.pair_type == 'SPOT_FUTURE' %}selected{% endif %}>Spot vs Future &mdash; basis trade</option>
+                                <option value="FUTURE_FUTURE" {% if config.pair_type == 'FUTURE_FUTURE' %}selected{% endif %}>Future vs Future &mdash; calendar spread</option>
+                                <option value="RELATED" {% if config.pair_type == 'RELATED' %}selected{% endif %}>Two different instruments (e.g. WTI vs Brent)</option>
+                            </select>
+                            <small class="text-secondary">
+                                Only affects the <strong>reference fair value</strong> shown on the
+                                dashboard. A basis pair has one &mdash; carry ties the two legs
+                                together &mdash; and two different instruments do not. The signal is
+                                z-score on the spread either way and never reads this.
+                            </small>
+                        </div>
+                        <div class="col-md-6 mt-3">
+                            <label class="form-label">Carry Rate (annual %)</label>
+                            <input type="number" class="form-control" id="carry_rate_pct"
+                                   name="carry_rate_pct" value="{{ config.carry_rate_pct }}"
+                                   step="0.01" min="0" max="50">
+                            <small class="text-secondary">
+                                Financing + storage &minus; convenience yield. Used ONLY to compute
+                                the reference fair value; nothing in the signal, sizing or exit path
+                                reads it. Ignored for two-instrument pairs.
+                            </small>
+                        </div>
                         <div class="col-md-4 mt-3">
                             <label class="form-label d-flex justify-content-between align-items-center">
                                 <span>Hedge Ratio (&beta;)</span>
@@ -1536,6 +1561,8 @@
             exit_profit_gate_pct: parseFloat(document.getElementById('exit_profit_gate_pct').value) || 0,
             lookback_period: parseInt(document.getElementById('lookback_period').value),
             min_samples: parseInt(document.getElementById('min_samples').value),
+            pair_type: document.getElementById('pair_type').value,
+            carry_rate_pct: parseFloat(document.getElementById('carry_rate_pct').value),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
             hurst_enabled: document.getElementById('hurst_enabled').checked,
             hurst_threshold: parseFloat(document.getElementById('hurst_threshold').value),
@@ -1821,6 +1848,8 @@
                 document.getElementById('exit_profit_gate_pct').value = config.exit_profit_gate_pct || 0;
                 document.getElementById('lookback_period').value = config.lookback_period;
                 document.getElementById('min_samples').value = config.min_samples;
+                document.getElementById('pair_type').value = config.pair_type || 'SPOT_FUTURE';
+                document.getElementById('carry_rate_pct').value = config.carry_rate_pct;
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;
                 document.getElementById('hurst_enabled').checked = config.hurst_enabled;
                 document.getElementById('hurst_threshold').value = config.hurst_threshold;

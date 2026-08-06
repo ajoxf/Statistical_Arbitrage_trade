@@ -139,6 +139,9 @@ def to_ui_config(raw, defaults=None):
     out['futures_symbol'] = (asset.get('futures_symbols') or [''])[0]
     out['contract_size'] = asset.get('lot_size')
     out['swap_charge'] = asset.get('swap_charge')
+    out['pair_type'] = (asset.get('pair_type') or 'SPOT_FUTURE').upper()
+    out['carry_rate_pct'] = round(
+        (asset.get('risk_free_rate') or 0.0) * 100, 4)
     expiry = asset.get('futures_expiry')
     out['futures_expiry'] = (expiry.isoformat()[:10]
                              if hasattr(expiry, 'isoformat') else expiry)
@@ -191,9 +194,20 @@ def apply_ui_config(raw, payload):
             asset['futures_symbols'] = [payload['futures_symbol']]
         for field, key in (('contract_size', 'lot_size'),
                            ('swap_charge', 'swap_charge'),
-                           ('futures_expiry', 'futures_expiry')):
+                           ('futures_expiry', 'futures_expiry'),
+                           ('spot_expiry', 'spot_expiry')):
             if payload.get(field) not in (None, ''):
                 asset[key] = payload[field]
+        if payload.get('pair_type'):
+            asset['pair_type'] = str(payload['pair_type']).upper()
+        # Carry rate arrives as a percentage from the UI and is stored
+        # as a fraction. Fair value is the ONLY thing that reads it.
+        if payload.get('carry_rate_pct') not in (None, ''):
+            try:
+                asset['risk_free_rate'] = float(
+                    payload['carry_rate_pct']) / 100.0
+            except (TypeError, ValueError):
+                pass
         asset.setdefault('risk_free_rate', 0.0425)
         asset.setdefault('multiplier', 1.0)
 
@@ -367,6 +381,12 @@ def status_to_ui(status, config_raw):
             'raw_basis': first.get('basis'),
             'spread_hedge_ratio': first.get('hedge_ratio'),
             'spread_formula': first.get('spread_formula'),
+            # Reference only — the dashboard labels it as such and no
+            # part of the engine reads it back.
+            'pair_type': first.get('pair_type'),
+            'fair_value': first.get('fair_value'),
+            'fair_gap': first.get('fair_gap'),
+            'fair_detail': first.get('fair_detail'),
             'mean': first.get('mu'), 'std': first.get('sigma'),
             'half_life': first.get('half_life_min'),
             'hurst': None, 'regime': first.get('regime'),

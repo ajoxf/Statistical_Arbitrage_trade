@@ -587,3 +587,40 @@ def test_the_warmup_bar_counts_against_min_samples_not_seconds(client):
     page = client.get('/').get_data(as_text=True)
     assert '0 / 300' in page         # MIN_SAMPLES default
     assert '7200' not in page
+
+
+# ---------------------------------------------------------------------------
+# Pair type + reference fair value
+# ---------------------------------------------------------------------------
+
+def test_the_pair_type_selector_offers_all_three_shapes(client):
+    page = client.get('/settings').get_data(as_text=True)
+    for value in ('SPOT_FUTURE', 'FUTURE_FUTURE', 'RELATED'):
+        assert f'value="{value}"' in page
+    assert 'Carry Rate (annual %)' in page
+
+
+def test_saving_the_pair_type_reaches_the_asset_config(client):
+    client.post('/api/config', json={'pair_type': 'FUTURE_FUTURE',
+                                     'asset': 'GOLD'})
+    with open(client.tmp_path / 'config.json') as f:
+        assert json.load(f)['assets']['GOLD']['pair_type'] == 'FUTURE_FUTURE'
+
+
+def test_the_carry_rate_is_stored_as_a_fraction(client):
+    """The UI shows a percentage; the maths wants a rate."""
+    client.post('/api/config', json={'carry_rate_pct': 4.25, 'asset': 'GOLD'})
+    with open(client.tmp_path / 'config.json') as f:
+        assert json.load(f)['assets']['GOLD']['risk_free_rate'] == 0.0425
+
+
+def test_the_settings_page_says_fair_value_is_reference_only(client):
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'never reads this' in page
+
+
+def test_the_dashboard_marks_the_fair_value_reference_only(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'id="fair-value-row"' in page
+    assert 'ref only' in page
+    assert 'REFERENCE ONLY' in page

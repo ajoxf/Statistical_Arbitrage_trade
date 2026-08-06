@@ -45,7 +45,16 @@ DEFAULT_ASSETS = {
         'spot_symbols': ['XAUUSD_', 'XAUUSD', 'GOLD'],
         'futures_symbols': ['GC1225', 'XAUUSD.f', 'GCZ4'],
         'futures_expiry': datetime(2025, 11, 26),
-        'risk_free_rate': 0.0425,
+        'spot_expiry': None,  # Leg A expiry — only a calendar spread
+                              # (FUTURE_FUTURE) has one; read from the
+                              # terminal, not typed in
+        # What the two legs ARE. Decides whether a theoretical fair
+        # value exists for the spread — reference only, never a signal
+        # input. See fairvalue.py.
+        'pair_type': 'SPOT_FUTURE',
+        'risk_free_rate': 0.0425,   # annual carry: financing + storage
+                                    # - convenience yield. Fair value
+                                    # only; nothing else reads it.
         'multiplier': 1.0,
         'lot_size': 100,      # oz per lot (contract size)
         'swap_charge': 0.0,
@@ -56,6 +65,8 @@ DEFAULT_ASSETS = {
         'spot_symbols': ['XAGUSD_', 'XAGUSD', 'SILVER'],
         'futures_symbols': ['SI1225', 'XAGUSD.f', 'SIU4'],
         'futures_expiry': datetime(2025, 11, 26),
+        'spot_expiry': None,
+        'pair_type': 'SPOT_FUTURE',
         'risk_free_rate': 0.0425,
         'multiplier': 1.0,
         'lot_size': 5000,     # oz per lot (contract size)

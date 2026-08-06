@@ -65,6 +65,8 @@ statarb/
   signals.py            SignalGenerator (legacy) + ZSignalGenerator (gates:
                         ceiling, trend, cooldowns, z-reset, edge filter)
   costs.py              round-trip cost model + edge filter
+  fairvalue.py          theoretical spread by pair type —
+                        DISPLAY ONLY, never a signal input
   exits.py              ExitLadder — dollar levels frozen at entry
   reconcile.py          orphan close / ghost clear, 3-strike, ledger
   notify.py             Telegram alerts + /status /positions /pnl
@@ -101,6 +103,21 @@ legacy/                 original monolith, superseded — do not extend
   below the noise z measures. Because HEDGE_RATIO now defines the
   series, it stays structural: blocked while a position is open,
   restart to change.
+- **Pair type + reference fair value** (owner, 2026-08-06). An asset
+  declares `pair_type`: SPOT_FUTURE / FUTURE_FUTURE (basis pairs, carry
+  ties the legs) or RELATED (WTI vs Brent — no arbitrage between them).
+  For basis pairs `statarb/fairvalue.py` computes the THEORETICAL
+  spread (spot compounded at `risk_free_rate` to expiry; for a calendar
+  spread, over the gap between the two expiries) and the dashboard
+  shows it under the spread card badged "ref only". It answers "is the
+  mean z is anchored on anywhere near what carry says?" — a big gap
+  usually means the contract month/multiplier/contract size is wrong,
+  NOT that the trade is good. **It is reference only and MUST stay
+  that way**: signals.py / exits.py / spread.py / costs.py /
+  pair_executor.py must never read it (structurally asserted in
+  tests/test_fair_value.py), and it returns None rather than guessing
+  when inputs are missing. Leg A's expiry (`spot_expiry`, for calendar
+  spreads) is read from the terminal like Leg B's.
 - Entries: z-score on that spread. ALL gates must pass: warm stats, |z| >=
   ENTRY_Z, |z| < MAX_ENTRY_Z (entry ceiling — its OWN knob, always
   active, keep the band >= 1 sigma wide; a z at 5+ is a momentum
