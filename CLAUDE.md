@@ -41,6 +41,12 @@ main.py                 single-account entry point (legacy flow)
 run_leg.py              leg runner: one process per MT5 account
 run_coordinator.py      coordinator: fuses legs, signals, routes orders
 run_watchdog.py         relaunches coordinator on crash (backoff)
+check_mt5.py            STANDALONE connection checker (no leg runners,
+                        no coordinator): connects each account in turn,
+                        decodes MT5's init errors (-10003 IPC, -6 auth)
+                        and order retcodes (10027 algo trading off) into
+                        fixes; --order places a min-lot round trip and
+                        confirms it in the terminal's own history
 statarb/
   config.py             file-based config: accounts/.env, TRADING,
                         SIGNALS, COSTS, EXITS, RECONCILE, EXECUTION
@@ -77,7 +83,7 @@ statarb/
   database.py           DataLogger (SQLite): trades, positions, market data,
                         position_state, untracked_closes, trade_review
   system.py             AlgorithmicTradingSystem — single-account loop
-tests/                  345 tests, all fakes, no MT5 (runs anywhere)
+tests/                  353 tests, all fakes, no MT5 (runs anywhere)
 legacy/                 original monolith, superseded — do not extend
 ```
 
