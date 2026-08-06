@@ -117,7 +117,7 @@ class AlgoTradingConfig:
             'MIN_MATCHED_FRACTION': 0.4,
         }
         self.SIGNALS = {
-            'USE_Z_SIGNALS': True,     # z-score on swap_diff (fixed
+            'USE_Z_SIGNALS': True,     # z-score on the spread (fixed
                                        # premium thresholds when False)
             'ENTRY_Z': 3.0,
             'EXIT_Z': 0.5,

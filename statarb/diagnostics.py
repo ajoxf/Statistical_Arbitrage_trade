@@ -274,8 +274,8 @@ def _check_expiry(checklist, scope, report, asset):
         checklist.add(
             scope, 'Futures expiry', FAIL,
             f'The configured contract expired on '
-            f'{configured.date()} — an expired expiry silently zeroes the '
-            f'swap basis and disables every signal',
+            f'{configured.date()} — an expired contract stops trading and '
+            f'its quotes go stale',
             fix=['Set the live contract\'s expiry date in Settings',
                  'Update the futures symbol to the front month'])
     elif broker_expiry:
@@ -296,9 +296,9 @@ def _check_expiry(checklist, scope, report, asset):
                       f'({(configured - now).days} days away)')
     else:
         checklist.add(scope, 'Futures expiry', INFO,
-                      'No expiry set — the engine trades the RAW basis '
-                      '(futures minus spot). Set one only if you want the '
-                      'spread carry-detrended by the swap cost.')
+                      'No expiry set. The spread does not depend on it — '
+                      'set one only so the checklist can warn you before '
+                      'the contract rolls.')
 
 
 def check_pair(checklist, spot, futures, config):

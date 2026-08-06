@@ -392,7 +392,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         first = (status.get('assets') or [{}])[0]
         return jsonify({
             'armed': bool(order), 'order': order,
-            'current_spread': first.get('swap_diff'),
+            'current_spread': first.get('spread'),
             'asset': first.get('asset'),
         })
 
@@ -410,12 +410,11 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         asset = request.args.get('asset')
         where = "WHERE asset=?" if asset else ""
         args = ((asset, n) if asset else (n,))
-        rows = query(f"SELECT actual_basis, swap_basis, z FROM market_data "
+        rows = query(f"SELECT spread, z FROM market_data "
                      f"{where} ORDER BY timestamp DESC LIMIT ?", args)
         rows.reverse()
         return jsonify({
-            'spreads': [(r['actual_basis'] or 0) - (r['swap_basis'] or 0)
-                        for r in rows],
+            'spreads': [r['spread'] or 0 for r in rows],
             'zscores': [r['z'] for r in rows],
         })
 
@@ -1414,7 +1413,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         limit = min(int(request.args.get('limit', 600)), 5000)
         return jsonify(query(
             "SELECT timestamp, spot_price, futures_price, actual_basis, "
-            "swap_basis, swap_premium_pct, z, signal FROM market_data "
+            "spread, basis_pct, z, signal FROM market_data "
             "WHERE asset=? ORDER BY timestamp DESC LIMIT ?", (asset, limit)))
 
     @app.route('/api/analysis')

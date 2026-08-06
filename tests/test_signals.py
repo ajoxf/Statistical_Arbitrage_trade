@@ -3,7 +3,7 @@ from statarb.signals import SignalGenerator
 
 
 def make_market_data(premium):
-    return {'swap_premium_pct': premium}
+    return {'basis_pct': premium}
 
 
 def make_position(signal_type):

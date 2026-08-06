@@ -111,9 +111,9 @@ def arm(coordinator, **order):
 
 
 def market(spread):
-    return {'swap_diff': spread, 'spot_price': 3300.0,
+    return {'spread': spread, 'spot_price': 3300.0,
             'futures_price': 3320.0, 'actual_basis': 20.0,
-            'swap_premium_pct': 5.0, 'spot_bid': 3299.9, 'spot_ask': 3300.1,
+            'basis_pct': 5.0, 'spot_bid': 3299.9, 'spot_ask': 3300.1,
             'futures_bid': 3319.9, 'futures_ask': 3320.1,
             'timestamp': datetime.now()}
 

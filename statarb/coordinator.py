@@ -400,87 +400,15 @@ class Coordinator:
                     "%s: futures contract expires %s (read from the broker)",
                     asset_key, asset_cfg['futures_expiry'].date())
 
-        self._adopt_swap_charge(asset_key, asset_cfg, spot_report)
-        self._log_spread_definition(asset_key, asset_cfg)
+        self._log_spread_definition(asset_key)
 
-    def _adopt_swap_charge(self, asset_key, asset_cfg, spot_report):
-        """Take the carry cost from the SPOT symbol.
-
-        swap_diff detrends the basis by the cost of CARRYING THE SPOT
-        LEG to expiry, so the number it needs is the spot symbol's
-        financing cost. This used to read the FUTURES symbol's swap —
-        the wrong leg, and typically zero on a dated contract — and then
-        only logged it without ever adopting it.
-
-        Two things have to be right or the spread is nonsense:
-        UNITS, because MT5 reports swap in points, in a currency, or as
-        an annual interest percentage depending on swap_mode; and SIGN,
-        because swap_long on spot gold is a DEBIT (negative) and the
-        carry model wants a positive cost of carry. Anything we cannot
-        convert is left alone with a warning — a wrong carry is worse
-        than none, because it moves the whole spread series.
-        """
-        if asset_cfg.get('swap_charge') or not spot_report:
-            return
-        charge, how = self._swap_to_currency(asset_cfg, spot_report)
-        if charge is None:
-            logging.warning(
-                "%s: cannot convert the spot swap to a daily cost (%s) — "
-                "leaving the carry adjustment OFF. The engine trades the "
-                "raw basis until swap_charge is set on the Settings page.",
-                asset_key, how)
-            return
-        asset_cfg['swap_charge'] = charge
-        logging.info(
-            "%s: carry cost %.2f per lot per day, from the spot symbol's "
-            "swap (%s)", asset_key, charge, how)
-
-    @staticmethod
-    def _swap_to_currency(asset_cfg, report):
-        """(daily cost per lot in account currency, how it was derived).
-
-        MT5 swap_mode values: 0 disabled, 1 points, 2 symbol currency,
-        3 margin currency, 4 deposit currency, 5/6 annual interest %.
-        """
-        swap = report.get('swap_long')
-        if swap is None:
-            return None, 'the broker reported no swap'
-        cost = -float(swap)          # a debit is the cost we want, positive
-        mode = report.get('swap_mode')
-        if mode in (2, 3, 4):
-            return cost, f'swap_mode {mode}, already per lot per day'
-        if mode == 1:
-            point = report.get('point')
-            size = asset_cfg.get('lot_size')
-            if not point or not size:
-                return None, 'swap is in points but point/contract size ' \
-                             'are unknown'
-            return (cost * float(point) * float(size),
-                    f'{swap:g} points x {point:g} x {size:g}/lot')
-        if mode in (5, 6):
-            return None, (f'swap_mode {mode} is an annual interest rate, '
-                          'not a per-day charge')
-        if mode == 0:
-            return 0.0, 'swaps are disabled on this symbol'
-        return None, f'unrecognised swap_mode {mode}'
-
-    @staticmethod
-    def _log_spread_definition(asset_key, asset_cfg):
+    def _log_spread_definition(self, asset_key):
         """Say in the log exactly what the number on the dashboard is.
-        'The spread seems incorrect' is usually the operator comparing a
-        detrended spread against futures minus spot."""
-        expiry = asset_cfg.get('futures_expiry')
-        live = expiry and expiry > datetime.now()
-        if live and asset_cfg.get('swap_charge'):
-            logging.info(
-                "%s spread = (futures - spot) - carry to %s, at %.2f per "
-                "lot per day. It will NOT equal futures minus spot.",
-                asset_key, expiry.date(), asset_cfg['swap_charge'])
-        else:
-            why = ('no futures expiry' if not live
-                   else 'no carry cost known')
-            logging.info(
-                "%s spread = futures - spot (raw basis, %s)", asset_key, why)
+        "The spread seems incorrect" is usually the operator checking it
+        against the two prices beside it."""
+        beta = self.config.TRADING.get('HEDGE_RATIO', 1.0)
+        logging.info("%s spread = futures - %g x spot (HEDGE_RATIO)",
+                     asset_key, beta)
 
     def _suggest_symbols(self, asset_key, role, leg, candidates):
         """Tell the operator what this broker DOES call the instrument —
@@ -530,7 +458,8 @@ class Coordinator:
             return compute_market_data(
                 asset['config'],
                 SimpleNamespace(**spot_tick),
-                SimpleNamespace(**futures_tick))
+                SimpleNamespace(**futures_tick),
+                self.config.TRADING.get('HEDGE_RATIO', 1.0))
         except Exception as e:
             logging.error("Market data error for %s: %s", asset_key, e)
             return None
@@ -558,12 +487,12 @@ class Coordinator:
         stats = self.stats.get(asset_key)
         z = None
         if stats is not None:
-            stats.update(market_data['swap_diff'],
+            stats.update(market_data['spread'],
                          market_data.get('quote_id'))
             z = stats.z
             self.z_gen.update(asset_key, z)
 
-        self._detect_sd_touches(asset_key, z, market_data['swap_diff'])
+        self._detect_sd_touches(asset_key, z, market_data['spread'])
         self.shadow.update(asset_key, market_data['spot_price'],
                            market_data['futures_price'])
         # An armed Manual Spread Trade watches the spread on every
@@ -586,13 +515,13 @@ class Coordinator:
             self.position_manager.update_position_pnl(
                 position_id, market_data['spot_price'],
                 market_data['futures_price'],
-                market_data['swap_premium_pct'],
+                market_data['basis_pct'],
                 contract_size=contract_size)
 
             reason = self._exit_reason(position, z, market_data)
             if reason:
                 self._close(position_id, position, reason, contract_size, z,
-                            spread=market_data.get('swap_diff'))
+                            spread=market_data.get('spread'))
 
         # -- entries (only while the algo is enabled; exits above
         # always run — stopping the algo never abandons a position) --
@@ -627,10 +556,10 @@ class Coordinator:
             return self.exit_ladder.evaluate(
                 position, position.exit_plan, z,
                 position.unrealized_pnl, age,
-                spread=market_data.get('swap_diff'))
+                spread=market_data.get('spread'))
         # Legacy premium-based paths
         hit, action = self.risk_manager.check_position_risk(
-            position, market_data['swap_premium_pct'])
+            position, market_data['basis_pct'])
         if hit:
             return action
         signal = self.legacy_gen.generate_signal(
@@ -723,7 +652,7 @@ class Coordinator:
 
         position = self.position_manager.create_position(
             asset_key, signal_type, spot_trade, futures_trade,
-            market_data['swap_premium_pct'])
+            market_data['basis_pct'])
         if plan and spot_trade.lot_size and lots:
             # Rescale dollar levels if we filled less than requested
             scale = spot_trade.lot_size / lots
@@ -734,9 +663,9 @@ class Coordinator:
             # at entry (for spread-mode exits), and the BE/EX/TP/SL
             # SPREAD levels for the in-position card
             plan['entry_mu'] = stats.mu if stats else None
-            plan['entry_spread'] = market_data['swap_diff']
+            plan['entry_spread'] = market_data['spread']
             plan['levels'] = self.exit_ladder.spread_levels(
-                plan, market_data['swap_diff'],
+                plan, market_data['spread'],
                 spot_trade.lot_size * contract_size, signal_type)
         position.exit_plan = plan
         self.data_logger.save_position_state(position)
@@ -1182,7 +1111,7 @@ class Coordinator:
             if not data:
                 return None
             stats = self.stats.get(asset_key)
-            return (data['swap_diff'],
+            return (data['spread'],
                     stats.mu if stats else None,
                     stats.sigma if stats else None,
                     stats.z if stats else None)
@@ -1282,7 +1211,7 @@ class Coordinator:
             return
         if self.position_manager.get_positions_for_asset(asset_key):
             return                       # already in the trade
-        spread = market_data.get('swap_diff')
+        spread = market_data.get('spread')
         entry = order.get('entry_spread')
         if spread is None or entry is None:
             return
@@ -1402,9 +1331,8 @@ class Coordinator:
                 'lookback': self.config.SIGNALS.get('LOOKBACK_SEC'),
                 'degenerate': bool(stats.degenerate) if stats else False,
                 'basis': md['actual_basis'],
-                'swap_diff': md['swap_diff'],
-                'swap_basis': md.get('swap_basis', 0.0),
-                'carry_adjusted': md.get('carry_adjusted', True),
+                'spread': md['spread'],
+                'hedge_ratio': md.get('hedge_ratio', 1.0),
                 'spread_formula': md.get('spread_formula'),
                 'spot_price': md['spot_price'],
                 'spot_bid': md['spot_bid'], 'spot_ask': md['spot_ask'],
@@ -1580,7 +1508,7 @@ class Coordinator:
             z = stats.z if stats else None
             lines.append(
                 f"{asset_key}: basis {md['actual_basis']:.2f} | "
-                f"swap_diff {md['swap_diff']:+.2f} | "
+                f"spread {md['spread']:+.2f} | "
                 f"z {'warm-up' if z is None else f'{z:+.2f}'} | "
                 f"{self.risk_manager.lots_traded_today(asset_key):.0f} "
                 f"lots today")
@@ -1779,10 +1707,10 @@ class Coordinator:
             state = f" | HALTED: {why}" if halted else ""
             z_str = f"{z:+.2f}" if z is not None else "warm-up"
             logging.info(
-                "%s spot %.2f | fut %.2f | swap_diff %+.2f | z %s | "
+                "%s spot %.2f | fut %.2f | spread %+.2f | z %s | "
                 "%s%s%s",
                 asset_key, md['spot_price'], md['futures_price'],
-                md['swap_diff'], z_str,
+                md['spread'], z_str,
                 getattr(self.last_signals.get(asset_key), 'value',
                         'NO_SIGNAL'), progress, state)
 

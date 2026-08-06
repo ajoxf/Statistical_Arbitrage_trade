@@ -51,15 +51,22 @@ class DataLogger:
                 spot_price REAL,
                 futures_price REAL,
                 actual_basis REAL,
-                swap_basis REAL,
-                swap_premium_pct REAL,
+                spread REAL,
+                basis_pct REAL,
                 signal TEXT
             )
         ''')
-        try:    # z column added later — upgrade in place
-            cursor.execute('ALTER TABLE market_data ADD COLUMN z REAL')
-        except sqlite3.OperationalError:
-            pass
+        # Columns added after the first release — upgrade in place.
+        # `spread`/`basis_pct` replaced `swap_basis`/`swap_premium_pct`
+        # when the spread stopped being carry-detrended (2026-08); older
+        # databases keep the old columns and gain the new ones empty.
+        for column, ddl in (('z', 'z REAL'), ('spread', 'spread REAL'),
+                            ('basis_pct', 'basis_pct REAL')):
+            try:
+                cursor.execute(
+                    f'ALTER TABLE market_data ADD COLUMN {ddl}')
+            except sqlite3.OperationalError:
+                pass
         # Crash-safe live-position snapshots for restart recovery
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS position_state (
@@ -363,11 +370,14 @@ class DataLogger:
         signal_str = signal.value if hasattr(signal, 'value') else str(signal)
         conn = sqlite3.connect(self.db_path)
         conn.execute('''
-            INSERT INTO market_data VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO market_data
+                (timestamp, asset, spot_price, futures_price, actual_basis,
+                 spread, basis_pct, signal, z)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             datetime.now().isoformat(), asset, market_data['spot_price'],
             market_data['futures_price'], market_data['actual_basis'],
-            market_data['swap_basis'], market_data['swap_premium_pct'],
+            market_data['spread'], market_data.get('basis_pct'),
             signal_str, z,
         ))
         conn.commit()

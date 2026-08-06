@@ -410,38 +410,33 @@ def test_an_asset_with_no_expiry_does_not_crash_the_engine(config):
     assert config.validate_expiries() == []      # no crash, nothing stale
 
 
-def test_without_an_expiry_the_engine_trades_the_raw_basis(config):
+def test_without_an_expiry_the_engine_still_has_a_live_spread(config):
     """A zero spread would mean z never moves and nothing ever trades —
-    indistinguishable from a dead engine. The raw basis is the spread."""
+    indistinguishable from a dead engine."""
     data = market_data(config, expiry='unset')
-    assert data['swap_diff'] == pytest.approx(20.0)     # 3320 - 3300
+    assert data['spread'] == pytest.approx(20.0)        # 3320 - 3300
     assert data['actual_basis'] == pytest.approx(20.0)
-    assert data['carry_adjusted'] is False
-    assert data['swap_basis'] == 0
 
 
-def test_an_expiry_in_the_future_still_detrends_the_carry(config):
+def test_the_expiry_does_not_change_the_spread(config):
+    """It used to: an expiry switched on a carry adjustment, and an
+    EXPIRED one silently switched it back off. The spread is now
+    futures minus hedge_ratio x spot whatever the contract says."""
     from datetime import datetime, timedelta
-    asset = dict(config.ASSETS['GOLD'])
-    asset['swap_charge'] = 45.0
-    config.ASSETS = {'GOLD': asset}
-    data = market_data(config, expiry=datetime.now() + timedelta(days=90))
-    assert data['carry_adjusted'] is True
-    assert data['swap_basis'] != 0
-    assert data['swap_diff'] != data['actual_basis']
+    future = market_data(config, expiry=datetime.now() + timedelta(days=90))
+    stale = market_data(config, expiry=datetime.now() - timedelta(days=5))
+    unset = market_data(config, expiry='unset')
+    assert future['spread'] == stale['spread'] == unset['spread']
 
 
-def test_a_past_expiry_warns_but_keeps_a_live_spread(config):
-    """It used to zero the spread silently. Now it warns and falls back
-    to the raw basis, so the failure is visible instead of mute."""
+def test_a_past_expiry_is_still_reported_as_stale(config):
+    """The spread no longer depends on it, but the operator should
+    still be told the contract has rolled."""
     from datetime import datetime, timedelta
     stale = datetime.now() - timedelta(days=5)
     config.ASSETS = {'GOLD': dict(config.ASSETS['GOLD'],
                                   futures_expiry=stale)}
     assert config.validate_expiries() == ['GOLD']
-    data = market_data(config, expiry=stale)
-    assert data['swap_diff'] == pytest.approx(20.0)
-    assert data['carry_adjusted'] is False
 
 
 def test_saving_a_broker_without_an_expiry_is_accepted(client):

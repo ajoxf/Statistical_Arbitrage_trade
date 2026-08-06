@@ -45,8 +45,9 @@ def market_data(spot=3300.0, futures=3320.0):
         'spot_price': spot, 'spot_bid': spot - 0.1, 'spot_ask': spot + 0.1,
         'futures_price': futures, 'futures_bid': futures - 0.1,
         'futures_ask': futures + 0.1,
-        'actual_basis': futures - spot, 'swap_diff': futures - spot,
-        'swap_basis': 0.0, 'swap_premium_pct': 0.0, 'carry_adjusted': False,
+        'actual_basis': futures - spot, 'spread': futures - spot,
+        'basis_pct': 0.0, 'hedge_ratio': 1.0,
+        'spread_formula': 'spread = futures - 1 x spot',
     }}
 
 

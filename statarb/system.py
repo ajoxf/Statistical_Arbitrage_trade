@@ -10,7 +10,7 @@ import pytz
 from .broker import BrokerSession
 from .database import DataLogger
 from .execution import OrderManager
-from .marketdata import calculate_swap_basis, compute_market_data
+from .marketdata import compute_market_data
 from .models import SignalType, TradingSession
 from .performance import PerformanceTracker
 from .positions import PositionManager
@@ -127,10 +127,6 @@ class AlgorithmicTradingSystem:
     # Market data
     # ------------------------------------------------------------------
 
-    def calculate_swap_basis(self, asset_key, spot_price, time_to_expiry):
-        return calculate_swap_basis(self.config.ASSETS[asset_key],
-                                    spot_price, time_to_expiry)
-
     def get_market_data(self, asset_key):
         if asset_key not in self.active_assets:
             return None
@@ -140,8 +136,9 @@ class AlgorithmicTradingSystem:
             futures_tick = self.broker.symbol_tick(asset['futures_symbol'])
             if not spot_tick or not futures_tick:
                 return None
-            return compute_market_data(asset['config'], spot_tick,
-                                       futures_tick)
+            return compute_market_data(
+                asset['config'], spot_tick, futures_tick,
+                self.config.TRADING.get('HEDGE_RATIO', 1.0))
         except Exception as e:
             logging.error("Error getting market data for %s: %s", asset_key, e)
             return None
@@ -175,13 +172,13 @@ class AlgorithmicTradingSystem:
                     position_id,
                     market_data['spot_price'],
                     market_data['futures_price'],
-                    market_data['swap_premium_pct'],
+                    market_data['basis_pct'],
                     contract_size=contract_size,
                 )
 
                 needs_action, action_type = \
                     self.risk_manager.check_position_risk(
-                        position, market_data['swap_premium_pct'])
+                        position, market_data['basis_pct'])
                 if needs_action:
                     if self.position_manager.close_position(
                             position_id, action_type, self.order_manager):
@@ -222,7 +219,7 @@ class AlgorithmicTradingSystem:
             if success:
                 position = self.position_manager.create_position(
                     asset_key, signal_type, spot_trade, futures_trade,
-                    market_data['swap_premium_pct'])
+                    market_data['basis_pct'])
                 self.risk_manager.record_trade(asset_key)
                 logging.info("Position opened: %s - %s %s",
                              position.position_id, asset_key,
@@ -233,7 +230,7 @@ class AlgorithmicTradingSystem:
         else:
             logging.info("PAPER TRADE: %s %s at premium %.2f%%",
                          asset_key, signal_type.value,
-                         market_data['swap_premium_pct'])
+                         market_data['basis_pct'])
             self.risk_manager.record_trade(asset_key)
 
     # ------------------------------------------------------------------
@@ -278,14 +275,14 @@ class AlgorithmicTradingSystem:
               f"Spr: {md['futures_spread']:>6.1f}{md['spread_unit']}")
         print(f"Actual Basis    | {md['actual_basis']:>8.2f} | "
               f"Market Pricing | Days to Expiry: {md['days_to_expiry']:>4.0f}")
-        print(f"Swap-Based Basis| {md['swap_basis']:>8.2f} | "
-              f"Your Real Cost | Swap Diff: {md['swap_diff']:>+8.2f}")
+        print(f"Spread          | {md['spread']:>+8.2f} | "
+              f"{md['spread_formula']}")
 
         signal = self.last_signals.get(asset_key, SignalType.NO_SIGNAL)
         signal_str = signal.value if hasattr(signal, 'value') else str(signal)
-        status = ("EXPENSIVE" if md['swap_diff'] > 5
-                  else "CHEAP" if md['swap_diff'] < -5 else "FAIR")
-        print(f"Market vs Swap  | Premium: {md['swap_premium_pct']:>+7.2f}% | "
+        status = ("EXPENSIVE" if md['spread'] > 5
+                  else "CHEAP" if md['spread'] < -5 else "FAIR")
+        print(f"Basis           | {md['basis_pct']:>+7.2f}% | "
               f"Status: {status:>9} | Signal: {signal_str}")
 
         active = self.position_manager.get_positions_for_asset(asset_key)

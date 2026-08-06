@@ -265,9 +265,9 @@ def test_paper_mode_does_not_claim_mt5_confirmations(coordinator):
     coordinator.executor = PaperExecutor(coordinator.spot_leg,
                                          coordinator.futures_leg)
     coordinator.stats['GOLD'] = None
-    market = {'swap_diff': 1.5, 'spot_price': 3300.0,
+    market = {'spread': 1.5, 'spot_price': 3300.0,
               'futures_price': 3320.0, 'actual_basis': 20.0,
-              'swap_premium_pct': 5.0, 'spot_bid': 3299.9,
+              'basis_pct': 5.0, 'spot_bid': 3299.9,
               'spot_ask': 3300.1, 'futures_bid': 3319.9,
               'futures_ask': 3320.1}
     from statarb.models import SignalType

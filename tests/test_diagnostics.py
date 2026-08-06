@@ -226,7 +226,7 @@ def test_expired_configured_contract_fails_loudly(cfg):
                    asset={'lot_size': 100.0, 'futures_expiry': stale})
     check = find(report(cfg, futures=futures), 'Futures expiry')
     assert check['status'] == 'FAIL'
-    assert 'zeroes the swap basis' in check['message']
+    assert 'expired' in check['message']
 
 
 def test_expiry_within_days_warns_to_roll(cfg):

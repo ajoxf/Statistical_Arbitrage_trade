@@ -1,7 +1,7 @@
 # Statistical Arbitrage Trade — Project Memory
 
 Basis/stat-arb trading system on MetaTrader 5 (Gold & Silver, spot vs
-futures, swap-cost-based signals).
+futures, z-score on the spread futures - HEDGE_RATIO * spot).
 
 ## Goal
 
@@ -60,7 +60,7 @@ statarb/
                         cancel+verify -> cross; hedge match; matched floor;
                         ticket-based closes (hedging mode)
   coordinator.py        Coordinator + PaperExecutor (paper = same lifecycle)
-  spread.py             SpreadStats: frozen mu/sigma/z on swap_diff,
+  spread.py             SpreadStats: frozen mu/sigma/z on the spread,
                         AR(1) half-life, trend slope
   signals.py            SignalGenerator (legacy) + ZSignalGenerator (gates:
                         ceiling, trend, cooldowns, z-reset, edge filter)
@@ -72,7 +72,8 @@ statarb/
                         token/chat from .env only)
   webapp.py             read-only Flask dashboard (own process, reads
                         SQLite + runtime_status.json)
-  marketdata.py         basis/swap math shared by both loops
+  marketdata.py         the spread (futures - HEDGE_RATIO * spot),
+                        shared by both loops
   models.py             enums, Trade (+position_tickets), Position (+to/from_dict)
   execution.py          OrderManager — single-account entry/close pairs
   positions.py          PositionManager — lifecycle, per-leg realized P&L
@@ -89,8 +90,18 @@ legacy/                 original monolith, superseded — do not extend
 
 ## Strategy (decided 2026-07; spec v2 applied 2026-07)
 
-- Entries: z-score on swap_diff (basis minus swap-implied basis — the
-  carry-detrended spread). ALL gates must pass: warm stats, |z| >=
+- **The spread is `futures - HEDGE_RATIO * spot`** (owner, 2026-08-06:
+  "Leg B - (Hedge Ratio) * Leg A"). Nothing else: no carry term, no
+  swap cost, no dependence on the futures expiry. An earlier build
+  subtracted a swap-implied carry; that made the dashboard number
+  impossible to reconcile against the two prices beside it and tied the
+  whole series to a swap figure nobody could verify. The drift the
+  carry was meant to remove is real but months-long, while the window
+  is hours — ~0.03 across a 2h window on a 59-point gold basis, far
+  below the noise z measures. Because HEDGE_RATIO now defines the
+  series, it stays structural: blocked while a position is open,
+  restart to change.
+- Entries: z-score on that spread. ALL gates must pass: warm stats, |z| >=
   ENTRY_Z, |z| < MAX_ENTRY_Z (entry ceiling — its OWN knob, always
   active, keep the band >= 1 sigma wide; a z at 5+ is a momentum
   spike, their extreme entries went 0-for-3), trend filter, cooldowns,
@@ -177,7 +188,7 @@ Applied to the engine:
   round-trip cost ("profit % on top of BE"); dollar stop stays GROSS
   (stop = spread distance, not fees).
 - Spread LEVELS frozen at entry for the in-position card: BE/EX/TP/SL
-  as absolute swap_diff values (ExitLadder.spread_levels).
+  as absolute spread values (ExitLadder.spread_levels).
 - EXIT_MODE zscore|spread|hybrid (spread = crosses the mean frozen at
   entry). HARD_MAX_HOLD_MIN fixed-minutes clock (owner: ~90min, exit
   before the spread starts drifting) alongside HARD_TIME_STOP_MULT.
@@ -334,28 +345,19 @@ per-leg maker/taker fee split, backtest suite.
   the log prints. `run()` also re-reads POLL_INTERVAL_SEC each pass —
   it is in HOT_TRADING_KEYS but was captured once before the loop, so
   hot-reloading it did nothing.
-- **"The Spread seems incorrect."** Two separate causes. (1) The card
-  showed swap_diff with no indication a carry had been subtracted, and
-  its tooltip still carried W3's formula (`futures - beta*spot`), so a
-  detrended spread of 9.13 next to prices 59.07 apart looked broken.
-  The snapshot now carries `spread_formula` + `swap_basis`, the UI
-  shows "basis X - carry Y", and startup LOGS which definition is in
-  force. (2) The carry itself was wrong: `_adopt_broker_specs` read
-  the FUTURES symbol's `swap_long` — the wrong leg (swap_diff detrends
-  by the cost of carrying the SPOT leg, and a dated contract's swap is
-  typically 0) — and only LOGGED it, never adopting it, so swap_charge
-  stayed at whatever was typed. Now `_adopt_swap_charge` reads the SPOT
-  report, converts by `swap_mode` (1=points x point x contract size,
-  2/3/4=currency per lot per day, 5/6=annual interest -> REFUSED,
-  0=disabled), and flips the sign (a broker DEBIT is a positive cost).
-  Anything it cannot convert leaves the carry OFF with a warning — a
-  wrong carry shifts the whole spread series, which is worse than
-  none. `carry_adjusted` is now True only when swap_basis is actually
-  non-zero (with swap_charge 0 it used to claim "carry-detrended"
-  while returning the raw basis). NOT modelled: the carry is one
-  number, but the pair is long one leg and short the other, so a
-  rigorous model needs swap_long on one side and swap_short on the
-  other.
+- **"The Spread seems incorrect."** First pass fixed the presentation
+  (the card showed a detrended spread with no derivation, and its
+  tooltip still carried W3's `futures - beta*spot`) and the carry
+  inputs (it read the FUTURES symbol's swap, ignored MT5's `swap_mode`
+  units, and never adopted what it read). Then the OWNER SETTLED IT:
+  **the spread is `futures - HEDGE_RATIO * spot`, full stop** — see
+  Strategy above. All the carry machinery is gone: `calculate_swap_basis`,
+  `_adopt_swap_charge`, `swap_diff`/`swap_basis`/`swap_premium_pct`/
+  `carry_adjusted`, main.py's swap prompt. `swap_charge` survives only
+  as an inert config key. market_data now carries `spread`, `basis_pct`
+  and `spread_formula` (shown under the card and logged at startup);
+  the DB's market_data table gained `spread`/`basis_pct` columns via
+  ALTER-if-missing, replacing `swap_basis`/`swap_premium_pct`.
 - **"The lookback period setting seems incorrect and not working."**
   The Settings field was labelled "Number of ticks to collect before
   trading" (W3's meaning) but wrote `SIGNALS.LOOKBACK_SEC` — a window
@@ -449,7 +451,8 @@ per-leg maker/taker fee split, backtest suite.
   on the form at all, and MT5 knows all three. The broker's number
   wins and a contradiction with config is logged; legs with different
   contract sizes log the implied HEDGE_RATIO. A real futures contract
-  brings its own expiry, so the carry adjustment switches itself on.
+  brings its own expiry; it is informational only — the spread does
+  not depend on it.
 - Symbol resolution failures now LIST WHAT THE ACCOUNT OFFERS
   (_suggest_symbols via find_symbols) instead of just "missing
   symbols", and say plainly when an account has nothing matching —
@@ -457,11 +460,11 @@ per-leg maker/taker fee split, backtest suite.
 - futures_expiry is OPTIONAL (owner: "just pick up the symbols, don't
   get into expiry"). Missing expiry used to KeyError in
   validate_expiries and kill startup. Now: no expiry -> the engine
-  trades the RAW basis (swap_diff = futures - spot, carry_adjusted
-  False); an expiry in the future -> carry-detrended as before; a PAST
-  expiry -> warns AND falls back to the raw basis instead of zeroing
-  the spread (a zero spread means z never moves — a dead engine that
-  looks alive). Two accounts at the SAME broker need two separate MT5
+  still trades (the spread never depended on it once the carry was
+  removed); a PAST expiry -> warns, because the contract has rolled and
+  its quotes go stale.
+  SUPERSEDED 2026-08-06: expiry used to switch a carry adjustment on
+  and off, so an expired one silently changed the spread definition. Two accounts at the SAME broker need two separate MT5
   INSTALLATIONS; sharing one is refused at startup and by the
   checklist, since one terminal holds one login.
 
@@ -506,7 +509,7 @@ per-leg maker/taker fee split, backtest suite.
   session. No more versioning by filename (`15_..._f.py` era is over).
 - Run `pytest tests/ -q` before any commit touching statarb/.
 - Futures expiry dates in config must be kept current — an expired
-  contract silently zeroes the swap basis and disables signals
-  (a warning is logged at startup).
+  contract stops trading and its quotes go stale (a warning is logged
+  at startup). It no longer affects the spread.
 - MT5 package is Windows-only; on Linux/dev machines everything but
   the live connection works (tests, config, imports).

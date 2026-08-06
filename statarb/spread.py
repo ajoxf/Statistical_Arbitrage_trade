@@ -1,10 +1,4 @@
-"""Rolling statistics of the spread (swap_diff = actual basis minus
-swap-implied basis).
-
-Why swap_diff and not raw basis: raw basis drifts deterministically
-toward zero as the futures approach expiry, so a rolling mean on it
-carries a systematic bias. swap_diff is the carry-detrended spread —
-the natural series to z-score.
+"""Rolling statistics of the spread (futures - hedge_ratio * spot).
 
 mu/sigma are FROZEN between refreshes (STATS_INTERVAL_SEC) so the
 anchor doesn't chase the spread intra-hold; z uses the live spread

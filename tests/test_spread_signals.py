@@ -208,7 +208,7 @@ def test_no_entry_while_position_open(sig_config):
 
 
 # --- degenerate windows: a sigma near zero is not a signal ---------------
-# Live 2026-08-06: "swap_diff +9.13 | z +53026.30". Sigma had collapsed
+# Live 2026-08-06: "spread +9.13 | z +53026.30". Sigma had collapsed
 # because the spread barely moved in the window, and dividing by it
 # produced a number with no meaning.
 
@@ -224,7 +224,7 @@ def test_a_flat_window_alone_is_not_yet_dangerous(sig_config):
 
 
 def test_the_absurd_z_the_operator_saw_is_refused(sig_config):
-    """swap_diff +9.13 with z +53026: sigma had collapsed, then the
+    """spread +9.13 with z +53026: sigma had collapsed, then the
     spread moved. That number reached the log and the dashboard."""
     clock = FakeClock()
     stats = make_stats(sig_config, clock)

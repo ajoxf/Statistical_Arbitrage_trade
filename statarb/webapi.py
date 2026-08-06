@@ -361,13 +361,11 @@ def status_to_ui(status, config_raw):
     if first:
         signal = {
             'zscore': first.get('z'),
-            'spread': first.get('swap_diff', first.get('basis')),
-            # The pieces the spread is made of. Without them the card
-            # shows one number that cannot be reconciled against the two
-            # prices beside it, and a carry-detrended spread looks wrong.
+            'spread': first.get('spread', first.get('basis')),
+            # The pieces the spread is made of, so the number on the
+            # card can be checked against the two prices beside it.
             'raw_basis': first.get('basis'),
-            'carry': first.get('swap_basis'),
-            'carry_adjusted': first.get('carry_adjusted'),
+            'spread_hedge_ratio': first.get('hedge_ratio'),
             'spread_formula': first.get('spread_formula'),
             'mean': first.get('mu'), 'std': first.get('sigma'),
             'half_life': first.get('half_life_min'),

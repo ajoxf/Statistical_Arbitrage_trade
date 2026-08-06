@@ -36,34 +36,6 @@ def load_config(path):
     return AlgoTradingConfig()
 
 
-def prompt_swap_charges(config):
-    """Ask only for swap charges the config file didn't provide."""
-    missing = [k for k, a in config.ASSETS.items()
-               if a['enabled'] and a['swap_charge'] <= 0]
-    if not missing:
-        return
-
-    print("\n" + "=" * 84)
-    print("SWAP CONFIGURATION")
-    print("Enter daily swap charges for long positions (USD per lot per day)")
-    print("-" * 84)
-    for asset_key in missing:
-        asset = config.ASSETS[asset_key]
-        while True:
-            try:
-                value = float(input(
-                    f"{asset['name']} (lot size: {asset['lot_size']:,}): $"
-                ).strip())
-                if value <= 0:
-                    print("  Enter a positive swap charge")
-                    continue
-                asset['swap_charge'] = value
-                break
-            except ValueError:
-                print("  Enter a valid number")
-    print("=" * 84)
-
-
 def prompt_trading_mode(default="PAPER"):
     print("\n1. PAPER TRADING (simulated)\n2. LIVE TRADING (real money)")
     choice = input("Select mode (1/2, default 1): ").strip()
@@ -87,7 +59,6 @@ def main():
     config = load_config(args.config)
 
     mode = args.mode.upper() if args.mode else prompt_trading_mode()
-    prompt_swap_charges(config)
 
     system = AlgorithmicTradingSystem(config, trading_mode=mode)
 
@@ -99,10 +70,10 @@ def main():
         sys.exit(1)
 
     print("\nACTIVE ASSETS")
+    beta = config.TRADING.get('HEDGE_RATIO', 1.0)
     for asset_key, data in system.active_assets.items():
-        swap = config.ASSETS[asset_key]['swap_charge']
         print(f"  {asset_key}: {data['spot_symbol']} + "
-              f"{data['futures_symbol']} | Swap: ${swap:.2f}/day")
+              f"{data['futures_symbol']} | spread = futures - {beta:g} x spot")
 
     if mode == "LIVE":
         print("\nWARNING: LIVE TRADING MODE - REAL MONEY AT RISK")

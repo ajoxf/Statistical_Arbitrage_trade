@@ -192,7 +192,7 @@ class TelegramNotifier:
 
     # ------------------------------------------------------------------
     # Message builders (formats ported 1:1 from W3 telegram_bot.py,
-    # adapted to MT5 fields: lots, contract sizes, swap_diff spread)
+    # adapted to MT5 fields: lots, contract sizes, the pair spread)
     # ------------------------------------------------------------------
 
     OUTCOME_LINES = {
@@ -229,7 +229,7 @@ class TelegramNotifier:
                     + (fut.executed_price or 0)) * oz
         spread = plan.get('entry_spread')
         if spread is None:
-            spread = market_data.get('swap_diff',
+            spread = market_data.get('spread',
                                      market_data.get('actual_basis'))
         fees = plan.get('rt_cost_usd', 0.0)
 

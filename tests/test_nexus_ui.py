@@ -84,7 +84,7 @@ def client(tmp_path, monkeypatch):
         'mode': 'PAPER', 'algo_enabled': True, 'updated': '12:00:00',
         'halted': False, 'halt_reason': None, 'daily_pnl': 500.0,
         'assets': [{'asset': 'GOLD', 'z': 1.2, 'basis': 20.0,
-                    'swap_diff': 1.5, 'spot_price': 3300.0,
+                    'spread': 1.5, 'spot_price': 3300.0,
                     'spot_bid': 3299.9, 'spot_ask': 3300.1,
                     'futures_price': 3320.0, 'fut_bid': 3319.9,
                     'fut_ask': 3320.1, 'lots_today': 100,

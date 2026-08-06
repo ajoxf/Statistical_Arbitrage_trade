@@ -358,7 +358,7 @@
                         <div class="metric-label">Spread</div>
                         <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
                              id="spread-breakdown"
-                             title="What the engine z-scores. With a live futures expiry and a known carry cost it is the basis minus the carry; otherwise it is the raw basis."></div>
+                             title="What the engine z-scores: Leg B (futures) minus the hedge ratio times Leg A (spot)."></div>
                     </div>
                     <div class="col-4 text-center">
                         <div class="d-flex align-items-center justify-content-center gap-2">
@@ -2211,11 +2211,8 @@
         // NOT equal futures minus spot, and one bare number on a card
         // gives no way to tell a detrended spread from a broken one.
         const breakdownEl = document.getElementById('spread-breakdown');
-        if (breakdownEl && data.raw_basis != null) {
-            breakdownEl.textContent = data.carry_adjusted
-                ? 'basis ' + data.raw_basis.toFixed(2) +
-                  ' − carry ' + (data.carry || 0).toFixed(2)
-                : 'raw basis (no carry)';
+        if (breakdownEl && data.spread_formula) {
+            breakdownEl.textContent = data.spread_formula;
             breakdownEl.style.display = '';
         }
 

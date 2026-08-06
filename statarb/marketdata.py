@@ -1,28 +1,28 @@
-"""Basis / swap-premium math, shared by the single-account system and
-the multi-account coordinator."""
+"""The spread the strategy trades, built from two ticks.
 
-import math
+    spread = futures - hedge_ratio * spot
+
+Owner's definition (2026-08-06). Leg B minus the hedge ratio times Leg
+A, and nothing else: no carry term, no swap cost, no dependence on the
+futures expiry. The hedge ratio is the same number that sizes the
+hedge, so the spread is exactly the P&L of the pair per unit — which is
+why HEDGE_RATIO is structural and cannot change under an open position.
+
+This replaced a carry-detrended spread (basis minus a swap-implied
+basis). The theory there was that the raw basis drifts toward zero as
+the contract approaches expiry, biasing a rolling mean. It does, but
+the drift is spread over months while the window is hours: on gold at a
+59-point basis four months out, that is ~0.03 of drift across a
+two-hour window — far below the noise the z-score is measuring. What
+the carry term did do reliably was make the spread depend on a swap
+number nobody could verify.
+"""
+
 from datetime import datetime
 
 
-def calculate_swap_basis(asset_cfg, spot_price, time_to_expiry):
-    """Swap-implied futures price and basis from real carry cost.
-
-    swap_charge is the cost of CARRYING THE SPOT LEG for one lot for one
-    day, in account currency, as a positive number. It is the spot
-    symbol's financing cost — not the futures symbol's, which is
-    typically zero on a dated contract.
-    """
-    position_value = spot_price * asset_cfg['lot_size']
-    daily_swap_rate = (asset_cfg.get('swap_charge') or 0.0) / position_value
-    annual_swap_rate = daily_swap_rate * 365
-
-    swap_futures_price = spot_price * math.exp(annual_swap_rate * time_to_expiry)
-    swap_basis = swap_futures_price - spot_price
-    return swap_futures_price, swap_basis, annual_swap_rate
-
-
-def compute_market_data(asset_cfg, spot_tick, futures_tick):
+def compute_market_data(asset_cfg, spot_tick, futures_tick,
+                        hedge_ratio=1.0):
     """Build the market-data snapshot from two ticks.
 
     Ticks are any objects with bid/ask/last attributes (mt5 ticks or
@@ -45,41 +45,17 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
     futures_price = (futures_tick.last if futures_tick.last > 0
                      else (futures_tick.bid + futures_tick.ask) / 2) * multiplier
 
-    actual_basis = futures_price - spot_price
+    beta = float(hedge_ratio or 1.0)
+    spread = futures_price - beta * spot_price
+    actual_basis = futures_price - spot_price      # raw, for reference
 
-    # Expiry is OPTIONAL. With one, the spread is carry-detrended:
-    # swap_diff = basis - the basis the swap cost implies. Without one
-    # (a rolling/perpetual contract, or simply not configured), the
-    # strategy trades the RAW basis. It must never silently become
-    # zero — a zero spread means z never moves and nothing ever
-    # trades, which looks identical to a dead engine.
+    # Expiry is OPTIONAL and no longer touches the spread — it is kept
+    # only so the operator can see how far out the contract is and be
+    # warned when it has rolled.
     expiry = asset_cfg.get('futures_expiry')
     time_to_expiry = ((expiry - datetime.now()).total_seconds()
                       / (365.25 * 24 * 3600)) if expiry else None
     days_to_expiry = time_to_expiry * 365.25 if time_to_expiry else 0
-
-    if time_to_expiry and time_to_expiry > 0:
-        swap_futures_price, swap_basis, annual_swap_rate = \
-            calculate_swap_basis(asset_cfg, spot_price, time_to_expiry)
-        if abs(swap_basis) > 0.001:
-            swap_premium_pct = ((actual_basis - swap_basis)
-                                / abs(swap_basis)) * 100
-        else:
-            swap_premium_pct = (actual_basis / spot_price) * 100
-        swap_diff = actual_basis - swap_basis
-        # Only claim a carry adjustment when one was actually made. With
-        # swap_charge unset (0 — the default until the operator supplies
-        # the spot leg's financing cost) swap_basis is identically zero
-        # and swap_diff IS the raw basis. Reporting "carry-detrended"
-        # there sent the operator looking for the difference between a
-        # spread of 59 and a spread of 59.
-        carry_adjusted = abs(swap_basis) > 1e-9
-    else:
-        swap_futures_price = futures_price
-        swap_basis = annual_swap_rate = 0
-        swap_diff = actual_basis          # trade the raw basis
-        swap_premium_pct = (actual_basis / spot_price) * 100
-        carry_adjusted = False
 
     return {
         'asset_name': asset_cfg['name'],
@@ -87,7 +63,6 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
         'quote_id': quote_id,
         'spot_price': spot_price,
         'futures_price': futures_price,
-        'swap_futures_price': swap_futures_price,
         'spot_bid': spot_tick.bid,
         'spot_ask': spot_tick.ask,
         'futures_bid': futures_tick.bid * multiplier,
@@ -95,20 +70,13 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick):
         'spot_spread': (spot_tick.ask - spot_tick.bid) * 100,
         'futures_spread': (futures_tick.ask - futures_tick.bid) * 100,
         'spread_unit': '¢',
+        'spread': spread,
         'actual_basis': actual_basis,
-        'swap_basis': swap_basis,
-        'swap_premium_pct': swap_premium_pct,
-        'swap_diff': swap_diff,
-        'annual_swap_rate': annual_swap_rate,
+        'hedge_ratio': beta,
+        'basis_pct': (actual_basis / spot_price * 100) if spot_price else 0.0,
         'time_to_expiry': time_to_expiry,
         'days_to_expiry': days_to_expiry,
-        'carry_adjusted': carry_adjusted,
-        # The spread the strategy trades, spelled out. One number on a
-        # card cannot be checked against the two prices next to it —
-        # the operator has to be able to see WHY 4328.80 and 4269.73
-        # make a spread of 9.13 rather than 59.07.
-        'spread_formula': (
-            "swap_diff = (futures - spot) - carry"
-            if carry_adjusted else "swap_diff = futures - spot"),
-        'swap_charge': asset_cfg.get('swap_charge') or 0.0,
+        # Spelled out so the number on the card can be checked against
+        # the two prices beside it.
+        'spread_formula': f"spread = futures - {beta:g} x spot",
     }
