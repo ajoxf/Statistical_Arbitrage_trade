@@ -645,7 +645,7 @@ def test_the_ratio_is_dropped_once_the_threshold_is_cleared(client):
     post-warm-up wording is present rather than the bare ratio."""
     page = client.get('/').get_data(as_text=True)
     assert 'const warming = dataPoints < minSamples' in page
-    assert "'quotes in ' +" in page
+    assert "'quotes · ' + humanDuration(history)" in page
 
 
 def test_a_collapsed_sigma_is_named_instead_of_collecting_data(client):
@@ -1065,13 +1065,22 @@ def test_the_cost_block_is_absent_when_the_engine_has_not_published_it():
     assert signal['leg_a_notional'] is None
 
 
-def test_the_history_gate_is_shown_in_seconds(client):
-    """Operator: "The lookback period does not have the time captured
-    (Example: 7200 / 7200)" — the same unit as the setting."""
+def test_elapsed_collection_is_a_duration_not_a_pinned_ratio(client):
+    """Operator wanted the time captured; the first attempt showed
+    "7,200 / 7,200s", which pins at its own denominator exactly like
+    the "10,894 / 300" it replaced. It is a growing duration now."""
     page = client.get('/').get_data(as_text=True)
-    assert "' / ' +" in page and "'s'" in page
-    assert 'const heldSec = Math.min' in page      # capped once met
-    assert "' history'" in page                     # shown when warm too
+    assert 'function humanDuration' in page
+    assert "humanDuration(history) + ' collected'" in page
+    assert 'const heldSec' not in page          # the pinned ratio is gone
+
+
+def test_each_warm_up_line_carries_one_unit(client):
+    """Mixed units on one line ("quotes in 2h window · 7,200/7,200s")
+    is what made it unreadable."""
+    page = client.get('/').get_data(as_text=True)
+    assert "'minutes collected'" in page
+    assert "'quotes collected'" in page
 
 
 def test_the_engine_publishes_its_measured_refresh_rate():

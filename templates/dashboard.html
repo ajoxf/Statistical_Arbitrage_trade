@@ -2949,6 +2949,15 @@ function updateFilterStatus(elementId, passed, value) {
         }
     }, 1000);
 
+    // "2h 47m" / "45m" / "12s" — a duration a human reads at a glance.
+    function humanDuration(seconds) {
+        const s = Math.max(0, Math.round(seconds));
+        if (s < 60) return s + 's';
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + 'm';
+        return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+    }
+
     // "2h window" / "45m window" — what the quote count is measured over.
     function windowLabel(seconds) {
         if (!seconds) return 'window';
@@ -2985,38 +2994,29 @@ function updateFilterStatus(elementId, passed, value) {
             ? Math.min(quotePct, timePct) : 100;
 
         progressBar.style.width = percent + '%';
-        // The history gate is in SECONDS, the same unit as the setting,
-        // so it reads straight against "Minimum History (seconds)".
-        // Capped at the requirement once met: 12,000 / 7,200 would be
-        // the same broken-denominator confusion the quote counter had.
-        const heldSec = Math.min(Math.round(history), Math.round(minHistory));
-        const histRatio = heldSec.toLocaleString() + ' / ' +
-                          Math.round(minHistory).toLocaleString() + 's';
-
+        // ONE fact per line, and never a ratio against a threshold that
+        // has already been met — "7,200 / 7,200s" was as meaningless as
+        // the "10,894 / 300" it replaced. While a gate is filling the
+        // big number is that gate's progress; once both are met it is
+        // the plain count, with elapsed collection as a DURATION that
+        // keeps growing rather than a pinned fraction.
         if (needHistory) {
             progressText.textContent = Math.round(percent) + '%';
-            dataCountDisplay.textContent = histRatio;
-            if (dataCountLabel) {
-                dataCountLabel.textContent = 'collected (' +
-                    Math.floor(history / 60) + ' of ' +
-                    Math.round(minHistory / 60) + ' min)';
-            }
+            dataCountDisplay.textContent = Math.floor(history / 60) + ' / ' +
+                Math.round(minHistory / 60);
+            if (dataCountLabel) dataCountLabel.textContent = 'minutes collected';
         } else if (warming) {
             progressText.textContent = Math.round(percent) + '%';
             dataCountDisplay.textContent = dataPoints.toLocaleString() +
                 ' / ' + minSamples.toLocaleString();
-            if (dataCountLabel) {
-                dataCountLabel.textContent = minHistory
-                    ? 'quotes to warm up · ' + histRatio
-                    : 'quotes to warm up';
-            }
+            if (dataCountLabel) dataCountLabel.textContent = 'quotes collected';
         } else {
             progressText.textContent = '';
             dataCountDisplay.textContent = dataPoints.toLocaleString();
             if (dataCountLabel) {
-                dataCountLabel.textContent = 'quotes in ' +
-                    windowLabel(lookbackSec) +
-                    (minHistory ? ' · ' + histRatio + ' history' : '');
+                dataCountLabel.textContent = history
+                    ? 'quotes · ' + humanDuration(history) + ' collected'
+                    : 'quotes';
             }
         }
 
