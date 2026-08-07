@@ -501,3 +501,80 @@ def test_a_dead_feed_restarts_the_history_clock(sig_config):
         stats.update(9.0, quote_id='frozen')
     assert not stats.samples
     assert stats.history_sec == 0.0 and not stats.warm
+
+
+# --- the DATABASE must store quotes too (2026-08-07) ----------------------
+#
+# The window dedups polls, but market_data did not: it was written on
+# every loop, three times a second, storing the same quote hundreds of
+# times. That is what made a warm start seed duplicates — and it wrote
+# roughly 288,000 rows per asset per day for no extra information.
+
+def coordinator_for(tmp_path, config, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator, PaperExecutor
+    from tests.test_limit_execution import LimitFakeLeg
+    coord = Coordinator(config, trading_mode='PAPER')
+    spot, fut = LimitFakeLeg('a', price=3300.0), LimitFakeLeg('b', price=3320.0)
+    coord.spot_leg, coord.futures_leg = spot, fut
+    coord.executor = PaperExecutor(spot, fut, config)
+    coord.active_assets['GOLD'] = {
+        'config': config.ASSETS['GOLD'], 'spot_symbol': 'XAUUSD',
+        'futures_symbol': 'GC1225', 'last_data': None}
+    return coord
+
+
+def stored_rows(coord):
+    import sqlite3
+    conn = sqlite3.connect(coord.data_logger.db_path)
+    n = conn.execute('SELECT COUNT(*) FROM market_data').fetchone()[0]
+    conn.close()
+    return n
+
+
+def quote(spread, quote_id):
+    return {'spot_price': 3300.0, 'futures_price': 3300.0 + spread,
+            'actual_basis': spread, 'spread': spread, 'basis_pct': 1.0,
+            'quote_id': quote_id}
+
+
+def test_repolling_one_quote_writes_one_row(tmp_path, config, monkeypatch):
+    coord = coordinator_for(tmp_path, config, monkeypatch)
+    for _ in range(50):
+        coord._log_quote('GOLD', quote(20.0, 'q1'), 'NO_SIGNAL', None)
+    assert stored_rows(coord) == 1
+
+
+def test_each_new_quote_writes_its_own_row(tmp_path, config, monkeypatch):
+    coord = coordinator_for(tmp_path, config, monkeypatch)
+    for i in range(5):
+        for _ in range(10):               # polled ten times each
+            coord._log_quote('GOLD', quote(20.0 + i, f'q{i}'), 'NO_SIGNAL', None)
+    assert stored_rows(coord) == 5
+
+
+def test_a_quote_id_returning_after_another_is_still_a_new_row(
+        tmp_path, config, monkeypatch):
+    """Only the IMMEDIATELY preceding quote is a duplicate — the market
+    genuinely revisiting a price is a new observation."""
+    coord = coordinator_for(tmp_path, config, monkeypatch)
+    for qid in ('q1', 'q2', 'q1'):
+        coord._log_quote('GOLD', quote(20.0, qid), 'NO_SIGNAL', None)
+    assert stored_rows(coord) == 3
+
+
+def test_a_feed_without_quote_ids_still_records(tmp_path, config, monkeypatch):
+    """No quote_id means we cannot tell polls apart; record rather than
+    silently drop the whole series."""
+    coord = coordinator_for(tmp_path, config, monkeypatch)
+    for _ in range(3):
+        coord._log_quote('GOLD', quote(20.0, None), 'NO_SIGNAL', None)
+    assert stored_rows(coord) == 3
+
+
+def test_two_assets_do_not_dedup_against_each_other(
+        tmp_path, config, monkeypatch):
+    coord = coordinator_for(tmp_path, config, monkeypatch)
+    coord._log_quote('GOLD', quote(20.0, 'q1'), 'NO_SIGNAL', None)
+    coord._log_quote('SILVER', quote(2.0, 'q1'), 'NO_SIGNAL', None)
+    assert stored_rows(coord) == 2

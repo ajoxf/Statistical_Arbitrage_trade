@@ -313,6 +313,38 @@ there until the owner approves this work. NOT yet ported from W3:
 Hurst/velocity/trailing optional exits, auto-tuner, AI monitor,
 per-leg maker/taker fee split, backtest suite.
 
+## The window counter fell for two hours after every start (2026-08-07)
+
+Operator: "What is this number? It keeps reducing and cant understand
+it" — the "quotes in 2h window" tile sliding down from ~24,000.
+
+Not just a labelling problem. `log_market_data` was called on EVERY
+poll (3/sec) with no dedup, so market_data stored the same quote
+hundreds of times. `_warm_start` then replayed those rows raw:
+
+- The window filled with POLL duplicates instead of quote events, so
+  the count started far too high and decayed for a full LOOKBACK_SEC
+  as the duplicates aged out. That decay is what was visible.
+- Worse, it silently undid the quote_id fix ACROSS RESTARTS. A window
+  of repeats has a deflated variance — the same collapsed sigma that
+  produced z = +53,026 on 2026-08-06. Sigma was poll-rate invariant
+  live and NOT invariant through a restart.
+- It also wrote ~288k rows per asset per day for no information.
+
+Fixed on both sides: `Coordinator._log_quote` persists only when
+quote_id changes, and `SpreadStats._collapse_repeats` drops CONSECUTIVE
+identical spreads from seeded history (defence for databases already
+full of poll rows; only consecutive, because a spread genuinely
+revisiting a level is a real observation). Regression-tested: the same
+quotes stored once each vs twenty times each give the same sigma.
+
+The counter is also a rolling OCCUPANCY, not a total — it legitimately
+falls when the market is quieter now than a window ago. It now reads
+"quotes now in the 2h window" with the arrival RATE beneath it
+(`SpreadStats.quote_rate_per_min`), which is the quantity actually
+changing, and goes amber below ~6/min because a thin window is what
+collapses sigma.
+
 ## Slippage tracking (2026-08-07, owner asked for it)
 
 Owner: "what your signal wanted to enter at and what the orders got

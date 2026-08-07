@@ -655,7 +655,7 @@ def test_the_ratio_is_dropped_once_the_threshold_is_cleared(client):
     post-warm-up wording is present rather than the bare ratio."""
     page = client.get('/').get_data(as_text=True)
     assert 'const warming = dataPoints < minSamples' in page
-    assert "'quotes in ' +" in page
+    assert "'quotes now in the ' +" in page
 
 
 def test_a_collapsed_sigma_is_named_instead_of_collecting_data(client):
@@ -1082,8 +1082,8 @@ def test_the_warm_counter_shows_one_span_only(client):
     page = client.get('/').get_data(as_text=True)
     assert "humanDuration(history) + ' collected'" not in page
     assert 'const heldSec' not in page            # the pinned ratio, gone
-    assert "'quotes in ' +" in page
-    assert 'Older quotes are dropped, so this is not a total' in page
+    assert "'quotes now in the ' +" in page
+    assert 'This is a rolling count, NOT a total' in page
     assert "' Collecting for ' + humanDuration(history)" in page
 
 

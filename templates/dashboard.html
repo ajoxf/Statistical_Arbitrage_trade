@@ -183,6 +183,11 @@
             <div class="text-end">
                 <div id="data-count-display" class="fw-bold font-monospace">0 / {{ config.min_samples }}</div>
                 <small class="text-secondary" id="data-count-label">quotes to warm up</small>
+                <!-- The count is a rolling occupancy and FALLS when the
+                     market quietens, which reads as losing data. The
+                     arrival rate is the quantity actually changing. -->
+                <div class="text-secondary" id="data-count-rate"
+                     style="font-size: 0.65rem;"></div>
             </div>
         </div>
         <!-- Readiness gates, always shown and always as ratios: "have
@@ -2658,7 +2663,8 @@
         updateTradingStatus(dataPoints, lookback, data.data_ready,
                             data.hurst_ok, data.std_filter_ok,
                             data.lookback_sec, data.degenerate,
-                            data.history_sec, data.min_history_sec);
+                            data.history_sec, data.min_history_sec,
+                            data.quote_rate_per_min);
 
         updateFilterStatus('hurst-status', data.hurst_ok, data.hurst);
         updateFilterStatus('std-status', data.std_filter_ok);
@@ -3193,7 +3199,7 @@ function updateFilterStatus(elementId, passed, value) {
 
     function updateTradingStatus(dataPoints, minSamples, dataReady, hurstOk,
                                  stdOk, lookbackSec, degenerate,
-                                 history, minHistory) {
+                                 history, minHistory, quoteRate) {
         const statusCard = document.getElementById('trading-status-card');
         const statusIcon = document.getElementById('trading-status-icon');
         const statusText = document.getElementById('trading-status-text');
@@ -3247,16 +3253,46 @@ function updateFilterStatus(elementId, passed, value) {
             progressText.textContent = '';
             dataCountDisplay.textContent = dataPoints.toLocaleString();
             if (dataCountLabel) {
-                dataCountLabel.textContent = 'quotes in ' +
+                // "in" not "collected": it is what the window HOLDS
+                // right now, and old quotes leave as new ones arrive.
+                dataCountLabel.textContent = 'quotes now in the ' +
                     windowLabel(lookbackSec);
             }
             const holder = dataCountDisplay.parentElement;
             if (holder) {
                 holder.title = dataPoints.toLocaleString() +
                     ' quotes inside the ' + windowLabel(lookbackSec) +
-                    '. Older quotes are dropped, so this is not a total.' +
+                    '. This is a rolling count, NOT a total: a quote ' +
+                    'leaves the window ' + windowLabel(lookbackSec) +
+                    ' after it arrived, so the number FALLS whenever ' +
+                    'the market is quieter now than it was then, and ' +
+                    'rises when it is busier. Nothing is being lost. ' +
+                    'The arrival rate below is the figure that is ' +
+                    'actually changing.' +
                     (history ? ' Collecting for ' + humanDuration(history) +
                                '.' : '');
+            }
+        }
+
+        // Arrival rate — why the count above moves.
+        const rateEl = document.getElementById('data-count-rate');
+        if (rateEl) {
+            if (quoteRate == null) {
+                rateEl.textContent = '';
+            } else {
+                const perMin = Math.round(quoteRate);
+                rateEl.textContent = perMin.toLocaleString()
+                    + ' quotes/min arriving';
+                // A window this thin is what collapses sigma.
+                const thin = quoteRate < 6;
+                rateEl.className = thin ? 'text-warning' : 'text-secondary';
+                rateEl.title = thin
+                    ? 'The feed is very slow right now. A thin window '
+                      + 'gives an unreliable standard deviation, which is '
+                      + 'what produces a nonsense z-score.'
+                    : 'New quotes per minute, measured across the window. '
+                      + 'The count above rises when this is faster than it '
+                      + 'was a window ago and falls when it is slower.';
             }
         }
 

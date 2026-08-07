@@ -514,6 +514,11 @@ def status_to_ui(status, config_raw):
             'half_life': first.get('half_life_min'),
             'hurst': None, 'regime': first.get('regime'),
             'data_points': first.get('samples'),
+            # data_points is a rolling OCCUPANCY of the window, so it
+            # falls whenever quotes arrive more slowly than they did a
+            # window ago. Shown alone it reads as data being lost; the
+            # rate is what is actually changing.
+            'quote_rate_per_min': first.get('quote_rate_per_min'),
             # What the warm-up bar must count against: MIN_SAMPLES is
             # what actually gates trading. LOOKBACK_SEC is a window in
             # SECONDS — showing "181 / 7,200" compared a sample count

@@ -153,6 +153,7 @@ class Coordinator:
         self._last_scenario_ts = 0
         self._last_diag_ts = 0
         self._last_order_log = 0.0
+        self._last_logged_quote = {}   # asset -> last quote_id persisted
         self._server_clock = {}        # leg -> broker clock offset vs UTC
         self._scenario_result = None   # last round-trip scenario outcome
         self._last_confirmation = None  # last MT5 ticket read-back
@@ -638,19 +639,46 @@ class Coordinator:
         # always run — stopping the algo never abandons a position) --
         if not self.algo_enabled:
             self.last_signals[asset_key] = SignalType.NO_SIGNAL
-            self.data_logger.log_market_data(
-                asset_key, market_data, SignalType.NO_SIGNAL, z=z,
-                series_key=self._series_key(asset_key))
+            self._log_quote(asset_key, market_data, SignalType.NO_SIGNAL, z)
             return
         active = self.position_manager.get_positions_for_asset(asset_key)
         signal = self._entry_signal(asset_key, stats, market_data, active,
                                     contract_size)
         self.last_signals[asset_key] = signal or SignalType.NO_SIGNAL
-        self.data_logger.log_market_data(
-            asset_key, market_data, self.last_signals[asset_key], z=z,
-            series_key=self._series_key(asset_key))
+        self._log_quote(asset_key, market_data,
+                        self.last_signals[asset_key], z)
         if signal:
             self._enter(asset_key, signal, market_data, stats, contract_size)
+
+    def _log_quote(self, asset_key, market_data, signal, z):
+        """Persist one QUOTE, not one poll.
+
+        market_data was written to the table on every loop — three
+        times a second — while the brokers tick far more slowly, so the
+        same quote was stored hundreds of times over. Two consequences,
+        both live:
+
+        1. A warm start seeded the rolling window from those rows, so
+           the window filled with POLL duplicates and the counter read
+           ~24,000 instead of the real quote count, then fell for two
+           hours as the duplicates aged out. That decline is what the
+           operator saw and could not explain (2026-08-07).
+        2. Worse, it silently undid the quote_id fix ACROSS RESTARTS.
+           Sigma is poll-rate invariant live, but a window seeded with
+           repeats has a deflated variance — the same collapse that
+           produced z = +53,026 on 2026-08-06.
+
+        It also wrote ~288k rows per asset per day for no added
+        information."""
+        quote_id = market_data.get('quote_id')
+        if quote_id is not None and \
+                self._last_logged_quote.get(asset_key) == quote_id:
+            return False
+        self._last_logged_quote[asset_key] = quote_id
+        self.data_logger.log_market_data(
+            asset_key, market_data, signal, z=z,
+            series_key=self._series_key(asset_key))
+        return True
 
     def _exit_reason(self, position, z, market_data):
         plan = position.exit_plan or {}
@@ -1590,6 +1618,12 @@ class Coordinator:
                 'half_life_min': ((stats.half_life_sec / 60)
                                   if stats and stats.half_life_sec else None),
                 'samples': len(stats.samples) if stats else 0,
+                # The window count is an occupancy, not a total, so it
+                # falls when quotes slow down. Publish the RATE beside
+                # it — that is the quantity actually changing, and the
+                # early warning for a window going thin.
+                'quote_rate_per_min': (stats.quote_rate_per_min
+                                       if stats else None),
                 'min_samples': self.config.SIGNALS.get('MIN_SAMPLES'),
                 'lookback': self.config.SIGNALS.get('LOOKBACK_SEC'),
                 'suggested_lookback_sec': (stats.suggested_lookback_sec

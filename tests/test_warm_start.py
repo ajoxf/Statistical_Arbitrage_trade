@@ -221,3 +221,92 @@ def test_a_changed_hedge_ratio_refuses_the_stored_window(tmp_path,
     coord.stats['GOLD'] = SpreadStats(config.SIGNALS)
     assert coord._warm_start('GOLD') == 0
     assert not coord.stats['GOLD'].samples
+
+
+# --- the window must hold QUOTES, not polls (2026-08-07) ------------------
+#
+# Operator: "What is this number? It keeps reducing and cant understand
+# it" — the window count fell steadily for two hours after every start.
+# Cause: market_data was written once per POLL (3/sec) while the brokers
+# tick far more slowly, and the warm start replayed those rows raw. The
+# window filled with duplicates, then decayed toward the true quote rate
+# as they aged out. Worse, a window of duplicates has a deflated
+# variance, which is exactly the collapsed sigma quote_id was added to
+# prevent — undone across every restart.
+
+def test_seeding_collapses_repeated_polls_of_one_quote(config):
+    stats = stats_for(config)
+    base = stats.clock() - 3000
+    # Three quotes, each polled ten times, as the old logger stored them.
+    rows = []
+    for i, value in enumerate((58.70, 58.75, 58.72)):
+        for poll in range(10):
+            rows.append((base + i * 30 + poll * 0.3, value))
+    assert stats.seed(rows) == 3
+    assert len(stats.samples) == 3
+
+
+def test_a_quote_that_returns_to_an_earlier_value_is_kept(config):
+    """Only CONSECUTIVE repeats are polls of one quote. A spread that
+    genuinely comes back to a previous level is a new observation, and
+    dropping it would bias the window toward recent levels."""
+    stats = stats_for(config)
+    base = stats.clock() - 1000
+    rows = [(base, 58.70), (base + 1, 58.75), (base + 2, 58.70)]
+    assert stats.seed(rows) == 3
+
+
+def test_sigma_survives_a_restart_unchanged(config):
+    """The invariant quote_id exists to protect, now held across a
+    restart too: the same quotes must give the same sigma whether they
+    were polled once each or twenty times each before being stored."""
+    quotes = [58.70, 58.75, 58.72, 58.80, 58.68, 58.77] * 12
+    base = SpreadStats(dict(config.SIGNALS), clock=FakeClock())
+    once = [(base.clock() - 3000 + i, v) for i, v in enumerate(quotes)]
+    lean = stats_for(config)
+    lean.seed(once)
+
+    polled = []
+    for i, value in enumerate(quotes):
+        for poll in range(20):
+            polled.append((base.clock() - 3000 + i + poll * 0.04, value))
+    fat = stats_for(config)
+    fat.seed(polled)
+
+    assert len(fat.samples) == len(lean.samples)
+    assert fat.sigma == pytest.approx(lean.sigma)
+    assert fat.mu == pytest.approx(lean.mu)
+
+
+def test_the_seeded_count_does_not_decay_toward_the_live_rate(config):
+    """The visible symptom. Seed a window from poll rows, then run the
+    live feed at its real rate: the count must stay steady rather than
+    sliding for a full window as the duplicates expire."""
+    stats = stats_for(config)
+    base = stats.clock() - 6000
+    rows = []
+    for i in range(200):                        # 200 real quotes...
+        for poll in range(10):                  # ...each polled 10x
+            rows.append((base + i * 30 + poll * 0.3, 58.70 + (i % 7) * 0.01))
+    stats.seed(rows)
+    seeded = len(stats.samples)
+    assert seeded == 200                        # not 2,000
+
+    # An hour of live quotes at the same rate; nothing has aged out yet.
+    for i in range(120):
+        stats.clock.t += 30
+        stats.update(58.70 + (i % 7) * 0.01, quote_id=f'live-{i}')
+    assert len(stats.samples) >= seeded          # grew, never slid
+
+
+def test_the_quote_rate_is_published(config):
+    stats = stats_for(config)
+    stats.seed(series(stats.clock, 121, 3600, step=30))   # one per 30s
+    assert stats.quote_rate_per_min == pytest.approx(2.0, abs=0.05)
+
+
+def test_the_quote_rate_is_absent_rather_than_zero_when_unknown(config):
+    stats = stats_for(config)
+    assert stats.quote_rate_per_min is None
+    stats.update(58.7, quote_id='q1')
+    assert stats.quote_rate_per_min is None      # one sample spans nothing

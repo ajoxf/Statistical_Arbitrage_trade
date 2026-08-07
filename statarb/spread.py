@@ -83,12 +83,38 @@ class SpreadStats:
         if not fresh:
             return 0
         fresh.sort(key=lambda row: row[0])
+        fresh = self._collapse_repeats(fresh)
         self.samples.extend(fresh)
         self.last_value = fresh[-1][1]
         self.collecting_since = (fresh[0][0] if self.collecting_since is None
                                  else min(self.collecting_since, fresh[0][0]))
         self._refresh(now)
         return len(fresh)
+
+    @staticmethod
+    def _collapse_repeats(rows):
+        """Drop consecutive identical spreads from seeded history.
+
+        The live path counts quote EVENTS: `update` ignores a repeated
+        quote_id, which is what makes sigma independent of the poll
+        rate. Seeded rows carry no quote_id, and older databases were
+        written once per POLL — the same quote stored hundreds of times
+        — so replaying them raw re-created the collapsed-sigma bug the
+        quote_id dedup exists to prevent, and inflated the window count
+        so it visibly decayed for two hours after every restart.
+
+        Consecutive rows with a bit-identical spread came from the same
+        pair of ticks: the value is computed from the two prices, so
+        two genuinely different quotes producing the exact same float
+        is vanishingly unlikely, and treating one as a repeat costs a
+        single sample. Believing a poll duplicate costs the z-score."""
+        out = []
+        previous = object()
+        for stamp, value in rows:
+            if value != previous:
+                out.append((stamp, value))
+                previous = value
+        return out
 
     def _refresh(self, now):
         if len(self.samples) < 2:
@@ -159,6 +185,23 @@ class SpreadStats:
             return None
         multiple = self.cfg.get('LOOKBACK_HALF_LIVES', 6.0) or 6.0
         return self.half_life_sec * multiple
+
+    @property
+    def quote_rate_per_min(self):
+        """Quote EVENTS per minute across the samples we hold.
+
+        The window count on its own is unreadable: it is a rolling
+        occupancy, so it falls whenever quotes arrive more slowly now
+        than they did a window ago, and an operator watching it drop
+        reasonably reads that as losing data (2026-08-07). The rate is
+        the quantity that is actually changing, and it is the early
+        warning for a thin window — which is what collapses sigma."""
+        if len(self.samples) < 2:
+            return None
+        span = self.samples[-1][0] - self.samples[0][0]
+        if span <= 0:
+            return None
+        return (len(self.samples) - 1) / span * 60.0
 
     @property
     def history_sec(self):
