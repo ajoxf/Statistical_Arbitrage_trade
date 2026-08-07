@@ -4187,7 +4187,11 @@ function updateFilterStatus(elementId, passed, value) {
     }
 
     updateActiveOrders();
-    setInterval(updateActiveOrders, 1000);
+    // 1s was 86,400 requests a day against an endpoint that returns a
+    // constant empty list (resting orders are not wired up yet), and
+    // it was the single loudest line in the server log. Resting orders
+    // do not change at 1Hz even once this is implemented.
+    setInterval(updateActiveOrders, 15000);
 
     async function closePosition(mode) {
         // Two ways to close by hand, user picks by urgency:

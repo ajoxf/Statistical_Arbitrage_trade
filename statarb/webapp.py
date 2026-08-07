@@ -18,7 +18,9 @@ the trading loop:
 import csv
 import io
 import json
+import logging
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime
@@ -598,6 +600,10 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
     @app.route('/api/active-orders')
     def api_active_orders():
+        # STUB. The engine's resting limit orders are visible in the
+        # Exchange Order Log (state 'working'); this W3 endpoint has
+        # never been wired to them. Kept so the page's table renders
+        # its empty state rather than erroring.
         return jsonify([])
 
     @app.route('/api/exchange-positions')
@@ -1554,8 +1560,37 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     return app
 
 
+class _QuietAccessLog(logging.Filter):
+    """Drop SUCCESSFUL request lines from werkzeug's access log.
+
+    Operator, 2026-08-07: "Too many messages". The dashboard polls
+    half a dozen endpoints continuously, so werkzeug was writing about
+    five lines a second — every one of them a 200 for a request the
+    page makes on a timer. None of it is information: a poll that
+    worked is the expected case, and the flood buried the engine's own
+    warnings, which are the reason to have a log at all.
+
+    4xx and 5xx still come through, because a request that FAILED is
+    exactly what someone reading this file is looking for.
+    """
+
+    _OK = re.compile(r'"\s+(?:2\d\d|30[0-9])\s+-\s*$')
+
+    def filter(self, record):
+        try:
+            return not self._OK.search(record.getMessage())
+        except Exception:
+            return True
+
+
+def quiet_access_log():
+    """Install the filter on werkzeug's logger."""
+    logging.getLogger('werkzeug').addFilter(_QuietAccessLog())
+
+
 def run_app(app, host='127.0.0.1', port=8080):
     """Serve with socket.io when available, plain Flask otherwise."""
+    quiet_access_log()
     if getattr(app, 'socketio', None) is not None:
         app.socketio.run(app, host=host, port=port,
                          allow_unsafe_werkzeug=True)

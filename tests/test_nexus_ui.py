@@ -1558,3 +1558,62 @@ def test_the_card_states_the_target_beside_the_achieved_notional(client):
     assert 'Asked for ' in page
     assert 'the nearest tradable lot gives' in page
     assert 'one lot = ' in page
+
+
+# --- log volume (operator, 2026-08-07: "Too many messages") ---------------
+
+def _access(msg):
+    import logging as _l
+    return _l.LogRecord('werkzeug', _l.INFO, '', 0, msg, (), None)
+
+
+def test_successful_polls_are_kept_out_of_the_log():
+    """The dashboard polls half a dozen endpoints continuously, so
+    werkzeug wrote about five 200 lines a second and buried the
+    engine's own warnings."""
+    from statarb.webapp import _QuietAccessLog
+    f = _QuietAccessLog()
+    for code in ('200', '204', '304'):
+        line = f'127.0.0.1 - - [d] "GET /api/engine/status HTTP/1.1" {code} -'
+        assert f.filter(_access(line)) is False, code
+
+
+def test_failed_requests_still_reach_the_log():
+    """A request that FAILED is exactly what someone reading the log
+    is looking for."""
+    from statarb.webapp import _QuietAccessLog
+    f = _QuietAccessLog()
+    for code in ('400', '404', '409', '500'):
+        line = f'127.0.0.1 - - [d] "POST /api/config HTTP/1.1" {code} -'
+        assert f.filter(_access(line)) is True, code
+
+
+def test_non_request_lines_are_untouched():
+    from statarb.webapp import _QuietAccessLog
+    f = _QuietAccessLog()
+    assert f.filter(_access(' * Running on http://127.0.0.1:8080')) is True
+
+
+def test_the_filter_is_installed_when_the_server_starts(monkeypatch):
+    """It has to be on the path start.py actually uses."""
+    import logging
+    from statarb import webapp
+    logger = logging.getLogger('werkzeug')
+    before = len(logger.filters)
+    served = {}
+    app = type('A', (), {'socketio': None,
+                         'run': lambda self, **kw: served.update(kw)})()
+    webapp.run_app(app, host='127.0.0.1', port=1)
+    try:
+        assert len(logger.filters) == before + 1
+        assert served['port'] == 1
+    finally:
+        logger.filters = logger.filters[:before]
+
+
+def test_the_stub_endpoint_is_not_polled_every_second(client):
+    """/api/active-orders returns a constant empty list — 86,400
+    requests a day for nothing, and the loudest line in the log."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'setInterval(updateActiveOrders, 1000)' not in page
+    assert 'setInterval(updateActiveOrders, 15000)' in page

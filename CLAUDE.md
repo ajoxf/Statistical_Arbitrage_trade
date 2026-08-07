@@ -357,6 +357,28 @@ ever depended on it. What replaced it:
   live on the readiness line and a second running total up there only
   duplicated or contradicted it.
 
+## Log volume (2026-08-07, operator: "Too many messages")
+
+Three separate floods, all fixed:
+
+- `ZSignalGenerator` logged every gate rejection on EVERY poll (3/sec).
+  With the edge filter failing persistently — correct behaviour when
+  sigma does not cover costs — that alone was ~10,000 identical lines
+  an hour. Now one line when a gate STARTS blocking, one when the
+  gates clear.
+- The coordinator's status line ran on a fixed 10s clock. Now
+  event-driven (warm / no-usable-z / signal change / halt), with a
+  heartbeat at `TRADING.LOG_HEARTBEAT_SEC` (5 min) purely to prove the
+  engine is alive.
+- **werkzeug's access log**, which was the loudest: the dashboard
+  polls half a dozen endpoints continuously, so the webapp wrote ~5
+  lines a second, every one a 200 for a timer-driven request.
+  `webapp._QuietAccessLog` (installed by `run_app`) drops 2xx/3xx and
+  KEEPS 4xx/5xx — a request that failed is the reason to read the log.
+  `/api/active-orders` was also polled at 1Hz against an endpoint that
+  returns a constant `[]` (resting orders are not wired to it); now
+  15s.
+
 ## A manual trade's own target is what gets measured (2026-08-07)
 
 Operator armed SHORT at 59.00 with TP 57 / SL 69, it triggered at
