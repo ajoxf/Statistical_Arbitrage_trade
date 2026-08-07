@@ -355,26 +355,52 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     @app.route('/api/engine/open', methods=['POST'])
     @app.route('/api/manual-trade', methods=['POST'])
     def api_open():
-        """Manual Spread Trade. With entry_spread the order is ARMED
-        and fires when the spread reaches that level; without it the
-        pair goes on immediately at market. exit_spread and overnight
-        travel with the trade."""
+        """Manual Spread Trade: ENTRY, TAKE PROFIT and STOP LOSS, all
+        as spread levels. With entry_spread the order is ARMED and
+        fires when the spread reaches that level; without it the pair
+        goes on immediately at market. exit_spread (take profit),
+        stop_spread and overnight travel with the trade.
+
+        The level geometry is checked here as well as in the engine —
+        the browser can be bypassed, and an upside-down stop is the
+        one mistake on this panel that costs money immediately."""
         payload = request.get_json(silent=True) or {}
         if not payload.get('asset') or not payload.get('direction'):
             return jsonify({'success': False,
                             'error': 'asset and direction required'}), 400
+        direction = payload['direction']
+        if direction not in ('SELL_BASIS', 'BUY_BASIS'):
+            return jsonify({'success': False,
+                            'error': 'direction must be SELL_BASIS '
+                                     '(short spread) or BUY_BASIS '
+                                     '(long spread)'}), 400
+        entry = payload.get('entry_spread')
+        take_profit = payload.get('exit_spread')
+        stop = payload.get('stop_spread')
+        # Fire-now orders are measured against the live spread, since
+        # that is what they will open at.
+        reference = entry
+        if reference is None:
+            first = (runtime_status().get('assets') or [{}])[0]
+            reference = first.get('spread')
+        bad = webapi.manual_level_error(direction, reference,
+                                        take_profit, stop)
+        if bad:
+            return jsonify({'success': False, 'error': bad}), 400
         write_control({'open': {
             'asset': payload['asset'],
-            'direction': payload['direction'],
+            'direction': direction,
             'lots': payload.get('lots'),
-            'entry_spread': payload.get('entry_spread'),
-            'exit_spread': payload.get('exit_spread'),
+            'entry_spread': entry,
+            'exit_spread': take_profit,
+            'stop_spread': stop,
             'overnight': payload.get('overnight', 'ALLOW'),
             'ts': time.time()}})
-        armed = payload.get('entry_spread') is not None
+        armed = entry is not None
         return jsonify({'success': True, 'armed': armed,
                         'note': ('Armed — waiting for the spread to reach '
-                                 'your entry level.' if armed else
+                                 'your entry level. This fires even while '
+                                 'the algo is stopped.' if armed else
                                  'Sent — opening at market now.')})
 
     @app.route('/api/manual-trade', methods=['DELETE'])
@@ -394,6 +420,11 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             'armed': bool(order), 'order': order,
             'current_spread': first.get('spread'),
             'asset': first.get('asset'),
+            # Whether the ENGINE accepted the last request. A refusal
+            # (circuit breaker, max positions, an unfilled pair) used
+            # to live only in the log file.
+            'note': status.get('manual_note'),
+            'algo_enabled': status.get('algo_enabled', True),
         })
 
     @app.route('/api/engine/test', methods=['POST'])
@@ -912,8 +943,8 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         rows = exchange_orders(
             min(request.args.get('limit', 1000, type=int), 5000),
             request.args.get('account'), request.args.get('source'))
-        columns = ['account', 'login', 'filled_at', 'source', 'symbol',
-                   'inst_type',
+        columns = ['account', 'login', 'broker_time', 'local_time',
+                   'source', 'symbol', 'inst_type',
                    'side', 'pos_side', 'order_type', 'quantity', 'fill_qty',
                    'fill_price', 'leverage', 'fee', 'fee_ccy', 'pnl',
                    'state', 'order_id', 'deal_id', 'position_id', 'is_bot',
@@ -923,10 +954,19 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         writer.writeheader()
         for row in rows:
             stamp = row.get('filled_at')
+            offset = row.get('server_offset_sec')
+            # broker_time reproduces MT5's History column (the stamp is
+            # the server's wall clock encoded as an epoch, so it reads
+            # back in UTC); local_time is the same instant here, and is
+            # blank when the broker's offset could not be measured
+            # rather than being quietly wrong.
             writer.writerow(dict(
                 row,
-                filled_at=(datetime.fromtimestamp(stamp / 1000).isoformat()
-                           if stamp else '')))
+                broker_time=(datetime.utcfromtimestamp(stamp / 1000)
+                             .isoformat() if stamp else ''),
+                local_time=(
+                    datetime.fromtimestamp(stamp / 1000 - offset).isoformat()
+                    if stamp and offset is not None else '')))
         return Response(
             out.getvalue(), mimetype='text/csv',
             headers={'Content-Disposition':

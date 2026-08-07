@@ -37,6 +37,7 @@ from . import diagnostics, scenarios
 from .shadow import ShadowTracker
 from .signals import SignalGenerator, ZSignalGenerator
 from .spread import SpreadStats
+from . import webapi
 
 
 class PaperExecutor:
@@ -117,12 +118,14 @@ class Coordinator:
         self._last_scenario_ts = 0
         self._last_diag_ts = 0
         self._last_order_log = 0.0
+        self._server_clock = {}        # leg -> broker clock offset vs UTC
         self._scenario_result = None   # last round-trip scenario outcome
         self._last_confirmation = None  # last MT5 ticket read-back
         self._diagnostics = None       # last connectivity checklist
         self._symbol_search = None     # last symbol lookup for the UI
         self._test_results = None
         self.manual_order = None       # armed Manual Spread Trade
+        self.manual_note = None        # last manual-trade outcome, for the UI
         self.algo_enabled = True       # entries only; exits ALWAYS run
 
         self.spot_leg, self.futures_leg = self._resolve_legs()
@@ -690,7 +693,7 @@ class Coordinator:
 
     def _open_position(self, asset_key, signal_type, lots, market_data,
                        stats, contract_size, manual=False,
-                       exit_spread=None, overnight=None):
+                       exit_spread=None, stop_spread=None, overnight=None):
         """Shared entry path for signal and manual trades: exit plan
         BEFORE orders (a trade whose cost floor exceeds plausible
         reversion is refused), execute, attach frozen levels."""
@@ -706,10 +709,12 @@ class Coordinator:
                 return None
             if manual:
                 plan['source'] = 'MANUAL'
-                # The operator's own exit target and overnight rule
-                # travel with the trade.
+                # The operator's own take-profit, stop and overnight
+                # rule travel with the trade.
                 if exit_spread is not None:
                     plan['manual_exit_spread'] = float(exit_spread)
+                if stop_spread is not None:
+                    plan['manual_stop_spread'] = float(stop_spread)
                 plan['overnight_mode'] = overnight or 'ALLOW'
 
         asset = self.active_assets[asset_key]
@@ -905,6 +910,8 @@ class Coordinator:
             if not open_cmd.get('asset'):
                 if self.manual_order:
                     logging.warning("Manual trade CANCELLED via web UI")
+                    self.manual_note = {'ok': True, 'ts': time.time(),
+                                        'text': 'armed order cancelled'}
                 self.manual_order = None
             elif open_cmd.get('entry_spread') is None:
                 # Fire now at market (immediate manual trade)
@@ -912,17 +919,10 @@ class Coordinator:
                                   open_cmd.get('direction', ''),
                                   open_cmd.get('lots'),
                                   exit_spread=open_cmd.get('exit_spread'),
+                                  stop_spread=open_cmd.get('stop_spread'),
                                   overnight=open_cmd.get('overnight'))
             else:
-                # Arm it: wait for the spread to reach the entry level
-                self.manual_order = dict(open_cmd)
-                logging.warning(
-                    "Manual trade ARMED: %s %s at spread %.4f "
-                    "(exit %s, overnight %s)",
-                    open_cmd['asset'], open_cmd.get('direction'),
-                    float(open_cmd['entry_spread']),
-                    open_cmd.get('exit_spread'),
-                    open_cmd.get('overnight', 'ALLOW'))
+                self._arm_manual(open_cmd)
 
         test_cmd = control.get('test') or {}
         ts = test_cmd.get('ts', 0)
@@ -1277,6 +1277,35 @@ class Coordinator:
             return finish(False, f'Scenario error: {e}')
         return finish(outcome['success'], outcome['detail'])
 
+    def _arm_manual(self, open_cmd):
+        """Park a manual trade until the spread reaches the operator's
+        entry level. The level geometry is checked HERE too, not only
+        when it fires: an armed order can sit for hours, and finding
+        out the stop was upside-down at the moment of execution is too
+        late to be told about it."""
+        try:
+            signal_type = SignalType(open_cmd.get('direction', ''))
+        except ValueError:
+            return self._manual_reject(
+                f"bad direction {open_cmd.get('direction')!r}")
+        entry = float(open_cmd['entry_spread'])
+        bad = self.check_manual_levels(signal_type, entry,
+                                       open_cmd.get('exit_spread'),
+                                       open_cmd.get('stop_spread'))
+        if bad:
+            return self._manual_reject(bad)
+        self.manual_order = dict(open_cmd)
+        logging.warning(
+            "Manual trade ARMED: %s %s at spread %.4f "
+            "(TP %s, SL %s, overnight %s)",
+            open_cmd['asset'], open_cmd.get('direction'), entry,
+            open_cmd.get('exit_spread'), open_cmd.get('stop_spread'),
+            open_cmd.get('overnight', 'ALLOW'))
+        self.manual_note = {
+            'ok': True, 'ts': time.time(),
+            'text': f"armed at spread {entry:g} — fires when the spread "
+                    f"reaches it, even with the algo stopped"}
+
     def _check_manual_arm(self, asset_key, market_data):
         """An armed manual trade fires when the spread reaches the
         operator's entry level, in the direction they chose."""
@@ -1300,54 +1329,93 @@ class Coordinator:
         self.manual_order = None
         self._manual_open(asset_key, direction, order.get('lots'),
                           exit_spread=order.get('exit_spread'),
+                          stop_spread=order.get('stop_spread'),
                           overnight=order.get('overnight'))
 
+    def _manual_reject(self, why):
+        """Every manual-trade refusal used to end in a log line the
+        operator never sees — they press Activate and nothing happens.
+        Publish it so the panel can say why."""
+        logging.warning("Manual trade rejected: %s", why)
+        self.manual_note = {'ok': False, 'text': why, 'ts': time.time()}
+        return None
+
+    @staticmethod
+    def check_manual_levels(signal_type, entry, take_profit, stop):
+        """Are the operator's three levels the right way round? One
+        rule, shared with the HTTP API and the browser (webapi), so a
+        trade cannot be refused in one place and accepted in another.
+        Returns an error string, or None when the geometry is sound."""
+        return webapi.manual_level_error(
+            signal_type.value if hasattr(signal_type, 'value')
+            else signal_type, entry, take_profit, stop)
+
     def _manual_open(self, asset_key, direction, lots=None,
-                     exit_spread=None, overnight=None):
+                     exit_spread=None, stop_spread=None, overnight=None):
         """Manual spread trade from the web UI: bypasses SIGNAL gates
         (z, trend, cooldowns, edge filter) but NEVER risk limits or
-        circuit breakers. Exits are managed by the normal ladder."""
+        circuit breakers. Exits are managed by the normal ladder plus
+        whichever take-profit/stop SPREAD levels the operator named."""
         if asset_key not in self.active_assets:
-            logging.error("Manual trade rejected: unknown asset %s",
-                          asset_key)
-            return
+            return self._manual_reject(f"unknown asset {asset_key}")
         try:
             signal_type = SignalType(direction)
         except ValueError:
-            logging.error("Manual trade rejected: bad direction %r",
-                          direction)
-            return
+            return self._manual_reject(f"bad direction {direction!r}")
         if signal_type not in (SignalType.SELL_BASIS,
                                SignalType.BUY_BASIS):
-            return
+            return self._manual_reject(f"direction {direction} is not a "
+                                       f"spread trade")
 
         halted, why = self.risk_manager.halted()
         if halted:
-            logging.warning("Manual trade rejected: circuit breaker (%s)",
-                            why)
-            return
+            return self._manual_reject(f"circuit breaker ({why})")
         lots = float(lots or self.config.TRADING.get('CLIP_LOTS', 1.0))
         if lots > self.config.RISK_LIMITS['MAX_LOT_SIZE']:
-            logging.warning("Manual trade rejected: %s lots > MAX_LOT_SIZE",
-                            lots)
-            return
+            return self._manual_reject(
+                f"{lots:g} lots exceeds MAX_LOT_SIZE "
+                f"{self.config.RISK_LIMITS['MAX_LOT_SIZE']:g}")
         active = self.position_manager.get_positions_for_asset(asset_key)
         if len(active) >= self.config.RISK_LIMITS['MAX_POSITIONS_PER_ASSET']:
-            logging.warning("Manual trade rejected: max positions reached")
-            return
+            return self._manual_reject("max positions per asset reached")
 
         market_data = self.get_market_data(asset_key) \
             or self.active_assets[asset_key]['last_data']
         if not market_data:
-            logging.error("Manual trade rejected: no market data")
-            return
+            return self._manual_reject("no market data")
+
+        # Levels are checked against the price we are actually filling
+        # at, not the level that armed the order — the spread has moved
+        # since, and the trade lives or dies on where it opens.
+        bad = self.check_manual_levels(signal_type, market_data.get('spread'),
+                                       exit_spread, stop_spread)
+        if bad:
+            return self._manual_reject(bad)
+
         contract_size = self.config.ASSETS[asset_key]['lot_size']
         stats = self.stats.get(asset_key)
-        logging.warning("MANUAL SPREAD TRADE via web UI: %s %s %.2f lots",
-                        asset_key, signal_type.value, lots)
-        self._open_position(asset_key, signal_type, lots, market_data,
-                            stats, contract_size, manual=True,
-                            exit_spread=exit_spread, overnight=overnight)
+        logging.warning(
+            "MANUAL SPREAD TRADE via web UI: %s %s %.2f lots "
+            "(spread %.4f, TP %s, SL %s)",
+            asset_key, signal_type.value, lots,
+            market_data.get('spread') or 0.0,
+            f"{exit_spread:g}" if exit_spread is not None else "engine",
+            f"{stop_spread:g}" if stop_spread is not None else "engine")
+        position = self._open_position(
+            asset_key, signal_type, lots, market_data, stats,
+            contract_size, manual=True, exit_spread=exit_spread,
+            stop_spread=stop_spread, overnight=overnight)
+        if position is None:
+            self.manual_note = {
+                'ok': False, 'ts': time.time(),
+                'text': 'order was not filled — see the log for the '
+                        'broker/engine reason'}
+        else:
+            self.manual_note = {
+                'ok': True, 'ts': time.time(),
+                'text': f"opened {position.position_id} "
+                        f"({signal_type.value}, {lots:g} lots)"}
+        return position
 
     # Balance/equity is one IPC round-trip per account into MT5. The
     # status file is now written on every poll (a few times a second) so
@@ -1544,6 +1612,7 @@ class Coordinator:
             'symbol_search': self._symbol_search,
             'margin_breaker': self._margin_breaker_state(),
             'manual_order': self.manual_order,
+            'manual_note': self.manual_note,
         }
         try:
             tmp = self.status_path + '.tmp'
@@ -1603,6 +1672,25 @@ class Coordinator:
         self._poll_order_logs(interval=0, hours=1)
         return confirmations
 
+    def _note_server_clock(self, leg_name, rows):
+        """Say once, in the log, how far each broker's clock sits from
+        ours. "The MT5 History is not matching the Exchange Order Log"
+        is most often this and nothing else, and it is invisible until
+        someone states the number."""
+        offset = next((r.get('server_offset_sec') for r in rows
+                       if r.get('server_offset_sec') is not None), None)
+        if offset is None or self._server_clock.get(leg_name) == offset:
+            return
+        first = leg_name not in self._server_clock
+        self._server_clock[leg_name] = offset
+        local = -time.timezone if not time.localtime().tm_isdst \
+            else -time.altzone
+        logging.log(logging.INFO if first else logging.WARNING,
+                    "Leg '%s': broker clock is UTC%+.1fh; this machine is "
+                    "UTC%+.1fh. MT5's History shows broker time, and so "
+                    "does the Exchange Order Log.",
+                    leg_name, offset / 3600.0, local / 3600.0)
+
     def _poll_order_logs(self, interval=30.0, hours=24):
         """Pull each account's raw MT5 order/deal activity into the
         broker_orders table so the dashboard's Exchange Order Log shows
@@ -1631,6 +1719,7 @@ class Coordinator:
                 continue
             rows.extend(fetched)
             polled.add(leg.name)
+            self._note_server_clock(leg.name, fetched)
 
         if not polled:
             return 0

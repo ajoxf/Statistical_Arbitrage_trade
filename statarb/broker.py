@@ -320,6 +320,43 @@ class BrokerSession:
         })
         return report
 
+    def server_time_offset_sec(self):
+        """Seconds the BROKER's displayed clock runs ahead of UTC.
+
+        MT5 stamps every deal and order with the server's WALL CLOCK
+        encoded as a Unix epoch, and the History tab displays that same
+        wall clock. Read one of those stamps as an ordinary timestamp —
+        which is what the dashboard was doing — and you get the
+        browser's local rendering of a number that was never in the
+        browser's time zone. On a GMT+3 broker seen from a GMT+5:30
+        box, every row in our Exchange Order Log sits 2.5 hours away
+        from the same trade in MT5's History, which is enough on its
+        own to make the two tables look like different accounts.
+
+        Measured from the freshest tick we can see (a tick's `time` is
+        stamped the same way), so it needs a symbol in Market Watch and
+        returns None when it cannot be established — a guess here would
+        be worse than an honest blank."""
+        if mt5 is None:
+            return None
+        newest = None
+        for name in self._time_probe_symbols():
+            tick = mt5.symbol_info_tick(name)
+            stamp = getattr(tick, 'time', None) if tick else None
+            if stamp:
+                newest = max(newest or 0, int(stamp))
+        if not newest:
+            return None
+        return int(round(newest - time.time()))
+
+    def _time_probe_symbols(self):
+        """Symbols to read the server clock off: whatever is already in
+        Market Watch. Cheap, and it needs no configuration."""
+        try:
+            return [s.name for s in (mt5.symbols_get() or ()) if s.visible]
+        except Exception:
+            return []
+
     def order_log(self, hours=24):
         """Everything this MT5 account did recently, normalised for the
         Exchange Order Log: filled deals (with fee/swap/profit), plus
@@ -329,9 +366,21 @@ class BrokerSession:
         if mt5 is None:
             return []
         rows = []
+        offset = self.server_time_offset_sec()
         try:
-            since = datetime.now() - timedelta(hours=hours)
-            now = datetime.now() + timedelta(minutes=1)
+            # These bounds are matched against SERVER-clock stamps
+            # while `datetime.now()` is this box's local clock. A
+            # `now + 1 minute` ceiling therefore silently dropped the
+            # most recent deals whenever the server clock ran ahead of
+            # the box — the newest rows, which are exactly the ones an
+            # operator is checking against MT5's History. The widest
+            # real gap (UTC-12 to UTC+14, plus DST) is 27 hours, so pad
+            # both ends by two days and trim afterwards on the rows'
+            # own stamps. Over-fetching an audit log costs nothing;
+            # missing a fill costs trust in the whole table.
+            slack = timedelta(days=2)
+            since = datetime.now() - timedelta(hours=hours) - slack
+            now = datetime.now() + slack
 
             deal_types = {0: 'buy', 1: 'sell'}
             for deal in (mt5.history_deals_get(since, now) or ()):
@@ -425,6 +474,21 @@ class BrokerSession:
                 })
         except Exception as e:
             logging.error("order_log failed: %s", e)
+
+        # The padded window above over-fetches on purpose. Trim back to
+        # what was asked for using each row's OWN stamp against the
+        # server clock — the same clock the stamps are in. Without a
+        # measured offset we keep everything rather than cut blind.
+        if offset is not None and hours:
+            cutoff_ms = int((time.time() + offset - hours * 3600) * 1000)
+            rows = [r for r in rows
+                    if r['state'] == 'working'
+                    or (r.get('filled_at') or 0) >= cutoff_ms]
+        # Every row carries the offset so the dashboard can render the
+        # broker's own clock beside MT5's History instead of the
+        # browser's, which is what made the two tables disagree.
+        for row in rows:
+            row['server_offset_sec'] = offset
         return rows
 
     def positions_by_magic(self, symbol=None):

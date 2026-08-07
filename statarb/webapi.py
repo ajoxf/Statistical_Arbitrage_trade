@@ -365,6 +365,33 @@ def drawdown_block(rows):
     }
 
 
+def manual_level_error(direction, entry, take_profit, stop):
+    """Manual Spread Trade: are Entry / Take Profit / Stop the right
+    way round? Mirrors Coordinator.check_manual_levels so the browser,
+    the HTTP API and the engine all refuse the same geometry.
+
+    A short-spread trade (SELL_BASIS) profits as the spread falls, so
+    its target is BELOW entry and its stop ABOVE; long-spread is the
+    mirror. Returns an error string, or None when the levels are
+    sound."""
+    if entry is None:
+        return None                     # nothing to measure against
+    down = direction == 'SELL_BASIS'
+    side = 'short' if down else 'long'
+    if take_profit is not None:
+        if (take_profit < entry) != down:
+            return (f"Take profit {take_profit:g} is on the losing side "
+                    f"of entry {entry:g}. A {side}-spread trade takes "
+                    f"profit {'below' if down else 'above'} entry.")
+    if stop is not None:
+        if (stop > entry) != down:
+            return (f"Stop loss {stop:g} is on the winning side of entry "
+                    f"{entry:g}. A {side}-spread trade stops out "
+                    f"{'above' if down else 'below'} entry — as placed "
+                    f"it would fire the moment the trade went right.")
+    return None
+
+
 def status_to_ui(status, config_raw):
     """runtime_status.json -> the /api/engine/status shape the Nexus
     dashboard consumes."""
@@ -477,6 +504,12 @@ def status_to_ui(status, config_raw):
                 'take_profit': levels.get('tp'),
                 'stop': levels.get('sl'),
                 'favorable': levels.get('favorable'),
+                # Set when the operator named the level by hand on the
+                # Manual Spread Trade panel — worth saying, because it
+                # explains a TP/SL the engine's own ladder would not
+                # have chosen.
+                'manual_take_profit': levels.get('manual_tp'),
+                'manual_stop': levels.get('manual_sl'),
             } if levels else None,
             'is_open': True,
             'is_paper': status.get('mode') != 'LIVE',

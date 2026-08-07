@@ -58,6 +58,90 @@ def test_stop_still_outranks_the_manual_target(config):
                            age_sec=60, spread=18.9) == 'DOLLAR_STOP'
 
 
+# --- the operator's own STOP spread ---------------------------------------
+
+def test_manual_stop_spread_closes_a_short_spread(config):
+    """A short-spread trade loses as the spread RISES, so its manual
+    stop sits above entry."""
+    ladder = ExitLadder(config)
+    short = make_position(SignalType.SELL_BASIS)
+    p = plan(manual_stop_spread=23.0)
+    assert ladder.evaluate(short, p, z=3.0, gross_pnl=-100,
+                           age_sec=60, spread=22.9) is None
+    assert ladder.evaluate(short, p, z=3.0, gross_pnl=-100,
+                           age_sec=60, spread=23.0) == 'MANUAL_STOP'
+
+
+def test_manual_stop_spread_mirrored_for_long_spread(config):
+    ladder = ExitLadder(config)
+    long_spread = make_position(SignalType.BUY_BASIS)
+    p = plan(manual_stop_spread=17.0)
+    assert ladder.evaluate(long_spread, p, z=-3.0, gross_pnl=-100,
+                           age_sec=60, spread=17.1) is None
+    assert ladder.evaluate(long_spread, p, z=-3.0, gross_pnl=-100,
+                           age_sec=60, spread=16.9) == 'MANUAL_STOP'
+
+
+def test_manual_stop_outranks_the_manual_target(config):
+    """Both levels reachable in one tick: the stop wins. Nothing on
+    this panel may outrank the operator's own stop."""
+    ladder = ExitLadder(config)
+    short = make_position(SignalType.SELL_BASIS)
+    p = plan(manual_stop_spread=23.0, manual_exit_spread=23.0)
+    assert ladder.evaluate(short, p, z=3.0, gross_pnl=0,
+                           age_sec=60, spread=23.5) == 'MANUAL_STOP'
+
+
+def test_engine_dollar_stop_still_armed_beside_a_manual_stop(config):
+    """A manual stop does not disarm the engine's own — whichever is
+    reached first closes the trade."""
+    ladder = ExitLadder(config)
+    short = make_position(SignalType.SELL_BASIS)
+    p = plan(manual_stop_spread=99.0)          # far away, never hit
+    assert ladder.evaluate(short, p, z=3.0, gross_pnl=-2000,
+                           age_sec=60, spread=20.0) == 'DOLLAR_STOP'
+
+
+def test_manual_stop_is_tagged_as_a_stop():
+    assert outcome_tag('MANUAL_STOP', False) == 'STOPPED_IN_TREND'
+    assert outcome_tag('MANUAL_STOP', True) == 'STOPPED_AFTER_FULL_REVERSION'
+
+
+# --- level geometry -------------------------------------------------------
+
+def test_manual_level_geometry_rules():
+    """The one mistake on this panel that costs money immediately: a
+    stop on the winning side fires the moment the trade goes right."""
+    from statarb.webapi import manual_level_error as err
+    # Short spread: TP below entry, SL above.
+    assert err('SELL_BASIS', 20.0, 19.0, 21.0) is None
+    assert 'Take profit' in err('SELL_BASIS', 20.0, 21.0, None)
+    assert 'Stop loss' in err('SELL_BASIS', 20.0, None, 19.0)
+    # Long spread: mirrored.
+    assert err('BUY_BASIS', 20.0, 21.0, 19.0) is None
+    assert 'Take profit' in err('BUY_BASIS', 20.0, 19.0, None)
+    assert 'Stop loss' in err('BUY_BASIS', 20.0, None, 21.0)
+    # Nothing to measure against, and omitted levels, are both fine.
+    assert err('SELL_BASIS', None, 21.0, 19.0) is None
+    assert err('SELL_BASIS', 20.0, None, None) is None
+
+
+def test_spread_levels_show_whichever_stop_comes_first(config):
+    """The in-position card must show the level the spread reaches
+    FIRST, not simply the engine's."""
+    ladder = ExitLadder(config)
+    # oz such that the engine's $1500 stop is 1.5 spread units away
+    oz = 1000.0
+    p = plan(rt_cost_usd=0.0)
+    near = ladder.spread_levels(dict(p, manual_stop_spread=20.5),
+                                20.0, oz, SignalType.SELL_BASIS)
+    assert near['sl'] == pytest.approx(20.5)     # operator's is nearer
+    assert near['manual_sl'] == 20.5
+    far = ladder.spread_levels(dict(p, manual_stop_spread=25.0),
+                               20.0, oz, SignalType.SELL_BASIS)
+    assert far['sl'] == pytest.approx(21.5)      # engine's is nearer
+
+
 # --- overnight handling ---------------------------------------------------
 
 def test_overnight_modes():
@@ -172,3 +256,56 @@ def test_armed_trade_does_not_double_fire(coordinator):
     coordinator._check_manual_arm('GOLD', market(22.5))
     coordinator._check_manual_arm('GOLD', market(23.0))
     assert len(coordinator.position_manager.get_active_positions()) == 1
+
+
+def test_stop_spread_travels_with_the_armed_trade(coordinator):
+    arm(coordinator, direction='SELL_BASIS', entry_spread=22.0,
+        exit_spread=19.0, stop_spread=24.0, lots=1.0)
+    coordinator._check_manual_arm('GOLD', market(22.3))
+    position = next(iter(
+        coordinator.position_manager.get_active_positions().values()))
+    assert position.exit_plan['manual_stop_spread'] == 24.0
+    assert position.exit_plan['manual_exit_spread'] == 19.0
+
+
+def test_upside_down_stop_is_refused_at_arm_time(coordinator):
+    """A stop below entry on a SHORT spread would fire the instant the
+    trade went right. Caught when it is armed, not hours later when it
+    executes — and the refusal is published for the panel to show."""
+    arm(coordinator, direction='SELL_BASIS', entry_spread=22.0,
+        stop_spread=20.0, lots=1.0)
+    assert coordinator.manual_order is None
+    assert coordinator.manual_note['ok'] is False
+    assert 'Stop loss' in coordinator.manual_note['text']
+
+
+def test_upside_down_target_is_refused_at_arm_time(coordinator):
+    arm(coordinator, direction='BUY_BASIS', entry_spread=18.0,
+        exit_spread=17.0, lots=1.0)
+    assert coordinator.manual_order is None
+    assert 'Take profit' in coordinator.manual_note['text']
+
+
+def test_fire_now_checks_levels_against_the_live_spread(coordinator):
+    """No entry level to measure against, so the geometry is judged at
+    the price the pair actually opens at."""
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    arm(coordinator, direction='SELL_BASIS', stop_spread=18.0, lots=1.0)
+    assert not coordinator.position_manager.get_active_positions()
+    assert coordinator.manual_note['ok'] is False
+
+
+def test_a_refusal_reaches_the_ui_not_just_the_log(coordinator):
+    """Every rejection path used to end in logging.warning and nothing
+    else — the operator pressed Activate and saw nothing happen."""
+    coordinator.config.RISK_LIMITS['MAX_LOT_SIZE'] = 0.5
+    arm(coordinator, direction='SELL_BASIS', lots=5.0)
+    assert coordinator.manual_note['ok'] is False
+    assert 'MAX_LOT_SIZE' in coordinator.manual_note['text']
+
+
+def test_a_successful_manual_trade_reports_itself(coordinator):
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    arm(coordinator, direction='SELL_BASIS', lots=1.0)
+    assert coordinator.manual_note['ok'] is True
+    assert 'POS_' in coordinator.manual_note['text']

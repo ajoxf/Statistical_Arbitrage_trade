@@ -408,8 +408,14 @@
     const counts = levels.map(l => sdCounts[l] || 0);
     const colors = levels.map(l => l > 0 ? 'rgba(35, 134, 54, 0.8)' : 'rgba(218, 54, 51, 0.8)');
 
-    const sdTouchCtx = document.getElementById('sdTouchChart').getContext('2d');
-    const sdTouchChart = new Chart(sdTouchCtx, {
+    // Guarded the same way as the dashboard's charts: Chart.js is a
+    // CDN script, and an unreachable CDN would otherwise throw a
+    // top-level ReferenceError that aborts this whole block and takes
+    // the rest of the Analysis page with it.
+    const sdTouchCanvas = document.getElementById('sdTouchChart');
+    const sdTouchChart = (typeof Chart === 'undefined' || !sdTouchCanvas)
+      ? {data: {datasets: [{}]}, update: function () {}}
+      : new Chart(sdTouchCanvas.getContext('2d'), {
         type: 'bar',
         data: {
             labels: levels.map(l => (l > 0 ? '+' : '') + l + ' SD'),

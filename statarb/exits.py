@@ -65,7 +65,7 @@ def outcome_tag(close_reason, z_reverted):
         return 'REVERSION_BANKED'
     if reason in ('MAX_HOLD', 'TIME_STOP'):
         return 'TIME_EXIT'
-    if reason in ('DOLLAR_STOP', 'Z_STOP', 'STOP_LOSS'):
+    if reason in ('DOLLAR_STOP', 'Z_STOP', 'STOP_LOSS', 'MANUAL_STOP'):
         return ('STOPPED_AFTER_FULL_REVERSION' if z_reverted
                 else 'STOPPED_IN_TREND')
     return reason
@@ -179,18 +179,39 @@ class ExitLadder:
             return None
         d = -1.0 if signal_type == SignalType.SELL_BASIS else 1.0
         fees = plan.get('rt_cost_usd', 0.0)
+        sl = (entry_spread - d * plan['stop_usd'] / oz
+              if plan.get('stop_usd') else None)
+        tp = (entry_spread + d * (plan['tp_usd'] + fees) / oz
+              if plan.get('tp_usd') else None)
+        # A manual trade carries the operator's own spread levels. Both
+        # ladders are live, so the card must show whichever the spread
+        # reaches FIRST — the one nearest entry on that side.
+        manual_tp = plan.get('manual_exit_spread')
+        manual_sl = plan.get('manual_stop_spread')
+        tp = ExitLadder._nearest(tp, manual_tp, entry_spread)
+        sl = ExitLadder._nearest(sl, manual_sl, entry_spread)
         levels = {
             'entry_spread': entry_spread,
             'be': entry_spread + d * fees / oz,
-            'sl': entry_spread - d * plan['stop_usd'] / oz
-                  if plan.get('stop_usd') else None,
-            'tp': entry_spread + d * (plan['tp_usd'] + fees) / oz
-                  if plan.get('tp_usd') else None,
+            'sl': sl,
+            'tp': tp,
             'ex': entry_spread + d * (plan.get('gate_floor_usd', 0)
                                       + fees) / oz,
             'favorable': 'down' if d < 0 else 'up',
+            'manual_tp': manual_tp,
+            'manual_sl': manual_sl,
         }
         return levels
+
+    @staticmethod
+    def _nearest(a, b, anchor):
+        """Of two levels on the same side of `anchor`, the one the
+        spread reaches first — i.e. the closer of the two."""
+        if a is None:
+            return b
+        if b is None:
+            return a
+        return a if abs(a - anchor) <= abs(b - anchor) else b
 
     def _reversion_home(self, plan, z, spread, signal_type):
         """Has the spread 'come home'? Depends on SIGNALS.EXIT_MODE:
@@ -225,14 +246,28 @@ class ExitLadder:
         fees = plan.get('rt_cost_usd', 0.0)
         net_pnl = gross_pnl - fees if gross_pnl is not None else None
 
-        # 1. Dollar stop — ungated, gross move
+        # 1. Manual trade: the operator named a stop SPREAD when they
+        # placed it. Checked FIRST — a stop the operator set by hand is
+        # the one instruction nothing else may outrank, and it is the
+        # reason a manual trade is allowed to skip the signal gates at
+        # all. The engine's own dollar stop below still applies, so
+        # whichever is reached first wins.
+        stop_level = plan.get('manual_stop_spread')
+        if stop_level is not None and spread is not None:
+            hit = (spread >= stop_level
+                   if position.signal_type == SignalType.SELL_BASIS
+                   else spread <= stop_level)
+            if hit:
+                return 'MANUAL_STOP'
+
+        # 1a. Dollar stop — ungated, gross move
         if plan['stop_usd'] and gross_pnl is not None \
                 and gross_pnl <= -plan['stop_usd']:
             return 'DOLLAR_STOP'
 
-        # 1b. Manual trade: the operator named an exit SPREAD when
-        # arming it. That target outranks the signal machinery (it is
-        # why they placed the trade) but never outranks the stop.
+        # 1b. Manual trade: the operator named a take-profit SPREAD
+        # when arming it. That target outranks the signal machinery
+        # (it is why they placed the trade) but never outranks a stop.
         target = plan.get('manual_exit_spread')
         if target is not None and spread is not None:
             reached = (spread <= target

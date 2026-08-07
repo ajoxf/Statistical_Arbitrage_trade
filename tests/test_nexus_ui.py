@@ -1267,3 +1267,118 @@ def test_the_capital_preview_converts_lots_to_notional(client):
     assert 'ps * contract * _cachedLegAPrice' in page
     assert 'ps * beta * contract * _cachedLegBPrice' in page
     assert 'lots ×' in page          # the breakdown states the conversion
+
+
+# --- Manual Spread Trade: entry / take profit / stop loss ------------------
+
+def test_the_manual_panel_has_all_three_levels(client):
+    """Owner: "The Manual Trade should be Entry - Take Profit and Stop
+    loss". It shipped with Entry and a single unlabelled "Exit"."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'id="manual-entry-spread"' in page
+    assert 'id="manual-exit-spread"' in page
+    assert 'id="manual-stop-spread"' in page
+    assert 'Take Profit' in page
+    assert 'Stop Loss' in page
+
+
+def test_the_manual_panel_says_it_ignores_the_algo_switch(client):
+    """Operator: "The Algo was turned off still the trade took place."
+    It is by design — _check_manual_arm runs before the algo_enabled
+    entry gate — but the panel never said so."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'ignores the Start/Stop switch' in page
+    assert 'even while the algo is stopped' in page
+
+
+def test_the_armed_footer_says_when_the_trigger_is_already_reached(client):
+    """"Waiting for spread 59.0000" while the spread was already past
+    59 read as if nothing would happen — it fired on the next tick."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'Trigger reached' in page
+    assert 'opens on the next tick' in page
+
+
+def test_the_manual_stop_level_reaches_the_engine(client):
+    """The whole point of a Stop Loss field is that it travels with
+    the order, so check the control file, not just the form."""
+    r = client.post('/api/manual-trade', json={
+        'asset': 'GOLD', 'direction': 'SELL_BASIS',
+        'entry_spread': 59.0, 'exit_spread': 58.5, 'stop_spread': 60.0})
+    assert r.get_json()['success'] is True
+    with open(client.tmp_path / 'control.json') as f:
+        order = json.load(f)['open']
+    assert order['stop_spread'] == 60.0
+    assert order['exit_spread'] == 58.5
+
+
+def test_the_api_refuses_an_upside_down_stop(client):
+    """A stop on the winning side fires the instant the trade goes
+    right. The browser checks it too, but the browser can be bypassed."""
+    r = client.post('/api/manual-trade', json={
+        'asset': 'GOLD', 'direction': 'SELL_BASIS',
+        'entry_spread': 59.0, 'stop_spread': 58.0})
+    assert r.status_code == 400
+    assert 'Stop loss' in r.get_json()['error']
+    assert not (client.tmp_path / 'control.json').exists()
+
+
+def test_the_api_refuses_an_upside_down_target(client):
+    r = client.post('/api/manual-trade', json={
+        'asset': 'GOLD', 'direction': 'BUY_BASIS',
+        'entry_spread': 59.0, 'exit_spread': 58.0})
+    assert r.status_code == 400
+    assert 'Take profit' in r.get_json()['error']
+
+
+def test_the_browser_and_the_server_share_one_level_rule(client):
+    """Two copies of this rule would let a trade be refused in one
+    place and accepted in the other."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'function manualLevelError' in page
+    assert 'is on the winning side of entry' in page      # same wording
+    assert 'is on the losing side of entry' in page
+
+
+def test_an_engine_refusal_reaches_the_panel(client):
+    """Every _manual_open rejection used to end in logging.warning."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'Last manual trade:' in page
+    r = client.get('/api/manual-trade')
+    assert 'note' in r.get_json()
+
+
+# --- the readiness ratio the owner asked to keep ---------------------------
+
+def test_the_readiness_gates_show_their_thresholds(client):
+    """Owner: "the 7200/7200 or 120/120 is helpful to understand if you
+    have enough data that has been used to calculate the mean and SD
+    and is ready to trade". Kept on their OWN line, self-labelled, so
+    they never mix spans with the live window count above."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'id="readiness-gates"' in page
+    assert 'Ready to trade:' in page
+    assert "Math.floor(Math.min(history, minHistory))" in page   # capped
+    assert "Math.min(dataPoints, minSamples)" in page            # capped
+    assert "'s history'" in page
+
+
+# --- a blocked CDN must not disable a page ---------------------------------
+
+def test_a_blocked_chart_cdn_cannot_disable_the_dashboard(client):
+    """`const zscoreChart = new Chart(...)` sat at the TOP LEVEL of the
+    dashboard's script block. With the Chart.js CDN unreachable it threw
+    a ReferenceError that aborted the whole block — killing the prices,
+    the position card and the manual trade panel with it. Found by
+    driving the page in Chromium behind a proxy that blocks the CDN."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'function makeChart' in page
+    assert "typeof Chart === 'undefined'" in page
+    assert 'const zscoreChart = new Chart' not in page
+    assert 'const spreadChart = new Chart' not in page
+
+
+def test_the_analysis_chart_is_guarded_too(client):
+    page = client.get('/analysis').get_data(as_text=True)
+    assert "typeof Chart === 'undefined'" in page
+    assert 'const sdTouchChart = new Chart' not in page

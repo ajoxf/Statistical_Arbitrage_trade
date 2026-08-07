@@ -185,6 +185,22 @@
                 <small class="text-secondary" id="data-count-label">quotes to warm up</small>
             </div>
         </div>
+        <!-- Readiness gates, always shown and always as ratios: "have
+             we collected enough data to trust the mean and SD?" is a
+             yes/no question, and the answer is only legible next to
+             the threshold it is being judged against. Both ratios are
+             CAPPED at their gate, so a met gate reads 7,200 / 7,200s
+             rather than growing past its own denominator. Kept apart
+             from the live window count above, which measures a
+             different span. -->
+        <div class="mt-1 pt-1 border-top d-flex gap-3 flex-wrap"
+             id="readiness-gates" style="font-size: 0.7rem;"
+             title="Both gates must be met before the engine will trade: enough elapsed collection AND enough quotes in the window. The mean and standard deviation the z-score is built from are only trustworthy once both are green.">
+            <span class="text-secondary">Ready to trade:</span>
+            <span id="gate-history">&mdash;</span>
+            <span id="gate-samples">&mdash;</span>
+            <span id="gate-sigma">&mdash;</span>
+        </div>
     </div>
 </div>
 
@@ -961,19 +977,9 @@
                     <span class="fw-bold" id="manual-current-spread">&mdash;</span>
                 </div>
                 <div class="row g-1 mb-2">
-                    <div class="col-6">
-                        <label class="form-label mb-0" style="font-size:0.65rem;">Entry <span class="text-secondary">(blank=now)</span></label>
-                        <input type="number" class="form-control form-control-sm py-0" id="manual-entry-spread" step="0.0001" style="font-size:0.75rem;">
-                    </div>
-                    <div class="col-6">
-                        <label class="form-label mb-0" style="font-size:0.65rem;">Exit <span class="text-secondary">(target)</span></label>
-                        <input type="number" class="form-control form-control-sm py-0" id="manual-exit-spread" step="0.0001" style="font-size:0.75rem;">
-                    </div>
-                </div>
-                <div class="row g-1 mb-2">
                     <div class="col-7">
                         <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>
-                        <select class="form-select form-select-sm py-0" id="manual-trade-direction" style="font-size:0.72rem;">
+                        <select class="form-select form-select-sm py-0" id="manual-trade-direction" style="font-size:0.72rem;" onchange="updateManualHints()">
                             <option value="SELL_BASIS">Short Spread</option>
                             <option value="BUY_BASIS">Long Spread</option>
                         </select>
@@ -983,6 +989,28 @@
                         <input type="number" class="form-control form-control-sm py-0" id="manual-lots" step="0.01" min="0.01" placeholder="clip" style="font-size:0.75rem;">
                     </div>
                 </div>
+                <!-- Entry / Take Profit / Stop Loss, all SPREAD levels.
+                     The hints below each field say which side of entry
+                     the level has to be on for the chosen direction —
+                     that is the mistake that costs money here. -->
+                <div class="row g-1 mb-1">
+                    <div class="col-4">
+                        <label class="form-label mb-0" style="font-size:0.65rem;">Entry <span class="text-secondary">(blank=now)</span></label>
+                        <input type="number" class="form-control form-control-sm py-0" id="manual-entry-spread" step="0.0001"
+                               oninput="updateManualHints()" style="font-size:0.75rem;">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label mb-0 text-success" style="font-size:0.65rem;">Take Profit</label>
+                        <input type="number" class="form-control form-control-sm py-0" id="manual-exit-spread" step="0.0001"
+                               oninput="updateManualHints()" style="font-size:0.75rem;">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label mb-0 text-danger" style="font-size:0.65rem;">Stop Loss</label>
+                        <input type="number" class="form-control form-control-sm py-0" id="manual-stop-spread" step="0.0001"
+                               oninput="updateManualHints()" style="font-size:0.75rem;">
+                    </div>
+                </div>
+                <div class="mb-2" id="manual-level-hint" style="font-size:0.62rem;"></div>
                 <div class="mb-2">
                     <label class="form-label mb-0" style="font-size:0.65rem;">Overnight</label>
                     <select class="form-select form-select-sm py-0" id="manual-overnight-mode" style="font-size:0.72rem;">
@@ -999,9 +1027,15 @@
                         <i class="bi bi-stop-fill me-1"></i>Cancel Armed
                     </button>
                 </div>
-                <div class="text-secondary mt-2" id="manual-trade-info" style="font-size:0.65rem;">
-                    Signal gates bypassed; risk limits, margin breaker and the
-                    exit ladder still apply.
+                <div class="text-secondary mt-2" id="manual-trade-info" style="font-size:0.65rem;"></div>
+                <div class="text-secondary mt-2" style="font-size:0.62rem;">
+                    <i class="bi bi-exclamation-triangle text-warning me-1"></i>
+                    A manual trade <strong>ignores the Start/Stop switch</strong> —
+                    an armed order fires even while the algo is stopped.
+                    It skips the signal gates (z, trend, cooldown, edge filter)
+                    but never the risk limits or circuit breakers. The engine's
+                    own dollar stop stays armed alongside your Stop Loss;
+                    whichever the spread reaches first closes the trade.
                 </div>
             </div>
         </div>
@@ -1050,7 +1084,7 @@
                             <tr>
                                 <th>Account</th>
                                 <th>Source</th>
-                                <th>Time</th>
+                                <th title="The BROKER's clock, the same one MT5's History tab shows, so the two tables line up row for row. Hover any cell for the date and for the same instant on your own clock.">Time <span class="text-secondary" style="font-weight:400;">(broker)</span></th>
                                 <th>Symbol</th>
                                 <th>Type</th>
                                 <th>Side</th>
@@ -1122,9 +1156,35 @@
         }
     };
 
+    // Chart.js comes off a CDN. When that CDN is blocked (locked-down
+    // box, offline, corporate proxy) `new Chart(...)` throws a
+    // ReferenceError at the TOP LEVEL of this block — which aborts the
+    // whole block, taking the prices, the position card, the manual
+    // trade panel and every other handler defined below with it. Two
+    // charts must never be able to disable the control panel, so build
+    // them through a factory that degrades to an inert stub and says
+    // so on the canvas. (Same fault, same fix, as the blocked
+    // socket.io `io()` in base.html.)
+    function makeChart(canvasId, cfg) {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return {data: cfg.data, update: function () {}};
+        if (typeof Chart === 'undefined') {
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#6c757d';
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Chart library did not load — the rest of the '
+                         + 'dashboard is unaffected',
+                         canvas.width / 2, canvas.height / 2);
+            // Same shape the update code calls into, so every
+            // chart.data/.update() site below is a harmless no-op.
+            return {data: cfg.data, update: function () {}};
+        }
+        return new Chart(canvas.getContext('2d'), cfg);
+    }
+
     // Z-Score Chart
-    const zscoreCtx = document.getElementById('zscoreChart').getContext('2d');
-    const zscoreChart = new Chart(zscoreCtx, {
+    const zscoreChart = makeChart('zscoreChart', {
         type: 'line',
         data: {
             labels: [],
@@ -1190,8 +1250,7 @@
     });
 
     // Spread Chart
-    const spreadCtx = document.getElementById('spreadChart').getContext('2d');
-    const spreadChart = new Chart(spreadCtx, {
+    const spreadChart = makeChart('spreadChart', {
         type: 'line',
         data: {
             labels: [],
@@ -1349,32 +1408,121 @@
     // Arms an order at a target spread (or fires now if left blank).
     // The engine bypasses only the SIGNAL gates — risk limits, the
     // margin breaker and the exit ladder still govern the trade.
+    // Engine notes carry config/broker strings; never interpolate them raw.
+    function escapeHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+
+    // The one rule that matters on this panel, mirrored from
+    // webapi.manual_level_error: a short-spread trade profits as the
+    // spread FALLS, so its take profit sits below entry and its stop
+    // above; long spread is the mirror. Returns a message or null.
+    function manualLevelError(direction, entry, takeProfit, stop) {
+        if (entry == null || isNaN(entry)) return null;
+        const down = direction === 'SELL_BASIS';
+        const side = down ? 'short' : 'long';
+        if (takeProfit != null && !isNaN(takeProfit)
+                && ((takeProfit < entry) !== down)) {
+            return `Take profit ${takeProfit} is on the losing side of entry `
+                 + `${entry}. A ${side}-spread trade takes profit `
+                 + `${down ? 'below' : 'above'} entry.`;
+        }
+        if (stop != null && !isNaN(stop) && ((stop > entry) !== down)) {
+            return `Stop loss ${stop} is on the winning side of entry `
+                 + `${entry}. A ${side}-spread trade stops out `
+                 + `${down ? 'above' : 'below'} entry — as placed it would `
+                 + `fire the moment the trade went right.`;
+        }
+        return null;
+    }
+
+    function manualFields() {
+        const num = id => {
+            const v = document.getElementById(id).value;
+            return v === '' ? null : parseFloat(v);
+        };
+        return {
+            direction: document.getElementById('manual-trade-direction').value,
+            entry: num('manual-entry-spread'),
+            takeProfit: num('manual-exit-spread'),
+            stop: num('manual-stop-spread'),
+            lots: num('manual-lots'),
+            overnight: document.getElementById('manual-overnight-mode').value,
+        };
+    }
+
+    // Live guidance under the three level fields: which way round they
+    // go, and what the current spread would do to a fire-now order.
+    function updateManualHints() {
+        const hint = document.getElementById('manual-level-hint');
+        if (!hint) return;
+        const f = manualFields();
+        const down = f.direction === 'SELL_BASIS';
+        const ref = f.entry != null ? f.entry : window.__manualSpread;
+        const err = manualLevelError(f.direction, ref, f.takeProfit, f.stop);
+        if (err) {
+            hint.className = 'mb-2 text-danger';
+            hint.textContent = err;
+            return;
+        }
+        hint.className = 'mb-2 text-secondary';
+        const anchor = f.entry != null
+            ? `entry ${f.entry}`
+            : (window.__manualSpread != null
+                ? `the live spread ${Number(window.__manualSpread).toFixed(4)}`
+                : 'entry');
+        hint.textContent =
+            `${down ? 'Short' : 'Long'} spread: profits as the spread `
+            + `${down ? 'falls' : 'rises'}. Take profit `
+            + `${down ? 'below' : 'above'} ${anchor}, stop `
+            + `${down ? 'above' : 'below'} it.`;
+    }
+
     async function activateManualTrade() {
-        const entry = document.getElementById('manual-entry-spread').value;
-        const exit = document.getElementById('manual-exit-spread').value;
-        const lots = document.getElementById('manual-lots').value;
-        const direction = document.getElementById('manual-trade-direction').value;
-        const overnight = document.getElementById('manual-overnight-mode').value;
+        const f = manualFields();
         const asset = (window.__manualAsset || 'GOLD');
-        const how = entry === ''
+        // Blank entry = fire now, so the live spread is what the levels
+        // will be measured against.
+        const ref = f.entry != null ? f.entry : window.__manualSpread;
+        const err = manualLevelError(f.direction, ref, f.takeProfit, f.stop);
+        if (err) {
+            await showDialog(err, {title: 'Check your levels',
+                                   variant: 'danger'});
+            return;
+        }
+        const how = f.entry == null
             ? 'open a pair NOW at market'
-            : `arm a pair to open when the spread reaches ${entry}`;
-        if (!await showConfirm(`Manual trade on ${asset}: ${how}?`,
+            : `arm a pair to open when the spread reaches ${f.entry}`;
+        const rows = [
+            `Direction: ${f.direction === 'SELL_BASIS' ? 'Short' : 'Long'} spread`,
+            `Take profit: ${f.takeProfit != null ? f.takeProfit : 'engine ladder'}`,
+            `Stop loss: ${f.stop != null ? f.stop : 'engine dollar stop only'}`,
+            `Lots: ${f.lots != null ? f.lots : 'configured clip'}`,
+        ].join(' · ');
+        if (!await showConfirm(
+                `Manual trade on ${asset}: ${how}.\n\n${rows}\n\n`
+                + `This bypasses the signal gates and fires even while `
+                + `the algo is stopped.`,
                 {title: 'Manual spread trade', confirmText: 'Place trade'}))
             return;
         const response = await fetch('/api/manual-trade', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                asset, direction, overnight,
-                lots: lots === '' ? null : parseFloat(lots),
-                entry_spread: entry === '' ? null : parseFloat(entry),
-                exit_spread: exit === '' ? null : parseFloat(exit)
+                asset, direction: f.direction, overnight: f.overnight,
+                lots: f.lots, entry_spread: f.entry,
+                exit_spread: f.takeProfit, stop_spread: f.stop
             })
         });
         const result = await response.json();
-        showToast(result.note || result.error ||
-                  (result.success ? 'Manual trade sent' : 'Failed'),
-                  result.success ? 'success' : 'danger');
+        if (!result.success) {
+            await showDialog(result.error || 'The trade was refused.',
+                             {title: 'Manual trade refused',
+                              variant: 'danger'});
+        } else {
+            showToast(result.note || 'Manual trade sent', 'success');
+        }
         refreshManualTrade();
     }
 
@@ -1389,6 +1537,7 @@
         try {
             const data = await (await fetch('/api/manual-trade')).json();
             if (data.asset) window.__manualAsset = data.asset;
+            window.__manualSpread = data.current_spread;
             const spreadEl = document.getElementById('manual-current-spread');
             if (spreadEl) {
                 spreadEl.textContent = data.current_spread == null ? '—'
@@ -1400,20 +1549,49 @@
             const info = document.getElementById('manual-trade-info');
             if (data.armed && data.order) {
                 const o = data.order;
+                const entry = Number(o.entry_spread);
+                const short = o.direction === 'SELL_BASIS';
                 if (badge) { badge.textContent = 'ARMED'; badge.className = 'badge bg-warning text-dark'; }
                 if (activate) activate.classList.add('d-none');
                 if (cancel) cancel.classList.remove('d-none');
-                if (info) info.innerHTML =
-                    `<span class="text-warning">Waiting for spread
-                     ${Number(o.entry_spread).toFixed(4)}
-                     (${o.direction === 'SELL_BASIS' ? 'short' : 'long'} spread)` +
-                    (o.exit_spread != null ? ` &rarr; exit ${Number(o.exit_spread).toFixed(4)}` : '') +
-                    ` · overnight: ${o.overnight || 'ALLOW'}</span>`;
+                // "Waiting for spread 59.0000" while the spread is
+                // already past 59 read as if nothing would happen — the
+                // trade then fired on the next tick. Say which it is.
+                const live = data.current_spread;
+                const reached = live != null &&
+                    (short ? live >= entry : live <= entry);
+                const lead = reached
+                    ? `<span class="text-danger">Trigger reached (spread
+                       ${Number(live).toFixed(4)} ${short ? '≥' : '≤'}
+                       ${entry.toFixed(4)}) — opens on the next tick</span>`
+                    : `<span class="text-warning">Waiting for the spread to
+                       ${short ? 'rise to' : 'fall to'} ${entry.toFixed(4)}</span>`;
+                const lvl = [];
+                lvl.push(`${short ? 'short' : 'long'} spread`);
+                lvl.push(o.exit_spread != null
+                    ? `TP ${Number(o.exit_spread).toFixed(4)}` : 'TP: engine');
+                lvl.push(o.stop_spread != null
+                    ? `SL ${Number(o.stop_spread).toFixed(4)}` : 'SL: engine $ stop');
+                lvl.push(`overnight ${o.overnight || 'ALLOW'}`);
+                if (info) info.innerHTML = lead +
+                    `<div class="text-secondary">${lvl.join(' · ')}</div>` +
+                    (data.algo_enabled === false
+                        ? `<div class="text-warning">Algo is STOPPED — this
+                           order still fires.</div>` : '');
             } else {
                 if (badge) { badge.textContent = 'IDLE'; badge.className = 'badge bg-secondary'; }
                 if (activate) activate.classList.remove('d-none');
                 if (cancel) cancel.classList.add('d-none');
+                // What the ENGINE did with the last request. A refusal
+                // (breaker, max positions, unfilled pair) used to reach
+                // the log file and nowhere else.
+                const note = data.note;
+                if (info) info.innerHTML = note
+                    ? `<span class="${note.ok ? 'text-success' : 'text-danger'}">`
+                      + `Last manual trade: ${escapeHtml(note.text)}</span>`
+                    : '';
             }
+            updateManualHints();
         } catch (e) { /* panel is best-effort */ }
     }
     document.addEventListener('DOMContentLoaded', () => {
@@ -2802,11 +2980,20 @@ function updateFilterStatus(elementId, passed, value) {
                     // gate). Only shown when a gate floor pushes it past BE.
                     const hasGate = lv.gate_release != null &&
                         Math.abs(parseFloat(lv.gate_release) - parseFloat(lv.break_even)) > 0.005;
+                    // A hand-set level looks wrong beside the engine's
+                    // ladder unless it says whose it is.
+                    const byHand = which => which
+                        ? ' <span class="badge bg-secondary" style="font-size:0.55rem;">set by hand</span>'
+                        : '';
                     levelsEl.innerHTML =
                         'BE <span class="text-info">' + fmt(lv.break_even) + '</span>' +
                         (hasGate ? ' · EX <span class="text-warning">' + fmt(lv.gate_release) + '</span>' : '') +
                         ' · TP <span class="text-success">' + fmt(lv.take_profit) + '</span>' +
+                        byHand(lv.manual_take_profit != null &&
+                               Number(lv.manual_take_profit) === Number(lv.take_profit)) +
                         ' · SL <span class="text-danger">' + fmt(lv.stop) + '</span>' +
+                        byHand(lv.manual_stop != null &&
+                               Number(lv.manual_stop) === Number(lv.stop)) +
                         ' <span class="text-secondary">(profit ' + arrow + ')</span>';
                     levelsRow.style.display = '';
                 } else if (levelsRow) {
@@ -3034,6 +3221,30 @@ function updateFilterStatus(elementId, passed, value) {
                                '.' : '');
             }
         }
+
+        // Readiness gates: the ratios the owner asked to keep — "have
+        // we collected enough data to calculate the mean and SD and is
+        // it ready to trade?". Capped at the threshold so a met gate
+        // reads as met, not as a denominator that has been overrun.
+        const gate = (el, met, text) => {
+            if (!el) return;
+            el.className = met ? 'text-success' : 'text-warning';
+            el.innerHTML = (met ? '<i class="bi bi-check-circle-fill me-1"></i>'
+                                : '<i class="bi bi-hourglass-split me-1"></i>')
+                         + escapeHtml(text);
+        };
+        gate(document.getElementById('gate-history'), !needHistory,
+             minHistory
+                ? Math.floor(Math.min(history, minHistory)) + ' / ' +
+                  Math.round(minHistory) + 's history'
+                : 'history gate off');
+        gate(document.getElementById('gate-samples'), !warming,
+             Math.min(dataPoints, minSamples).toLocaleString() + ' / ' +
+             minSamples.toLocaleString() + ' quotes');
+        gate(document.getElementById('gate-sigma'), !!dataReady,
+             dataReady ? 'mean & SD usable'
+                       : (degenerate ? 'sigma too small'
+                                     : 'mean & SD not ready'));
 
         if (!dataReady) {
             statusCard.style.borderLeft = '4px solid #ffc107';
@@ -4107,7 +4318,13 @@ function updateFilterStatus(elementId, passed, value) {
         const tbody = document.getElementById('exchange-orders-table');
         tbody.innerHTML = '<tr><td colspan="16" class="text-center text-secondary py-2"><i class="bi bi-hourglass-split me-1"></i>Loading...</td></tr>';
 
-        fetch('/api/exchange-orders?limit=100')
+        // 100 rows silently truncated a busy day's activity, so MT5's
+        // History showed trades this table simply did not reach. Ask
+        // for more, and SAY SO when the cap is what ended the list —
+        // a table that stops without explanation reads as a table that
+        // is missing data.
+        const ORDER_LOG_LIMIT = 500;
+        fetch('/api/exchange-orders?limit=' + ORDER_LOG_LIMIT)
             .then(r => r.json())
             .then(data => {
                 const orders = data.orders || [];
@@ -4125,8 +4342,42 @@ function updateFilterStatus(elementId, passed, value) {
                     const stateClass = o.state === 'filled' ? 'text-success' : (o.state === 'cancelled' ? 'text-secondary' : 'text-warning');
                     const pnlClass = o.pnl > 0 ? 'text-success' : (o.pnl < 0 ? 'text-danger' : '');
                     const feeClass = o.fee < 0 ? 'text-danger' : '';
-                    const time = o.filled_at ? new Date(parseInt(o.filled_at)).toLocaleTimeString() : '-';
-                    const date = o.filled_at ? new Date(parseInt(o.filled_at)).toLocaleDateString() : '';
+                    // MT5's History tab shows the BROKER's clock. This
+                    // table was rendering the browser's, so on a box in
+                    // a different time zone from the server every row
+                    // looked like a different trade. Show broker time
+                    // to match the terminal, with local in the tooltip.
+                    // getUTC* because the offset is already folded in.
+                    // MT5 stamps deals with the SERVER's wall clock
+                    // encoded as an epoch, and the History tab shows
+                    // that wall clock. Rendering the epoch normally
+                    // gave the browser's time zone instead, so on a box
+                    // in a different zone from the broker every row was
+                    // hours away from the same trade in MT5 — which is
+                    // what "the History doesn't match" looked like.
+                    // Reading it in UTC undoes the encoding exactly and
+                    // reproduces the terminal's own column.
+                    const stamp = o.filled_at ? parseInt(o.filled_at) : null;
+                    const off = o.server_offset_sec;
+                    let time = '-', date = '';
+                    if (stamp) {
+                        const s = new Date(stamp);
+                        const pad = n => String(n).padStart(2, '0');
+                        time = pad(s.getUTCHours()) + ':'
+                             + pad(s.getUTCMinutes()) + ':'
+                             + pad(s.getUTCSeconds());
+                        date = s.toISOString().slice(0, 10)
+                             + ' broker time (as shown in MT5 History)';
+                        if (off != null) {
+                            // Same instant on the operator's own clock.
+                            date += ' · ' + new Date(stamp - off * 1000)
+                                              .toLocaleString()
+                                  + ' your time';
+                        } else {
+                            date += ' · your local time unknown (the '
+                                  + 'broker clock offset could not be read)';
+                        }
+                    }
 
                     const acctTitle = (o.login ? 'Login ' + o.login : '') + (o.is_bot ? ' · placed by the algo' : ' · manual/terminal');
                     const tr = document.createElement('tr');
@@ -4150,6 +4401,16 @@ function updateFilterStatus(elementId, passed, value) {
                     `;
                     tbody.appendChild(tr);
                 });
+                if (orders.length >= ORDER_LOG_LIMIT) {
+                    const note = document.createElement('tr');
+                    note.innerHTML = '<td colspan="16" class="text-center '
+                        + 'text-warning py-2" style="font-size:0.7rem;">'
+                        + 'Showing the newest ' + ORDER_LOG_LIMIT
+                        + ' rows — older activity exists and is in the CSV '
+                        + 'export. MT5 History will show more than this.'
+                        + '</td>';
+                    tbody.appendChild(note);
+                }
             })
             .catch(err => {
                 tbody.innerHTML = `<tr><td colspan="16" class="text-center text-danger py-3">Error: ${err}</td></tr>`;

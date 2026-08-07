@@ -187,6 +187,14 @@ class DataLogger:
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_broker_orders_time '
                        'ON broker_orders (filled_at DESC)')
+        # filled_at is a SERVER-time stamp; this is how far the broker's
+        # clock runs ahead of ours, so the log can be shown on the same
+        # clock as MT5's own History tab (2026-08). NULL where unknown.
+        try:
+            cursor.execute('ALTER TABLE broker_orders '
+                           'ADD COLUMN server_offset_sec INTEGER')
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
         conn.close()
 
@@ -194,7 +202,7 @@ class DataLogger:
         'account', 'order_id', 'deal_id', 'symbol', 'inst_type', 'side',
         'pos_side', 'order_type', 'quantity', 'fill_qty', 'fill_price',
         'fee', 'fee_ccy', 'pnl', 'state', 'filled_at', 'position_id',
-        'is_bot', 'comment')
+        'is_bot', 'comment', 'server_offset_sec')
 
     def record_broker_orders(self, rows, accounts=None):
         """Upsert a poll's worth of order-log rows.
@@ -216,6 +224,10 @@ class DataLogger:
         payload = [
             tuple(row.get(f) for f in self.BROKER_ORDER_FIELDS) + (seen,)
             for row in rows]
+        # Columns are NAMED, not positional: the table gains columns by
+        # ALTER on upgrade, which appends them AFTER `seen`, so a bare
+        # VALUES(...) would start writing fields into the wrong slots.
+        columns = ', '.join(self.BROKER_ORDER_FIELDS + ('seen',))
         placeholders = ', '.join('?' * (len(self.BROKER_ORDER_FIELDS) + 1))
         conn = sqlite3.connect(self.db_path)
         conn.executemany(
@@ -224,8 +236,8 @@ class DataLogger:
             [(account,) for account in sorted(accounts)])
         if payload:
             conn.executemany(
-                f'INSERT OR REPLACE INTO broker_orders VALUES '
-                f'({placeholders})', payload)
+                f'INSERT OR REPLACE INTO broker_orders ({columns}) '
+                f'VALUES ({placeholders})', payload)
         conn.commit()
         conn.close()
         return len(payload)

@@ -422,6 +422,144 @@ def test_dashboard_table_has_an_account_column(client):
     log = page.split('Exchange Order Log', 1)[1]
     header = log.split('</thead>', 1)[0]
     assert '<th>Account</th>' in header and '<th>Source</th>' in header
-    # 16 columns now — every placeholder row must span them all
-    assert header.count('<th>') == 16
+    # 16 columns now — every placeholder row must span them all.
+    # Match '<th>' or '<th ...>': the Time header carries a title
+    # attribute explaining the broker clock.
+    import re
+    assert len(re.findall(r'<th[ >]', header)) == 16
     assert 'colspan="14"' not in log and 'colspan="15"' not in log
+
+
+# --- the broker's clock (2026-08: "MT5 History is not matching") ----------
+
+def test_the_window_cannot_be_clipped_by_a_clock_difference(fake_mt5):
+    """MT5 matches these bounds against SERVER-clock stamps while
+    `datetime.now()` is the box's local clock. The old `now + 1 minute`
+    ceiling dropped the newest deals on any broker running ahead of the
+    box — the exact rows an operator checks against MT5's History."""
+    from datetime import datetime, timedelta
+    captured = {}
+
+    class Recording(FakeMT5):
+        def history_deals_get(self, since, until):
+            captured['since'], captured['until'] = since, until
+            return ()
+
+    import statarb.broker as bm
+    fake = Recording()
+    bm.mt5, saved = fake, bm.mt5
+    try:
+        make_session().order_log(hours=24)
+    finally:
+        bm.mt5 = saved
+    now = datetime.now()
+    # Two days of headroom each way covers UTC-12 to UTC+14 plus DST.
+    assert captured['until'] - now >= timedelta(hours=27)
+    assert now - captured['since'] >= timedelta(hours=24 + 27)
+
+
+def test_rows_carry_the_brokers_clock_offset(fake_mt5, monkeypatch):
+    """Without it the dashboard renders a server-clock stamp in the
+    BROWSER's zone, so every row sits hours away from the same trade in
+    MT5's History."""
+    import time as _time
+    server_now = int(_time.time()) + 3 * 3600
+    fake = fake_mt5(deals=[deal(time=server_now - 60)])
+    # A GMT+3 broker: its wall clock, encoded as an epoch, reads three
+    # hours ahead of true UTC.
+    fake.symbols_get = lambda: [SimpleNamespace(name='XAUUSD', visible=True)]
+    fake.symbol_info_tick = lambda name: SimpleNamespace(time=server_now)
+    row = make_session().order_log()[0]
+    assert abs(row['server_offset_sec'] - 3 * 3600) <= 2
+
+
+def test_the_trim_uses_the_brokers_clock_not_ours(fake_mt5):
+    """The padded fetch over-collects on purpose; the trim has to
+    measure each row against the SAME clock its stamp is in, or it
+    reintroduces the skew it was added to defeat."""
+    import time as _time
+    server_now = int(_time.time()) + 3 * 3600
+    fake = fake_mt5(deals=[
+        deal(ticket=1, time=server_now - 600),          # 10 min ago: keep
+        deal(ticket=2, time=server_now - 30 * 3600),    # 30h ago: drop
+    ])
+    fake.symbols_get = lambda: [SimpleNamespace(name='XAUUSD', visible=True)]
+    fake.symbol_info_tick = lambda name: SimpleNamespace(time=server_now)
+    rows = make_session().order_log(hours=24)
+    assert [r['deal_id'] for r in rows] == ['1']
+
+
+def test_resting_orders_are_never_trimmed(fake_mt5):
+    """A working order is live NOW whatever its setup time says."""
+    import time as _time
+    server_now = int(_time.time())
+    fake = fake_mt5(pending=[pending_order(time_setup=server_now - 90 * 3600)])
+    fake.symbols_get = lambda: [SimpleNamespace(name='XAUUSD', visible=True)]
+    fake.symbol_info_tick = lambda name: SimpleNamespace(time=server_now)
+    assert len(make_session().order_log(hours=24)) == 1
+
+
+def test_the_offset_is_absent_rather_than_guessed(fake_mt5):
+    """No readable tick, no offset. A wrong clock is worse than a
+    blank one — the operator would trust it."""
+    fake = fake_mt5(deals=[deal()])
+    fake.symbols_get = lambda: []
+    assert make_session().order_log()[0]['server_offset_sec'] is None
+
+
+def test_the_offset_survives_the_trip_to_the_database(tmp_path):
+    """It is stored via a NAMED column list, because upgrading an
+    existing database appends the column after `seen` and a positional
+    INSERT would then write every field into the wrong slot."""
+    from statarb.database import DataLogger
+    logger = DataLogger(str(tmp_path / 'db.sqlite'))
+    logger.record_broker_orders([{
+        'account': 'a', 'order_id': '1', 'deal_id': '2', 'symbol': 'XAUUSD',
+        'state': 'filled', 'filled_at': 1_760_000_000_000,
+        'server_offset_sec': 10800}], {'a'})
+    row = logger.recent_broker_orders()[0]
+    assert row['server_offset_sec'] == 10800
+    assert row['symbol'] == 'XAUUSD'        # nothing shifted a slot
+
+
+def test_the_table_shows_the_brokers_clock(client):
+    """Reading the epoch in UTC undoes MT5's encoding exactly and
+    reproduces the terminal's own Time column."""
+    page = client.get('/').get_data(as_text=True)
+    assert 's.getUTCHours()' in page
+    assert 'as shown in MT5 History' in page
+    assert 'Time <span' in page and '(broker)' in page
+    # The old rendering, which used the browser's zone.
+    assert 'new Date(parseInt(o.filled_at)).toLocaleTimeString()' not in page
+
+
+def test_the_csv_carries_both_clocks(client):
+    body = client.get('/api/exchange-orders/csv').get_data(as_text=True)
+    header = body.splitlines()[0]
+    assert 'broker_time' in header and 'local_time' in header
+    assert ',filled_at,' not in header
+
+
+def test_the_table_says_when_the_row_cap_ended_the_list(client):
+    """100 rows silently truncated a busy day, so MT5's History held
+    trades this table never reached — and nothing said so."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'const ORDER_LOG_LIMIT = 500' in page
+    assert 'MT5 History will show more than this' in page
+    assert "'/api/exchange-orders?limit=100'" not in page
+
+
+def test_the_coordinator_states_the_clock_difference(config, tmp_path,
+                                                     monkeypatch, caplog):
+    """The offset is invisible until someone prints it."""
+    import logging
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    coord = Coordinator(config, trading_mode='PAPER')
+    with caplog.at_level(logging.INFO):
+        coord._note_server_clock('account_a',
+                                 [{'server_offset_sec': 10800}])
+    assert 'broker clock is UTC+3.0h' in caplog.text
+    caplog.clear()
+    coord._note_server_clock('account_a', [{'server_offset_sec': 10800}])
+    assert caplog.text == ''            # said once, not every poll
