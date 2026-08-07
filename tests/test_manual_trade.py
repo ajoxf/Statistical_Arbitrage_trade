@@ -309,3 +309,106 @@ def test_a_successful_manual_trade_reports_itself(coordinator):
     arm(coordinator, direction='SELL_BASIS', lots=1.0)
     assert coordinator.manual_note['ok'] is True
     assert 'POS_' in coordinator.manual_note['text']
+
+
+# --- the engine must not veto the operator's own target -------------------
+#
+# Live 2026-08-07: armed SHORT at 59.00 with TP 57 and SL 69, triggered
+# at 59.12, then "Exit plan not viable: cost floor $59 exceeds plausible
+# full reversion $15 — blocking entry". The badge went back to IDLE and
+# the panel said "order was not filled". Both were wrong: the operator's
+# own target was 2.12 spread units away, worth $212 against $59 of cost.
+# The engine measured a target THEY had not asked for.
+
+def test_the_operators_target_is_what_gets_measured(config):
+    ladder = ExitLadder(config)
+    md = {'spot_price': 4292.61, 'futures_price': 4351.55,
+          'spot_bid': 4292.55, 'spot_ask': 4292.68,
+          'futures_bid': 4351.38, 'futures_ask': 4351.72}
+    # A full reversion of this z is worth very little...
+    assert ladder.build_plan(1.0, 100, 2.4, 0.063, 600, md) is None
+    assert 'cannot pay for itself' in ladder.last_refusal
+    # ...but the operator's 2.12-wide target is worth $212.
+    plan = ladder.build_plan(1.0, 100, 2.4, 0.063, 600, md,
+                             manual_target_usd=212.0)
+    assert plan is not None
+    assert plan['tp_usd'] == pytest.approx(212.0)
+
+
+def test_a_manual_target_below_cost_is_allowed_but_warned(config, caplog):
+    """Manual means manual. It is stated loudly and placed anyway —
+    the operator may be hedging something the engine cannot see."""
+    import logging
+    ladder = ExitLadder(config)
+    md = {'spot_price': 4292.61, 'futures_price': 4351.55,
+          'spot_bid': 4292.55, 'spot_ask': 4292.68,
+          'futures_bid': 4351.38, 'futures_ask': 4351.72}
+    with caplog.at_level(logging.WARNING):
+        plan = ladder.build_plan(1.0, 100, 2.4, 0.063, 600, md,
+                                 manual_target_usd=5.0)
+    assert plan is not None
+    assert 'cannot make money at that level' in caplog.text
+
+
+def test_a_signal_entry_is_still_vetoed(config):
+    """The viability check is the edge filter's last line for AUTOMATIC
+    entries and must not be weakened by any of this."""
+    ladder = ExitLadder(config)
+    md = {'spot_price': 4292.61, 'futures_price': 4351.55,
+          'spot_bid': 4292.55, 'spot_ask': 4292.68,
+          'futures_bid': 4351.38, 'futures_ask': 4351.72}
+    assert ladder.build_plan(1.0, 100, 2.4, 0.063, 600, md) is None
+
+
+def test_the_refusal_reaches_the_panel_not_just_the_log(coordinator):
+    """"order was not filled — see the log" sent the operator to a file
+    to find a decision the engine had already made and could simply
+    have reported."""
+    coordinator.exit_ladder.last_refusal = 'the trade cannot pay for itself'
+    coordinator.exit_ladder.build_plan = lambda *a, **k: None
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    arm(coordinator, direction='SELL_BASIS', lots=1.0)
+
+    assert not coordinator.position_manager.get_active_positions()
+    note = coordinator.manual_note
+    assert note['ok'] is False
+    assert note['text'] == 'the trade cannot pay for itself'
+    assert 'see the log' not in note['text']
+
+
+def test_the_operators_target_is_handed_to_the_exit_ladder(coordinator):
+    """The wiring behind the fix: what the operator's own take-profit
+    is worth, so the viability test measures THEIR distance."""
+    seen = {}
+    real = coordinator.exit_ladder.build_plan
+
+    def spy(*args, **kwargs):
+        seen['manual_target_usd'] = kwargs.get('manual_target_usd')
+        return real(*args, **kwargs)
+
+    coordinator.exit_ladder.build_plan = spy
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    arm(coordinator, direction='SELL_BASIS', lots=1.0, exit_spread=15.0)
+
+    # 5.0 spread units x 1 lot x 100 contract = $500
+    assert seen['manual_target_usd'] == pytest.approx(500.0)
+    position = next(iter(
+        coordinator.position_manager.get_active_positions().values()))
+    assert position.exit_plan['manual_exit_spread'] == 15.0
+    assert position.exit_plan['tp_usd'] == pytest.approx(500.0)
+    assert coordinator.manual_note['ok'] is True
+
+
+def test_a_signal_entry_hands_over_no_manual_target(coordinator):
+    """Only a hand-placed trade gets to name its own target."""
+    seen = {}
+    real = coordinator.exit_ladder.build_plan
+    coordinator.exit_ladder.build_plan = lambda *a, **k: (
+        seen.update(target=k.get('manual_target_usd')) or real(*a, **k))
+    # The fixture builds active_assets by hand, so give GOLD the
+    # SpreadStats a real run would have.
+    from statarb.spread import SpreadStats
+    coordinator.stats['GOLD'] = SpreadStats(coordinator.config.SIGNALS)
+    coordinator._open_position('GOLD', SignalType.SELL_BASIS, 1.0,
+                               market(20.0), coordinator.stats['GOLD'], 100)
+    assert seen['target'] is None

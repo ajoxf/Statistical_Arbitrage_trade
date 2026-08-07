@@ -75,6 +75,10 @@ class ExitLadder:
     def __init__(self, config):
         self.config = config
         self._z_stop_logged = set()   # position ids already logged
+        # Why the last build_plan returned None. A refusal that only
+        # reaches the log leaves the operator pressing a button and
+        # watching nothing happen.
+        self.last_refusal = None
 
     # ------------------------------------------------------------------
 
@@ -98,10 +102,18 @@ class ExitLadder:
         return margin * buffer
 
     def build_plan(self, lots, contract_size, entry_z, sigma, half_life_sec,
-                   market_data):
+                   market_data, manual_target_usd=None):
         """Compute the frozen exit levels. Returns None when the trade
         can never win (cost floor above plausible full reversion) —
-        the entry must then be blocked."""
+        the entry must then be blocked, and `last_refusal` says why.
+
+        `manual_target_usd` is what the OPERATOR's own take-profit is
+        worth. When they have named a level, that is the trade they are
+        placing, and vetoing it against a sigma-derived target they
+        never asked for is the engine substituting its opinion for
+        theirs. The viability test then measures their target instead.
+        """
+        self.last_refusal = None
         exits = self.config.EXITS
         oz = lots * contract_size
         capital = self._capital_at_risk(lots, contract_size, market_data)
@@ -119,15 +131,29 @@ class ExitLadder:
         rt_cost = costs_mod.round_trip_cost(
             market_data, lots, contract_size, self.config.COSTS)
 
-        if tp is not None:
+        if manual_target_usd is not None:
+            # The operator's level IS the plan. Their target still has
+            # to clear the round trip to be worth placing, but it is
+            # measured against what THEY chose, not against a full
+            # reversion of the current z.
+            tp = float(manual_target_usd)
+            if tp <= rt_cost:
+                logging.warning(
+                    "Manual take-profit is worth $%.0f against $%.0f of "
+                    "round-trip cost — this trade cannot make money at "
+                    "that level, placing it anyway because it was asked "
+                    "for by hand", tp, rt_cost)
+        elif tp is not None:
             floor = exits.get('COST_FLOOR_MULT', 1.0) * rt_cost
             tp = max(tp, floor)
             plausible = abs(entry_z or 0) * (sigma or 0) * oz
             if plausible > 0 and tp > plausible:
-                logging.info(
-                    "Exit plan not viable: cost floor $%.0f exceeds "
-                    "plausible full reversion $%.0f — blocking entry",
-                    tp, plausible)
+                self.last_refusal = (
+                    f"a full reversion of the current z is only worth "
+                    f"${plausible:,.0f}, and the round trip costs "
+                    f"${rt_cost:,.0f} (target floor ${tp:,.0f}) — the "
+                    f"trade cannot pay for itself")
+                logging.info("Exit plan not viable: %s", self.last_refusal)
                 return None
 
         # Stop: the TIGHTER of every armed form

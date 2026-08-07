@@ -357,6 +357,31 @@ ever depended on it. What replaced it:
   live on the readiness line and a second running total up there only
   duplicated or contradicted it.
 
+## A manual trade's own target is what gets measured (2026-08-07)
+
+Operator armed SHORT at 59.00 with TP 57 / SL 69, it triggered at
+59.12, and then: `Exit plan not viable: cost floor $59 exceeds
+plausible full reversion $15 — blocking entry`. Badge back to IDLE,
+panel said "order was not filled".
+
+`ExitLadder.build_plan` vetoes an entry whose target cannot clear the
+round trip, measuring `plausible = |z| x sigma x oz` — a FULL reversion
+of the current z. That is the edge filter's last line and it is right
+for a SIGNAL entry. It is wrong for a hand-placed one: the operator's
+target was 2.12 spread units away, worth $212 against $59 of cost. The
+engine refused a trade nobody had proposed.
+
+`build_plan(..., manual_target_usd=)` now measures the operator's own
+distance when they have named a level. A manual target BELOW cost is
+placed anyway with a loud warning — manual means manual, and they may
+be hedging something the engine cannot see. Signal entries are
+unchanged (regression-tested).
+
+Also: `build_plan` sets `last_refusal` and the coordinator puts it in
+`manual_note`, so the panel states the reason instead of "see the log
+for the broker/engine reason" — which sent the operator to a file to
+find a decision the engine had already made.
+
 ## Position sizing: notional per leg (2026-08-07, owner)
 
 Owner: "the way we had it before in the W3 project is — User fixes the

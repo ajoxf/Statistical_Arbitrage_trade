@@ -156,6 +156,7 @@ class Coordinator:
         self._last_order_log = 0.0
         self._last_logged_quote = {}   # asset -> last quote_id persisted
         self._last_status_state = {}   # asset -> last LOGGED state
+        self._plan_refusal = None      # why the last entry was blocked
         self._server_clock = {}        # leg -> broker clock offset vs UTC
         self._scenario_result = None   # last round-trip scenario outcome
         self._last_confirmation = None  # last MT5 ticket read-back
@@ -812,12 +813,27 @@ class Coordinator:
         plan = None
         if (self.use_z and stats is not None) or manual:
             warm = stats is not None and stats.warm
+            # A manual trade carries the operator's OWN take-profit, so
+            # the viability test measures the distance THEY chose. The
+            # engine vetoing it against a sigma-derived target nobody
+            # asked for is it substituting its opinion for the
+            # operator's (2026-08-07: a hand-placed trade with a 2.12
+            # spread target — $212 against $59 of cost — was refused
+            # because a full reversion of the CURRENT z was worth $15).
+            manual_target = None
+            if manual and exit_spread is not None \
+                    and market_data.get('spread') is not None:
+                manual_target = (abs(market_data['spread']
+                                     - float(exit_spread))
+                                 * lots * contract_size)
             plan = self.exit_ladder.build_plan(
                 lots, contract_size,
                 stats.z if warm else None,
                 stats.sigma if warm else None,
-                stats.half_life_sec if stats else None, market_data)
+                stats.half_life_sec if stats else None, market_data,
+                manual_target_usd=manual_target)
             if plan is None:
+                self._plan_refusal = self.exit_ladder.last_refusal
                 return None
             if manual:
                 plan['source'] = 'MANUAL'
@@ -1527,15 +1543,20 @@ class Coordinator:
             market_data.get('spread') or 0.0,
             f"{exit_spread:g}" if exit_spread is not None else "engine",
             f"{stop_spread:g}" if stop_spread is not None else "engine")
+        self._plan_refusal = None
         position = self._open_position(
             asset_key, signal_type, lots, market_data, stats,
             contract_size, manual=True, exit_spread=exit_spread,
             stop_spread=stop_spread, overnight=overnight)
         if position is None:
+            # Say WHY. "Not filled — see the log" sent the operator to
+            # a log file to find a decision the engine had already made
+            # and could simply have reported.
             self.manual_note = {
                 'ok': False, 'ts': time.time(),
-                'text': 'order was not filled — see the log for the '
-                        'broker/engine reason'}
+                'text': self._plan_refusal
+                        or 'the pair did not execute — check the log for '
+                           'the broker error'}
         else:
             self.manual_note = {
                 'ok': True, 'ts': time.time(),
