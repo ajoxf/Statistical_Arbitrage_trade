@@ -2004,7 +2004,11 @@
         // Leg A
         const aIsDeriv = _isDerivative(_legASymbol);
         const aLev = aIsDeriv ? _legALeverage : 1;
-        const aNotional = ps;   // sizing anchor
+        // Prefer the engine's own figure: it sizes in LOTS, so notional
+        // is lots x contract size x live mid. `ps` is W3's configured
+        // USD position size, which this engine does not use and which
+        // left the card showing an em dash.
+        const aNotional = (_engineLegANotional != null) ? _engineLegANotional : ps;
         const aMargin = aLev > 0 ? aNotional / aLev : aNotional;
         const aLevText = aIsDeriv ? (aLev + 'x') : 'Cash';
         const aNoEl = document.getElementById('leg-a-notional');
@@ -2018,7 +2022,9 @@
         const bIsDeriv = _isDerivative(_legBSymbol);
         const bLev = bIsDeriv ? _legBLeverage : 1;
         let bNotional = ps;
-        if (spotMid && futMid && spotMid > 0 && beta > 0) {
+        if (_engineLegBNotional != null) {
+            bNotional = _engineLegBNotional;     // lots x contract x mid
+        } else if (spotMid && futMid && spotMid > 0 && beta > 0) {
             bNotional = ps * (futMid / (beta * spotMid));
         }
         const bMargin = bLev > 0 ? bNotional / bLev : bNotional;
@@ -2445,6 +2451,9 @@
         updateFilterStatus('hurst-status', data.hurst_ok, data.hurst);
         updateFilterStatus('std-status', data.std_filter_ok);
 
+        if (data.leg_a_notional != null) _engineLegANotional = data.leg_a_notional;
+        if (data.leg_b_notional != null) _engineLegBNotional = data.leg_b_notional;
+
         const stdRatioValue = document.getElementById('std-ratio-value');
         const stdRatioRequired = document.getElementById('std-ratio-required');
         const stdExplanation = document.getElementById('std-explanation');
@@ -2558,6 +2567,11 @@
     let _cachedCurrentPosition = 'NONE';
     let _cachedDataReady = false;
     let _cachedDataPoints = 0;
+    // Notionals straight from the engine: it sizes in LOTS, so these
+    // are lots x contract size x live mid rather than W3's configured
+    // USD position size (which this engine never sets, leaving the
+    // Position Sizing card empty).
+    let _engineLegANotional = null, _engineLegBNotional = null;
     let _cachedLookback = {{ config.min_samples if config.min_samples else 100 }};
 
     function _relAge(ms) {
@@ -2944,22 +2958,38 @@ function updateFilterStatus(elementId, passed, value) {
             ? Math.min(quotePct, timePct) : 100;
 
         progressBar.style.width = percent + '%';
+        // The history gate is in SECONDS, the same unit as the setting,
+        // so it reads straight against "Minimum History (seconds)".
+        // Capped at the requirement once met: 12,000 / 7,200 would be
+        // the same broken-denominator confusion the quote counter had.
+        const heldSec = Math.min(Math.round(history), Math.round(minHistory));
+        const histRatio = heldSec.toLocaleString() + ' / ' +
+                          Math.round(minHistory).toLocaleString() + 's';
+
         if (needHistory) {
             progressText.textContent = Math.round(percent) + '%';
-            dataCountDisplay.textContent = Math.floor(history / 60) + ' / ' +
-                Math.round(minHistory / 60);
-            if (dataCountLabel) dataCountLabel.textContent = 'minutes collected';
+            dataCountDisplay.textContent = histRatio;
+            if (dataCountLabel) {
+                dataCountLabel.textContent = 'collected (' +
+                    Math.floor(history / 60) + ' of ' +
+                    Math.round(minHistory / 60) + ' min)';
+            }
         } else if (warming) {
             progressText.textContent = Math.round(percent) + '%';
             dataCountDisplay.textContent = dataPoints.toLocaleString() +
                 ' / ' + minSamples.toLocaleString();
-            if (dataCountLabel) dataCountLabel.textContent = 'quotes to warm up';
+            if (dataCountLabel) {
+                dataCountLabel.textContent = minHistory
+                    ? 'quotes to warm up · ' + histRatio
+                    : 'quotes to warm up';
+            }
         } else {
             progressText.textContent = '';
             dataCountDisplay.textContent = dataPoints.toLocaleString();
             if (dataCountLabel) {
                 dataCountLabel.textContent = 'quotes in ' +
-                    windowLabel(lookbackSec);
+                    windowLabel(lookbackSec) +
+                    (minHistory ? ' · ' + histRatio + ' history' : '');
             }
         }
 

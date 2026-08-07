@@ -389,6 +389,26 @@ def status_to_ui(status, config_raw):
             'fair_value': first.get('fair_value'),
             'fair_gap': first.get('fair_gap'),
             'fair_detail': first.get('fair_detail'),
+            # Cost / edge, in the W3 field names the Filters card reads.
+            # These were never published, which is why that card showed
+            # "-" against every row.
+            'std_ratio': first.get('edge_ratio'),
+            'std_ratio_required': first.get('edge_required'),
+            'round_trip_cost_bps': first.get('rt_cost_bps'),
+            'round_trip_fees_bps': first.get('rt_fees_bps'),
+            'round_trip_slippage_bps': None,
+            'round_trip_cost_usd': first.get('rt_cost_usd'),
+            'expected_capture_usd': first.get('capture_usd'),
+            'fee_bps_used': (round(first['rt_fees_bps'], 2)
+                             if first.get('rt_fees_bps') is not None else None),
+            'order_mode': first.get('order_mode'),
+            # Position sizing: this engine's anchor is CLIP_LOTS, not a
+            # USD figure, so the notionals are computed from lots x
+            # contract size x live mid rather than a configured amount.
+            'leg_a_notional': first.get('spot_notional'),
+            'leg_b_notional': first.get('fut_notional'),
+            'clip_lots': first.get('clip_lots'),
+            'contract_size': first.get('contract_size'),
             'mean': first.get('mu'), 'std': first.get('sigma'),
             'half_life': first.get('half_life_min'),
             'hurst': None, 'regime': first.get('regime'),
@@ -473,6 +493,9 @@ def status_to_ui(status, config_raw):
         'futures_tick': futures_tick,
         'open_trade': open_trade,
         'tick_age_ms': status.get('tick_age_ms'),
+        # How fast the engine is ACTUALLY refreshing, measured.
+        'write_interval_ms': status.get('write_interval_ms'),
+        'poll_interval_sec': status.get('poll_interval_sec'),
         'ws_connected': bool(status),
         'sl_cooldown_remaining': 0,
         'daily_loss_usd': min(0.0, status.get('daily_pnl', 0.0)),

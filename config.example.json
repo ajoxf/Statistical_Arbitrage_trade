@@ -25,7 +25,7 @@
     "SLICE_LOTS": 10.0,
     "DAILY_LOT_TARGET": 500.0,
     "HEDGE_RATIO": 1.0,
-    "POLL_INTERVAL_SEC": 0.5
+    "POLL_INTERVAL_SEC": 0.3
   },
   "signal_thresholds": {
     "PREMIUM_ENTRY": 20.0,
@@ -106,8 +106,16 @@
   "assets": {
     "GOLD": {
       "name": "GOLD",
-      "spot_symbols": ["XAUUSD_", "XAUUSD", "GOLD"],
-      "futures_symbols": ["GC1225", "XAUUSD.f", "GCZ4"],
+      "spot_symbols": [
+        "XAUUSD_",
+        "XAUUSD",
+        "GOLD"
+      ],
+      "futures_symbols": [
+        "GC1225",
+        "XAUUSD.f",
+        "GCZ4"
+      ],
       "futures_expiry": "2026-11-25",
       "risk_free_rate": 0.0425,
       "multiplier": 1.0,
@@ -117,8 +125,16 @@
     },
     "SILVER": {
       "name": "SILVER",
-      "spot_symbols": ["XAGUSD_", "XAGUSD", "SILVER"],
-      "futures_symbols": ["SI1225", "XAGUSD.f", "SIU4"],
+      "spot_symbols": [
+        "XAGUSD_",
+        "XAGUSD",
+        "SILVER"
+      ],
+      "futures_symbols": [
+        "SI1225",
+        "XAGUSD.f",
+        "SIU4"
+      ],
       "futures_expiry": "2026-11-25",
       "risk_free_rate": 0.0425,
       "multiplier": 1.0,

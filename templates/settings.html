@@ -279,6 +279,16 @@
                             don't count &mdash; only ones the broker actually moved.</small>
                         </div>
                         <div class="col-md-4">
+                            <label class="form-label">Poll Interval (seconds)</label>
+                            <input type="number" class="form-control" id="poll_interval_sec"
+                                   name="poll_interval_sec" value="{{ config.poll_interval_sec }}"
+                                   step="0.1" min="0.1" max="5">
+                            <small class="text-secondary">How often the engine reads both feeds &mdash; and
+                            therefore how often the dashboard's prices can change. The page
+                            refreshes at 0.3s, so anything slower than that is what you will
+                            actually see. Applies without a restart.</small>
+                        </div>
+                        <div class="col-md-4">
                             <label class="form-label">Stats Update Interval (seconds)</label>
                             <select class="form-select" id="stats_update_interval" name="stats_update_interval">
                                 <option value="0" {% if config.stats_update_interval == 0 %}selected{% endif %}>Every tick (real-time)</option>
@@ -1601,6 +1611,7 @@
             lookback_period: parseInt(document.getElementById('lookback_period').value),
             min_samples: parseInt(document.getElementById('min_samples').value),
             min_history_sec: parseInt(document.getElementById('min_history_sec').value),
+            poll_interval_sec: parseFloat(document.getElementById('poll_interval_sec').value),
             pair_type: document.getElementById('pair_type').value,
             carry_rate_pct: parseFloat(document.getElementById('carry_rate_pct').value),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
@@ -1895,6 +1906,7 @@
                 document.getElementById('lookback_period').value = config.lookback_period;
                 document.getElementById('min_samples').value = config.min_samples;
                 document.getElementById('min_history_sec').value = config.min_history_sec;
+                document.getElementById('poll_interval_sec').value = config.poll_interval_sec;
                 document.getElementById('pair_type').value = config.pair_type || 'SPOT_FUTURE';
                 document.getElementById('carry_rate_pct').value = config.carry_rate_pct;
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;

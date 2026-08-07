@@ -23,6 +23,7 @@ from .config import AlgoTradingConfig
 from .database import DataLogger
 from .exits import ExitLadder, outcome_tag, overnight_exit
 from .legs import LocalLeg, RemoteLeg
+from . import costs as costs_mod
 from . import fairvalue
 from .marketdata import compute_market_data
 from .models import Position, SignalType, Trade, OrderSide
@@ -149,6 +150,7 @@ class Coordinator:
         self.status_path = 'runtime_status.json'
         self._accounts_cache = None    # (accounts, equity) — see
         self._accounts_at = 0.0        # _account_snapshot
+        self._last_status_write = 0.0  # for the measured write interval
         self.shadow = ShadowTracker(self.data_logger)
         self._last_z = {}          # asset -> z (for SD-touch detection)
 
@@ -1356,6 +1358,57 @@ class Coordinator:
     STATUS_LOG_SEC = 10.0        # the one-line status in the log
     CONFIG_RELOAD_SEC = 10.0     # hot-apply of the safe config sections
 
+    def _sizing_and_cost(self, asset_key, md, stats):
+        """What the next trade would cost and whether the edge covers it.
+
+        The engine already computes all of this inside the edge filter
+        on every tick; it was simply never published, so the dashboard's
+        cost and sizing cards sat empty. With gold measuring ~1.4 bps of
+        combined bid-ask against a sigma far below it, this is the most
+        decision-relevant number on the page.
+        """
+        lots = self._clip_lots()
+        contract = self.config.ASSETS.get(asset_key, {}).get('lot_size', 1.0)
+        beta = self.config.TRADING.get('HEDGE_RATIO', 1.0)
+        oz = lots * contract
+        spot_notional = oz * (md.get('spot_price') or 0.0)
+        fut_notional = oz * beta * (md.get('futures_price') or 0.0)
+
+        block = {
+            'clip_lots': lots, 'contract_size': contract,
+            'spot_notional': spot_notional, 'fut_notional': fut_notional,
+            'order_mode': str(self.config.EXECUTION.get(
+                'ENTRY_STYLE', 'market')).upper(),
+        }
+        try:
+            cost = costs_mod.round_trip_cost(md, lots, contract,
+                                             self.config.COSTS)
+            capture = costs_mod.expected_capture(
+                stats.z if stats else None,
+                stats.sigma if stats else None, lots, contract,
+                self.config.COSTS)
+        except Exception:
+            return block
+
+        commissions = ((self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0)
+                        + self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0))
+                       * lots)
+        # Quoted against ONE leg's notional, the convention a pair trade
+        # is normally costed in — and the same basis as "combined
+        # bid-ask in bps".
+        denom = spot_notional or 1.0
+        block.update({
+            'rt_cost_usd': cost,
+            'rt_fees_usd': commissions,
+            'rt_spread_usd': max(cost - commissions, 0.0),
+            'rt_cost_bps': cost / denom * 1e4,
+            'rt_fees_bps': commissions / denom * 1e4,
+            'capture_usd': capture,
+            'edge_ratio': (capture / cost) if cost else None,
+            'edge_required': self.config.COSTS.get('MIN_EDGE_MULTIPLE', 1.5),
+        })
+        return block
+
     def _account_snapshot(self):
         """(accounts, equity), refreshed at most every few seconds."""
         now = time.time()
@@ -1415,6 +1468,9 @@ class Coordinator:
                 'fair_value': md.get('fair_value'),
                 'fair_gap': md.get('fair_gap'),
                 'fair_detail': md.get('fair_detail'),
+            })
+            assets[-1].update(self._sizing_and_cost(asset_key, md, stats))
+            assets[-1].update({
                 'spot_price': md['spot_price'],
                 'spot_bid': md['spot_bid'], 'spot_ask': md['spot_ask'],
                 'futures_price': md['futures_price'],
@@ -1424,12 +1480,23 @@ class Coordinator:
                 'lot_target': target,
             })
         accounts, equity = self._account_snapshot()
+        now_mono = time.time()
+        write_ms = (round((now_mono - self._last_status_write) * 1000)
+                    if self._last_status_write else None)
+        self._last_status_write = now_mono
         payload = {
             'mode': self.trading_mode,
             # Milliseconds matter: the webapp's socket bridge only emits
             # when this stamp CHANGES, so a whole-second stamp would cap
             # the dashboard at one price update per second.
             'updated': datetime.now().strftime('%H:%M:%S.%f')[:-3],
+            # Measured, not configured: how long since the previous
+            # write. If this reads 300ms and the screen still looks
+            # slow, the engine is fine and the browser end is the
+            # problem — and vice versa.
+            'write_interval_ms': write_ms,
+            'poll_interval_sec': self.config.TRADING.get(
+                'POLL_INTERVAL_SEC', 0.3),
             'algo_enabled': self.algo_enabled,
             'halted': halted,
             'halt_reason': why,

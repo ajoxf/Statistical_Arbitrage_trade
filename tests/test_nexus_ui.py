@@ -1006,3 +1006,77 @@ def test_the_scenario_table_is_striped_and_therefore_covered(client):
     """The table in the screenshot: setup.html's order-test suite."""
     page = client.get('/setup').get_data(as_text=True)
     assert 'table-dark table-striped' in page
+
+
+# ---------------------------------------------------------------------------
+# The cost / sizing cards that showed only dashes
+# ---------------------------------------------------------------------------
+# Operator, 2026-08-07: "Why are the values in these cards not showing
+# any values?" The engine computes all of it on every tick inside the
+# edge filter — status_to_ui simply never published it.
+
+def status_with_costs():
+    return {'assets': [{
+        'asset': 'GOLD', 'z': 2.0, 'sigma': 0.063, 'mu': 58.8,
+        'spread': 58.6, 'basis': 58.6, 'samples': 900, 'min_samples': 300,
+        'spot_price': 4258.0, 'futures_price': 4316.6,
+        'clip_lots': 0.1, 'contract_size': 100,
+        'spot_notional': 42580.0, 'fut_notional': 43166.0,
+        'rt_cost_usd': 5.9, 'rt_fees_usd': 0.0, 'rt_cost_bps': 1.39,
+        'rt_fees_bps': 0.0, 'capture_usd': 0.945,
+        'edge_ratio': 0.16, 'edge_required': 1.5, 'order_mode': 'MARKET',
+    }]}
+
+
+def test_the_edge_ratio_reaches_the_filters_card():
+    signal = webapi.status_to_ui(status_with_costs(), {})['signal']
+    assert signal['std_ratio'] == 0.16
+    assert signal['std_ratio_required'] == 1.5
+
+
+def test_the_round_trip_cost_reaches_the_filters_card():
+    signal = webapi.status_to_ui(status_with_costs(), {})['signal']
+    assert signal['round_trip_cost_bps'] == 1.39
+    assert signal['round_trip_fees_bps'] == 0.0
+    assert signal['order_mode'] == 'MARKET'
+
+
+def test_the_notionals_reach_the_position_sizing_card():
+    signal = webapi.status_to_ui(status_with_costs(), {})['signal']
+    assert signal['leg_a_notional'] == 42580.0
+    assert signal['leg_b_notional'] == 43166.0
+    assert signal['clip_lots'] == 0.1
+
+
+def test_the_dashboard_prefers_the_engines_notional(client):
+    """W3 sized in configured USD; this engine sizes in LOTS, so the
+    card was reading a number that is never set."""
+    page = client.get('/').get_data(as_text=True)
+    assert '_engineLegANotional' in page
+    assert 'data.leg_a_notional' in page
+
+
+def test_the_cost_block_is_absent_when_the_engine_has_not_published_it():
+    """No invented zeros — the card shows dashes until there is data."""
+    signal = webapi.status_to_ui({'assets': [{'asset': 'GOLD', 'z': 1.0}]},
+                                 {})['signal']
+    assert signal['std_ratio'] is None
+    assert signal['round_trip_cost_bps'] is None
+    assert signal['leg_a_notional'] is None
+
+
+def test_the_history_gate_is_shown_in_seconds(client):
+    """Operator: "The lookback period does not have the time captured
+    (Example: 7200 / 7200)" — the same unit as the setting."""
+    page = client.get('/').get_data(as_text=True)
+    assert "' / ' +" in page and "'s'" in page
+    assert 'const heldSec = Math.min' in page      # capped once met
+    assert "' history'" in page                     # shown when warm too
+
+
+def test_the_engine_publishes_its_measured_refresh_rate():
+    ui = webapi.status_to_ui({'write_interval_ms': 302,
+                              'poll_interval_sec': 0.3,
+                              'assets': [{'asset': 'GOLD', 'z': 1.0}]}, {})
+    assert ui['write_interval_ms'] == 302
+    assert ui['poll_interval_sec'] == 0.3

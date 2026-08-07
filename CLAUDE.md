@@ -593,6 +593,27 @@ running the page in the bundled Chromium under Playwright and reading
   actually reads: **13.01:1**, verified in Chromium with Bootstrap
   5.3's real table rules injected.
 
+- **Cards showing only dashes** (operator, 2026-08-07: Filters cost
+  row, Position Sizing notionals). Not a runtime fault — W3 field names
+  the vendored templates read (`std_ratio`, `round_trip_cost_bps`,
+  `fee_bps_used`, `order_mode`, leg notionals) that `status_to_ui`
+  never published. The engine computes all of it every tick inside
+  `costs.edge_ok`; `Coordinator._sizing_and_cost` now publishes it.
+  Notionals come from lots x contract size x live mid, because this
+  engine's sizing anchor is CLIP_LOTS and W3's `position_size_usd` is
+  never set. Margin Details staying blank with no position is correct —
+  the card says so.
+- **Prices refreshing slower than 0.3s**: `config.example.json` pinned
+  `POLL_INTERVAL_SEC: 0.5`, and `start.py` copies it to config.json on
+  first run, so the 0.3 default never applied on an existing install —
+  and the key had NO control on the Settings page. Example fixed, and
+  "Poll Interval (seconds)" is now editable (hot-applies). The status
+  file also publishes a MEASURED `write_interval_ms`, so "is the engine
+  or the browser slow?" is answerable rather than guessed at.
+- The warm-up counter shows the history gate in SECONDS (`7,200 /
+  7,200s`), the same unit as the setting, capped once met so it never
+  reads like a broken denominator.
+
 ## Dialogs (2026-08-06)
 
 Owner: "Make all the Dialog Boxes Professional and also Everytime new
