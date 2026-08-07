@@ -379,6 +379,48 @@ Three separate floods, all fixed:
   returns a constant `[]` (resting orders are not wired to it); now
   15s.
 
+## A failed close made the engine believe it was flat (2026-08-07)
+
+LIVE, the worst state this system can reach. A manual 1-lot gold pair
+opened, then 37 seconds later:
+
+```
+Close ticket 102320968 failed: 10013 - Invalid request
+Close ticket 102320969 failed: 10013 - Invalid request
+CRITICAL INCOMPLETE CLOSE for POS_0001 — MANUAL INTERVENTION REQUIRED
+Failed to close position: POS_0001
+    exits    --      flat          <-- while 1 lot sat open at the broker
+```
+
+`close_position` set `PositionStatus.ERROR` on failure, and EVERY
+lookup in PositionManager filters on ACTIVE. So the position vanished
+from the exit loop, the health block, the position snapshot and the
+dashboard, while the money was still on the account. Nothing would
+ever have retried it; only the reconciler's orphan sweep would have
+eventually force-closed it.
+
+A close that did not go through leaves the position OPEN, so it now
+stays ACTIVE and under management (`_close_failed`). The ladder
+re-evaluates it next tick; `Coordinator._close_is_due` rate-limits
+retries to CLOSE_RETRY_SEC (5s) so a refusing broker is not hammered
+three times a second, and escalates CRITICAL once past
+CLOSE_ESCALATE_AFTER (5). The health block's `exits` row goes FAILED
+and names the broker error. Two tests that asserted the ERROR status
+were encoding the bug and now assert the opposite.
+
+## MAX_HOLD had no floor and a 3-second half-life closed a live trade
+
+Same trade: `Exit plan (RESOLVED): TP=$215 STOP=$717 max_hold=0min
+time_stop=1min`. The AR(1) fit runs on consecutive QUOTES, ~0.6s apart
+at 104 quotes/min, so a spread that is mostly tick noise fits a
+half-life of a few SECONDS: 4 x 3s = 12s max hold, 3x that = a 36s
+hard time stop. The trade was force-exited 37 seconds after entry,
+paying the full round trip with no chance of reaching its $215 target.
+
+`EXITS.MIN_MAX_HOLD_SEC` (default 300s) floors it, and the binding
+case logs a warning saying the half-life is measuring tick noise
+rather than the spread. A genuine half-life is left alone.
+
 ## The log says what is working (2026-08-07, operator)
 
 "I am more interested to get details on what is working and what is

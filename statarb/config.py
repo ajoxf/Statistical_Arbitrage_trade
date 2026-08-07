@@ -227,6 +227,17 @@ class AlgoTradingConfig:
             'GATE_FLOOR_USD': 0.0,
             'MAX_HOLD_HALF_LIVES': 4.0,
             'MAX_HOLD_FALLBACK_MIN': 240,
+            # Floor under the half-life-derived max hold. The AR(1) fit
+            # runs on consecutive QUOTES, about 0.6s apart on a live
+            # gold feed, so a spread that is mostly tick noise fits a
+            # tiny phi and a half-life of a few SECONDS. Live
+            # 2026-08-07 that produced max_hold 12s and a hard time
+            # stop at 36s: a manual trade with a $215 target was
+            # force-closed 37 seconds after entry, paying the full
+            # round trip with no chance of ever reaching it. A
+            # reversion time shorter than this is a measurement
+            # artefact, not a tradable horizon.
+            'MIN_MAX_HOLD_SEC': 300.0,
             # Suppress MAX_HOLD while z-progress toward home >= this,
             # ONLY when a TP exists (never wait for a TP that is off)
             'MAX_HOLD_PROGRESS_SUPPRESS': 0.5,

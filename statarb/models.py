@@ -101,6 +101,12 @@ class Position:
         # None means unmeasured, which is NOT the same as zero.
         self.entry_slippage = None
         self.exit_slippage = None
+        # A close the broker refused. The position is still OPEN, so it
+        # stays ACTIVE and under management; these track the retries so
+        # the engine neither hammers the broker nor goes quiet about it.
+        self.close_failures = 0
+        self.last_close_error = None
+        self.last_close_attempt = None
 
     # -- crash-safe persistence -----------------------------------------
 
@@ -145,6 +151,8 @@ class Position:
             'z_min': self.z_min,
             'z_max': self.z_max,
             'entry_slippage': self.entry_slippage,
+            'close_failures': self.close_failures,
+            'last_close_error': self.last_close_error,
             'spot_trade': self._trade_to_dict(self.spot_trade),
             'futures_trade': self._trade_to_dict(self.futures_trade),
         }
@@ -166,6 +174,8 @@ class Position:
         position.trough_pnl = d.get('trough_pnl')
         position.trough_min = d.get('trough_min')
         position.entry_slippage = d.get('entry_slippage')
+        position.close_failures = d.get('close_failures', 0)
+        position.last_close_error = d.get('last_close_error')
         position.z_reverted = d.get('z_reverted', False)
         position.z_min = d.get('z_min')
         position.z_max = d.get('z_max')

@@ -83,13 +83,46 @@ def test_close_buy_basis_position(config, data_logger, fake_broker):
                                   ('GC1225', 'SELL', 1.0)]
 
 
-def test_close_failure_marks_error(config, data_logger, fake_broker):
+def test_a_failed_close_keeps_the_position_under_management(
+        config, data_logger, fake_broker):
+    """A close the broker refuses leaves the position OPEN, so it must
+    stay ACTIVE here. Marking it ERROR removed it from every lookup in
+    PositionManager — the exit loop, the health report and the
+    dashboard all filter on ACTIVE — so the engine reported "flat"
+    while real exposure sat on the account and nothing ever retried
+    (live 2026-08-07, two legs failing with 10013)."""
     om, pm, position = open_position(config, data_logger, fake_broker,
                                      SignalType.SELL_BASIS)
     fake_broker.fail_symbols.add('XAUUSD')
 
     assert not pm.close_position(position.position_id, "SIGNAL_EXIT", om)
-    assert position.status == PositionStatus.ERROR
+    assert position.status == PositionStatus.ACTIVE
+    assert position.position_id in pm.get_active_positions()
+    assert position.close_failures == 1
+    assert position.last_close_error
+
+
+def test_repeated_close_failures_are_counted(config, data_logger,
+                                             fake_broker):
+    om, pm, position = open_position(config, data_logger, fake_broker,
+                                     SignalType.SELL_BASIS)
+    fake_broker.fail_symbols.add('XAUUSD')
+    for _ in range(3):
+        pm.close_position(position.position_id, "SIGNAL_EXIT", om)
+    assert position.close_failures == 3
+    assert position.position_id in pm.get_active_positions()
+
+
+def test_a_close_that_succeeds_after_failing_still_closes(
+        config, data_logger, fake_broker):
+    """Staying ACTIVE is only useful if the retry can actually work."""
+    om, pm, position = open_position(config, data_logger, fake_broker,
+                                     SignalType.SELL_BASIS)
+    fake_broker.fail_symbols.add('XAUUSD')
+    assert not pm.close_position(position.position_id, "SIGNAL_EXIT", om)
+    fake_broker.fail_symbols.discard('XAUUSD')
+    assert pm.close_position(position.position_id, "SIGNAL_EXIT", om)
+    assert position.status == PositionStatus.CLOSED
 
 
 def test_double_close_is_noop(config, data_logger, fake_broker):

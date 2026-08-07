@@ -292,3 +292,45 @@ def test_outcome_tags_are_deterministic():
     assert outcome_tag('DOLLAR_STOP', False) == 'STOPPED_IN_TREND'
     assert outcome_tag('DOLLAR_STOP', True) == 'STOPPED_AFTER_FULL_REVERSION'
     assert outcome_tag('Z_STOP', True) == 'STOPPED_AFTER_FULL_REVERSION'
+
+
+# --- the max-hold horizon has a floor (live 2026-08-07) -------------------
+
+def test_a_seconds_long_half_life_does_not_produce_a_seconds_long_hold(
+        config):
+    """The AR(1) fit runs on consecutive QUOTES, ~0.6s apart on a live
+    gold feed, so a spread that is mostly tick noise fits a half-life
+    of a few seconds. Live that gave max_hold 12s and a hard time stop
+    at 36s: a manual trade with a $215 target was force-closed 37
+    seconds after entry, paying the full round trip with no chance of
+    reaching it."""
+    ladder = ExitLadder(config)
+    md = {'spot_price': 4335.11, 'futures_price': 4394.03,
+          'spot_bid': 4335.05, 'spot_ask': 4335.18,
+          'futures_bid': 4394.03, 'futures_ask': 4394.37}
+    plan = ladder.build_plan(1.0, 100, 3.0, 0.5, 3.0, md)
+    assert plan is not None
+    floor = config.EXITS['MIN_MAX_HOLD_SEC']
+    assert plan['max_hold_sec'] == pytest.approx(floor)
+    # 4 x 3s = 12s under the old rule.
+    assert plan['max_hold_sec'] > 12
+
+
+def test_a_real_half_life_is_left_alone(config):
+    """The floor must not override a genuine reversion horizon."""
+    ladder = ExitLadder(config)
+    md = {'spot_price': 4335.11, 'futures_price': 4394.03,
+          'spot_bid': 4335.05, 'spot_ask': 4335.18,
+          'futures_bid': 4394.03, 'futures_ask': 4394.37}
+    plan = ladder.build_plan(1.0, 100, 3.0, 0.5, 1800.0, md)
+    assert plan['max_hold_sec'] == pytest.approx(4 * 1800.0)
+
+
+def test_the_floor_can_be_switched_off(config):
+    config.EXITS['MIN_MAX_HOLD_SEC'] = 0
+    ladder = ExitLadder(config)
+    md = {'spot_price': 4335.11, 'futures_price': 4394.03,
+          'spot_bid': 4335.05, 'spot_ask': 4335.18,
+          'futures_bid': 4394.03, 'futures_ask': 4394.37}
+    plan = ladder.build_plan(1.0, 100, 3.0, 0.5, 3.0, md)
+    assert plan['max_hold_sec'] == pytest.approx(12.0)

@@ -150,7 +150,7 @@ def test_close_pair_reverses_recorded_lots(clip_config, data_logger):
     assert sum(o[3] for o in fut.orders if o[1] == 'BUY') == pytest.approx(50.0)
 
 
-def test_incomplete_close_marks_error(clip_config, data_logger):
+def test_an_incomplete_close_stays_under_management(clip_config, data_logger):
     spot = FakeLeg('account_a')
     fut = FakeLeg('account_b')
     px = PairExecutor(clip_config, spot, fut)
@@ -164,7 +164,10 @@ def test_incomplete_close_marks_error(clip_config, data_logger):
     fut.liquidity['GC1225'] = 10.0   # can only close 10 of 50
 
     assert not pm.close_position(position.position_id, "SIGNAL_EXIT", px)
-    assert position.status == PositionStatus.ERROR
+    # Still ACTIVE: a partially closed pair is REAL residual exposure
+    # and has to keep being retried and displayed, not filed away.
+    assert position.status == PositionStatus.ACTIVE
+    assert position.close_failures == 1
 
 
 def test_atomic_precheck_refuses_before_any_order(clip_config):

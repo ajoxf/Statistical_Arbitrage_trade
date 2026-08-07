@@ -582,3 +582,41 @@ def test_only_the_verdicts_decide_whether_to_reprint(coord):
     assert first == same
     changed = coord._status_state('GOLD', gold_md(tick_age_ms=45_000))
     assert changed != first
+
+
+def test_a_position_that_will_not_close_is_the_loudest_line(coord):
+    """Live 2026-08-07: both legs failed to close with 10013, and the
+    very next health block read "exits -- flat" while the position sat
+    open at the broker."""
+    from statarb.models import OrderSide, SignalType as ST, Trade
+    spot = Trade('XAUUSD_', OrderSide.BUY, 1.0)
+    fut = Trade('GC1226', OrderSide.SELL, 1.0)
+    spot.executed_price, fut.executed_price = 4335.11, 4394.03
+    pos = coord.position_manager.create_position('GOLD', ST.SELL_BASIS,
+                                                 spot, fut, 1.36)
+    pos.close_failures = 2
+    pos.last_close_error = '10013 - Invalid request'
+
+    row = {name: (state, detail) for name, state, detail
+           in coord._health('GOLD', gold_md())}['exits']
+    assert row[0] == 'FAILED'
+    assert 'WILL NOT CLOSE' in row[1]
+    assert '10013' in row[1]
+    assert 'Still open at the broker' in row[1]
+
+
+def test_close_retries_are_rate_limited(coord):
+    """The position stays ACTIVE so the ladder keeps asking, which
+    without a limit re-sends the order three times a second."""
+    from datetime import datetime, timedelta
+    from statarb.models import OrderSide, SignalType as ST, Trade
+    pos = coord.position_manager.create_position(
+        'GOLD', ST.SELL_BASIS, Trade('XAUUSD_', OrderSide.BUY, 1.0),
+        Trade('GC1226', OrderSide.SELL, 1.0), 1.36)
+
+    assert coord._close_is_due(pos)                  # never tried
+    pos.close_failures = 1
+    pos.last_close_attempt = datetime.now()
+    assert not coord._close_is_due(pos)              # too soon
+    pos.last_close_attempt = datetime.now() - timedelta(seconds=30)
+    assert coord._close_is_due(pos)                  # cooldown elapsed

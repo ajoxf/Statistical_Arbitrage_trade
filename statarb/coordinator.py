@@ -634,7 +634,7 @@ class Coordinator:
                 contract_size=contract_size)
 
             reason = self._exit_reason(position, z, market_data)
-            if reason:
+            if reason and self._close_is_due(position):
                 self._close(position_id, position, reason, contract_size, z,
                             spread=market_data.get('spread'),
                             market_data=market_data)
@@ -682,6 +682,32 @@ class Coordinator:
         self.data_logger.log_market_data(
             asset_key, market_data, signal, z=z,
             series_key=self._series_key(asset_key))
+        return True
+
+    CLOSE_RETRY_SEC = 5.0        # don't hammer a broker that says no
+    CLOSE_ESCALATE_AFTER = 5     # ...but never go quiet about it
+
+    def _close_is_due(self, position):
+        """Rate-limit retries of a close the broker keeps refusing.
+
+        The position stays ACTIVE so the exit ladder keeps asking for
+        it (that is the fix for it vanishing entirely), which without a
+        limit would re-send the order on every poll — three times a
+        second."""
+        failures = getattr(position, 'close_failures', 0)
+        if not failures:
+            return True
+        last = getattr(position, 'last_close_attempt', None)
+        if last and (datetime.now() - last).total_seconds() \
+                < self.CLOSE_RETRY_SEC:
+            return False
+        if failures == self.CLOSE_ESCALATE_AFTER:
+            logging.critical(
+                "%s has failed to close %d times (%s). It is STILL OPEN at "
+                "the broker. Retries continue every %.0fs, but CLOSE IT BY "
+                "HAND if this persists.", position.position_id, failures,
+                getattr(position, 'last_close_error', 'unknown'),
+                self.CLOSE_RETRY_SEC)
         return True
 
     def _exit_reason(self, position, z, market_data):
@@ -2231,9 +2257,21 @@ class Coordinator:
             rows.append(('entries', self.BLOCKED, 'waiting on statistics'))
 
         # -- exits --
-        rows.append(('exits', self.OK if held else self.IDLE,
-                     f'{held} position(s) being managed' if held
-                     else 'flat'))
+        stuck = [p for p in self.position_manager
+                 .get_positions_for_asset(asset_key).values()
+                 if getattr(p, 'close_failures', 0)]
+        if stuck:
+            worst = max(stuck, key=lambda p: p.close_failures)
+            rows.append(('exits', self.FAILED,
+                         f'{len(stuck)} position(s) WILL NOT CLOSE — '
+                         f'{worst.position_id} failed '
+                         f'{worst.close_failures}x: '
+                         f'{worst.last_close_error}. Still open at the '
+                         f'broker; close by hand if this persists'))
+        else:
+            rows.append(('exits', self.OK if held else self.IDLE,
+                         f'{held} position(s) being managed' if held
+                         else 'flat'))
 
         # -- risk --
         target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)

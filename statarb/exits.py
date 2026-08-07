@@ -170,6 +170,17 @@ class ExitLadder:
             max_hold = exits.get('MAX_HOLD_HALF_LIVES', 4) * half_life_sec
         else:
             max_hold = exits.get('MAX_HOLD_FALLBACK_MIN', 240) * 60
+        floor_sec = exits.get('MIN_MAX_HOLD_SEC', 0) or 0
+        if floor_sec and max_hold < floor_sec:
+            logging.warning(
+                "Measured half-life %.1fs implies a %.0fs max hold and a "
+                "%.0fs hard time stop — too short to be a real reversion "
+                "horizon, so the floor of %.0fs applies. A half-life this "
+                "small usually means the AR(1) fit is measuring tick noise "
+                "rather than the spread.",
+                half_life_sec or 0, max_hold,
+                max_hold * exits.get('HARD_TIME_STOP_MULT', 0), floor_sec)
+            max_hold = floor_sec
 
         plan = {
             'tp_usd': tp,

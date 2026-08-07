@@ -137,16 +137,38 @@ class PositionManager:
                              position_id, close_reason, position.realized_pnl)
                 return True
 
-            position.status = PositionStatus.ERROR
-            self.data_logger.save_position_state(position)
-            logging.error("Failed to close position: %s", position_id)
-            return False
+            return self._close_failed(position, 'the broker rejected the '
+                                                 'close')
 
         except Exception as e:
-            position.status = PositionStatus.ERROR
-            self.data_logger.save_position_state(position)
-            logging.error("Error closing position %s: %s", position_id, e)
-            return False
+            return self._close_failed(position, str(e))
+
+    def _close_failed(self, position, why):
+        """A close that did not go through leaves the position OPEN at
+        the broker, so it must stay ACTIVE here.
+
+        It used to be marked ERROR, and every lookup in this class
+        filters on ACTIVE — so the position vanished from the exit
+        loop, from the health report and from the dashboard while a
+        real position sat on the account. Live 2026-08-07: two legs
+        failed to close with 10013, the engine logged CRITICAL and the
+        very next status block read "exits -- flat". Nothing would ever
+        have retried it.
+
+        Staying ACTIVE means the exit ladder re-evaluates it on the
+        next tick and tries again; the coordinator rate-limits the
+        retries and escalates once they keep failing.
+        """
+        position.status = PositionStatus.ACTIVE
+        position.close_failures = getattr(position, 'close_failures', 0) + 1
+        position.last_close_error = why
+        position.last_close_attempt = datetime.now()
+        self.data_logger.save_position_state(position)
+        logging.error(
+            "Close FAILED for %s (attempt %d): %s — the position is still "
+            "OPEN at the broker and stays under management",
+            position.position_id, position.close_failures, why)
+        return False
 
     def restore_position(self, position):
         """Re-attach a position recovered from the DB after a restart."""
