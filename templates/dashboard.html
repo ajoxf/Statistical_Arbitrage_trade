@@ -3011,12 +3011,27 @@ function updateFilterStatus(elementId, passed, value) {
                 ' / ' + minSamples.toLocaleString();
             if (dataCountLabel) dataCountLabel.textContent = 'quotes collected';
         } else {
+            // Once warm, ONE fact: how many quotes the window holds and
+            // what span that window covers. Elapsed uptime was shown
+            // beside it and the two are measured over DIFFERENT spans —
+            // the count only covers the last LOOKBACK_SEC, because
+            // older samples are dropped. "13,752 quotes · 2h 8m" reads
+            // as a rate, and after eight hours it would read as a rate
+            // wrong by four times. Uptime moves to the tooltip, where
+            // it cannot be mistaken for the count's denominator.
             progressText.textContent = '';
             dataCountDisplay.textContent = dataPoints.toLocaleString();
             if (dataCountLabel) {
-                dataCountLabel.textContent = history
-                    ? 'quotes · ' + humanDuration(history) + ' collected'
-                    : 'quotes';
+                dataCountLabel.textContent = 'quotes in ' +
+                    windowLabel(lookbackSec);
+            }
+            const holder = dataCountDisplay.parentElement;
+            if (holder) {
+                holder.title = dataPoints.toLocaleString() +
+                    ' quotes inside the ' + windowLabel(lookbackSec) +
+                    '. Older quotes are dropped, so this is not a total.' +
+                    (history ? ' Collecting for ' + humanDuration(history) +
+                               '.' : '');
             }
         }
 
