@@ -55,20 +55,39 @@ beta 1 with equal contracts, different otherwise.
 import math
 
 
-def round_step(volume, step, minimum=0.0):
-    """Round DOWN to a tradable volume. Down, because rounding up can
-    breach a max or a margin the caller already checked."""
+def round_step(volume, step, minimum=0.0, down=False):
+    """Snap to a tradable volume.
+
+    NEAREST by default. Flooring was the original rule and it is wrong
+    for a target: the operator asks for $20,000 a leg, gold is $4,293 a
+    lot at 0.01 lots, so the exact answer is 0.0466 lots and flooring
+    gives 0.04 — $17,170, fourteen percent short, with nothing on
+    screen explaining the gap (operator, 2026-08-07: "Why is Leg A
+    notional being calculated incorrectly"). Nearest gives 0.05 and
+    halves the error.
+
+    It matters most exactly where it is least visible: one step is 21%
+    of a $20,000 gold position but 0.2% of a $2m one, so the rule is
+    invisible at size and dominant when small.
+
+    `down=True` where overshooting is genuinely unsafe."""
     if step and step > 0:
-        volume = math.floor(volume / step + 1e-9) * step
+        scaled = volume / step
+        volume = (math.floor(scaled + 1e-9) if down
+                  else math.floor(scaled + 0.5 + 1e-9)) * step
         volume = round(volume, 8)
     return volume if volume >= minimum - 1e-9 else 0.0
 
 
 def lots_for_notional(notional_usd, contract_size, price, step=0.0,
                       minimum=0.0):
-    """Lots whose notional is as close to (but not over) the target.
+    """Lots whose notional is as close as a tradable step allows.
 
-    notional = lots x contract_size x price, so lots is that inverted.
+    notional = lots x contract_size x price, so lots is that inverted,
+    snapped to the NEAREST tradable step: the notional is a target the
+    operator set, not a ceiling, and flooring it can land a fifth of
+    the way below at small sizes.
+
     Returns None when it cannot be computed — a missing price must not
     silently become a zero-lot or a full-clip order."""
     if not notional_usd or not contract_size or not price:
@@ -117,7 +136,15 @@ def hedge_lots(leg_a_lots, contract_a, contract_b, beta, step=0.0,
         if beta == 0:
             return 0.0
         target = leg_a_lots * contract_a / (beta * contract_b)
-    return round_step(target, step, minimum)
+    # DOWN, unlike leg A. Leg A's notional is a target and nearest is
+    # the honest reading of it; the hedge is a quantity that must not
+    # overshoot. With leg B's step ten times leg A's, nearest would
+    # turn a wanted 0.05 into 0.1 — a hedge twice the position it is
+    # hedging, net short the difference, and it would also slip past
+    # the minimum-notional guard that exists to catch exactly this.
+    # Rounding down leaves the pair short instead, which the executor
+    # already handles by trimming leg A to the matched size.
+    return round_step(target, step, minimum, down=True)
 
 
 def spread_units(leg_b_lots, contract_b):
@@ -235,6 +262,15 @@ def plan(config, contract_a, contract_b, price_a, price_b,
     margin_a, margin_b = margin(notional_a, lev_a), margin(notional_b, lev_b)
     bigger = max(notional_a, notional_b)
 
+    # What the rounding actually cost against the target. A tradable
+    # step is a fixed number of dollars, so the smaller the position
+    # the bigger a slice of it one step is — at $20k of gold a step is
+    # 21% of the whole thing. Stated, never implied.
+    step_usd = step_a * contract_a * price_a if (step_a and price_a) else None
+    shortfall_pct = None
+    if mode == 'notional' and target_notional and notional_a:
+        shortfall_pct = 100.0 * (notional_a - target_notional) / target_notional
+
     # Dollar-neutral sizing and a fixed HEDGE_RATIO agree only when
     # beta equals the live price ratio. Away from that the position
     # does not track the spread the z-score is measured on, so the
@@ -269,5 +305,7 @@ def plan(config, contract_a, contract_b, price_a, price_b,
         # The smallest per-leg notional this pair can trade at all,
         # so the operator has a target rather than a rejection.
         'min_notional_usd': floor,
+        'lot_step_usd': step_usd,
+        'notional_gap_pct': shortfall_pct,
         'reason': reason,
     }

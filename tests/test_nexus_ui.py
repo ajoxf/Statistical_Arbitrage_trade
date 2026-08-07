@@ -1547,3 +1547,14 @@ def test_the_card_takes_leverage_from_the_engine(client):
     page = client.get('/').get_data(as_text=True)
     assert '_engineSizing.leg_a_leverage' in page
     assert '_engineSizing.leg_b_leverage' in page
+
+
+def test_the_card_states_the_target_beside_the_achieved_notional(client):
+    """Operator: "Why is Leg A notional being calculated incorrectly" —
+    $20,000 asked for, $17,170 shown, and nothing on screen connected
+    the two. One 0.01 gold lot is $4,293, so a target that small cannot
+    be hit exactly whatever the rounding rule."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'Asked for ' in page
+    assert 'the nearest tradable lot gives' in page
+    assert 'one lot = ' in page

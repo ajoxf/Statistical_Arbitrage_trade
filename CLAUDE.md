@@ -418,6 +418,24 @@ dashboard warns past 2%. Regression-tested both ways: a common
 percentage move nets to zero under `notional` and does NOT under
 `units`; a pure beta move nets to zero under `units`.
 
+**Lots snap to the NEAREST tradable step, not down** (operator,
+2026-08-07: "Why is Leg A notional being calculated incorrectly" —
+$20,000 requested, $17,170 shown). The notional is a TARGET, not a
+ceiling. One 0.01 gold lot is $4,293, so $20,000 is 0.0466 lots exactly
+and flooring gave 0.04 = $17,170, 14% short; nearest gives 0.05 =
+$21,463, 7% over. The rule is invisible at size (one step is 0.2% of
+$2m) and dominant when small, which is why it went unnoticed.
+
+The HEDGE still rounds DOWN, deliberately: leg B's step is 10x leg A's,
+so nearest would turn a wanted 0.05 into 0.1 — a hedge twice the
+position it hedges, net short the difference, and it would slip past
+the minimum-notional guard below. Short is the recoverable error; the
+executor already trims leg A to the matched size.
+
+The card now states the target beside the result ("Asked for $20,000
+per leg; the nearest tradable lot gives $21,463 (+7.3%, one lot =
+$4,293)"), because showing only the achieved figure reads as a bug.
+
 **The pair has a minimum tradable notional.** Live on CFI the spot
 minimum is 0.01 lots and the futures minimum is 0.1 — ten times larger
 — so $20,000 per leg gives 0.04 spot lots and a hedge of 0.04 against a

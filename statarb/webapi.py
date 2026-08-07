@@ -521,6 +521,8 @@ def status_to_ui(status, config_raw):
             'leg_a_leverage': (sizing_block or {}).get('leg_a_leverage'),
             'leg_b_leverage': (sizing_block or {}).get('leg_b_leverage'),
             'min_notional_usd': (sizing_block or {}).get('min_notional_usd'),
+            'notional_gap_pct': (sizing_block or {}).get('notional_gap_pct'),
+            'lot_step_usd': (sizing_block or {}).get('lot_step_usd'),
             'hedge_mode': (sizing_block or {}).get('hedge_mode'),
             'dollar_neutral_beta': (sizing_block or {}).get(
                 'dollar_neutral_beta'),

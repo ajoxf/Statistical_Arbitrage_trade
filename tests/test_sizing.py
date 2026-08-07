@@ -25,11 +25,27 @@ def test_lots_come_from_the_money_and_the_price():
     assert sizing.notional(lots, 100, 4265.0) <= 1_000_000
 
 
-def test_lots_round_DOWN_to_a_tradable_step():
-    """Rounding up would breach the notional the operator set, and any
-    max or margin already checked against it."""
-    lots = sizing.lots_for_notional(1_000_000, 100, 4265.0, step=0.1)
-    assert lots == pytest.approx(2.3)
+def test_lots_snap_to_the_NEAREST_tradable_step():
+    """The notional is a target, not a ceiling. Flooring cost a fifth
+    of a small position and produced the operator's "Leg A notional
+    calculated incorrectly" (2026-08-07)."""
+    # 2.3446 exact -> 2.3 either way at a 0.1 step
+    assert sizing.lots_for_notional(1_000_000, 100, 4265.0,
+                                    step=0.1) == pytest.approx(2.3)
+    # 0.0466 exact: floor gives 0.04 (-14%), nearest gives 0.05 (+7%)
+    assert sizing.lots_for_notional(20_000, 100, 4292.61,
+                                    step=0.01) == pytest.approx(0.05)
+
+
+def test_a_hedge_never_rounds_UP(config):
+    """Leg B's step is ten times leg A's, so nearest would turn a
+    wanted 0.05 into 0.1 — a hedge twice the size of the position it
+    hedges, and past the minimum-notional guard that exists to catch
+    exactly that."""
+    assert sizing.hedge_lots(0.05, 100, 100, 1.0,
+                             step=0.1, minimum=0.1) == 0.0
+    assert sizing.hedge_lots(0.19, 100, 100, 1.0,
+                             step=0.1, minimum=0.1) == pytest.approx(0.1)
 
 
 def test_a_notional_below_one_lot_is_zero_not_a_fraction():
@@ -194,7 +210,11 @@ def test_the_operators_20k_on_gold_is_refused_with_the_real_floor(config):
     p = sizing.plan(config, 100, 100, 4292.61, 4351.55,
                     meta_a={'volume_step': 0.01, 'volume_min': 0.01},
                     meta_b={'volume_step': 0.1, 'volume_min': 0.1})
-    assert p['leg_a_lots'] == pytest.approx(0.04)
+    # Leg A rounds to NEAREST (0.0466 -> 0.05, the target is a target),
+    # the hedge rounds DOWN (0.05 -> 0 against a 0.1 step, because a
+    # hedge must never overshoot) — so the pair is still refused, with
+    # the floor named.
+    assert p['leg_a_lots'] == pytest.approx(0.05)
     assert p['leg_b_lots'] == 0.0
     assert "0.1-lot minimum" in p['reason']
     assert '42,926' in p['reason']
@@ -222,12 +242,33 @@ def test_a_coarse_step_on_leg_b_leaves_a_real_imbalance(config):
 
 
 def test_size_washes_the_step_rounding_out(config):
-    """The same coarse step is negligible once the position is large
-    enough that one step is a small fraction of it."""
-    p = gold_plan(config, 2_000_000.0)
-    assert p['reason'] is None
-    # 4.66 spot lots vs 4.6 futures: the residual step is now ~1%.
-    assert abs(p['imbalance_pct']) < 2.0
+    """The same coarse step shrinks as a fraction of the position: at
+    $20k one futures step is 21% of the trade, at $2m it is 2%."""
+    small = gold_plan(config, 100_000.0)
+    big = gold_plan(config, 2_000_000.0)
+    assert big['reason'] is None
+    assert abs(big['imbalance_pct']) < abs(small['imbalance_pct']) / 4
+
+
+def test_leg_a_lands_near_the_notional_that_was_asked_for(config):
+    """Operator, 2026-08-07: "Why is Leg A notional being calculated
+    incorrectly" — $20,000 requested, $17,170 shown. It was rounding
+    DOWN, and one 0.01 gold lot is $4,293, so it lost a fifth of the
+    position to the rounding rule alone."""
+    p = gold_plan(config, 20_000.0)
+    assert p['leg_a_lots'] == pytest.approx(0.05)          # not 0.04
+    assert p['leg_a_notional_usd'] == pytest.approx(21_463, abs=5)
+    # Under the old floor rule this was -14.1%.
+    assert p['notional_gap_pct'] == pytest.approx(7.3, abs=0.2)
+
+
+def test_the_size_of_one_step_is_published(config):
+    """The gap is not a defect to hide — it is the granularity of the
+    instrument, and at small sizes it dominates."""
+    p = gold_plan(config, 20_000.0)
+    assert p['lot_step_usd'] == pytest.approx(4292.61, abs=1)
+    big = gold_plan(config, 2_000_000.0)
+    assert abs(big['notional_gap_pct']) < 0.5      # invisible at size
 
 
 def test_no_price_is_refused_rather_than_defaulted(config):

@@ -2317,10 +2317,20 @@
                     + '. Raise the Leg Notional Value in Settings.';
             } else if (sz.mode === 'notional') {
                 basisEl.className = 'text-secondary mt-1';
-                basisEl.textContent = 'Sized from '
-                    + _fmtMoney(sz.target_notional_usd || 0)
-                    + ' per leg (Settings → Leg Notional Value); lots '
-                    + 'follow the live price.'
+                // Say what was ASKED FOR and what a tradable lot
+                // actually delivers. One 0.01 gold lot is $4,293, so a
+                // $20,000 target lands 7% away however it is rounded —
+                // showing only the result reads as a miscalculation.
+                const gap = sz.notional_gap_pct;
+                basisEl.textContent = 'Asked for '
+                    + _fmtMoney(sz.target_notional_usd || 0) + ' per leg; '
+                    + (gap == null ? 'lots follow the live price.'
+                        : 'the nearest tradable lot gives '
+                          + _fmtMoney(sz.leg_a_notional_usd) + ' ('
+                          + (gap >= 0 ? '+' : '') + gap.toFixed(1) + '%'
+                          + (sz.lot_step_usd
+                              ? ', one lot = ' + _fmtMoney(sz.lot_step_usd)
+                              : '') + ').')
                     + (sz.min_notional_usd
                         ? ' This pair cannot trade below '
                           + _fmtMoney(sz.min_notional_usd) + ' per leg.'
