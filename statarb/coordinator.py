@@ -2260,7 +2260,11 @@ class Coordinator:
             count += 1
         return f"🚨 CLOSEALL: {count} position(s) sent to market close"
 
-    OK, BLOCKED, FAILED, IDLE = 'OK', 'BLOCKED', 'FAILED', '--'
+    # WARN is deliberately NOT in the "held up by" set: it reports
+    # something worth reading that is not stopping anything, so calling
+    # it blocked would send the operator hunting for a halt that isn't
+    # there.
+    OK, BLOCKED, FAILED, IDLE, WARN = 'OK', 'BLOCKED', 'FAILED', '--', 'WARN'
 
     def _health(self, asset_key, md):
         """What is working and what is not, subsystem by subsystem.
@@ -2295,6 +2299,13 @@ class Coordinator:
             rows.append(('feed', self.OK,
                          f'{rate:.0f} quotes/min' if rate
                          else 'ticking'))
+
+        # -- pair definition --
+        # Reference only, so it never blocks; but a basis label that
+        # cannot describe this pair belongs in the log rather than
+        # only on a card nobody is looking at.
+        if md.get('fair_warning'):
+            rows.append(('pair', self.WARN, md['fair_warning']))
 
         # -- statistics --
         if stats is None:

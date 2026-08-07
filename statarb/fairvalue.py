@@ -103,14 +103,55 @@ def fair_spread(asset_cfg, spot_price, futures_price, hedge_ratio=1.0,
     return fair_far - beta * spot_price, detail
 
 
+#: How far the live spread may sit from the carry-implied one before
+#: the pair_type itself is the likeliest explanation. Carry is a small,
+#: slow number; a live spread several multiples away is not a mispricing
+#: worth trading, it is a pair that carry does not describe.
+IMPLAUSIBLE_GAP_MULT = 3.0
+
+
+def mislabelled_pair(pair_type, spread, value):
+    """Say when a basis label cannot be describing this pair.
+
+    Live 2026-08-07: the operator repointed the engine at USOIL_U6 vs
+    UKOIL_V6 — WTI against Brent — while pair_type still said
+    SPOT_FUTURE from the gold setup. Carry over a couple of months on a
+    $77 barrel is a few cents; the live spread was $5.03. The card
+    dutifully rendered a theoretical basis two orders of magnitude away
+    from the traded one, which reads as an enormous edge rather than as
+    a mislabelled pair.
+
+    WTI vs Brent is RELATED: no arbitrage ties them, so no fair value
+    exists and none should be shown. This cannot detect that from
+    prices alone — nothing in a quote says "different underlying" — but
+    a gap this size is the symptom either way, and the other causes
+    (wrong contract month, wrong multiplier, wrong contract size) are
+    all worth the same warning.
+    """
+    if value is None or spread is None:
+        return None
+    slack = max(abs(value), 1e-9) * IMPLAUSIBLE_GAP_MULT
+    if abs(spread - value) <= slack:
+        return None
+    return (f'The live spread ({spread:+.4f}) is nowhere near the '
+            f'{pair_type} carry value ({value:+.4f}). Carry is small and '
+            f'slow, so a gap this size usually means the pair is not a '
+            f'basis pair at all (two related instruments are RELATED, '
+            f'not {pair_type}) or the contract month, multiplier or '
+            f'contract size is wrong. Reference only — it changes no '
+            f'trading decision — but do not read it as edge.')
+
+
 def fair_value_block(asset_cfg, spot_price, futures_price, spread,
                      hedge_ratio=1.0, now=None):
     """The reference block the dashboard shows under the spread."""
     value, detail = fair_spread(asset_cfg, spot_price, futures_price,
                                 hedge_ratio, now)
+    pair_type = (asset_cfg.get('pair_type') or SPOT_FUTURE).upper()
     return {
-        'pair_type': (asset_cfg.get('pair_type') or SPOT_FUTURE).upper(),
+        'pair_type': pair_type,
         'fair_value': value,
         'fair_gap': (spread - value) if value is not None else None,
         'fair_detail': detail,
+        'fair_warning': mislabelled_pair(pair_type, spread, value),
     }

@@ -103,6 +103,27 @@
 
                     <hr class="my-4" style="border-color: var(--border-color);">
 
+                    <!-- Configured pairs. Every ENABLED pair the engine can
+                         resolve gets traded, so a leftover row is not
+                         cosmetic: it is one resolving symbol away from a
+                         second live position. -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3">Configured Pairs</h6>
+                            <p class="small text-secondary">
+                                The engine trades <strong>every enabled pair whose two symbols it can
+                                resolve</strong>. A pair it cannot resolve only warns at startup &mdash;
+                                until the day those symbols exist on the account, when it becomes a
+                                second live position beside your real one. Disable what you are not
+                                trading; delete what you never meant to create.
+                                The settings above apply to the <em>first enabled</em> pair.
+                            </p>
+                            <div id="pairs-list" class="small text-secondary">Loading&hellip;</div>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" style="border-color: var(--border-color);">
+
                     <!-- Z-Score Thresholds -->
                     <div class="row mb-4">
                         <div class="col-12">
@@ -277,6 +298,28 @@
                             <small class="text-secondary">Quotes needed inside the window before trading starts.
                             Both this AND Minimum History must clear. Repeated quotes
                             don't count &mdash; only ones the broker actually moved.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Minimum Sigma (spread units)</label>
+                            <input type="number" class="form-control" id="min_sigma"
+                                   name="min_sigma" value="{{ config.min_sigma }}"
+                                   step="0.001" min="0" max="1000">
+                            <small class="text-secondary">The spread's standard deviation must be at
+                            least this big for z to be trusted. <strong>z is the spread divided by
+                            sigma</strong>, so a quiet session with a tiny sigma manufactures a huge
+                            z out of nothing &mdash; that is how a live run once printed z = 53,026.
+                            Set it once you know the pair's real sigma; a tenth of a normal reading
+                            is a sane floor. 0 = off, and then nothing stops a manufactured z.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Maximum Plausible |z|</label>
+                            <input type="number" class="form-control" id="max_abs_z"
+                                   name="max_abs_z" value="{{ config.max_abs_z }}"
+                                   step="1" min="0" max="1000">
+                            <small class="text-secondary">A window implying a bigger |z| than this is
+                            treated as broken rather than as an opportunity, and reports warm-up.
+                            Backstop for a collapsed sigma; unlike the floor above it needs no
+                            knowledge of the instrument. 0 = off.</small>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Poll Interval (seconds)</label>
@@ -1836,6 +1879,8 @@
             lookback_period: parseInt(document.getElementById('lookback_period').value),
             min_samples: parseInt(document.getElementById('min_samples').value),
             min_history_sec: parseInt(document.getElementById('min_history_sec').value),
+            min_sigma: parseFloat(document.getElementById('min_sigma').value),
+            max_abs_z: parseFloat(document.getElementById('max_abs_z').value),
             poll_interval_sec: parseFloat(document.getElementById('poll_interval_sec').value),
             pair_type: document.getElementById('pair_type').value,
             carry_rate_pct: parseFloat(document.getElementById('carry_rate_pct').value),
@@ -2136,6 +2181,8 @@
                 document.getElementById('lookback_period').value = config.lookback_period;
                 document.getElementById('min_samples').value = config.min_samples;
                 document.getElementById('min_history_sec').value = config.min_history_sec;
+                document.getElementById('min_sigma').value = config.min_sigma;
+                document.getElementById('max_abs_z').value = config.max_abs_z;
                 document.getElementById('poll_interval_sec').value = config.poll_interval_sec;
                 document.getElementById('pair_type').value = config.pair_type || 'SPOT_FUTURE';
                 document.getElementById('carry_rate_pct').value = config.carry_rate_pct;
@@ -2668,6 +2715,112 @@
         });
     })();
 
+    // ── Configured pairs ──────────────────────────────────────────────
+    async function loadPairs() {
+        const host = document.getElementById('pairs-list');
+        if (!host) return;
+        let pairs;
+        try {
+            pairs = await (await fetch('/api/assets')).json();
+        } catch (e) {
+            host.textContent = 'Could not read the configured pairs.';
+            return;
+        }
+        if (!pairs.length) { host.textContent = 'No pairs configured.'; return; }
+        host.innerHTML = `
+        <table class="table table-sm align-middle mb-0">
+            <thead><tr><th>Pair</th><th>Leg A</th><th>Leg B</th><th>Type</th>
+            <th>State</th><th style="width:13rem;"></th></tr></thead>
+            <tbody>${pairs.map(p => `
+                <tr>
+                    <td><strong>${esc(p.key)}</strong></td>
+                    <td><code>${esc(p.spot_symbol || '—')}</code></td>
+                    <td><code>${esc(p.futures_symbol || '—')}</code></td>
+                    <td>${esc(p.pair_type)}</td>
+                    <td>${p.enabled
+                        ? '<span class="badge bg-success">enabled</span>'
+                        : '<span class="badge bg-secondary">disabled</span>'}
+                        ${p.has_open_position
+                        ? ' <span class="badge bg-warning text-dark">position open</span>'
+                        : ''}</td>
+                    <td class="text-end">
+                        <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                                data-pair-toggle="${esc(p.key)}"
+                                data-enabled="${p.enabled ? '1' : '0'}">
+                            ${p.enabled ? 'Disable' : 'Enable'}</button>
+                        <button type="button" class="btn btn-sm btn-outline-primary me-1"
+                                data-pair-rename="${esc(p.key)}">Rename</button>
+                        <button type="button" class="btn btn-sm btn-outline-danger"
+                                data-pair-delete="${esc(p.key)}">Delete</button>
+                    </td>
+                </tr>`).join('')}
+            </tbody></table>`;
+    }
+
+    // Pair keys are operator-supplied and one of them literally
+    // contains a slash, so nothing here goes in via innerHTML unescaped.
+    function esc(value) {
+        const node = document.createElement('span');
+        node.textContent = value == null ? '' : String(value);
+        return node.innerHTML;
+    }
+
+    async function pairRequest(key, options, failure) {
+        // encodeURIComponent, because "XAUUSD_/GC1225" is a real key.
+        const response = await fetch(
+            '/api/assets/' + encodeURIComponent(key), options);
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || !body.success) {
+            await showResult(false, failure,
+                             body.error || ('HTTP ' + response.status));
+            return false;
+        }
+        await showResult(true, 'Saved.', body.note || null);
+        loadPairs();
+        return true;
+    }
+
+    document.addEventListener('click', async (event) => {
+        const target = event.target.closest(
+            '[data-pair-toggle],[data-pair-rename],[data-pair-delete]');
+        if (!target) return;
+        event.preventDefault();
+
+        const remove = target.getAttribute('data-pair-delete');
+        if (remove) {
+            if (!await showConfirm(
+                    `Delete the pair "${remove}" from the configuration? ` +
+                    `Its recorded history is kept.`,
+                    {title: 'Delete pair', variant: 'danger',
+                     confirmText: 'Delete'})) return;
+            await pairRequest(remove, {method: 'DELETE'},
+                              'The pair was not deleted.');
+            return;
+        }
+
+        const rename = target.getAttribute('data-pair-rename');
+        if (rename) {
+            const next = await showPrompt(
+                `New name for "${rename}". Past trades and the warm-start ` +
+                `window are carried across.`, rename);
+            if (!next || next === rename) return;
+            await pairRequest(rename, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({rename: next})},
+                'The pair was not renamed.');
+            return;
+        }
+
+        const key = target.getAttribute('data-pair-toggle');
+        const enabled = target.getAttribute('data-enabled') === '1';
+        await pairRequest(key, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: !enabled})},
+            'The pair was not changed.');
+    });
+
     // ── Boot ──────────────────────────────────────────────────────────
     // Runs LAST, deliberately. These read `const`/`let` declared above
     // in this same block; called earlier they hit the temporal dead
@@ -2679,6 +2832,7 @@
     fetchBetaSuggestion();
     updateSizingMode();
     refreshPairMinimum();
+    loadPairs();
     setInterval(refreshPairMinimum, 10000);
 </script>
 {% endblock %}

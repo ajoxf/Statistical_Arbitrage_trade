@@ -562,6 +562,18 @@
                 p.textContent = line;
                 body.appendChild(p);
             });
+            // A single free-text answer, when the dialog is asking for
+            // one. Same modal as everything else — the whole point of
+            // the shared dialog is that the app never drops to the
+            // browser's own chrome for anything.
+            let input = null;
+            if (o.input) {
+                input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'form-control';
+                input.value = o.inputValue || '';
+                body.appendChild(input);
+            }
             if (o.details) {
                 const pre = document.createElement('pre');
                 pre.className = 'small text-secondary bg-body-tertiary ' +
@@ -597,7 +609,10 @@
                     document.removeEventListener('keydown', onKey);
                     resolve(answer);
                 };
-                const onConfirm = () => { answer = true; close(); };
+                const onConfirm = () => {
+                    answer = input ? input.value.trim() : true;
+                    close();
+                };
                 const onKey = (ev) => {
                     if (ev.key === 'Escape') close();
                     if (ev.key === 'Enter') onConfirm();
@@ -614,7 +629,7 @@
                 modalEl.classList.add('show');
                 modalEl.setAttribute('aria-modal', 'true');
                 document.addEventListener('keydown', onKey);
-                setTimeout(() => confirmBtn.focus(), 50);
+                setTimeout(() => (input || confirmBtn).focus(), 50);
             });
         }
 
@@ -624,6 +639,16 @@
             return showDialog(Object.assign(
                 {title: 'Please confirm', message: message, variant: 'warning',
                  confirmText: 'Continue'}, opts || {}));
+        }
+
+        // Ask for one value. Resolves to the trimmed string, or false
+        // if the operator cancelled — so an empty answer and a cancel
+        // are distinguishable, and neither is mistaken for the other.
+        function showPrompt(message, value, opts) {
+            return showDialog(Object.assign(
+                {title: 'Enter a value', message: message, variant: 'info',
+                 confirmText: 'OK', input: true, inputValue: value || ''},
+                opts || {}));
         }
 
         // Acknowledgement — one button, no cancel. This is what every

@@ -379,6 +379,52 @@ Three separate floods, all fixed:
   returns a constant `[]` (resting orders are not wired to it); now
   15s.
 
+## A pair could be created but never removed (2026-08-07)
+
+Assets were only ever created — implicitly, by saving a symbol on a
+broker row. Nothing could rename, disable or delete one. Two rows the
+operator could not get rid of proved it: `XAUUSD_/GC1225`, a phantom
+born of the old label-into-the-key bug, and `SILVER`, whose futures
+symbol does not exist on the account. Both warned at every startup.
+
+That is not cosmetic. `_setup_symbols` trades EVERY enabled asset whose
+two symbols resolve, so a leftover row is one resolving symbol away
+from a second live position on the same underlying, with its own sizing
+and its own book.
+
+`/api/assets` (GET list, POST rename/enable, DELETE) plus a Configured
+Pairs table on Settings. Notes:
+
+- The route is `<path:key>`, not `<string:key>`. The pair that most
+  needs deleting has a SLASH in its key, and Werkzeug's default
+  converter stops at one — a plain route 404s on precisely the row it
+  exists to remove, whether the slash arrives raw or as %2F.
+- A rename carries the recorded history across (`trades`, `positions`,
+  `market_data`, `trade_review`, `sd_touches`, `shadow_trades`).
+  Renaming GOLD to WTI_BRENT otherwise strands every past trade and the
+  whole warm-start window. `series_key` still guards correctness — the
+  rename does not make old rows usable if the SYMBOLS changed, it only
+  stops them being orphaned.
+- A pair with an open position returns 409 for all three operations:
+  renaming orphans the position from its history, disabling or deleting
+  takes it out of the exit loop.
+- `showPrompt()` was added to base.html's shared modal rather than
+  reaching for the native `prompt()`, which a test forbids.
+
+Also added, both of which had NO control at all: `SIGNALS.MIN_SIGMA` —
+the ONLY defence against a collapsed sigma manufacturing a tradable z,
+which CLAUDE.md has flagged as residual risk since the z=53,026
+incident — and `SIGNALS.MAX_ABS_Z`.
+
+`fairvalue.mislabelled_pair` flags a live spread more than 3x its own
+carry value away: the operator ran WTI vs Brent under a SPOT_FUTURE
+label left over from gold, so the card rendered a theoretical basis two
+orders of magnitude from the traded one, which reads as enormous edge
+rather than as a mislabelled pair. It surfaces as a `pair` row in the
+health block under a new `WARN` state — deliberately NOT in the "held
+up by" set, since it reports something worth reading that is not
+stopping anything.
+
 ## One account holding BOTH legs was unrepresentable (2026-08-07)
 
 Operator: "Both the Legs are connected. Why this error?" — the

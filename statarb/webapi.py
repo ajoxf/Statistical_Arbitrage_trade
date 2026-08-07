@@ -21,6 +21,8 @@ FIELD_MAP = {
     'stats_update_interval': ('SIGNALS', 'STATS_INTERVAL_SEC'),
     'min_samples': ('SIGNALS', 'MIN_SAMPLES'),
     'min_history_sec': ('SIGNALS', 'MIN_HISTORY_SEC'),
+    'min_sigma': ('SIGNALS', 'MIN_SIGMA'),
+    'max_abs_z': ('SIGNALS', 'MAX_ABS_Z'),
     'trend_direction_filter': ('SIGNALS', 'TREND_FILTER'),
     'trend_window_sec': ('SIGNALS', 'TREND_WINDOW_SEC'),
     'entry_cooldown_seconds': ('SIGNALS', 'ENTRY_COOLDOWN_SEC'),

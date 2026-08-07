@@ -841,6 +841,116 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         return jsonify({'success': True, 'id': name,
                         'note': 'Saved. Restart the launcher to connect.'})
 
+    # -- pairs (assets) ------------------------------------------------
+    #
+    # Until now an asset could only be CREATED (implicitly, by saving a
+    # symbol on a broker row) and never renamed, disabled or removed.
+    # That is how a phantom pair born of the old label-into-the-key bug
+    # ("XAUUSD_/GC1225") survived every attempt to clear it, and how a
+    # SILVER pair with no futures symbol on the account kept warning at
+    # every startup. An enabled asset the engine cannot resolve is
+    # harmless only while it stays unresolvable — the day its symbols
+    # exist, the coordinator trades it as a second live pair.
+
+    ASSET_TABLES = ('trades', 'positions', 'market_data', 'trade_review',
+                    'sd_touches', 'shadow_trades')
+
+    @app.route('/api/assets', methods=['GET'])
+    def api_assets():
+        raw = load_config_raw()
+        assets = raw.get('assets') or {}
+        open_assets = {p.get('asset')
+                       for p in (runtime_status().get('positions') or [])}
+        return jsonify([{
+            'key': key,
+            'name': asset.get('name', key),
+            'enabled': bool(asset.get('enabled', True)),
+            'spot_symbol': (asset.get('spot_symbols') or [''])[0],
+            'futures_symbol': (asset.get('futures_symbols') or [''])[0],
+            'pair_type': (asset.get('pair_type') or 'SPOT_FUTURE').upper(),
+            'has_open_position': key in open_assets,
+        } for key, asset in assets.items()])
+
+    # <path:> not <string:>. The pair that most needs deleting is
+    # "XAUUSD_/GC1225" — the old label-into-the-key bug put a SLASH in
+    # the key, and Werkzeug's default converter stops at one, so a
+    # plain <key> route 404s on exactly the row it exists to remove
+    # (whether the slash arrives raw or as %2F).
+    @app.route('/api/assets/<path:key>', methods=['POST', 'DELETE'])
+    def api_asset_edit(key):
+        raw = load_config_raw()
+        assets = raw.setdefault('assets', {})
+        if key not in assets:
+            return jsonify({'success': False,
+                            'error': f'No pair named {key}'}), 404
+
+        # A pair with money on it is not a config row. Renaming it
+        # orphans the open position from its own history; deleting or
+        # disabling it takes the position out of the exit loop.
+        open_assets = {p.get('asset')
+                       for p in (runtime_status().get('positions') or [])}
+        if key in open_assets:
+            return jsonify({
+                'success': False,
+                'error': f'{key} has an open position — close it first. '
+                         f'Changing the pair now would leave that position '
+                         f'without an exit.'}), 409
+
+        if request.method == 'DELETE':
+            assets.pop(key)
+            save_config_raw(raw)
+            return jsonify({'success': True,
+                            'note': f'Pair {key} removed. Restart the '
+                                    f'launcher to apply. Its recorded '
+                                    f'history is kept.'})
+
+        payload = request.get_json(silent=True) or {}
+        asset = assets[key]
+        notes = []
+        if 'enabled' in payload:
+            asset['enabled'] = bool(payload['enabled'])
+            notes.append('enabled' if asset['enabled'] else 'disabled')
+
+        new_key = (payload.get('rename') or '').strip()
+        if new_key and new_key != key:
+            if new_key in assets:
+                return jsonify({'success': False,
+                                'error': f'A pair named {new_key} already '
+                                         f'exists'}), 400
+            assets[new_key] = assets.pop(key)
+            assets[new_key]['name'] = payload.get('name') or new_key
+            # Carry the recorded history across, or a rename silently
+            # throws away the warm-start window and every past trade
+            # for this pair. series_key still guards correctness — a
+            # rename does not make old rows usable if the SYMBOLS
+            # changed, it only stops them being stranded.
+            moved = 0
+            conn = sqlite3.connect(db_path)
+            try:
+                for table in ASSET_TABLES:
+                    try:
+                        cursor = conn.execute(
+                            f'UPDATE {table} SET asset = ? WHERE asset = ?',
+                            (new_key, key))
+                        moved += cursor.rowcount or 0
+                    except sqlite3.Error:
+                        continue        # table absent on an older DB
+                conn.commit()
+            finally:
+                conn.close()
+            notes.append(f'renamed to {new_key} ({moved:,} history rows '
+                         f'carried over)')
+            key = new_key
+        elif payload.get('name'):
+            asset['name'] = payload['name']
+            notes.append('renamed')
+
+        save_config_raw(raw)
+        return jsonify({'success': True, 'key': key,
+                        'note': ('Pair ' + ', '.join(notes) +
+                                 '. Restart the launcher to apply.')
+                        if notes else 'No change.'})
+
     @app.route('/api/exchanges/<account_id>', methods=['DELETE'])
     def api_exchange_delete(account_id):
         raw = load_config_raw()
