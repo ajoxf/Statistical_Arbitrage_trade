@@ -1199,3 +1199,22 @@ def test_the_engine_publishes_per_leg_margin_and_the_buffer(tmp_path,
     assert block['capital_required'] == pytest.approx(
         (block['spot_margin'] + block['fut_margin']) * 1.10)
     assert block['capital_buffer_pct'] == 10.0
+
+
+def test_the_statistics_card_reads_its_values_from_the_signal_block():
+    """updateSignal() is handed status['signal'], so anything the
+    Statistics & Regime card reads has to live THERE. Publishing at the
+    top level only is why Mean/Std stayed blank while Regime worked."""
+    ui = webapi.status_to_ui(stats_status(), {})
+    signal = ui['signal']
+    assert signal['spread_mean'] == 58.7985
+    assert signal['spread_std'] == 0.0631
+    assert signal['regime'] == 'MEAN_REVERTING'
+    assert signal['half_life'] == 12.5
+
+
+def test_the_card_updater_is_fed_the_signal_block(client):
+    """Guards the assumption above: if this ever changes, the keys need
+    to move with it."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'updateSignal(data.signal)' in page

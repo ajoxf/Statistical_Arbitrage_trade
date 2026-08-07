@@ -410,6 +410,13 @@ def status_to_ui(status, config_raw):
             'clip_lots': first.get('clip_lots'),
             'contract_size': first.get('contract_size'),
             'mean': first.get('mu'), 'std': first.get('sigma'),
+            # The Statistics & Regime card is rendered by updateSignal(),
+            # which receives THIS block — not the top level. Publishing
+            # spread_mean/spread_std only at the top level left the card
+            # reading undefined, which is why it showed 0.00 and then a
+            # dash while `regime` (already in here) worked fine.
+            'spread_mean': first.get('mu'), 'spread_std': first.get('sigma'),
+            'trend_slope': first.get('trend_slope'),
             'half_life': first.get('half_life_min'),
             'hurst': None, 'regime': first.get('regime'),
             'data_points': first.get('samples'),
