@@ -59,13 +59,17 @@
                     </div>
                     <div class="col-md-4">
                         <label class="form-label">Leg</label>
-                        <select class="form-select" name="role" id="broker-role">
+                        <select class="form-select" name="role" id="broker-role"
+                                onchange="updateLegFields()">
                             <option value="SPOT">Leg A &mdash; Spot</option>
                             <option value="FUTURES">Leg B &mdash; Futures</option>
+                            <option value="BOTH">Both legs &mdash; one account</option>
                         </select>
+                        <small class="text-secondary">Pick <em>Both</em> when a
+                        single terminal trades each side of the pair.</small>
                     </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Symbol</label>
+                    <div class="col-md-4" id="broker-symbol-wrap">
+                        <label class="form-label" id="broker-symbol-label">Symbol</label>
                         <input type="text" class="form-control" name="symbol"
                                id="broker-symbol" list="symbol-options"
                                placeholder="e.g. XAUUSD" autocomplete="off"
@@ -73,6 +77,16 @@
                         <datalist id="symbol-options"></datalist>
                         <small class="text-secondary">Exactly as this broker spells it.
                         Contract size, expiry and swap are read from the terminal.</small>
+                    </div>
+                    <div class="col-md-4 d-none" id="broker-fut-symbol-wrap">
+                        <label class="form-label">Leg B &mdash; Futures symbol</label>
+                        <input type="text" class="form-control" name="futures_symbol"
+                               id="broker-fut-symbol" list="fut-symbol-options"
+                               placeholder="e.g. GC1226" autocomplete="off"
+                               oninput="suggestSymbols('futures')">
+                        <datalist id="fut-symbol-options"></datalist>
+                        <small class="text-secondary">The other side of the pair,
+                        on this same account.</small>
                     </div>
 
                     <div class="col-12"><hr class="my-1"></div>
@@ -200,7 +214,11 @@ async function loadBrokers() {
     } catch (e) { /* dashboard still usable without live figures */ }
 
     // The engine cannot start unless BOTH legs are mapped to an account.
-    const mapped = new Set(brokers.filter(b => b.role !== 'NONE').map(b => b.role));
+    // One account may hold BOTH legs, so this reads every role on every
+    // row — reading a single `role` per account reported FUTURES as
+    // unmapped on a one-account setup that was running fine.
+    const mapped = new Set();
+    brokers.forEach(b => (b.roles || []).forEach(r => mapped.add(r)));
     const missing = ['SPOT', 'FUTURES'].filter(r => !mapped.has(r));
     document.getElementById('leg-mapping-warning').innerHTML =
         (brokers.length && missing.length) ? `
@@ -221,10 +239,12 @@ async function loadBrokers() {
                 return `
                 <tr id="broker-row-${b.name}">
                     <td><strong>${b.name}</strong></td>
-                    <td>${b.role === 'NONE'
-                        ? '<span class="badge bg-secondary">unused</span>'
-                        : `<span class="badge bg-primary">${b.role}</span>`}</td>
-                    <td><code>${b.symbol || '—'}</code></td>
+                    <td>${(b.roles || []).length
+                        ? b.roles.map(r =>
+                            `<span class="badge bg-primary me-1">${r}</span>`).join('')
+                        : '<span class="badge bg-secondary">unused</span>'}</td>
+                    <td>${[b.spot_symbol, b.futures_symbol].filter(Boolean)
+                        .map(s => `<code>${s}</code>`).join(' + ') || '—'}</td>
                     <td>${b.login || '—'}</td>
                     <td>${b.server || '—'}</td>
                     <td class="small text-secondary">${b.terminal_path || 'attach to open terminal'}</td>
@@ -348,8 +368,13 @@ function editBroker(name) {
     if (!broker) return;
     const form = document.getElementById('broker-form');
     form.name.value = broker.id;
-    form.role.value = broker.role === 'FUTURES' ? 'FUTURES' : 'SPOT';
-    form.symbol.value = broker.symbol || '';
+    const roles = broker.roles || (broker.role !== 'NONE' ? [broker.role] : []);
+    form.role.value = roles.length === 2 ? 'BOTH'
+                    : roles[0] === 'FUTURES' ? 'FUTURES' : 'SPOT';
+    updateLegFields();
+    form.symbol.value = (roles.length === 2 ? broker.spot_symbol
+                                            : broker.symbol) || '';
+    form.futures_symbol.value = broker.futures_symbol || '';
     form.terminal_path.value = broker.terminal_path || '';
     form.endpoint.value = broker.endpoint || '';
     form.login.value = broker.login || '';
@@ -397,19 +422,38 @@ async function deleteBroker(name) {
     loadBrokers();
 }
 
+// A dual-leg account needs a symbol box per leg; a single-leg row has
+// one, labelled for the leg it holds.
+function updateLegFields() {
+    const role = document.getElementById('broker-role').value;
+    const both = role === 'BOTH';
+    document.getElementById('broker-fut-symbol-wrap')
+        .classList.toggle('d-none', !both);
+    document.getElementById('broker-symbol-label').textContent =
+        both ? 'Leg A — Spot symbol' : 'Symbol';
+}
+
 // Typing in Symbol offers the names that actually exist on that
 // account — no separate search panel, just browser autocomplete.
 let _symbolTimer = null;
-function suggestSymbols() {
+function suggestSymbols(forLeg) {
     clearTimeout(_symbolTimer);
     _symbolTimer = setTimeout(async () => {
-        const text = document.getElementById('broker-symbol').value.trim();
+        const futures = forLeg === 'futures';
+        const box = document.getElementById(
+            futures ? 'broker-fut-symbol' : 'broker-symbol');
+        const text = box.value.trim();
         if (text.length < 2) return;
-        const leg = document.getElementById('broker-role').value.toLowerCase();
+        const role = document.getElementById('broker-role').value;
+        // On a BOTH row the two boxes name the two legs; otherwise the
+        // row's own role decides which account gets searched.
+        const leg = futures ? 'futures'
+                  : role === 'BOTH' ? 'spot' : role.toLowerCase();
         try {
             const d = await (await fetch(
                 `/api/symbols/search?leg=${leg}&q=${encodeURIComponent(text)}`)).json();
-            document.getElementById('symbol-options').innerHTML =
+            document.getElementById(
+                futures ? 'fut-symbol-options' : 'symbol-options').innerHTML =
                 (d.symbols || []).slice(0, 20).map(
                     s => `<option value="${s.symbol}">${s.description || ''}</option>`).join('');
         } catch (e) { /* the coordinator may not be up yet */ }

@@ -593,19 +593,75 @@ class BrokerSession:
             return mt5.ORDER_FILLING_IOC
         return mt5.ORDER_FILLING_RETURN
 
+    def legal_limit_price(self, symbol, side, price):
+        """The nearest price MT5 will actually ACCEPT for this limit.
+
+        A pending price has to clear two separate constraints, and
+        missing either one comes back as the same opaque 10015 Invalid
+        price:
+
+        1. It must land on a `trade_tick_size` boundary.
+        2. It must sit at least `trade_stops_level` POINTS away from the
+           market — BUY_LIMIT that far below the ask, SELL_LIMIT that
+           far above the bid. Brokers set this per symbol.
+
+        Only (1) was enforced. That was survivable on CFI's gold, where
+        the stops level is 0, so a limit one tick inside the touch was
+        legal. On their oil symbols it is not: live 2026-08-07, every
+        BUY_SPOT LIMIT scenario failed `10015 - Invalid price` on
+        USOIL_U6 while the identical code passed on XAUUSD_.
+
+        Returns (price, note) — `note` is None when nothing had to move,
+        otherwise it says what the broker's rule forced, so a limit that
+        could not rest where it was asked to says so instead of looking
+        like a clean fill at a price nobody chose.
+        """
+        info = self.symbol_info(symbol)
+        tick_size = (getattr(info, 'trade_tick_size', 0)
+                     or getattr(info, 'point', 0.01) or 0.01)
+
+        def to_tick(value, up=False):
+            steps = value / tick_size
+            steps = (int(steps + 1 - 1e-9) if up else int(steps + 1e-9))
+            return round(steps * tick_size, 10)
+
+        wanted = round(round(price / tick_size) * tick_size, 10)
+        point = getattr(info, 'point', 0) or tick_size
+        stops = getattr(info, 'trade_stops_level', 0) or 0
+        gap = max(stops * point, tick_size)
+
+        tick = mt5.symbol_info_tick(symbol)
+        bid = getattr(tick, 'bid', 0) if tick else 0
+        ask = getattr(tick, 'ask', 0) if tick else 0
+        if not bid or not ask:
+            return wanted, None          # no book to measure against
+
+        if side is OrderSide.BUY:
+            limit = to_tick(ask - gap)           # must be BELOW the ask
+            if wanted <= limit:
+                return wanted, None
+            return limit, (f"buy limit moved {wanted:.5f} -> {limit:.5f}: "
+                           f"{symbol} requires {gap:.5f} below the "
+                           f"{ask:.5f} ask")
+        limit = to_tick(bid + gap, up=True)      # must be ABOVE the bid
+        if wanted >= limit:
+            return wanted, None
+        return limit, (f"sell limit moved {wanted:.5f} -> {limit:.5f}: "
+                       f"{symbol} requires {gap:.5f} above the "
+                       f"{bid:.5f} bid")
+
     def place_pending_limit(self, symbol, side, volume, price, comment="",
                             position_ticket=None):
         """Rest a limit order. With position_ticket, the limit CLOSES
         that position when it executes (hedging-mode limit exits).
 
-        Price must be rounded to trade_tick_size and inside the book
-        (BUY_LIMIT strictly below ask) or brokers reject with
-        Invalid Price (10015) — live-tested 2026-06."""
+        Price must be rounded to trade_tick_size and far enough from the
+        book (see legal_limit_price) or brokers reject with Invalid
+        Price (10015) — live-tested 2026-06 and again 2026-08."""
         try:
-            info = self.symbol_info(symbol)
-            tick_size = getattr(info, 'trade_tick_size', 0) or \
-                getattr(info, 'point', 0.01) or 0.01
-            price = round(round(price / tick_size) * tick_size, 10)
+            price, moved = self.legal_limit_price(symbol, side, price)
+            if moved:
+                logging.info("%s", moved)
 
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
@@ -626,7 +682,8 @@ class BrokerSession:
                 error = (mt5.last_error() if result is None
                          else f"{result.retcode} - {result.comment}")
                 return {'ok': False, 'ticket': None, 'error': str(error)}
-            return {'ok': True, 'ticket': result.order, 'error': None}
+            return {'ok': True, 'ticket': result.order, 'error': None,
+                    'price': price, 'price_note': moved}
         except Exception as e:
             return {'ok': False, 'ticket': None, 'error': str(e)}
 
@@ -644,8 +701,22 @@ class BrokerSession:
                 for o in raw if o.magic == MAGIC_NUMBER]
 
     def modify_pending(self, ticket, price):
-        """Re-peg a resting limit in place — no cancel/replace round trip."""
+        """Re-peg a resting limit in place — no cancel/replace round trip.
+
+        The re-peg is subject to the SAME minimum-distance rule as the
+        original placement, so it is legalised the same way. Without
+        this, a symbol with a stops level lets the order rest and then
+        rejects every attempt to chase the market with it."""
         try:
+            order = next(iter(mt5.orders_get(ticket=ticket) or ()), None)
+            if order is not None:
+                side = (OrderSide.BUY
+                        if getattr(order, 'type', None)
+                        == mt5.ORDER_TYPE_BUY_LIMIT else OrderSide.SELL)
+                price, moved = self.legal_limit_price(
+                    order.symbol, side, price)
+                if moved:
+                    logging.info("%s", moved)
             result = mt5.order_send({
                 "action": mt5.TRADE_ACTION_MODIFY,
                 "order": ticket,

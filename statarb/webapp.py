@@ -702,9 +702,26 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             asset = assets.get(asset_key) or {}
             expiry = asset.get('futures_expiry')
 
-            def role_of(name):
-                return ('SPOT' if legs.get('spot') == name else
-                        'FUTURES' if legs.get('futures') == name else 'NONE')
+            # ONE account can hold BOTH legs — that is the third
+            # supported topology (one broker, one account, both
+            # symbols). Returning a single role made that setup
+            # unrepresentable: leg_accounts held {'spot': X,
+            # 'futures': X}, the row badged X as SPOT only, and the
+            # page then computed FUTURES as unmapped and showed "the
+            # coordinator cannot start" over a coordinator that was
+            # running perfectly well (live 2026-08-07).
+            def roles_of(name):
+                return [role.upper() for role in ('spot', 'futures')
+                        if legs.get(role) == name]
+
+            spot_symbol = (asset.get('spot_symbols') or [''])[0]
+            fut_symbol = (asset.get('futures_symbols') or [''])[0]
+
+            def symbol_of(name):
+                roles = roles_of(name)
+                if roles == ['FUTURES']:
+                    return fut_symbol
+                return spot_symbol if roles else ''
 
             return jsonify([{
                 'id': name, 'name': name, 'exchange_type': 'MT5',
@@ -713,15 +730,20 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 'server': acct.get('server') or '',
                 'endpoint': acct.get('endpoint') or '',
                 'has_password': bool(acct.get('password_env')),
-                'role': role_of(name),
+                'roles': roles_of(name),
+                # `role` stays single-valued for callers that predate
+                # dual-leg accounts; `roles` is the whole truth.
+                'role': (roles_of(name) or ['NONE'])[0],
                 'is_active': name in legs.values(),
                 # The symbol this account trades, so the broker row is
                 # the whole story for that leg (as in the old app).
+                # A dual-leg account carries both.
                 'asset': asset_key,
-                'symbol': ((asset.get('futures_symbols') or [''])[0]
-                           if role_of(name) == 'FUTURES'
-                           else (asset.get('spot_symbols') or [''])[0]
-                           if role_of(name) == 'SPOT' else ''),
+                'spot_symbol': (spot_symbol if 'SPOT' in roles_of(name)
+                                else ''),
+                'futures_symbol': (fut_symbol if 'FUTURES' in roles_of(name)
+                                   else ''),
+                'symbol': symbol_of(name),
                 'contract_size': asset.get('lot_size'),
                 'swap_charge': asset.get('swap_charge'),
                 'futures_expiry': (expiry[:10] if isinstance(expiry, str)
@@ -756,16 +778,32 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         # Role, symbol and contract specs live on the broker row, the
         # way the old app did it: "this account, this leg, this
         # symbol". The role decides which side of the asset the symbol
-        # is written to.
+        # is written to. BOTH is the one-account topology: a single
+        # terminal serving Leg A and Leg B.
         role = (payload.get('role') or '').strip().upper()
-        if role in ('SPOT', 'FUTURES'):
-            raw.setdefault('leg_accounts', {})[role.lower()] = name
+        claimed = (('SPOT', 'FUTURES') if role == 'BOTH'
+                   else (role,) if role in ('SPOT', 'FUTURES') else ())
+        if claimed:
+            legs = raw.setdefault('leg_accounts', {})
+            for leg_role in claimed:
+                legs[leg_role.lower()] = name
+            # RELEASE any leg this account used to hold and no longer
+            # claims. Without this, moving from BOTH back to a single
+            # leg is unexpressible — the stale mapping survives every
+            # save and the operator can never undo it from the UI.
+            for leg_role in ('spot', 'futures'):
+                if legs.get(leg_role) == name \
+                        and leg_role.upper() not in claimed:
+                    legs.pop(leg_role)
         symbol = (payload.get('symbol') or '').strip()
+        # A dual-leg account needs both symbols on the one row.
+        spot_symbol = (payload.get('spot_symbol') or '').strip()
+        fut_symbol = (payload.get('futures_symbol') or '').strip()
         specs = {field: payload.get(field)
                  for field in ('contract_size', 'swap_charge',
                                'futures_expiry')
                  if payload.get(field) not in (None, '')}
-        if symbol or specs:
+        if symbol or spot_symbol or fut_symbol or specs:
             asset_key = (payload.get('asset')
                          or next((k for k, v in (raw.get('assets') or {})
                                   .items() if v.get('enabled', True)),
@@ -776,16 +814,22 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             asset.setdefault('enabled', True)
             asset.setdefault('risk_free_rate', 0.0425)
             asset.setdefault('multiplier', 1.0)
-            if symbol:
+            if symbol and role in ('SPOT', 'FUTURES'):
+                # Single-leg row: `symbol` belongs to whichever leg the
+                # row holds.
                 if role == 'FUTURES':
-                    asset['futures_symbols'] = [symbol]
-                elif role == 'SPOT':
-                    asset['spot_symbols'] = [symbol]
+                    fut_symbol = fut_symbol or symbol
                 else:
-                    return jsonify({
-                        'success': False,
-                        'error': 'Choose a role (Spot or Futures) so the '
-                                 'symbol can be assigned to a leg'}), 400
+                    spot_symbol = spot_symbol or symbol
+            elif symbol and role != 'BOTH':
+                return jsonify({
+                    'success': False,
+                    'error': 'Choose a role (Spot or Futures) so the '
+                             'symbol can be assigned to a leg'}), 400
+            if spot_symbol and 'SPOT' in claimed:
+                asset['spot_symbols'] = [spot_symbol]
+            if fut_symbol and 'FUTURES' in claimed:
+                asset['futures_symbols'] = [fut_symbol]
             for field, key in (('contract_size', 'lot_size'),
                                ('swap_charge', 'swap_charge')):
                 if field in specs:

@@ -379,6 +379,57 @@ Three separate floods, all fixed:
   returns a constant `[]` (resting orders are not wired to it); now
   15s.
 
+## One account holding BOTH legs was unrepresentable (2026-08-07)
+
+Operator: "Both the Legs are connected. Why this error?" — the
+Exchanges page showing "No account is mapped to the FUTURES leg — the
+coordinator cannot start" over a coordinator that had started fine
+("spot on [X], futures on [X]" in the same session's log).
+
+The page modelled ONE role per account. `api_exchanges`' `role_of`
+returned `'SPOT' if legs['spot'] == name else 'FUTURES' if ...`, so on
+the one-account topology (`leg_accounts = {'spot': X, 'futures': X}`)
+the first match won, the row badged SPOT, and the banner then computed
+FUTURES as unmapped. Pure display fault — the config was correct.
+
+But the form was worse than the badge: the Leg selector had no way to
+say "both", the single Symbol box mapped to whichever role the row
+reported, and **the futures symbol was therefore unreachable from the
+UI on this topology**. The only way it ever got set was the accident
+that saving a role never RELEASED the other one, so an operator who
+saved the row twice (once as Futures, once as Spot) left both mappings
+behind.
+
+Now: `roles_of` returns a list, the row renders a badge per role and
+both symbols, the banner unions every row's roles, the selector has
+"Both legs — one account" with a second symbol box, and saving
+releases any leg the account no longer claims (without that, BOTH ->
+single is unexpressible and the stale mapping survives every save).
+
+## Oil exposed two things gold never could (2026-08-07)
+
+The operator repointed the pair at USOIL_U6 / UKOIL_V6.
+
+- **Every LIMIT scenario failed `10015 - Invalid price`** on oil while
+  the identical code passed on gold. `place_pending_limit` enforced
+  only the tick grid; MT5 ALSO requires a pending price to sit at
+  least `trade_stops_level` POINTS from the market. CFI sets that on
+  the energy symbols and leaves it 0 on XAUUSD_, so the bug could not
+  appear until the instrument changed. `BrokerSession.legal_limit_price`
+  now enforces both rules and RETURNS what it had to move and why —
+  the re-peg path (`modify_pending`) is legalised the same way, since
+  a stops level rejects every attempt to chase the market otherwise.
+- **`fut_lot_size` was read, warned about, and thrown away.**
+  `sizing.plan` takes `contract_b` from `asset['fut_lot_size']` and
+  falls back to leg A's when unset — and `_adopt_broker_specs` never
+  set it. Two legs with different contract sizes were sized as if they
+  matched, off by exactly the ratio between them. Invisible on gold
+  (100 oz both legs) and on this oil pair (1000 bbl both legs); one
+  config away from live. The mismatch warning also told the operator
+  to "fix HEDGE_RATIO", which is wrong and would redefine the spread
+  series — beta is the price coefficient, and the hedge formula
+  already divides by each leg's contract size.
+
 ## A restart replayed every command ever sent (2026-08-07)
 
 LIVE. The operator restarted the launcher and, inside half a second,

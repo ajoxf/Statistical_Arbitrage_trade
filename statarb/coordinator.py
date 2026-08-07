@@ -435,14 +435,29 @@ class Coordinator:
         if fut_report:
             fut_size = fut_report.get('contract_size')
             spot_size = asset_cfg.get('lot_size')
+            if fut_size:
+                # Leg B's OWN contract size. sizing.plan reads this as
+                # `fut_lot_size` and falls back to leg A's when it is
+                # missing — and nothing used to set it, so two legs with
+                # different contract sizes were silently sized as if
+                # they matched. That is the "wrong by 2x silently" this
+                # method exists to prevent, in the method itself.
+                asset_cfg['fut_lot_size'] = float(fut_size)
             if fut_size and spot_size and abs(fut_size - spot_size) > 1e-9:
-                implied = spot_size / fut_size
+                # NOT a reason to touch HEDGE_RATIO. Beta is the PRICE
+                # coefficient of the spread (futures - beta * spot);
+                # the contract sizes are handled by the hedge formula
+                # L_B = L_A * C_A / (beta * C_B). Changing beta to
+                # "compensate" would redefine the series the z-score is
+                # measured on.
                 logging.warning(
                     "%s: spot is %g/lot but futures is %g/lot — the hedge "
-                    "ratio implied by the contract specs is %.4f, "
-                    "HEDGE_RATIO is %.4f. Fix it on the Settings page "
-                    "before trading size.", asset_key, spot_size, fut_size,
-                    implied, self.config.TRADING.get('HEDGE_RATIO', 1.0))
+                    "is sized from both contract sizes, so the lot counts "
+                    "will differ by %.4gx. This is NOT a reason to change "
+                    "HEDGE_RATIO (%.4f), which is the spread's price "
+                    "coefficient, not a lot ratio.",
+                    asset_key, spot_size, fut_size, spot_size / fut_size,
+                    self.config.TRADING.get('HEDGE_RATIO', 1.0))
 
             expiry = fut_report.get('expiry')
             if expiry and not asset_cfg.get('futures_expiry'):

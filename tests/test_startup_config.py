@@ -623,16 +623,29 @@ def test_a_contract_size_that_contradicts_the_config_is_flagged(
     assert "using the broker's number" in caplog.text
 
 
-def test_legs_with_different_contract_sizes_warn_about_hedge_ratio(
+def test_each_legs_own_contract_size_is_adopted(
         config, tmp_path, monkeypatch, caplog):
+    """sizing.plan reads leg B's size as `fut_lot_size` and falls back
+    to leg A's when unset. Nothing wrote it, so two legs with different
+    contract sizes were sized as if they matched — silently, and by the
+    exact ratio between them."""
     config = gold_only(config)
     config.TRADING['HEDGE_RATIO'] = 1.0
     with caplog.at_level('WARNING'):
-        spec_coordinator(
+        coord = spec_coordinator(
             config, tmp_path, monkeypatch,
             SpecLeg('spot', {'XAUUSD': 'Gold'}, {'contract_size': 100.0}),
             SpecLeg('fut', {'GC1225': 'Gold fut'}, {'contract_size': 50.0}))
-    assert 'implied by the contract specs is 2.0000' in caplog.text
+    asset = coord.config.ASSETS['GOLD']
+    assert asset['lot_size'] == 100.0
+    assert asset['fut_lot_size'] == 50.0
+
+    # The mismatch is reported, but NOT as a reason to retune beta:
+    # HEDGE_RATIO is the spread's price coefficient, and the hedge
+    # formula already divides by each leg's contract size.
+    assert 'spot is 100/lot but futures is 50/lot' in caplog.text
+    assert 'NOT a reason to change HEDGE_RATIO' in caplog.text
+    assert 'implied by the contract specs' not in caplog.text
 
 
 def test_a_real_futures_expiry_is_picked_up_from_the_broker(
