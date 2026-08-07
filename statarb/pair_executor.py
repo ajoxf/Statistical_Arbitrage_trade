@@ -30,6 +30,7 @@ import time as time_mod
 import uuid
 
 from .models import OrderSide, SignalType, Trade
+from . import sizing
 from . import slippage
 
 EPS = 1e-9
@@ -285,7 +286,22 @@ class PairExecutor:
     # Atomic pre-checks
     # ------------------------------------------------------------------
 
-    def _precheck_pair(self, lot_size, spot_symbol, futures_symbol):
+    def _contract_size(self, asset_key, role):
+        """Units per lot for one leg.
+
+        Read from the terminal at startup (_adopt_broker_specs) into
+        the asset config. `lot_size` is leg A's; leg B carries its own
+        when the two differ, and falls back to leg A's when it does
+        not — which is the common case and the only one this engine has
+        been run in."""
+        asset = self.config.ASSETS.get(asset_key) or {}
+        if role == 'futures':
+            return float(asset.get('fut_lot_size')
+                         or asset.get('lot_size') or 1.0)
+        return float(asset.get('lot_size') or 1.0)
+
+    def _precheck_pair(self, asset_key, lot_size, spot_symbol,
+                       futures_symbol):
         """Validate both legs up front. Returns an error string or None."""
         spot_meta = self._meta(self.spot_leg, spot_symbol)
         fut_meta = self._meta(self.futures_leg, futures_symbol)
@@ -299,7 +315,9 @@ class PairExecutor:
         hedge_ratio = self.config.TRADING.get('HEDGE_RATIO', 1.0)
         slice_lots = self.config.TRADING.get('SLICE_LOTS') or lot_size
         spot_child = min(slice_lots, lot_size)
-        fut_child = min(slice_lots, lot_size) * hedge_ratio
+        fut_child = sizing.hedge_lots(
+            spot_child, self._contract_size(asset_key, 'spot'),
+            self._contract_size(asset_key, 'futures'), hedge_ratio)
 
         if spot_child < spot_meta.get('volume_min', 0) - EPS:
             return (f"spot child order {spot_child:.2f} below minimum "
@@ -365,7 +383,7 @@ class PairExecutor:
         # Atomic pre-checks: BOTH legs validated before placing EITHER
         # order — a leg that fails minimums after the other filled is
         # an instant naked position
-        precheck_error = self._precheck_pair(lot_size, spot_symbol,
+        precheck_error = self._precheck_pair(asset, lot_size, spot_symbol,
                                              futures_symbol)
         if precheck_error:
             logging.error("Entry refused (pre-check): %s", precheck_error)
@@ -387,9 +405,14 @@ class PairExecutor:
         # Leg 2: futures hedge — short patience, every second unhedged
         # is naked exposure; timeout crosses the spread
         hedge_ratio = self.config.TRADING.get('HEDGE_RATIO', 1.0)
-        fut_step = self._meta(self.futures_leg,
-                              futures_symbol).get('volume_step') or 0.01
-        hedge_target = self._round_step(spot_filled * hedge_ratio, fut_step)
+        fut_meta = self._meta(self.futures_leg, futures_symbol)
+        fut_step = fut_meta.get('volume_step') or 0.01
+        # Sized off the actual spot FILL, and off both CONTRACT SIZES —
+        # a hedge of `spot_lots x beta` is only right when beta is 1 and
+        # the two contracts are equal. See statarb/sizing.py.
+        hedge_target = sizing.hedge_lots(
+            spot_filled, self._contract_size(asset, 'spot'),
+            self._contract_size(asset, 'futures'), hedge_ratio, fut_step)
 
         fut_filled, fut_vwap, fut_tickets = self._send_sliced(
             self.futures_leg, futures_symbol, futures_side, hedge_target,
@@ -408,8 +431,13 @@ class PairExecutor:
         if fut_filled < hedge_target - EPS:
             spot_step = self._meta(self.spot_leg,
                                    spot_symbol).get('volume_step') or 0.01
-            matched_spot = self._round_step(fut_filled / hedge_ratio,
-                                            spot_step)
+            # The inverse of hedge_lots: how much spot this partial
+            # futures fill actually covers. Must use the same contract
+            # sizes, or a partial fill unwinds the wrong amount.
+            matched_spot = sizing.hedge_lots(
+                fut_filled, self._contract_size(asset, 'futures'),
+                self._contract_size(asset, 'spot'), 1.0 / hedge_ratio
+                if hedge_ratio else 1.0, spot_step)
             min_fraction = execution.get('MIN_MATCHED_FRACTION', 0.0)
 
             if matched_spot < lot_size * min_fraction - EPS:

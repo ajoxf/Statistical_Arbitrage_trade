@@ -37,6 +37,7 @@ from . import diagnostics, scenarios
 from .shadow import ShadowTracker
 from .signals import SignalGenerator, ZSignalGenerator
 from .spread import SpreadStats
+from . import sizing
 from . import slippage
 from . import webapi
 
@@ -712,7 +713,7 @@ class Coordinator:
 
     def _entry_signal(self, asset_key, stats, market_data, active,
                       contract_size):
-        clip = self._clip_lots()
+        clip = self._clip_lots(asset_key, market_data)
         if self.use_z:
             if stats is None:
                 return None
@@ -739,13 +740,58 @@ class Coordinator:
                 self.data_logger.log_sd_touch(asset_key, level, 'DOWN',
                                               z, spread)
 
-    def _clip_lots(self):
-        return self.config.TRADING.get('CLIP_LOTS', 1.0) \
-            * self.risk_manager.size_multiplier()
+    def _sizing_plan(self, asset_key, market_data=None):
+        """Resolve this entry's lots for BOTH legs.
+
+        In 'notional' mode the operator sets the money per leg on the
+        Settings page and the lots come from the live price, so the
+        same setting means the same risk on gold and on oil. In 'lots'
+        mode CLIP_LOTS is the anchor, as before. Either way the hedge
+        leg is derived from leg A and the two CONTRACT SIZES, never
+        from the lot count alone (statarb/sizing.py).
+        """
+        market_data = market_data or (
+            self.active_assets.get(asset_key) or {}).get('last_data') or {}
+        asset = self.config.ASSETS.get(asset_key) or {}
+        contract_a = float(asset.get('lot_size') or 1.0)
+        contract_b = float(asset.get('fut_lot_size') or contract_a)
+        legs = self.active_assets.get(asset_key) or {}
+        meta_a = meta_b = None
+        for leg, symbol_key, target in (
+                (self.spot_leg, 'spot_symbol', 'a'),
+                (self.futures_leg, 'futures_symbol', 'b')):
+            symbol = legs.get(symbol_key)
+            probe = getattr(self.executor, '_meta', None)
+            if symbol and callable(probe):
+                try:
+                    meta = probe(leg, symbol)
+                except Exception:
+                    meta = None
+                if target == 'a':
+                    meta_a = meta
+                else:
+                    meta_b = meta
+        return sizing.plan(
+            self.config, contract_a, contract_b,
+            market_data.get('spot_price'), market_data.get('futures_price'),
+            meta_a=meta_a, meta_b=meta_b,
+            size_multiplier=self.risk_manager.size_multiplier())
+
+    def _clip_lots(self, asset_key=None, market_data=None):
+        """Leg A lots for the next entry."""
+        if asset_key is None:
+            return self.config.TRADING.get('CLIP_LOTS', 1.0) \
+                * self.risk_manager.size_multiplier()
+        return self._sizing_plan(asset_key, market_data)['leg_a_lots']
 
     def _enter(self, asset_key, signal_type, market_data, stats,
                contract_size):
-        clip = self._clip_lots()
+        size = self._sizing_plan(asset_key, market_data)
+        clip = size['leg_a_lots']
+        if size.get('reason') or clip <= 0:
+            logging.warning("Entry rejected for %s: %s", asset_key,
+                            size.get('reason') or 'sizing resolved to 0 lots')
+            return
 
         valid, reason = self.risk_manager.validate_new_position(
             asset_key, signal_type, clip, self.position_manager)
@@ -1514,18 +1560,20 @@ class Coordinator:
         combined bid-ask against a sigma far below it, this is the most
         decision-relevant number on the page.
         """
-        lots = self._clip_lots()
-        contract = self.config.ASSETS.get(asset_key, {}).get('lot_size', 1.0)
-        beta = self.config.TRADING.get('HEDGE_RATIO', 1.0)
-        oz = lots * contract
-        spot_notional = oz * (md.get('spot_price') or 0.0)
-        fut_notional = oz * beta * (md.get('futures_price') or 0.0)
+        size = self._sizing_plan(asset_key, md)
+        lots = size['leg_a_lots']
+        contract = size['leg_a_contract']
+        spot_notional = size['leg_a_notional_usd']
+        fut_notional = size['leg_b_notional_usd']
 
         block = {
             'clip_lots': lots, 'contract_size': contract,
             'spot_notional': spot_notional, 'fut_notional': fut_notional,
             'order_mode': str(self.config.EXECUTION.get(
                 'ENTRY_STYLE', 'market')).upper(),
+            # The whole sizing decision, so the card can show how the
+            # lots were arrived at and how balanced the pair ends up.
+            'sizing': size,
         }
         try:
             cost = costs_mod.round_trip_cost(md, lots, contract,

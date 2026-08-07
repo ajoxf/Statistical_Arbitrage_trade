@@ -176,9 +176,12 @@ def test_settings_page_is_mt5_native_not_crypto(client):
     assert 'leg_spot_account' in body and 'leg_futures_account' in body
     # All three topologies are explained on the page
     assert 'Both legs' in body
-    # Sizing is in lots, not USD notional
+    # Both sizing anchors are offered: lots, and W3's notional-per-leg
+    # (restored 2026-08-07 at the owner's request — a lot is a different
+    # amount of money on every instrument).
     assert 'clip_lots' in body
-    assert 'position_size_usd' not in body
+    assert 'position_size_usd' in body
+    assert 'sizing_mode' in body
 
 
 def test_all_pages_are_free_of_crypto_wording(client):
@@ -1275,7 +1278,8 @@ def test_the_capital_preview_converts_lots_to_notional(client):
     whose real notional is $42m."""
     page = client.get('/settings').get_data(as_text=True)
     assert 'ps * contract * _cachedLegAPrice' in page
-    assert 'ps * beta * contract * _cachedLegBPrice' in page
+    # Leg B now comes from BOTH contract sizes, not from beta alone.
+    assert 'lotsB * contractB * _cachedLegBPrice' in page
     assert 'lots ×' in page          # the breakdown states the conversion
 
 
@@ -1462,3 +1466,61 @@ def test_the_journal_has_a_slippage_column(client):
     assert 'Not measured — this trade closed before slippage tracking' in page
     # Blank, never a zero, for trades that predate the measurement.
     assert "slip == null ? '—'" in page
+
+
+# --- notional sizing (2026-08-07, owner: the W3 model) --------------------
+
+def test_the_operator_can_save_a_leg_notional(client):
+    """Owner: "User fixes the notional value of the leg and the lots
+    are calculated by itself... The User saves the leg Notional Value
+    in the Settings page"."""
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'Leg Notional Value' in page
+    assert 'id="position_size_usd"' in page
+    assert 'id="sizing_mode"' in page
+    r = client.post('/api/config', json={'sizing_mode': 'notional',
+                                         'position_size_usd': 2_500_000})
+    assert r.get_json()['success'] is True
+    with open(client.tmp_path / 'config.json') as f:
+        trading = json.load(f)['trading']
+    assert trading['SIZING_MODE'] == 'notional'
+    assert trading['NOTIONAL_PER_LEG_USD'] == 2_500_000
+
+
+def test_only_one_sizing_control_is_shown_at_a_time(client):
+    """Showing both invites setting one and having the other win."""
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'function updateSizingMode' in page
+    assert "mode === 'notional' ? '' : 'none'" in page
+
+
+def test_the_settings_preview_derives_lots_from_the_notional(client):
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'function sizingLegALots' in page
+    assert 'target / (contract * _cachedLegAPrice)' in page
+
+
+def test_the_dashboard_states_the_lots_and_the_balance(client):
+    """"Balanced" is the point of pairing two instruments, and lot
+    rounding makes exact balance impossible — so state the residual."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'id="sizing-lots"' in page
+    assert 'id="sizing-balance"' in page
+    assert 'Math.abs(pct) <= 2' in page          # the tolerance band
+    assert 'more on A' in page and 'more on B' in page
+
+
+def test_the_dashboard_explains_how_the_hedge_is_derived(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'L_B = L_A × C_A ÷ (β × C_B)' in page
+
+
+def test_configured_leverage_reaches_the_margin_figures(client):
+    """The symbol test inherited from W3 counted hyphens, so no MT5
+    symbol ever registered as levered and both legs were rendered as
+    unlevered cash — quoting the full notional as the requirement."""
+    page = client.get('/').get_data(as_text=True)
+    assert '(symbol.match(/-/g) || []).length >= 2' not in page
+    assert '_engineSizing.leg_a_margin_usd' in page
+    settings = client.get('/settings').get_data(as_text=True)
+    assert '(symbol.match(/-/g) || []).length >= 2' not in settings

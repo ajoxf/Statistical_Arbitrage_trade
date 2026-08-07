@@ -58,6 +58,10 @@ FIELD_MAP = {
     'hedge_ratio': ('TRADING', 'HEDGE_RATIO'),
     'clip_lots': ('TRADING', 'CLIP_LOTS'),
     'slice_lots': ('TRADING', 'SLICE_LOTS'),
+    # W3's sizing model, restored 2026-08-07: the operator saves the
+    # money per LEG and the lots follow from the live price.
+    'sizing_mode': ('TRADING', 'SIZING_MODE'),
+    'position_size_usd': ('TRADING', 'NOTIONAL_PER_LEG_USD'),
     'daily_lot_target': ('TRADING', 'DAILY_LOT_TARGET'),
     'poll_interval_sec': ('TRADING', 'POLL_INTERVAL_SEC'),
 
@@ -496,13 +500,15 @@ def status_to_ui(status, config_raw):
             'fee_bps_used': (round(first['rt_fees_bps'], 2)
                              if first.get('rt_fees_bps') is not None else None),
             'order_mode': first.get('order_mode'),
-            # Position sizing: this engine's anchor is CLIP_LOTS, not a
-            # USD figure, so the notionals are computed from lots x
-            # contract size x live mid rather than a configured amount.
+            # Position sizing. The anchor is either CLIP_LOTS or, in
+            # notional mode, the money the operator saved per leg —
+            # `sizing` carries the whole resolved decision including
+            # each leg's lots, margin, and how balanced the pair is.
             'leg_a_notional': first.get('spot_notional'),
             'leg_b_notional': first.get('fut_notional'),
             'clip_lots': first.get('clip_lots'),
             'contract_size': first.get('contract_size'),
+            'sizing': first.get('sizing'),
             'mean': first.get('mu'), 'std': first.get('sigma'),
             # The Statistics & Regime card is rendered by updateSignal(),
             # which receives THIS block — not the top level. Publishing

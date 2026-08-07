@@ -502,6 +502,33 @@
                             <h6 class="text-secondary mb-3">Position Sizing</h6>
                         </div>
                         <div class="col-md-6">
+                            <label class="form-label">Size By</label>
+                            <select class="form-select" id="sizing_mode" name="sizing_mode"
+                                    onchange="updateSizingMode()">
+                                <option value="notional">Notional value per leg ($)</option>
+                                <option value="lots">Lots per leg</option>
+                            </select>
+                            <small class="text-secondary d-block">A lot is a different amount of
+                            money on every instrument, so sizing by lots means the same setting is
+                            $21m of gold and $80k of oil. Sizing by <strong>notional</strong> fixes
+                            the money and derives the lots from the live price &mdash; the only way
+                            two different instruments end up balanced against each other.</small>
+                        </div>
+                        <div class="col-md-6" id="notional_field">
+                            <label class="form-label">Leg Notional Value ($ per leg)</label>
+                            <input type="number" class="form-control" id="position_size_usd"
+                                   name="position_size_usd" value="{{ config.position_size_usd }}"
+                                   step="1000" min="0">
+                            <small class="text-secondary d-block">Money on ONE leg &mdash;
+                            <code>NOTIONAL_PER_LEG_USD</code>. Lots =
+                            notional &divide; (contract size &times; price), rounded down to a
+                            tradable step. The hedge leg is then derived from this leg and both
+                            contract sizes, so the pair balances even when the two contracts differ.
+                            Margin actually locked is this &divide; the leg's leverage.</small>
+                            <small class="text-secondary mt-1 d-block" style="font-size: 0.7rem;"
+                                   id="notional_preview"></small>
+                        </div>
+                        <div class="col-md-6" id="clip_lots_field">
                             <label class="form-label">Clip Size (LOTS per leg)</label>
                             <input type="number" class="form-control" id="clip_lots" name="clip_lots" value="{{ config.clip_lots }}" step="0.01" min="0.01">
                             <small class="text-secondary d-block">LOTS, not dollars &mdash; this is
@@ -1223,10 +1250,12 @@
     let _cachedLegBPrice = 0;
 
     // Mirrors adapters/base.is_derivative — drives the Cash vs Lev decision
+    // See the note on _isDerivative in dashboard.html: this is W3's
+    // hyphen-counting symbol test and it matches no MT5 symbol, so the
+    // capital preview quietly ignored the leverage on both legs and
+    // quoted the full notional as the requirement.
     function _settingsIsDerivative(symbol) {
-        if (!symbol) return false;
-        if (symbol.endsWith('-SWAP')) return true;
-        return (symbol.match(/-/g) || []).length >= 2;
+        return true;
     }
     function _fmtUsdLong(n) {
         if (!isFinite(n)) return '—';
@@ -1235,6 +1264,57 @@
     function _fmtUsdShort(n) {
         if (!isFinite(n)) return '—';
         return '$' + Math.round(n).toLocaleString();
+    }
+
+    // Which sizing control applies. Showing both at once invites the
+    // operator to set one and have the other silently win.
+    function updateSizingMode() {
+        const mode = (document.getElementById('sizing_mode') || {}).value
+                     || 'lots';
+        const notionalField = document.getElementById('notional_field');
+        const lotsField = document.getElementById('clip_lots_field');
+        if (notionalField) notionalField.style.display =
+            mode === 'notional' ? '' : 'none';
+        if (lotsField) lotsField.style.display =
+            mode === 'notional' ? 'none' : '';
+        updateCapitalPreview();
+    }
+
+    // Leg A lots for the current settings — read straight from the
+    // clip, or derived from the notional exactly as sizing.py does.
+    function sizingLegALots(beta) {
+        const mode = (document.getElementById('sizing_mode') || {}).value
+                     || 'lots';
+        if (mode !== 'notional') {
+            return parseFloat(
+                document.getElementById('clip_lots').value) || 0;
+        }
+        const target = parseFloat(
+            document.getElementById('position_size_usd').value) || 0;
+        const contract = parseFloat(
+            (document.getElementById('contract_size') || {}).value) ||
+            {{ config.contract_size or 100 }};
+        const preview = document.getElementById('notional_preview');
+        if (!target || !(_cachedLegAPrice > 0)) {
+            if (preview) preview.textContent = _cachedLegAPrice > 0
+                ? '' : 'Waiting for a live price on Leg A to convert this '
+                     + 'into lots.';
+            return 0;
+        }
+        const lots = target / (contract * _cachedLegAPrice);
+        if (preview) {
+            const contractB = parseFloat(
+                (document.getElementById('fut_contract_size') || {}).value)
+                || contract;
+            const lotsB = lots * contract / (beta * contractB);
+            preview.textContent =
+                '≈ ' + lots.toFixed(2) + ' lots on Leg A and '
+                + lotsB.toFixed(2) + ' on Leg B '
+                + '(' + target.toLocaleString() + ' ÷ (' + contract
+                + ' × ' + _cachedLegAPrice.toFixed(2) + ')). '
+                + 'The broker rounds down to a tradable step.';
+        }
+        return lots;
     }
 
     // Mirror of core/trading_engine._check_sufficient_balance — same formula,
@@ -1246,8 +1326,11 @@
         const breakEl = document.getElementById('capital_preview_breakdown');
         if (!valEl || !breakEl) return;
 
-        const ps   = parseFloat(document.getElementById('clip_lots').value) || 0;
         const beta = Math.max(parseFloat(document.getElementById('hedge_ratio').value) || 1, 1e-9);
+        // In notional mode the LOTS are derived, so the preview has to
+        // derive them the same way the engine does rather than reading
+        // a clip the operator is no longer setting.
+        const ps = sizingLegALots(beta);
         const aLevRaw = parseInt(document.getElementById('spot_leverage').value, 10)    || 1;
         const bLevRaw = parseInt(document.getElementById('futures_leverage').value, 10) || 1;
         const aSym = (document.getElementById('spot_symbol').value    || '').trim();
@@ -1270,10 +1353,16 @@
         const contract = parseFloat(
             (document.getElementById('contract_size') || {}).value) ||
             {{ config.contract_size or 100 }};
+        // Leg B lots come from BOTH contract sizes, not from beta
+        // alone: L_B = L_A x C_A / (beta x C_B). See statarb/sizing.py.
+        const contractB = parseFloat(
+            (document.getElementById('fut_contract_size') || {}).value)
+            || contract;
+        const lotsB = ps * contract / (beta * contractB);
         const notA = (_cachedLegAPrice > 0)
             ? ps * contract * _cachedLegAPrice : null;
         const notB = (_cachedLegBPrice > 0)
-            ? ps * beta * contract * _cachedLegBPrice : null;
+            ? lotsB * contractB * _cachedLegBPrice : null;
         if (notA == null || notB == null) {
             valEl.textContent = '—';
             breakEl.textContent = ' (waiting for live prices on both legs)';
@@ -1506,7 +1595,8 @@
     // Wire the capital preview to every input that affects the math.
     // Symbols are already covered — they fire fetchBetaSuggestion which
     // calls updateCapitalPreview once prices land.
-    ['clip_lots', 'hedge_ratio', 'spot_leverage', 'futures_leverage', 'm2m_buffer_pct']
+    ['clip_lots', 'position_size_usd', 'sizing_mode', 'hedge_ratio',
+     'spot_leverage', 'futures_leverage', 'm2m_buffer_pct']
         .forEach(function(id) {
             const el = document.getElementById(id);
             if (!el) return;
@@ -1658,6 +1748,9 @@
             rfq_notional_threshold_usd: parseFloat(document.getElementById('rfq_notional_threshold_usd').value) || 0,
             rfq_max_markup_bps: parseFloat(document.getElementById('rfq_max_markup_bps').value) || 0,
             clip_lots: parseFloat(document.getElementById('clip_lots').value),
+            sizing_mode: document.getElementById('sizing_mode').value,
+            position_size_usd: parseFloat(
+                document.getElementById('position_size_usd').value) || 0,
             slice_lots: parseFloat(document.getElementById('slice_lots').value) || 0,
             max_lot_size: parseFloat(document.getElementById('max_lot_size').value),
             spot_leverage: parseInt(document.getElementById('spot_leverage').value),
@@ -1955,6 +2048,11 @@
                 document.getElementById('min_std_multiple').value = config.min_std_multiple;
                 document.getElementById('min_entry_rr_multiple').value = config.min_entry_rr_multiple || 0;
                 document.getElementById('clip_lots').value = config.clip_lots;
+                document.getElementById('sizing_mode').value =
+                    config.sizing_mode || 'lots';
+                document.getElementById('position_size_usd').value =
+                    config.position_size_usd || 0;
+                updateSizingMode();
                 document.getElementById('slice_lots').value = config.slice_lots;
                 document.getElementById('max_lot_size').value = config.max_lot_size;
                 document.getElementById('spot_leverage').value = config.spot_leverage || 1;
@@ -2465,5 +2563,6 @@
     updatePairLabel();
     checkPairWarning();
     fetchBetaSuggestion();
+    updateSizingMode();
 </script>
 {% endblock %}

@@ -243,10 +243,22 @@ class AlgoTradingConfig:
             'Z_STOP_EXIT_ENABLED': False,
         }
         self.TRADING = {
+            # 'lots'     -> CLIP_LOTS is the anchor (original behaviour)
+            # 'notional' -> NOTIONAL_PER_LEG_USD is the anchor and the
+            #               lots are derived from the live price. The
+            #               only mode in which "balanced" means anything
+            #               across two different instruments, because a
+            #               lot is a different amount of money on each.
+            'SIZING_MODE': 'lots',
+            'NOTIONAL_PER_LEG_USD': 0.0,   # per LEG, not per pair
             'CLIP_LOTS': 1.0,          # lots per entry (per leg)
             'SLICE_LOTS': 0.0,         # child-order size; 0 = no slicing
             'DAILY_LOT_TARGET': 0.0,   # throughput target/day (NOT a cap)
-            'HEDGE_RATIO': 1.0,        # futures lots per spot lot
+            # The price coefficient in spread = legB - HEDGE_RATIO*legA.
+            # NOT the lot ratio: the hedge is derived from it and the two
+            # contract sizes (statarb/sizing.py). Those coincide only at
+            # beta 1 with equal contract sizes.
+            'HEDGE_RATIO': 1.0,
             # Feed cadence, and therefore the dashboard's: the status
             # file is written once per poll. Matches the dashboard's own
             # 300ms refresh. Safe to run this fast since SpreadStats

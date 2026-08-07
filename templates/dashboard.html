@@ -321,10 +321,25 @@
                         </div>
                     </div>
                 </div>
-                <div class="text-secondary mt-2" style="font-size: 0.65rem;">
-                    Leg A notional is the sizing anchor (= Position Size). Leg B notional =
-                    Position Size × mid(B) ÷ (β × mid(A)) — matches Leg A when β is dollar-neutral.
+                <!-- Lots per leg and how balanced the pair ends up.
+                     "Balanced" is the whole point of pairing two
+                     instruments, and rounding to a tradable lot makes
+                     exact balance impossible — so state the residual
+                     rather than imply there is none. -->
+                <div class="d-flex justify-content-between mt-2"
+                     style="font-size: 0.7rem;"
+                     title="Lots actually sent to each account. Leg B is derived from Leg A and BOTH contract sizes: L_B = L_A × C_A ÷ (β × C_B). That is what makes the pair's P&L equal the spread move — a plain lots × β hedge is only right when β is 1 and the two contracts are the same size.">
+                    <span class="text-secondary">Lots (A / B):</span>
+                    <span id="sizing-lots" class="font-monospace">&mdash;</span>
                 </div>
+                <div class="d-flex justify-content-between"
+                     style="font-size: 0.7rem;"
+                     title="Difference between the two legs' notional exposure. Anything more than a percent or two means the hedge ratio or a contract size is wrong — the pair is carrying net directional risk it was not meant to.">
+                    <span class="text-secondary">Balance:</span>
+                    <span id="sizing-balance" class="font-monospace">&mdash;</span>
+                </div>
+                <div class="text-secondary mt-1" id="sizing-basis"
+                     style="font-size: 0.65rem;"></div>
             </div>
         </div>
 
@@ -2091,10 +2106,15 @@
     let _legBSymbol = {{ (config.futures_symbol or '') | tojson }};
 
     // Mirrors adapters/base.is_derivative — MT5 instId shape heuristic
+    // Inherited from W3, where it told a spot pair from a perpetual by
+    // counting hyphens in the exchange's symbol format. No MT5 symbol
+    // looks like that — XAUUSD_, GC1226, WTI, BRENT all return false —
+    // so every leg was rendered as unlevered cash and the leverage the
+    // operator configured never reached the margin figures. MT5
+    // accounts are margin accounts; leverage applies to both legs, and
+    // the engine already computes each leg's margin from it.
     function _isDerivative(symbol) {
-        if (!symbol) return false;
-        if (symbol.endsWith('-SWAP')) return true;
-        return (symbol.match(/-/g) || []).length >= 2;
+        return true;
     }
     function _fmtMoney(n) {
         if (n === null || n === undefined || !isFinite(n) || n <= 0) return '—';
@@ -2199,7 +2219,12 @@
         // USD position size, which this engine does not use and which
         // left the card showing an em dash.
         const aNotional = (_engineLegANotional != null) ? _engineLegANotional : ps;
-        const aMargin = aLev > 0 ? aNotional / aLev : aNotional;
+        // Prefer the engine's own figure — it divides each leg's
+        // notional by THAT leg's leverage, which is the number the
+        // pre-trade capital check uses.
+        const aMargin = (_engineSizing && _engineSizing.leg_a_margin_usd != null)
+            ? _engineSizing.leg_a_margin_usd
+            : (aLev > 0 ? aNotional / aLev : aNotional);
         const aLevText = aIsDeriv ? (aLev + 'x') : 'Cash';
         const aNoEl = document.getElementById('leg-a-notional');
         const aLvEl = document.getElementById('leg-a-leverage-disp');
@@ -2217,7 +2242,9 @@
         } else if (spotMid && futMid && spotMid > 0 && beta > 0) {
             bNotional = ps * (futMid / (beta * spotMid));
         }
-        const bMargin = bLev > 0 ? bNotional / bLev : bNotional;
+        const bMargin = (_engineSizing && _engineSizing.leg_b_margin_usd != null)
+            ? _engineSizing.leg_b_margin_usd
+            : (bLev > 0 ? bNotional / bLev : bNotional);
         const bLevText = bIsDeriv ? (bLev + 'x') : 'Cash';
         const bNoEl = document.getElementById('leg-b-notional');
         const bLvEl = document.getElementById('leg-b-leverage-disp');
@@ -2231,6 +2258,56 @@
         // not just one leg.
         const totalNotionalEl = document.getElementById('config-total-notional');
         if (totalNotionalEl) totalNotionalEl.textContent = _fmtMoney(aNotional + bNotional);
+
+        // Lots per leg, how the size was arrived at, and the residual
+        // imbalance. The engine resolves all of it; the browser must
+        // not re-derive lots or the two can disagree.
+        const sz = _engineSizing;
+        const lotsEl = document.getElementById('sizing-lots');
+        const balEl  = document.getElementById('sizing-balance');
+        const basisEl = document.getElementById('sizing-basis');
+        if (lotsEl) {
+            lotsEl.textContent = sz
+                ? (sz.leg_a_lots || 0).toFixed(2) + ' / '
+                  + (sz.leg_b_lots || 0).toFixed(2)
+                : '—';
+        }
+        if (balEl) {
+            if (!sz || sz.imbalance_pct == null) {
+                balEl.textContent = '—';
+                balEl.className = 'font-monospace';
+            } else {
+                const pct = sz.imbalance_pct;
+                // A couple of percent is lot rounding. More than that
+                // is a wrong hedge ratio or contract size, and the pair
+                // is carrying directional risk it was not meant to.
+                const ok = Math.abs(pct) <= 2;
+                balEl.className = 'font-monospace '
+                    + (ok ? 'text-success' : 'text-danger');
+                balEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2)
+                    + '% (' + _fmtMoney(Math.abs(sz.imbalance_usd || 0))
+                    + (pct >= 0 ? ' more on A)' : ' more on B)');
+            }
+        }
+        if (basisEl) {
+            if (!sz) {
+                basisEl.textContent = '';
+            } else if (sz.reason) {
+                basisEl.className = 'text-danger mt-1';
+                basisEl.textContent = 'Cannot size this trade: ' + sz.reason;
+            } else if (sz.mode === 'notional') {
+                basisEl.className = 'text-secondary mt-1';
+                basisEl.textContent = 'Sized from '
+                    + _fmtMoney(sz.target_notional_usd || 0)
+                    + ' per leg (Settings → Leg Notional Value); lots '
+                    + 'follow the live price.';
+            } else {
+                basisEl.className = 'text-secondary mt-1';
+                basisEl.textContent = 'Sized from ' + (sz.leg_a_lots || 0)
+                    + ' lots per leg (Settings → Clip Size). Switch to '
+                    + 'notional sizing to fix the money instead.';
+            }
+        }
     }
 
     // Headline price = MID (bid+ask)/2 — this is what the strategy trades on
@@ -2669,6 +2746,7 @@
         updateFilterStatus('hurst-status', data.hurst_ok, data.hurst);
         updateFilterStatus('std-status', data.std_filter_ok);
 
+        if (data.sizing) _engineSizing = data.sizing;
         if (data.leg_a_notional != null) _engineLegANotional = data.leg_a_notional;
         if (data.leg_b_notional != null) _engineLegBNotional = data.leg_b_notional;
 
@@ -2790,6 +2868,7 @@
     // USD position size (which this engine never sets, leaving the
     // Position Sizing card empty).
     let _engineLegANotional = null, _engineLegBNotional = null;
+    let _engineSizing = null;   // the engine's resolved sizing plan
     let _cachedLookback = {{ config.min_samples if config.min_samples else 100 }};
 
     function _relAge(ms) {

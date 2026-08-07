@@ -68,6 +68,9 @@ statarb/
   fairvalue.py          theoretical spread by pair type —
                         DISPLAY ONLY, never a signal input
   exits.py              ExitLadder — dollar levels frozen at entry
+  sizing.py             lots per leg: notional-anchored or clip-
+                        anchored, and the hedge derived from BOTH
+                        contract sizes (NOT lots x beta)
   slippage.py           decision-to-fill: what the signal saw (mid),
                         what it was executable at (touch), what MT5
                         filled — crossing and slippage kept APART
@@ -344,6 +347,55 @@ falls when the market is quieter now than a window ago. It now reads
 (`SpreadStats.quote_rate_per_min`), which is the quantity actually
 changing, and goes amber below ~6/min because a thin window is what
 collapses sigma.
+
+## Position sizing: notional per leg (2026-08-07, owner)
+
+Owner: "the way we had it before in the W3 project is — User fixes the
+notional value of the leg and the lots are calculated by itself and
+after considering the leverage. The User saves the leg Notional Value
+in the Settings page." Also: "if I am doing WTI and BRENT the
+quantities after Hedge Ratio should be balanced."
+
+`TRADING.SIZING_MODE` is `lots` (CLIP_LOTS, the original) or `notional`
+(`NOTIONAL_PER_LEG_USD`, W3's model). Notional mode is the only one in
+which "balanced" means anything across two instruments — a lot is a
+different amount of money on each, so one CLIP_LOTS is $21m of gold and
+$80k of oil. Lots = notional / (contract size x price), rounded DOWN to
+a tradable step; margin = notional / that leg's leverage.
+
+**HEDGE_RATIO is the price coefficient, NOT the lot ratio.** From
+`spread = P_B - beta * P_A`, matching the pair's P&L to the spread move
+requires `L_A*C_A = beta * L_B*C_B`, i.e.
+
+    L_B = L_A * C_A / (beta * C_B)
+
+The engine used to size the hedge as `L_B = L_A * beta`. Identical only
+at beta 1 with equal contract sizes — which is the ONLY configuration
+it has ever been run in (gold, 100 oz both legs), so it never showed.
+Away from there it was wrong twice over: different contract sizes left
+the pair unbalanced by their ratio, and **beta != 1 INVERTED it** (at
+beta 2 the correct hedge is HALF the spot lots; the old rule traded
+double, turning a should-be-zero move into a loss three times the
+intended size). Regression test: a pure beta move must net to zero,
+parameterised over four contract pairs x four betas — it fails under
+the old rule for every case except the gold one.
+
+The same `k = L_B * C_B` is what turns a spread move into dollars.
+ExitLadder and slippage.py still use leg A's units (`spot_lots x
+contract`); equal at beta 1 with equal contracts, off by beta otherwise
+— NOT yet corrected, flagged here.
+
+The dashboard's Position Sizing card states the lots per leg and the
+residual imbalance (green within 2%, red beyond — rounding to a
+tradable lot makes exact balance impossible, so the residual is stated
+rather than implied away).
+
+Also fixed: `_isDerivative` / `_settingsIsDerivative` were W3's
+hyphen-counting symbol test for a crypto venue. No MT5 symbol matches
+it, so BOTH pages rendered every leg as unlevered cash and the
+configured leverage never reached the margin figures — the capital
+preview quoted the full notional as the requirement. They now take the
+engine's per-leg margin.
 
 ## Slippage tracking (2026-08-07, owner asked for it)
 
