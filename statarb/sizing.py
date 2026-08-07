@@ -79,17 +79,45 @@ def lots_for_notional(notional_usd, contract_size, price, step=0.0,
 
 
 def hedge_lots(leg_a_lots, contract_a, contract_b, beta, step=0.0,
-               minimum=0.0):
-    """Leg B lots that actually hedge leg A: L_B = L_A*C_A / (beta*C_B).
+               minimum=0.0, mode='units', price_a=None, price_b=None):
+    """Leg B lots that hedge leg A.
 
-    See the module docstring for the derivation. This is the formula
-    that makes the pair's P&L equal to the spread move, which is the
-    whole premise of the strategy."""
+    Two constructions, and they answer different questions:
+
+    units (default) — L_B*C_B = L_A*C_A / beta. Equal UNITS: the same
+        ounces of gold long and short, weighted by beta. The pair's
+        P&L is then exactly the spread move, which is what the z-score
+        is measured on, so this is the right hedge for a basis trade.
+        The two legs' NOTIONALS differ by the basis itself, and that
+        difference is the thing being traded, not an imbalance.
+
+    notional — L_B*C_B*P_B = L_A*C_A*P_A. Equal MONEY on both legs
+        (owner asked for this, 2026-08-07). The position then trades
+        the RETURN spread rather than the price spread:
+
+            P&L = notional * (return_A - return_B)
+
+        which is the correct construction for two related instruments
+        with no arbitrage tying them (WTI vs Brent), where equal
+        dollars is the neutral position and equal barrels is not.
+
+    The two coincide exactly when beta equals the price ratio P_B/P_A —
+    the "live beta" the dashboard shows. Away from that, dollar-neutral
+    sizing and a fixed HEDGE_RATIO disagree, and the position will not
+    track the spread the signal measures; `plan` reports the gap so the
+    UI can say so rather than let it pass silently."""
     beta = float(beta or 1.0)
-    if not leg_a_lots or not contract_a or not contract_b or beta == 0:
+    if not leg_a_lots or not contract_a or not contract_b:
         return 0.0
-    return round_step(leg_a_lots * contract_a / (beta * contract_b),
-                      step, minimum)
+    if str(mode).lower() == 'notional':
+        if not price_a or not price_b:
+            return 0.0
+        target = leg_a_lots * contract_a * price_a / (contract_b * price_b)
+    else:
+        if beta == 0:
+            return 0.0
+        target = leg_a_lots * contract_a / (beta * contract_b)
+    return round_step(target, step, minimum)
 
 
 def spread_units(leg_b_lots, contract_b):
@@ -120,7 +148,7 @@ def margin(notional_usd, leverage):
 
 
 def minimum_notional(contract_a, contract_b, price_a, price_b, beta,
-                     min_a=0.0, min_b=0.0):
+                     min_a=0.0, min_b=0.0, mode='units'):
     """The smallest per-leg notional this PAIR can actually trade.
 
     Both legs have a minimum volume and they are usually different —
@@ -139,8 +167,13 @@ def minimum_notional(contract_a, contract_b, price_a, price_b, beta,
     needs = [min_a * contract_a * price_a] if min_a else []
     if min_b:
         # Leg B's minimum, expressed as the leg A notional that would
-        # generate it: L_A = L_B * beta * C_B / C_A.
-        lots_a_needed = min_b * beta * contract_b / contract_a
+        # generate it. Dollar-neutral inverts through the prices
+        # instead of through beta.
+        if str(mode).lower() == 'notional':
+            lots_a_needed = min_b * contract_b * price_b / (
+                contract_a * price_a)
+        else:
+            lots_a_needed = min_b * beta * contract_b / contract_a
         needs.append(lots_a_needed * contract_a * price_a)
     return max(needs) if needs else None
 
@@ -180,10 +213,12 @@ def plan(config, contract_a, contract_b, price_a, price_b,
     else:
         lots_a = float(trading.get('CLIP_LOTS', 1.0) or 0.0)
 
+    hedge_mode = str(trading.get('HEDGE_MODE', 'units') or 'units').lower()
     lots_a = round_step(lots_a * float(size_multiplier or 1.0), step_a, min_a)
-    lots_b = hedge_lots(lots_a, contract_a, contract_b, beta, step_b, min_b)
+    lots_b = hedge_lots(lots_a, contract_a, contract_b, beta, step_b, min_b,
+                        mode=hedge_mode, price_a=price_a, price_b=price_b)
     floor = minimum_notional(contract_a, contract_b, price_a, price_b,
-                             beta, min_a, min_b)
+                             beta, min_a, min_b, mode=hedge_mode)
     if lots_a > 0 and lots_b <= 0 and not reason:
         reason = (f"the hedge for {lots_a:g} lots on leg A is under leg B's "
                   f"{min_b:g}-lot minimum"
@@ -200,8 +235,19 @@ def plan(config, contract_a, contract_b, price_a, price_b,
     margin_a, margin_b = margin(notional_a, lev_a), margin(notional_b, lev_b)
     bigger = max(notional_a, notional_b)
 
+    # Dollar-neutral sizing and a fixed HEDGE_RATIO agree only when
+    # beta equals the live price ratio. Away from that the position
+    # does not track the spread the z-score is measured on, so the
+    # disagreement is reported rather than left to be discovered.
+    dollar_neutral_beta = (price_b / price_a) if (price_a and price_b) else None
+    beta_gap_pct = (100.0 * (beta - dollar_neutral_beta) / dollar_neutral_beta
+                    if dollar_neutral_beta else None)
+
     return {
         'mode': mode,
+        'hedge_mode': hedge_mode,
+        'dollar_neutral_beta': dollar_neutral_beta,
+        'beta_gap_pct': beta_gap_pct,
         'target_notional_usd': target_notional if mode == 'notional' else None,
         'hedge_ratio': beta,
         'leg_a_lots': lots_a, 'leg_b_lots': lots_b,

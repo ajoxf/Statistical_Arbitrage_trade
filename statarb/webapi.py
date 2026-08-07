@@ -62,6 +62,7 @@ FIELD_MAP = {
     # money per LEG and the lots follow from the live price.
     'sizing_mode': ('TRADING', 'SIZING_MODE'),
     'position_size_usd': ('TRADING', 'NOTIONAL_PER_LEG_USD'),
+    'hedge_mode': ('TRADING', 'HEDGE_MODE'),
     'daily_lot_target': ('TRADING', 'DAILY_LOT_TARGET'),
     'poll_interval_sec': ('TRADING', 'POLL_INTERVAL_SEC'),
 
@@ -520,6 +521,10 @@ def status_to_ui(status, config_raw):
             'leg_a_leverage': (sizing_block or {}).get('leg_a_leverage'),
             'leg_b_leverage': (sizing_block or {}).get('leg_b_leverage'),
             'min_notional_usd': (sizing_block or {}).get('min_notional_usd'),
+            'hedge_mode': (sizing_block or {}).get('hedge_mode'),
+            'dollar_neutral_beta': (sizing_block or {}).get(
+                'dollar_neutral_beta'),
+            'beta_gap_pct': (sizing_block or {}).get('beta_gap_pct'),
             'leg_a_margin': (sizing_block or {}).get('leg_a_margin_usd'),
             'leg_b_margin': (sizing_block or {}).get('leg_b_margin_usd'),
             'mean': first.get('mu'), 'std': first.get('sigma'),

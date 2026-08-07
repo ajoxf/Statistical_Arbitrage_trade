@@ -250,6 +250,14 @@ class AlgoTradingConfig:
             #               across two different instruments, because a
             #               lot is a different amount of money on each.
             'SIZING_MODE': 'lots',
+            # How the hedge leg is sized against leg A:
+            #   'units'    equal units (ounces/barrels) weighted by
+            #              HEDGE_RATIO — the pair's P&L is then exactly
+            #              the spread move, correct for a basis trade.
+            #   'notional' equal MONEY on both legs — the pair trades
+            #              the RETURN spread, correct for two related
+            #              instruments with no arbitrage tying them.
+            'HEDGE_MODE': 'units',
             'NOTIONAL_PER_LEG_USD': 0.0,   # per LEG, not per pair
             'CLIP_LOTS': 1.0,          # lots per entry (per leg)
             'SLICE_LOTS': 0.0,         # child-order size; 0 = no slicing
@@ -332,7 +340,7 @@ class AlgoTradingConfig:
     # page and expects to take effect belongs in this tuple.
     HOT_TRADING_KEYS = ('CLIP_LOTS', 'SLICE_LOTS', 'DAILY_LOT_TARGET',
                         'POLL_INTERVAL_SEC', 'SIZING_MODE',
-                        'NOTIONAL_PER_LEG_USD')
+                        'NOTIONAL_PER_LEG_USD', 'HEDGE_MODE')
 
     def hot_apply(self, fresh, positions_open=False):
         """Apply a freshly-loaded config to this live one in place.

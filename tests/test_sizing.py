@@ -347,3 +347,73 @@ def test_the_engine_publishes_the_leverage_it_used():
     assert ui['signal']['leg_a_leverage'] == 20
     assert ui['signal']['leg_b_leverage'] == 50
     assert ui['signal']['leg_a_margin'] == 1000.0
+
+
+# --- dollar-neutral hedging (owner asked for it, 2026-08-07) --------------
+
+def test_unit_neutral_holds_the_same_quantity_on_both_legs(config):
+    """The default, and the right hedge for a basis pair: the two legs'
+    dollar values differ by the basis, which IS the trade."""
+    p = gold_plan(config, 2_000_000.0)
+    assert p['hedge_mode'] == 'units'
+    assert p['leg_a_lots'] * 100 == pytest.approx(p['leg_b_lots'] * 100,
+                                                  rel=0.02)
+
+
+def test_dollar_neutral_puts_the_same_money_on_each_leg(config):
+    config.TRADING['HEDGE_MODE'] = 'notional'
+    p = gold_plan(config, 2_000_000.0)
+    assert p['hedge_mode'] == 'notional'
+    # Within one 0.1-lot step of exactly equal notional.
+    assert abs(p['imbalance_pct']) < 2.5
+    assert p['leg_b_lots'] < p['leg_a_lots']    # leg B is dearer per oz
+
+
+def test_dollar_neutral_ignores_beta_and_uses_the_prices(config):
+    """L_B*C_B*P_B = L_A*C_A*P_A — beta plays no part."""
+    lots_units = sizing.hedge_lots(2.0, 100, 100, 2.0, mode='units')
+    lots_money = sizing.hedge_lots(2.0, 100, 100, 2.0, mode='notional',
+                                   price_a=4292.61, price_b=4351.55)
+    assert lots_units == pytest.approx(1.0)              # halved by beta
+    assert lots_money == pytest.approx(2.0 * 4292.61 / 4351.55)
+
+
+def test_dollar_neutral_trades_the_return_spread(config):
+    """The defining property: equal money means the P&L is the
+    difference in RETURNS, so two legs moving the same percentage net
+    to zero however different their prices."""
+    lots_a, c_a, c_b, p_a, p_b = 2.0, 100, 100, 4292.61, 4351.55
+    lots_b = sizing.hedge_lots(lots_a, c_a, c_b, 1.0, mode='notional',
+                               price_a=p_a, price_b=p_b)
+    move = 0.01                                    # both legs +1%
+    pnl = (p_a * move) * lots_a * c_a - (p_b * move) * lots_b * c_b
+    assert pnl == pytest.approx(0.0, abs=1e-6)
+
+
+def test_unit_neutral_does_NOT_net_out_a_common_percentage_move(config):
+    """The flip side, and why this is a real choice rather than a
+    preference: equal ounces means a 1% move in both legs leaves the
+    basis difference on the table."""
+    lots_b = sizing.hedge_lots(2.0, 100, 100, 1.0, mode='units')
+    move = 0.01
+    pnl = (4292.61 * move) * 2.0 * 100 - (4351.55 * move) * lots_b * 100
+    assert abs(pnl) > 100                          # not neutral in money
+
+
+def test_the_beta_disagreement_is_reported(config):
+    """Dollar-neutral sizing and a fixed HEDGE_RATIO agree only when
+    beta equals the price ratio. Anywhere else the position does not
+    track the spread the z-score is built on, so say so."""
+    config.TRADING['HEDGE_MODE'] = 'notional'
+    p = gold_plan(config, 2_000_000.0)
+    assert p['dollar_neutral_beta'] == pytest.approx(4351.55 / 4292.61)
+    assert p['beta_gap_pct'] == pytest.approx(-1.354, abs=0.01)
+
+
+def test_the_hedge_mode_hot_reloads():
+    from statarb.config import AlgoTradingConfig
+    live, fresh = AlgoTradingConfig(), AlgoTradingConfig()
+    fresh.TRADING['HEDGE_MODE'] = 'notional'
+    applied, _ = live.hot_apply(fresh)
+    assert 'TRADING.HEDGE_MODE' in applied
+    assert live.TRADING['HEDGE_MODE'] == 'notional'

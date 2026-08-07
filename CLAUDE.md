@@ -399,6 +399,36 @@ residual imbalance (green within 2%, red beyond — rounding to a
 tradable lot makes exact balance impossible, so the residual is stated
 rather than implied away).
 
+**Hedge balance is a CHOICE** (owner, 2026-08-07: "Want dollar-neutral
+rather than unit-neutral - Yes"). `TRADING.HEDGE_MODE`:
+
+- `units` (default) — `L_B*C_B = L_A*C_A / beta`. Equal quantity on
+  both legs, so the pair's P&L IS the spread move the z-score is
+  measured on. The legs' dollar values then differ by the basis, which
+  is the thing being traded, not an imbalance. Right for spot/futures.
+- `notional` — `L_B*C_B*P_B = L_A*C_A*P_A`. Equal money, so the pair
+  trades the RETURN spread (`P&L = notional x (ret_A - ret_B)`). Right
+  for two related instruments with no arbitrage tying them.
+
+They coincide only when beta equals the live price ratio `P_B/P_A`.
+Away from that, dollar-neutral sizing and a fixed HEDGE_RATIO disagree
+and the position stops tracking the series the signal measures — the
+plan publishes `dollar_neutral_beta` and `beta_gap_pct` and the
+dashboard warns past 2%. Regression-tested both ways: a common
+percentage move nets to zero under `notional` and does NOT under
+`units`; a pure beta move nets to zero under `units`.
+
+**The pair has a minimum tradable notional.** Live on CFI the spot
+minimum is 0.01 lots and the futures minimum is 0.1 — ten times larger
+— so $20,000 per leg gives 0.04 spot lots and a hedge of 0.04 against a
+0.1 floor: leg B sizes to nothing and the pair reads 100% unbalanced.
+`sizing.minimum_notional` computes the floor from both legs' minimums
+and both contract sizes ($42,926 for gold at 4292/4351), the refusal
+names it, and the Settings notional field shows it BEFORE saving.
+Note leg B's STEP is also 10x leg A's, so above the floor the hedge
+stays coarse: 0.23 spot vs 0.2 futures at $100k is 12% under-hedged
+(flagged red), washing out to ~1% at $2m.
+
 Follow-ups the operator found the same day:
 - **"Cannot change clip sizing."** The inactive sizing field was hidden
   outright, so an operator who wanted to change the clip could not find

@@ -2296,6 +2296,18 @@
                     + (pct >= 0 ? ' more on A)' : ' more on B)');
             }
         }
+        // Dollar-neutral sizing against a fixed HEDGE_RATIO only agrees
+        // when beta equals the live price ratio; past that the position
+        // stops tracking the spread the z-score is measured on.
+        let betaNote = '';
+        if (sz && sz.hedge_mode === 'notional' && sz.beta_gap_pct != null
+                && Math.abs(sz.beta_gap_pct) > 2) {
+            betaNote = ' ⚠ Dollar-neutral sizing wants β ≈ '
+                + Number(sz.dollar_neutral_beta).toFixed(4) + ', but '
+                + 'HEDGE_RATIO is ' + Number(sz.hedge_ratio).toFixed(4)
+                + ' — the position will not track the spread the z-score '
+                + 'measures.';
+        }
         if (basisEl) {
             if (!sz) {
                 basisEl.textContent = '';
@@ -2312,7 +2324,11 @@
                     + (sz.min_notional_usd
                         ? ' This pair cannot trade below '
                           + _fmtMoney(sz.min_notional_usd) + ' per leg.'
-                        : '');
+                        : '')
+                    + (sz.hedge_mode === 'notional'
+                        ? ' Hedge: dollar-neutral.' : '')
+                    + betaNote;
+                if (betaNote) basisEl.className = 'text-warning mt-1';
             } else {
                 basisEl.className = 'text-secondary mt-1';
                 basisEl.textContent = 'Sized from ' + (sz.leg_a_lots || 0)

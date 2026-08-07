@@ -531,6 +531,25 @@
                             <small class="text-secondary mt-1 d-block" style="font-size: 0.7rem;"
                                    id="notional_preview"></small>
                         </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Hedge Balance</label>
+                            <select class="form-select" id="hedge_mode" name="hedge_mode">
+                                <option value="units">Unit-neutral (equal oz/bbl)</option>
+                                <option value="notional">Dollar-neutral (equal $ per leg)</option>
+                            </select>
+                            <small class="text-secondary d-block">
+                            <strong>Unit-neutral</strong> holds the same quantity on
+                            both legs weighted by &beta;, so the pair's P&amp;L is exactly
+                            the spread move the z-score is measured on. The legs' dollar
+                            values then differ by the basis &mdash; which is the thing
+                            being traded, not an imbalance. Correct for spot-vs-futures.
+                            <br><strong>Dollar-neutral</strong> puts the same money on
+                            each leg, so the pair trades the <em>return</em> spread.
+                            Correct for two related instruments with no arbitrage tying
+                            them (WTI vs Brent). The two agree only when &beta; equals
+                            the live price ratio; the dashboard warns when they diverge.
+                            </small>
+                        </div>
                         <div class="col-md-6" id="clip_lots_field">
                             <label class="form-label">Clip Size (LOTS per leg)
                                 <span class="badge ms-1" id="clip_badge"
@@ -1254,6 +1273,13 @@
     // Live prices cached from the most recent /api/leg-prices fetch — fed into
     // updateCapitalPreview() so the user can see the actual β-scaled Leg B
     // notional, not just an assumed dollar-neutral approximation.
+    // The smallest per-leg notional this PAIR can trade, computed by
+    // the engine from BOTH legs' minimum volumes. Live on CFI the spot
+    // minimum is 0.01 lots and the futures minimum is 0.1, so the
+    // futures leg sets a floor ten times higher than leg A's — and a
+    // notional under it produces a spot order with no hedge, which the
+    // engine refuses. Far better to know here than after saving.
+    let _pairMinNotional = null;
     let _cachedLegAPrice = 0;
     let _cachedLegBPrice = 0;
 
@@ -1272,6 +1298,19 @@
     function _fmtUsdShort(n) {
         if (!isFinite(n)) return '—';
         return '$' + Math.round(n).toLocaleString();
+    }
+
+    function refreshPairMinimum() {
+        fetch('/api/engine/status')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                const min = d && d.signal && d.signal.min_notional_usd;
+                if (min !== _pairMinNotional) {
+                    _pairMinNotional = min || null;
+                    updateCapitalPreview();
+                }
+            })
+            .catch(function() { /* engine down: stay quiet */ });
     }
 
     // Which sizing control applies. Showing both at once invites the
@@ -1315,13 +1354,37 @@
             (document.getElementById('contract_size') || {}).value) ||
             {{ config.contract_size or 100 }};
         const preview = document.getElementById('notional_preview');
+        // The pair's floor comes from the ENGINE's own sizing plan and
+        // needs no price here, so it is checked FIRST — otherwise a
+        // box with no live feed shows "waiting for a price" and never
+        // mentions that the value entered cannot trade at all.
+        if (target && _pairMinNotional && target < _pairMinNotional) {
+            if (preview) {
+                preview.className = 'text-danger mt-1 d-block';
+                preview.style.fontSize = '0.7rem';
+                preview.textContent =
+                    'Too small to trade this pair: it needs at least '
+                    + _fmtUsdLong(_pairMinNotional) + ' per leg, set by the '
+                    + 'larger of the two legs\' minimum order sizes. Below '
+                    + 'that the hedge rounds to zero and every entry is '
+                    + 'refused.';
+            }
+            return 0;
+        }
+        if (preview) {
+            preview.className = 'text-secondary mt-1 d-block';
+            preview.style.fontSize = '0.7rem';
+        }
         if (!target || !(_cachedLegAPrice > 0)) {
-            if (preview) preview.textContent = _cachedLegAPrice > 0
-                ? ''
-                : 'Lots are shown here once Leg A has a live price — the '
+            if (preview && !target) preview.textContent = '';
+            else if (preview) preview.textContent =
+                'Lots are shown here once Leg A has a live price — the '
                 + 'coordinator must be running and the symbol streaming. '
                 + 'The value saves either way; the engine converts it at '
-                + 'the price current when a trade fires.';
+                + 'the price current when a trade fires.'
+                + (_pairMinNotional
+                    ? ' This pair\'s minimum is '
+                      + _fmtUsdLong(_pairMinNotional) + ' per leg.' : '');
             return 0;
         }
         const lots = target / (contract * _cachedLegAPrice);
@@ -1356,7 +1419,11 @@
                 + lotsB.toFixed(2) + ' on Leg B '
                 + '(' + target.toLocaleString() + ' ÷ (' + contract
                 + ' × ' + _cachedLegAPrice.toFixed(2) + ')). '
-                + 'The broker rounds down to a tradable step.';
+                + 'The broker rounds down to a tradable step.'
+                + (_pairMinNotional
+                    ? ' This pair\'s minimum is '
+                      + _fmtUsdLong(_pairMinNotional) + ' per leg.'
+                    : '');
         }
         return lots;
     }
@@ -1793,6 +1860,7 @@
             rfq_max_markup_bps: parseFloat(document.getElementById('rfq_max_markup_bps').value) || 0,
             clip_lots: parseFloat(document.getElementById('clip_lots').value),
             sizing_mode: document.getElementById('sizing_mode').value,
+            hedge_mode: document.getElementById('hedge_mode').value,
             position_size_usd: parseFloat(
                 document.getElementById('position_size_usd').value) || 0,
             slice_lots: parseFloat(document.getElementById('slice_lots').value) || 0,
@@ -2094,6 +2162,8 @@
                 document.getElementById('clip_lots').value = config.clip_lots;
                 document.getElementById('sizing_mode').value =
                     config.sizing_mode || 'lots';
+                document.getElementById('hedge_mode').value =
+                    config.hedge_mode || 'units';
                 document.getElementById('position_size_usd').value =
                     config.position_size_usd || 0;
                 updateSizingMode();
@@ -2608,5 +2678,7 @@
     checkPairWarning();
     fetchBetaSuggestion();
     updateSizingMode();
+    refreshPairMinimum();
+    setInterval(refreshPairMinimum, 10000);
 </script>
 {% endblock %}
