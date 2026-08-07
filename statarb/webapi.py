@@ -258,6 +258,15 @@ def trade_to_ui(row):
         'trough_net_usd': row.get('trough_pnl'),
         'peak_minutes': row.get('peak_min'),
         'trough_minutes': row.get('trough_min'),
+        # Execution quality for this trade: the round-trip slippage in
+        # dollars, and each side separately. None where the trade
+        # predates the measurement — never 0, which would read as a
+        # perfect fill.
+        'slip_usd': row.get('slip_usd'),
+        'entry_slip_usd': row.get('entry_slip_usd'),
+        'exit_slip_usd': row.get('exit_slip_usd'),
+        'entry_slip_spread': row.get('entry_slip_spread'),
+        'exit_slip_spread': row.get('exit_slip_spread'),
         'is_open': False,
         'is_paper': False,
     }
@@ -309,6 +318,64 @@ def statistics_from_rows(rows):
         'p70_peak': peaks[int(0.7 * (len(peaks) - 1))] if peaks else 0.0,
         'median_peak_minutes': (peak_mins[len(peak_mins) // 2]
                                 if peak_mins else 0.0),
+    }
+
+
+def slippage_block(rows):
+    """Realised execution cost across closed trades.
+
+    This is the other half of the audit CLAUDE.md asks for — "alarm if
+    modeled >= 2x realized" was unanswerable while nothing measured
+    what execution actually cost. `cost_est` is what the model charged
+    the trade; crossing + slippage is what it really paid.
+
+    Counts are per SIDE (entry and exit are separate observations), and
+    trades where nothing was measured are excluded rather than counted
+    as zero — a zero would drag the average toward "flawless"."""
+    def measured(key):
+        return [r[key] for r in rows if r.get(key) is not None]
+
+    entries = measured('entry_slip_usd')
+    exits = measured('exit_slip_usd')
+    sides = entries + exits
+    round_trips = measured('slip_usd')
+    cross = measured('entry_cross_spread') + measured('exit_cross_spread')
+    # Modelled vs realised, per trade, over the trades where BOTH are
+    # known. Realised = the crossing actually paid PLUS the slippage —
+    # the model's cost_est is meant to cover the whole round trip, so
+    # comparing it against slippage alone would flatter it.
+    modelled, realised = [], []
+    for r in rows:
+        cross_usd = [r.get('entry_cross_usd'), r.get('exit_cross_usd')]
+        if r.get('cost_est') is None or r.get('slip_usd') is None \
+                or any(c is None for c in cross_usd):
+            continue
+        modelled.append(r['cost_est'])
+        realised.append(sum(cross_usd) + r['slip_usd'])
+
+    worst = max(sides, key=abs) if sides else None
+    avg_modelled = (sum(modelled) / len(modelled)) if modelled else None
+    avg_realised = (sum(realised) / len(realised)) if realised else None
+    return {
+        'measured_sides': len(sides),
+        'measured_round_trips': len(round_trips),
+        'avg_slip_usd': (sum(sides) / len(sides)) if sides else None,
+        'total_slip_usd': sum(sides) if sides else None,
+        'avg_entry_slip_usd': (sum(entries) / len(entries)
+                               if entries else None),
+        'avg_exit_slip_usd': (sum(exits) / len(exits)) if exits else None,
+        'avg_round_trip_slip_usd': (sum(round_trips) / len(round_trips)
+                                    if round_trips else None),
+        'avg_crossing_spread': (sum(cross) / len(cross)) if cross else None,
+        'worst_slip_usd': worst,
+        'improved_sides': len([s for s in sides if s < 0]),
+        'compared_trades': len(modelled),
+        'avg_modelled_cost_usd': avg_modelled,
+        'avg_realised_cost_usd': avg_realised,
+        # CLAUDE.md: "alarm if modeled >= 2x realized — an inflated
+        # cost model silently blocks every good trade."
+        'model_ratio': (avg_modelled / avg_realised)
+                       if avg_modelled is not None and avg_realised else None,
     }
 
 
@@ -511,6 +578,7 @@ def status_to_ui(status, config_raw):
                 'manual_take_profit': levels.get('manual_tp'),
                 'manual_stop': levels.get('manual_sl'),
             } if levels else None,
+            'entry_slippage': open_position.get('entry_slippage'),
             'is_open': True,
             'is_paper': status.get('mode') != 'LIVE',
         }

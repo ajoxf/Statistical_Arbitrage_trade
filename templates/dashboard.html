@@ -461,6 +461,13 @@
                             <span id="position-levels-usd" class="font-monospace">-</span>
                         </div>
                     </div>
+                    <div class="row mb-1" id="position-slippage-row" style="display:none;">
+                        <div class="col-12" style="font-size: 0.75rem;"
+                             title="What the signal saw versus what MT5 gave us, split into two costs that behave differently. CROSSING is mid-to-touch: quoted on the screen before you trade and already in the cost model — paying it is normal. SLIPPAGE is touch-to-fill: the market moving between the decision and the fill, or the broker filling away from its own quote. A negative slippage is price improvement, which limit orders do produce.">
+                            <span class="text-secondary">Entry cost:</span>
+                            <span id="position-slippage" class="font-monospace">-</span>
+                        </div>
+                    </div>
                     <div class="row">
                         <div class="col-6">
                             <span class="text-secondary">Age:</span>
@@ -2998,6 +3005,37 @@ function updateFilterStatus(elementId, passed, value) {
                     levelsRow.style.display = '';
                 } else if (levelsRow) {
                     levelsRow.style.display = 'none';
+                }
+
+                // Entry cost: what the signal wanted vs what MT5 gave
+                // us. Crossing and slippage stay separate — a wide
+                // spread and a bad fill are different problems with
+                // different fixes.
+                const slipRow = document.getElementById('position-slippage-row');
+                const slipEl  = document.getElementById('position-slippage');
+                const sl = t.entry_slippage;
+                if (slipRow && slipEl && sl && sl.executed_spread != null) {
+                    const f4 = x => x == null ? '—' : parseFloat(x).toFixed(4);
+                    const money = sl.slippage_usd;
+                    const slipClass = (sl.slippage_spread || 0) > 0
+                        ? 'text-danger' : 'text-success';
+                    slipEl.innerHTML =
+                        'wanted <span class="text-info">' + f4(sl.decision_spread)
+                        + '</span> · quoted <span class="text-warning">'
+                        + f4(sl.quoted_spread) + '</span> · filled '
+                        + '<span class="text-info">' + f4(sl.executed_spread)
+                        + '</span> &nbsp;|&nbsp; crossing '
+                        + f4(sl.crossing_spread) + ' + slippage '
+                        + '<span class="' + slipClass + '">'
+                        + (sl.slippage_spread >= 0 ? '+' : '')
+                        + f4(sl.slippage_spread) + '</span>'
+                        + (money == null ? '' :
+                           ' <span class="' + slipClass + '">('
+                           + (money >= 0 ? '-$' : '+$')
+                           + Math.abs(money).toFixed(2) + ')</span>');
+                    slipRow.style.display = '';
+                } else if (slipRow) {
+                    slipRow.style.display = 'none';
                 }
 
                 // Target & Stop levels

@@ -37,6 +37,7 @@ from . import diagnostics, scenarios
 from .shadow import ShadowTracker
 from .signals import SignalGenerator, ZSignalGenerator
 from .spread import SpreadStats
+from . import slippage
 from . import webapi
 
 
@@ -45,9 +46,13 @@ class PaperExecutor:
     lifecycle (entries, exit ladder, reviews, breakers) runs
     identically to LIVE, no orders leave the machine."""
 
-    def __init__(self, spot_leg, futures_leg):
+    def __init__(self, spot_leg, futures_leg, config=None):
         self.spot_leg = spot_leg
         self.futures_leg = futures_leg
+        # Only needed to price the slippage report in dollars; paper
+        # measures it the same way LIVE does, so the operator can read
+        # the number before risking anything.
+        self.config = config
 
     def _fill(self, leg, symbol, side):
         tick = leg.tick(symbol)
@@ -55,8 +60,32 @@ class PaperExecutor:
             return None
         return tick['ask'] if side is OrderSide.BUY else tick['bid']
 
+    def _slippage(self, asset_key, signal_type, closing, spot_trade,
+                  futures_trade, reference):
+        contract = 0.0
+        beta = 1.0
+        if self.config is not None:
+            contract = float((self.config.ASSETS.get(asset_key) or {})
+                             .get('lot_size', 0.0) or 0.0)
+            beta = self.config.TRADING.get('HEDGE_RATIO', 1.0)
+        report = slippage.build(
+            signal_type, closing, beta,
+            (spot_trade.lot_size or 0.0) * contract,
+            spot_trade.side, futures_trade.side, reference,
+            spot_trade.executed_price, futures_trade.executed_price,
+            spot_trade.symbol, futures_trade.symbol)
+        if report:
+            logging.info("[SLIPPAGE] paper %s %s: %s",
+                         'exit' if closing else 'entry',
+                         signal_type.value, slippage.summarise(report))
+        legs = (report or {}).get('legs') or {}
+        spot_trade.requested_price = (legs.get('spot') or {}).get('quote')
+        futures_trade.requested_price = (legs.get('futures') or {}).get('quote')
+        return report
+
     def execute_trade_pair(self, asset, signal_type, lot_size,
-                           spot_symbol, futures_symbol, tag='BASIS_ARB'):
+                           spot_symbol, futures_symbol, tag='BASIS_ARB',
+                           reference=None):
         if signal_type == SignalType.SELL_BASIS:
             spot_side, fut_side = OrderSide.BUY, OrderSide.SELL
         elif signal_type == SignalType.BUY_BASIS:
@@ -79,9 +108,11 @@ class PaperExecutor:
                      asset, signal_type.value, lot_size,
                      spot_trade.executed_price, lot_size,
                      fut_trade.executed_price)
+        spot_trade.slippage = self._slippage(
+            asset, signal_type, False, spot_trade, fut_trade, reference)
         return True, spot_trade, fut_trade
 
-    def execute_close_pair(self, position, reason=None):
+    def execute_close_pair(self, position, reason=None, reference=None):
         close_spot = Trade(position.spot_trade.symbol,
                            position.spot_trade.side.opposite,
                            position.spot_trade.lot_size)
@@ -95,6 +126,10 @@ class PaperExecutor:
         ok = close_spot.executed_price is not None \
             and close_fut.executed_price is not None
         close_spot.status = close_fut.status = "EXECUTED" if ok else "ERROR"
+        if ok:
+            close_spot.slippage = self._slippage(
+                position.asset, position.signal_type, True,
+                close_spot, close_fut, reference)
         return ok, close_spot, close_fut
 
 
@@ -135,7 +170,8 @@ class Coordinator:
             self.executor = PairExecutor(config, self.spot_leg,
                                          self.futures_leg)
         else:
-            self.executor = PaperExecutor(self.spot_leg, self.futures_leg)
+            self.executor = PaperExecutor(self.spot_leg, self.futures_leg,
+                                          config)
         self.position_manager = PositionManager(self.data_logger)
         self.risk_manager = RiskManager(config)
         self.performance_tracker = PerformanceTracker()
@@ -595,7 +631,8 @@ class Coordinator:
             reason = self._exit_reason(position, z, market_data)
             if reason:
                 self._close(position_id, position, reason, contract_size, z,
-                            spread=market_data.get('spread'))
+                            spread=market_data.get('spread'),
+                            market_data=market_data)
 
         # -- entries (only while the algo is enabled; exits above
         # always run — stopping the algo never abandons a position) --
@@ -722,7 +759,10 @@ class Coordinator:
             self.executor.execute_trade_pair(
                 asset_key, signal_type, lots,
                 asset['spot_symbol'], asset['futures_symbol'],
-                tag='MANUAL' if manual else 'BASIS_ARB')
+                tag='MANUAL' if manual else 'BASIS_ARB',
+                # The snapshot the DECISION was made on, so slippage is
+                # measured from the prices the signal actually saw.
+                reference=market_data)
         if not success:
             logging.error("Pair entry failed for %s %s", asset_key,
                           signal_type.value)
@@ -731,6 +771,7 @@ class Coordinator:
         position = self.position_manager.create_position(
             asset_key, signal_type, spot_trade, futures_trade,
             market_data['basis_pct'])
+        position.entry_slippage = spot_trade.slippage
         if plan and spot_trade.lot_size and lots:
             # Rescale dollar levels if we filled less than requested
             scale = spot_trade.lot_size / lots
@@ -761,10 +802,16 @@ class Coordinator:
         return position
 
     def _close(self, position_id, position, reason, contract_size, z,
-               spread=None):
+               spread=None, market_data=None):
         contract = contract_size
+        # The exit decision's own snapshot, so the close is scored on
+        # what it saw rather than on a tick read after the fact.
+        if market_data is None:
+            market_data = (self.active_assets.get(position.asset) or {}) \
+                .get('last_data')
         closed = self.position_manager.close_position(
-            position_id, reason, self.executor, contract_size=contract)
+            position_id, reason, self.executor, contract_size=contract,
+            reference=market_data)
         if not closed:
             return
         self.performance_tracker.update_with_closed_position(position)
@@ -841,6 +888,10 @@ class Coordinator:
                 'levels': plan.get('levels'),
                 'peak_pnl': position.peak_pnl,
                 'trough_pnl': position.trough_pnl,
+                # What the signal wanted vs what MT5 gave us, so the
+                # cost of getting in is visible while the trade is
+                # still open rather than only in the post-mortem.
+                'entry_slippage': position.entry_slippage,
             })
         return rows
 

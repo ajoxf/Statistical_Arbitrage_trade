@@ -122,7 +122,25 @@ class DataLogger:
                                  ('ex_spread', 'REAL'),
                                  ('tp_spread', 'REAL'),
                                  ('sl_spread', 'REAL'),
-                                 ('notional', 'REAL')]:
+                                 ('notional', 'REAL'),
+                                 # Decision-to-fill accounting, in
+                                 # spread units and dollars, split into
+                                 # the crossing cost (quoted, expected,
+                                 # already in the cost model) and the
+                                 # slippage (the surprise). Kept per leg
+                                 # of the round trip so the two halves
+                                 # can be compared — an exit slipping
+                                 # far worse than the entry means the
+                                 # urgent market close is what costs.
+                                 ('entry_cross_spread', 'REAL'),
+                                 ('entry_cross_usd', 'REAL'),
+                                 ('entry_slip_spread', 'REAL'),
+                                 ('entry_slip_usd', 'REAL'),
+                                 ('exit_cross_spread', 'REAL'),
+                                 ('exit_cross_usd', 'REAL'),
+                                 ('exit_slip_spread', 'REAL'),
+                                 ('exit_slip_usd', 'REAL'),
+                                 ('slip_usd', 'REAL')]:
             try:
                 cursor.execute(f'ALTER TABLE trade_review '
                                f'ADD COLUMN {column} {col_type}')
@@ -329,28 +347,56 @@ class DataLogger:
         conn = sqlite3.connect(self.db_path)
         plan = position.exit_plan or {}
         levels = plan.get('levels') or {}
-        conn.execute('''
-            INSERT OR REPLACE INTO trade_review VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            position.position_id, position.asset,
-            plan.get('entry_z'), exit_z, plan.get('entry_sigma'),
-            capture_target if capture_target is not None
-            else plan.get('tp_usd'),
-            cost_est if cost_est is not None else plan.get('rt_cost_usd'),
-            position.realized_pnl, position.close_reason,
-            position.spot_trade.lot_size if position.spot_trade else None,
-            position.entry_time.isoformat(),
-            position.close_time.isoformat() if position.close_time else None,
-            position.peak_pnl, position.peak_min,
-            position.trough_pnl, position.trough_min,
-            outcome,
-            levels.get('entry_spread'), exit_spread,
-            levels.get('be'), levels.get('ex'),
-            levels.get('tp'), levels.get('sl'),
-            notional,
-        ))
+        entry_slip = position.entry_slippage or {}
+        exit_slip = position.exit_slippage or {}
+        slip_total = None
+        halves = [s.get('slippage_usd') for s in (entry_slip, exit_slip)
+                  if s.get('slippage_usd') is not None]
+        if halves:
+            slip_total = sum(halves)
+        # Columns are NAMED, not positional: this table gains columns by
+        # ALTER on upgrade, and a bare VALUES(...) silently writes every
+        # field one slot off the moment the ordering drifts.
+        values = {
+            'position_id': position.position_id,
+            'asset': position.asset,
+            'entry_z': plan.get('entry_z'),
+            'exit_z': exit_z,
+            'entry_sigma': plan.get('entry_sigma'),
+            'capture_target': (capture_target if capture_target is not None
+                               else plan.get('tp_usd')),
+            'cost_est': (cost_est if cost_est is not None
+                         else plan.get('rt_cost_usd')),
+            'realized_pnl': position.realized_pnl,
+            'exit_reason': position.close_reason,
+            'lots': (position.spot_trade.lot_size
+                     if position.spot_trade else None),
+            'opened': position.entry_time.isoformat(),
+            'closed': (position.close_time.isoformat()
+                       if position.close_time else None),
+            'peak_pnl': position.peak_pnl, 'peak_min': position.peak_min,
+            'trough_pnl': position.trough_pnl,
+            'trough_min': position.trough_min,
+            'outcome': outcome,
+            'entry_spread': levels.get('entry_spread'),
+            'exit_spread': exit_spread,
+            'be_spread': levels.get('be'), 'ex_spread': levels.get('ex'),
+            'tp_spread': levels.get('tp'), 'sl_spread': levels.get('sl'),
+            'notional': notional,
+            'entry_cross_spread': entry_slip.get('crossing_spread'),
+            'entry_cross_usd': entry_slip.get('crossing_usd'),
+            'entry_slip_spread': entry_slip.get('slippage_spread'),
+            'entry_slip_usd': entry_slip.get('slippage_usd'),
+            'exit_cross_spread': exit_slip.get('crossing_spread'),
+            'exit_cross_usd': exit_slip.get('crossing_usd'),
+            'exit_slip_spread': exit_slip.get('slippage_spread'),
+            'exit_slip_usd': exit_slip.get('slippage_usd'),
+            'slip_usd': slip_total,
+        }
+        columns = ', '.join(values)
+        placeholders = ', '.join('?' * len(values))
+        conn.execute(f'INSERT OR REPLACE INTO trade_review ({columns}) '
+                     f'VALUES ({placeholders})', tuple(values.values()))
         conn.commit()
         conn.close()
 

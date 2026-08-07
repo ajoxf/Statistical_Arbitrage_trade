@@ -68,6 +68,9 @@ statarb/
   fairvalue.py          theoretical spread by pair type —
                         DISPLAY ONLY, never a signal input
   exits.py              ExitLadder — dollar levels frozen at entry
+  slippage.py           decision-to-fill: what the signal saw (mid),
+                        what it was executable at (touch), what MT5
+                        filled — crossing and slippage kept APART
   reconcile.py          orphan close / ghost clear, 3-strike, ledger
   notify.py             Telegram alerts + /status /positions /pnl
                         (background thread, never blocks the loop;
@@ -309,6 +312,65 @@ Reversibility: tag v1-engine-baseline = pre-port engine; main stays
 there until the owner approves this work. NOT yet ported from W3:
 Hurst/velocity/trailing optional exits, auto-tuner, AI monitor,
 per-leg maker/taker fee split, backtest suite.
+
+## Slippage tracking (2026-08-07, owner asked for it)
+
+Owner: "what your signal wanted to enter at and what the orders got
+placed at on MT5". Nothing measured it before — `Trade.requested_price`
+was written as NULL by the pair executor from the day it was built.
+
+`statarb/slippage.py` scores every fill against THREE prices, because
+the signal and the fill are not quoted on the same thing:
+
+- **mid** — `compute_market_data` builds the spread from mids, so this
+  is what the z-score, the edge filter and the exit ladder all saw.
+- **quote** — the executable touch at that same instant (ask to buy,
+  bid to sell). What the decision was actually worth.
+- **fill** — what came back from MT5.
+
+Split into `crossing` (mid->quote: quoted on the screen, known before
+you trade, already charged by COSTS) and `slippage` (quote->fill: the
+surprise). **Do not merge these into one number.** One figure would
+make a wide spread look like bad execution and a fast market look like
+a wide spread, and the fix for each is a different fix.
+
+- Sign convention: POSITIVE IS A COST, everywhere. Negative slippage is
+  price improvement and it does happen on limit fills, so the sign is
+  kept rather than absolute-valued.
+- `selling_the_spread(signal, closing)`: a short-spread position SELLS
+  the spread to get in and BUYS it back to get out, so the same signal
+  type flips sign between entry and exit. Getting this backwards
+  reports every exit's cost as a gain.
+- The reference is the market_data snapshot the DECISION was made on,
+  not a fresh tick — a fresh tick would measure the last few
+  milliseconds and miss the poll interval entirely.
+- Invariant, regression-tested over both directions x entry/exit x
+  three betas: `spread_slip == fut_slip + beta * spot_slip`. The spread
+  is `futures - beta * spot`, so each leg enters with its own weight.
+  If it ever fails, one of the two numbers on the operator's screen is
+  wrong and they cannot tell which.
+- **Unmeasured is not zero.** No snapshot or an unfilled leg reports
+  None all the way to the UI, which renders "—". A zero would read as
+  flawless execution.
+- Paper measures it identically to LIVE (PaperExecutor takes `config`
+  now), so the number is readable before any money is at risk.
+
+Where it surfaces: a `[SLIPPAGE]` log line per pair; the in-position
+card's "Entry cost" row; Telegram's EXECUTION block on entry and exit;
+`trade_review` columns (entry/exit x cross/slip, spread AND usd, plus
+a round-trip `slip_usd`); the Analysis page's Execution Quality tiles
+and the journal's "Slip $" column.
+
+This finally answers CLAUDE.md's own audit rule ("alarm if modeled >=
+2x realized") — the **Modelled / realised cost** tile computes it
+continuously. Realised is crossing PLUS slippage, because `cost_est`
+covers the whole round trip; comparing it against slippage alone would
+flatter the model enormously.
+
+Both `trade_review` and `broker_orders` INSERTs now NAME their columns.
+Both tables gain columns by ALTER on upgrade, which appends them after
+the last column, so a bare `VALUES (...)` writes every field one slot
+off the moment the ordering drifts.
 
 ## Repo branch map (2026-07)
 

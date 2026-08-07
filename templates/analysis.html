@@ -154,6 +154,90 @@
     </div>
 </div>
 
+<!-- Execution quality: what the signal wanted vs what MT5 gave us.
+     The two costs are deliberately NOT summed into one figure —
+     crossing is quoted before you trade and already in the cost model,
+     slippage is the surprise, and the fix for each is a different fix. -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span title="Every fill is scored against the price the signal actually saw. CROSSING is mid-to-touch: the quoted bid-ask, known in advance and already charged by the cost model. SLIPPAGE is touch-to-fill: the market moving between decision and fill, or the broker filling away from its own quote. Entry and exit are counted separately because an urgent market exit slips differently from a patient limit entry.">
+                    <i class="bi bi-speedometer2 me-2"></i>Execution Quality &mdash; what the signal wanted vs what MT5 gave us
+                    <i class="bi bi-question-circle small text-secondary ms-1"></i>
+                </span>
+                <span class="badge bg-secondary">
+                    {{ slippage.measured_sides or 0 }} fills measured
+                </span>
+            </div>
+            <div class="card-body">
+            {% if not slippage.measured_sides %}
+                <div class="text-secondary small">
+                    No fills measured yet. Slippage is recorded from the
+                    first trade this build places &mdash; trades closed
+                    before it was added have no decision snapshot to score
+                    against, and are left blank rather than counted as zero.
+                </div>
+            {% else %}
+                <div class="row g-3">
+                    <div class="col-md-3 col-6">
+                        <div class="metric-card"
+                             title="Average slippage per FILL (entry and exit counted separately). Positive is a cost; negative is price improvement, which limit orders do produce.">
+                            <div class="metric-value {% if slippage.avg_slip_usd is not none and slippage.avg_slip_usd > 0 %}price-down{% else %}price-up{% endif %}">
+                                {{ ('%+.2f' % slippage.avg_slip_usd) if slippage.avg_slip_usd is not none else '—' }}
+                            </div>
+                            <div class="metric-label">Avg slippage / fill ($)</div>
+                            <div class="metric-note">
+                                {{ slippage.improved_sides or 0 }} of
+                                {{ slippage.measured_sides }} improved on the quote
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 col-6">
+                        <div class="metric-card"
+                             title="Entry versus exit. A much larger exit figure means the urgent market close is where the money goes — that is an argument for limit-first exits, not for a wider entry filter.">
+                            <div class="metric-value">
+                                {{ ('%+.2f' % slippage.avg_entry_slip_usd) if slippage.avg_entry_slip_usd is not none else '—' }}
+                                /
+                                {{ ('%+.2f' % slippage.avg_exit_slip_usd) if slippage.avg_exit_slip_usd is not none else '—' }}
+                            </div>
+                            <div class="metric-label">Entry / exit slip ($)</div>
+                            <div class="metric-note">per fill, entry then exit</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 col-6">
+                        <div class="metric-card"
+                             title="Average crossing cost per fill in SPREAD units — half the spot spread plus half the futures spread, weighted by the hedge ratio. This is the number to compare against sigma: the edge has to clear it.">
+                            <div class="metric-value">
+                                {{ ('%.4f' % slippage.avg_crossing_spread) if slippage.avg_crossing_spread is not none else '—' }}
+                            </div>
+                            <div class="metric-label">Avg crossing (spread)</div>
+                            <div class="metric-note">quoted cost, not a surprise</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3 col-6">
+                        <div class="metric-card"
+                             title="CLAUDE.md's monthly audit, computed continuously: modelled round-trip cost against what execution really cost (crossing + slippage). A ratio at or above 2 means the cost model is inflated and the edge filter is silently blocking good trades. Below 1 means the model is under-charging and trades look better than they are.">
+                            <div class="metric-value {% if slippage.model_ratio is not none and (slippage.model_ratio >= 2 or slippage.model_ratio < 1) %}price-down{% elif slippage.model_ratio is not none %}price-up{% endif %}">
+                                {{ ('%.2fx' % slippage.model_ratio) if slippage.model_ratio is not none else '—' }}
+                            </div>
+                            <div class="metric-label">Modelled ÷ realised cost</div>
+                            <div class="metric-note">
+                                {% if slippage.avg_modelled_cost_usd is not none %}
+                                    ${{ '%.2f' % slippage.avg_modelled_cost_usd }} modelled vs
+                                    ${{ '%.2f' % slippage.avg_realised_cost_usd }} real
+                                    ({{ slippage.compared_trades }} trades)
+                                {% else %}needs closed trades on both{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Shadow "what-if-held" summary -->
 <div class="row g-3 mb-4">
     <div class="col-12">
@@ -337,12 +421,13 @@
                                 <th title="Net P&L in dollars after all fees — the realized take-home for the round trip.">P&L</th>
                                 <th title="Return on actually-locked capital: per-leg margin (notional ÷ leverage) + M2M buffer — the honest 'return on what you put up'.">P&L %</th>
                                 <th title="Net P&L as a % of your CURRENT account equity (the capital available) — return on the whole account, vs P&L % which is against just this trade's locked capital. Uses current equity for all trades.">P&L % eq</th>
+                                <th class="text-nowrap" title="Round-trip SLIPPAGE in dollars: how far the fills landed from the touch that was quoted when each decision was made, entry and exit combined. Positive is a cost; negative is price improvement. This is NOT the bid-ask — crossing the book is charged separately by the cost model. Blank means the trade closed before slippage was being measured.">Slip $</th>
                                 <th title="Why the trade closed: PROFIT_TARGET, DOLLAR_STOP (%-capital), STOP_LOSS (z), MAX_HOLD (time), EXIT (reversion), or a manual/cleanup close.">Exit Reason</th>
                             </tr>
                         </thead>
                         <tbody id="trade-journal-table">
                             <tr>
-                                <td colspan="18" class="text-center text-secondary">Loading...</td>
+                                <td colspan="19" class="text-center text-secondary">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -454,7 +539,7 @@
             tbody.innerHTML = '';
 
             if (data.trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="18" class="text-center text-secondary">No trades recorded</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="19" class="text-center text-secondary">No trades recorded</td></tr>';
                 return;
             }
 
@@ -472,6 +557,18 @@
                     const dCls = captured > 0 ? 'price-up' : captured < 0 ? 'price-down' : '';
                     deltaCell = `<td class="${dCls}">${captured >= 0 ? '+' : ''}${captured.toFixed(2)}</td>`;
                 }
+                // Slippage: blank when unmeasured, because a 0 here
+                // would claim a perfect fill on a trade nobody scored.
+                const slip = trade.slip_usd;
+                const slipCell = slip == null ? '—'
+                    : (slip >= 0 ? '-$' : '+$') + Math.abs(slip).toFixed(2);
+                const slipCls = slip == null ? 'text-secondary'
+                    : (slip > 0 ? 'price-down' : 'price-up');
+                const half = v => v == null ? '—' : v.toFixed(2);
+                const slipTitle = slip == null
+                    ? 'Not measured — this trade closed before slippage tracking'
+                    : 'Entry ' + half(trade.entry_slip_usd) + ' + exit '
+                      + half(trade.exit_slip_usd) + ' (positive = cost)';
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>${trade.entry_time ? new Date(trade.entry_time).toLocaleString() : '-'}</td>
@@ -491,6 +588,7 @@
                     <td class="${pnlClass}">$${(trade.pnl_usd || 0).toFixed(2)}</td>
                     <td class="${pnlClass}" title="${trade.capital_locked_usd ? 'On $' + trade.capital_locked_usd.toFixed(0) + ' locked (margin + buffer)' : 'Capital not recorded'}">${trade.capital_locked_usd ? (trade.pnl_pct_on_capital || 0).toFixed(2) + '%' : '—'}</td>
                     <td class="${pnlClass}" title="${(EQUITY && EQUITY > 0) ? 'On $' + EQUITY.toFixed(0) + ' account equity' : 'Account equity not available'}">${(EQUITY && EQUITY > 0) ? ((trade.pnl_usd || 0) / EQUITY * 100).toFixed(2) + '%' : '—'}</td>
+                    <td class="${slipCls}" title="${slipTitle}">${slipCell}</td>
                     <td><span class="badge ${trade.is_open ? 'bg-warning' : 'bg-secondary'}">${trade.exit_reason || (trade.is_open ? 'OPEN' : '-')}</span></td>
                 `;
                 tbody.appendChild(row);
@@ -499,7 +597,7 @@
         .catch(error => {
             console.error('Error:', error);
             document.getElementById('trade-journal-table').innerHTML =
-                '<tr><td colspan="18" class="text-center text-danger">Error loading trades</td></tr>';
+                '<tr><td colspan="19" class="text-center text-danger">Error loading trades</td></tr>';
         });
 
     // Asset filter

@@ -210,6 +210,27 @@ class TelegramNotifier:
     def _row(label, value):
         return f"<code>{label:<13}</code>{value}"
 
+    def _slippage_rows(self, report):
+        """Decision-to-fill, for the entry/exit messages. Silent when
+        unmeasured — printing zeros would tell the operator execution
+        was flawless on a trade nobody scored."""
+        if not report or report.get('executed_spread') is None:
+            return []
+        R = self._row
+        rows = ["", "<b>EXECUTION</b>",
+                R("Wanted", f"{report['decision_spread']:+.4f}  (mid)"),
+                R("Quoted", f"{report['quoted_spread']:+.4f}  (touch)"),
+                R("Filled", f"{report['executed_spread']:+.4f}"),
+                R("Crossing", f"{report['crossing_spread']:+.4f}")]
+        slip = report.get('slippage_spread')
+        money = report.get('slippage_usd')
+        mark = "✅" if slip is not None and slip <= 0 else "⚠️"
+        rows.append(R("Slippage",
+                      f"{slip:+.4f}"
+                      + (f"  (${-money:,.2f})" if money is not None else "")
+                      + f" {mark}"))
+        return rows
+
     def notify_startup(self, mode, spot_leg, futures_leg, assets):
         self._send(
             f"🚀 <b>COORDINATOR STARTED</b>\n"
@@ -246,6 +267,7 @@ class TelegramNotifier:
         ]
         if spread is not None:
             rows.append(R("Spread", f"{spread:+.4f}"))
+        rows += self._slippage_rows(position.entry_slippage)
         rows += ["", R("Z-score", f"{z:+.4f}" if z is not None
                        else "manual / warm-up")]
         if plan.get('entry_sigma'):
@@ -340,10 +362,25 @@ class TelegramNotifier:
                 'SELL_BASIS' else 1
             change = direction_sign * (exit_spread - entry_spread)
             rows.append(R("Spread Chg", f"{change:+.4f} (favorable +)"))
+        rows += self._slippage_rows(position.exit_slippage)
         rows += ["",
                  R("Gross PnL", f"${gross:+,.2f}"),
                  R("Est. Fees", f"-${fees:,.2f}  (round-trip)"),
                  R("Net PnL", f"${net:+,.2f}  ({net_pct:+.3f}%)")]
+
+        # What the round trip cost to EXECUTE, against what the model
+        # charged for it — the audit CLAUDE.md asks for, on every trade
+        # instead of once a month.
+        halves = [(position.entry_slippage or {}).get('slippage_usd'),
+                  (position.exit_slippage or {}).get('slippage_usd')]
+        measured = [h for h in halves if h is not None]
+        if measured:
+            entry_s, exit_s = halves
+            detail = " + ".join(
+                f"{name} ${value:+,.2f}"
+                for name, value in (('entry', entry_s), ('exit', exit_s))
+                if value is not None)
+            rows.append(R("Slippage", f"-${sum(measured):,.2f}  ({detail})"))
 
         # ── Crisp lifecycle analysis: exact numbers, rule-based verdict ──
         rows += ["", "<b>ANALYSIS</b>"]

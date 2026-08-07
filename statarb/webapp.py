@@ -196,6 +196,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             sd_touches=touches,
             shadow={'count': len(shadow_rows), 'recent': shadow_rows},
             drawdown=webapi.drawdown_block(rows),
+            slippage=webapi.slippage_block(rows),
             equity=(runtime_status().get('equity')))
 
     def ui_assets():

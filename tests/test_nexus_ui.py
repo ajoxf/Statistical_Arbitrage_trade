@@ -41,6 +41,16 @@ def seed_db(db):
                                          'sl': 20.3, 'favorable': 'down'}}
         from datetime import datetime
         position.close_time = datetime.now()
+        # Decision-to-fill, on every trade but the first — so the
+        # Execution Quality card is exercised with data AND the
+        # "unmeasured" case stays represented in the same fixture.
+        if i:
+            position.entry_slippage = {
+                'crossing_spread': 0.30, 'crossing_usd': 1500.0,
+                'slippage_spread': 0.01, 'slippage_usd': 50.0}
+            position.exit_slippage = {
+                'crossing_spread': 0.30, 'crossing_usd': 1500.0,
+                'slippage_spread': 0.02, 'slippage_usd': 100.0}
         db.log_trade_review(position, exit_z=0.3, outcome='TARGET_HIT',
                             exit_spread=17.0, notional=16500000.0)
         db.log_shadow({'position_id': f'POS_{i:04d}', 'asset': 'GOLD',
@@ -1382,3 +1392,73 @@ def test_the_analysis_chart_is_guarded_too(client):
     page = client.get('/analysis').get_data(as_text=True)
     assert "typeof Chart === 'undefined'" in page
     assert 'const sdTouchChart = new Chart' not in page
+
+
+# --- slippage on the pages (2026-08-07) -----------------------------------
+
+def test_the_position_card_shows_all_three_prices(client):
+    """Owner: "what your signal wanted to enter at and what the orders
+    got placed at on MT5" — visible while the trade is still open, not
+    only in the post-mortem."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'id="position-slippage-row"' in page
+    assert 'wanted <span' in page and 'quoted <span' in page
+    assert 'crossing ' in page and 'slippage ' in page
+
+
+def test_the_card_keeps_crossing_and_slippage_apart(client):
+    """One combined figure would make a wide spread look like bad
+    execution and a fast market look like a wide spread."""
+    page = client.get('/').get_data(as_text=True)
+    tip = page.split('id="position-slippage-row"', 1)[1][:1200]
+    assert 'CROSSING is mid-to-touch' in tip
+    assert 'SLIPPAGE is touch-to-fill' in tip
+    assert 'price improvement' in tip
+
+
+def test_the_analysis_page_has_the_execution_quality_card(client):
+    page = client.get('/analysis').get_data(as_text=True)
+    assert 'Execution Quality' in page
+    assert 'Avg slippage / fill' in page
+    assert 'Entry / exit slip' in page
+    assert 'Avg crossing (spread)' in page
+    assert 'Modelled ÷ realised cost' in page
+
+
+def test_the_tiles_carry_the_measured_numbers(client):
+    """The seeded book has 5 measured trades of 6, so the counts must
+    read per FILL (10) and exclude the unmeasured one entirely."""
+    page = client.get('/analysis').get_data(as_text=True)
+    assert '10 fills measured' in page
+    # entry $50 / exit $100 on each measured trade (the template puts
+    # the two on separate lines, so compare on collapsed whitespace).
+    flat = ' '.join(page.split())
+    assert '+50.00 / +100.00' in flat
+    assert '+75.00' in flat                  # the per-fill average
+    assert '0 of 10 improved on the quote' in flat
+
+
+def test_an_empty_book_explains_itself_rather_than_showing_zeros(tmp_path):
+    """With nothing measured the card must say so, not show a row of
+    zeros that reads as flawless execution."""
+    from statarb.database import DataLogger
+    from statarb.webapp import create_app
+    db = str(tmp_path / 'empty.db')
+    DataLogger(db_path=db)
+    (tmp_path / 'status.json').write_text('{}')
+    app = create_app(db_path=db,
+                     status_path=str(tmp_path / 'status.json'),
+                     control_path=str(tmp_path / 'control.json'),
+                     config_path=str(tmp_path / 'nope.json'))
+    page = app.test_client().get('/analysis').get_data(as_text=True)
+    assert 'No fills measured yet' in page
+    assert 'rather than counted as zero' in page
+    assert 'Avg slippage / fill' not in page
+
+
+def test_the_journal_has_a_slippage_column(client):
+    page = client.get('/analysis').get_data(as_text=True)
+    assert '>Slip $</th>' in page
+    assert 'Not measured — this trade closed before slippage tracking' in page
+    # Blank, never a zero, for trades that predate the measurement.
+    assert "slip == null ? '—'" in page

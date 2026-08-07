@@ -48,8 +48,15 @@ class Trade:
         self.symbol = symbol
         self.side = side                    # OrderSide
         self.lot_size = lot_size
+        # What we wanted: the executable touch at the moment the
+        # DECISION was made. Compared against executed_price this is
+        # the slippage the operator asked to track (statarb/slippage.py).
         self.requested_price = price
         self.executed_price = None
+        # Pair-level decision-to-fill account, set on the spot leg of
+        # each pair. None means it could not be measured, which is not
+        # the same as zero.
+        self.slippage = None
         self.order_ticket = None
         # MT5 position tickets created by the fills. Hedging-mode
         # accounts REQUIRE closes to target these tickets.
@@ -89,6 +96,11 @@ class Position:
         self.z_max = None
         self.exit_spot_price = None
         self.exit_fut_price = None
+        # Decision-to-fill accounts (statarb/slippage.py): what the
+        # signal saw, what it was executable at, what MT5 gave us.
+        # None means unmeasured, which is NOT the same as zero.
+        self.entry_slippage = None
+        self.exit_slippage = None
 
     # -- crash-safe persistence -----------------------------------------
 
@@ -98,6 +110,7 @@ class Position:
             'trade_id': trade.trade_id, 'symbol': trade.symbol,
             'side': trade.side.value, 'lot_size': trade.lot_size,
             'executed_price': trade.executed_price,
+            'requested_price': trade.requested_price,
             'order_ticket': trade.order_ticket,
             'position_tickets': list(trade.position_tickets),
             'status': trade.status,
@@ -108,6 +121,7 @@ class Position:
         trade = Trade(d['symbol'], OrderSide(d['side']), d['lot_size'])
         trade.trade_id = d['trade_id']
         trade.executed_price = d['executed_price']
+        trade.requested_price = d.get('requested_price')
         trade.order_ticket = d['order_ticket']
         trade.position_tickets = list(d.get('position_tickets') or [])
         trade.status = d['status']
@@ -130,6 +144,7 @@ class Position:
             'z_reverted': self.z_reverted,
             'z_min': self.z_min,
             'z_max': self.z_max,
+            'entry_slippage': self.entry_slippage,
             'spot_trade': self._trade_to_dict(self.spot_trade),
             'futures_trade': self._trade_to_dict(self.futures_trade),
         }
@@ -150,6 +165,7 @@ class Position:
         position.peak_min = d.get('peak_min')
         position.trough_pnl = d.get('trough_pnl')
         position.trough_min = d.get('trough_min')
+        position.entry_slippage = d.get('entry_slippage')
         position.z_reverted = d.get('z_reverted', False)
         position.z_min = d.get('z_min')
         position.z_max = d.get('z_max')

@@ -30,6 +30,7 @@ import time as time_mod
 import uuid
 
 from .models import OrderSide, SignalType, Trade
+from . import slippage
 
 EPS = 1e-9
 URGENT_REASONS = {'STOP_LOSS', 'DOLLAR_STOP', 'Z_STOP', 'SYSTEM_SHUTDOWN',
@@ -312,8 +313,36 @@ class PairExecutor:
     # Pair entry (PositionManager-compatible interface)
     # ------------------------------------------------------------------
 
+    def _slippage(self, asset_key, signal_type, closing, spot_side,
+                  futures_side, reference, spot_trade, futures_trade):
+        """Decision-to-fill account for the pair. `reference` is the
+        market_data snapshot the DECISION was made on — not a fresh
+        tick, which would measure only the last few milliseconds and
+        miss the poll interval entirely."""
+        contract = float((self.config.ASSETS.get(asset_key) or {})
+                         .get('lot_size', 0.0) or 0.0)
+        report = slippage.build(
+            signal_type, closing,
+            self.config.TRADING.get('HEDGE_RATIO', 1.0),
+            (spot_trade.lot_size or 0.0) * contract,
+            spot_side, futures_side, reference,
+            spot_trade.executed_price, futures_trade.executed_price,
+            spot_trade.symbol, futures_trade.symbol)
+        if report:
+            logging.info("[SLIPPAGE] %s %s: %s",
+                         'exit' if closing else 'entry',
+                         signal_type.value, slippage.summarise(report))
+        # The quoted touch is 'what we wanted', which is exactly what
+        # the trades table's requested_price column is for; it has been
+        # written as NULL since the pair executor was built.
+        legs = (report or {}).get('legs') or {}
+        spot_trade.requested_price = (legs.get('spot') or {}).get('quote')
+        futures_trade.requested_price = (legs.get('futures') or {}).get('quote')
+        return report
+
     def execute_trade_pair(self, asset, signal_type, lot_size,
-                           spot_symbol, futures_symbol, tag='BASIS_ARB'):
+                           spot_symbol, futures_symbol, tag='BASIS_ARB',
+                           reference=None):
         if signal_type == SignalType.SELL_BASIS:
             spot_side, futures_side = OrderSide.BUY, OrderSide.SELL
         elif signal_type == SignalType.BUY_BASIS:
@@ -425,6 +454,9 @@ class PairExecutor:
                      asset, signal_type.value, spot_filled, spot_vwap or 0,
                      self.spot_leg.name, fut_filled, fut_vwap or 0,
                      self.futures_leg.name)
+        spot_trade.slippage = self._slippage(
+            asset, signal_type, False, spot_side, futures_side,
+            reference, spot_trade, futures_trade)
         return True, spot_trade, futures_trade
 
     # ------------------------------------------------------------------
@@ -489,7 +521,7 @@ class PairExecutor:
             timeout=self.config.EXECUTION.get('EXIT_TIMEOUT_SEC', 15))
         return filled, vwap
 
-    def execute_close_pair(self, position, reason=None):
+    def execute_close_pair(self, position, reason=None, reference=None):
         urgent = (reason or '').upper() in URGENT_REASONS
         comment = f"BASIS_ARB_CX_{uuid.uuid4().hex[:6]}"
 
@@ -521,4 +553,8 @@ class PairExecutor:
                 fut_filled, close_futures.lot_size)
             return False, close_spot, close_futures
 
+        close_spot.slippage = self._slippage(
+            position.asset, position.signal_type, True,
+            close_spot.side, close_futures.side, reference,
+            close_spot, close_futures)
         return True, close_spot, close_futures

@@ -97,7 +97,7 @@ class PositionManager:
             + (exit_fut - entry_fut) * fut_units
 
     def close_position(self, position_id, close_reason, order_manager,
-                       contract_size=1.0):
+                       contract_size=1.0, reference=None):
         if position_id not in self.positions:
             return False
 
@@ -108,8 +108,13 @@ class PositionManager:
         position.status = PositionStatus.CLOSING
         self.data_logger.save_position_state(position)
         try:
+            # `reference` is the market_data the EXIT decision was made
+            # on. Passed through by keyword so the single-account
+            # OrderManager, which does not measure slippage, still works.
+            extra = {'reference': reference} if reference is not None else {}
             success, close_spot, close_futures = \
-                order_manager.execute_close_pair(position, reason=close_reason)
+                order_manager.execute_close_pair(position,
+                                                 reason=close_reason, **extra)
 
             if success:
                 # Mark closed and persist ONLY after exit orders succeeded
@@ -121,6 +126,7 @@ class PositionManager:
                 position.unrealized_pnl = 0.0
                 position.exit_spot_price = close_spot.executed_price
                 position.exit_fut_price = close_futures.executed_price
+                position.exit_slippage = close_spot.slippage
 
                 self.data_logger.log_trade(close_spot, position_id)
                 self.data_logger.log_trade(close_futures, position_id)
