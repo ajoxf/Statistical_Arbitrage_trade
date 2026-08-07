@@ -563,3 +563,18 @@ def test_the_coordinator_states_the_clock_difference(config, tmp_path,
     caplog.clear()
     coord._note_server_clock('account_a', [{'server_offset_sec': 10800}])
     assert caplog.text == ''            # said once, not every poll
+
+    # The offset is a second-resolution tick stamp measured against a
+    # continuous clock, so it jitters by a second between polls. Live
+    # 2026-08-07 that reprinted the line at WARNING every 30 seconds.
+    for jitter in (10799, 10801, 10798, 10802):
+        coord._note_server_clock('account_a',
+                                 [{'server_offset_sec': jitter}])
+    assert caplog.text == ''
+
+    # A real clock change (DST) still speaks up, and loudly
+    with caplog.at_level(logging.INFO):
+        coord._note_server_clock('account_a',
+                                 [{'server_offset_sec': 14400}])
+    assert 'broker clock is UTC+4.0h' in caplog.text
+    assert any(r.levelno == logging.WARNING for r in caplog.records)

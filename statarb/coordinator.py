@@ -12,6 +12,7 @@ Topology comes from config:
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -1949,20 +1950,34 @@ class Coordinator:
         """Say once, in the log, how far each broker's clock sits from
         ours. "The MT5 History is not matching the Exchange Order Log"
         is most often this and nothing else, and it is invisible until
-        someone states the number."""
+        someone states the number.
+
+        Compared to the MINUTE, not the second. The offset is measured
+        as `tick.time - time.time()`, and a tick stamp has one-second
+        resolution against a continuous clock, so the raw number
+        alternates between (say) 10800 and 10799 from one poll to the
+        next. Dedup on the exact value therefore never matched and the
+        line reprinted every 30s at WARNING — the same log flood the
+        operator asked to be rid of, wearing a different hat. A clock
+        offset that genuinely CHANGES (a DST roll) moves by 30 minutes
+        or more, so the minute is the honest resolution and a change at
+        that resolution is worth a WARNING."""
         offset = next((r.get('server_offset_sec') for r in rows
                        if r.get('server_offset_sec') is not None), None)
-        if offset is None or self._server_clock.get(leg_name) == offset:
+        if offset is None:
+            return
+        minutes = int(round(offset / 60.0))
+        if self._server_clock.get(leg_name) == minutes:
             return
         first = leg_name not in self._server_clock
-        self._server_clock[leg_name] = offset
+        self._server_clock[leg_name] = minutes
         local = -time.timezone if not time.localtime().tm_isdst \
             else -time.altzone
         logging.log(logging.INFO if first else logging.WARNING,
                     "Leg '%s': broker clock is UTC%+.1fh; this machine is "
                     "UTC%+.1fh. MT5's History shows broker time, and so "
                     "does the Exchange Order Log.",
-                    leg_name, offset / 3600.0, local / 3600.0)
+                    leg_name, minutes / 60.0, local / 3600.0)
 
     def _poll_order_logs(self, interval=30.0, hours=24):
         """Pull each account's raw MT5 order/deal activity into the
@@ -2281,7 +2296,9 @@ class Coordinator:
         else:
             need_hist = stats.min_history_sec - stats.history_sec
             need_qty = cfg.get('MIN_SAMPLES', 0) - len(stats.samples)
-            gate = (f'{need_hist / 60:.0f} more minutes'
+            # Round UP: a gate with 20 seconds left is not "0 more
+            # minutes needed", which reads as the counter being broken.
+            gate = (f'{math.ceil(need_hist / 60):.0f} more minutes'
                     if need_hist > 0 else f'{need_qty:.0f} more quotes')
             rows.append(('stats', self.BLOCKED,
                          f'still collecting — {gate} needed'))
@@ -2512,9 +2529,18 @@ def main():
 
     if mode == "LIVE":
         print("WARNING: LIVE TRADING MODE - REAL MONEY AT RISK")
-        clip = config.TRADING.get('CLIP_LOTS', 1.0)
+        # State the size the engine will ACTUALLY use. This banner is
+        # the last thing between the operator and real orders, and it
+        # printed "Clip size: 50.0 lots/leg" on a box running notional
+        # sizing at 1.15 lots — a 43x overstatement on the one screen
+        # that exists to make the operator stop and check.
         target = config.TRADING.get('DAILY_LOT_TARGET', 0)
-        print(f"Clip size: {clip} lots/leg | Daily target: {target} lots")
+        if config.TRADING.get('SIZING_MODE', 'lots') == 'notional':
+            size = (f"Sizing: ${config.TRADING.get('NOTIONAL_PER_LEG_USD', 0):,.0f}"
+                    f" notional/leg (lots derived from live price)")
+        else:
+            size = f"Clip size: {config.TRADING.get('CLIP_LOTS', 1.0)} lots/leg"
+        print(f"{size} | Daily target: {target} lots")
         if not args.yes and input(
                 "Type 'START' to begin live trading: "
                 ).strip().upper() != "START":

@@ -414,6 +414,20 @@ stopped must stay stopped across a restart), not a command. The
 distinction is the whole fix: `_CONTROL_COMMANDS` lists exactly the
 keys that EXECUTE something, and everything on that list is primed.
 
+Three flood/accuracy warts the same restart exposed, all fixed:
+
+- **The broker-clock line reprinted every 30s at WARNING.** The offset
+  is `tick.time - time.time()`, a one-second-resolution stamp against a
+  continuous clock, so it alternates 10800/10799 and the exact-value
+  dedup never matched. `_note_server_clock` now compares to the MINUTE
+  — a genuine change (DST) moves 30 minutes or more, so it still warns
+  when it matters.
+- "still collecting — **0 more minutes** needed" (rounding down on a
+  gate with seconds left). Rounds up.
+- The LIVE banner printed "Clip size: 50.0 lots/leg" on a box running
+  **notional** sizing at 1.15 lots. It is the last screen before real
+  orders; it now states whichever sizing mode is actually in force.
+
 ## A failed close made the engine believe it was flat (2026-08-07)
 
 LIVE, the worst state this system can reach. A manual 1-lot gold pair
