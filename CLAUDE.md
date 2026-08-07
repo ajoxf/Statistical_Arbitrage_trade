@@ -341,12 +341,21 @@ full of poll rows; only consecutive, because a spread genuinely
 revisiting a level is a real observation). Regression-tested: the same
 quotes stored once each vs twenty times each give the same sigma.
 
-The counter is also a rolling OCCUPANCY, not a total — it legitimately
-falls when the market is quieter now than a window ago. It now reads
-"quotes now in the 2h window" with the arrival RATE beneath it
-(`SpreadStats.quote_rate_per_min`), which is the quantity actually
-changing, and goes amber below ~6/min because a thin window is what
-collapses sigma.
+**The counter is now GONE** (operator, 2026-08-07: "10,516 quotes in
+window - not require"). It was a rolling OCCUPANCY, not a total, so it
+legitimately fell whenever the market was quieter than a window ago and
+read as data being lost — three attempts to word it and no decision
+ever depended on it. What replaced it:
+
+- the **readiness gates** line answers the question it stood in for
+  (enough data to trust mu/sigma?) against the thresholds that actually
+  gate trading, each capped so a met gate reads as met;
+- the **feed rate** tile (`SpreadStats.quote_rate_per_min`) keeps the
+  one genuinely diagnostic part, amber below ~6/min, because a thin
+  feed is what collapses sigma;
+- the progress bar shows a plain percentage, since the gate numbers
+  live on the readiness line and a second running total up there only
+  duplicated or contradicted it.
 
 ## Position sizing: notional per leg (2026-08-07, owner)
 

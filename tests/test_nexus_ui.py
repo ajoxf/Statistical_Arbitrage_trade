@@ -595,12 +595,13 @@ def test_saving_the_lookback_window_reaches_the_config(client):
         assert json.load(f)['signals']['LOOKBACK_SEC'] == 1800
 
 
-def test_the_warmup_bar_counts_against_min_samples_not_seconds(client):
+def test_the_warmup_bar_tracks_whichever_gate_is_binding(client):
     """"181 / 7,200" compared a sample count to a duration in seconds,
-    so the bar could never fill."""
+    so the bar could never fill. It now tracks the gate that is
+    furthest from being met, and shows a plain percentage."""
     page = client.get('/').get_data(as_text=True)
-    assert '0 / 300' in page         # MIN_SAMPLES default
-    assert '7200' not in page
+    assert 'const percent = (needHistory || warming)' in page
+    assert 'Math.min(quotePct, timePct)' in page
 
 
 # ---------------------------------------------------------------------------
@@ -647,18 +648,19 @@ def test_the_dashboard_marks_the_fair_value_reference_only(client):
 # MIN_SAMPLES is a threshold to CLEAR, not a target to sit at. Once
 # cleared the ratio reads like a broken denominator.
 
-def test_the_counter_label_starts_as_a_warm_up_target(client):
-    page = client.get('/').get_data(as_text=True)
-    assert 'quotes to warm up' in page
-    assert 'id="data-count-label"' in page
+def test_the_window_count_is_gone(client):
+    """Operator, 2026-08-07: "10,516 quotes in window - not require".
 
-
-def test_the_ratio_is_dropped_once_the_threshold_is_cleared(client):
-    """Rendered client-side, so assert the branch exists and that the
-    post-warm-up wording is present rather than the bare ratio."""
+    It was a rolling occupancy, so it FELL whenever the market quietened
+    and read as data being lost — it took three attempts to word and no
+    decision ever depended on it. The readiness gates answer the
+    question it was standing in for, against the thresholds that
+    actually gate trading."""
     page = client.get('/').get_data(as_text=True)
-    assert 'const warming = dataPoints < minSamples' in page
-    assert "'quotes now in the ' +" in page
+    assert 'id="data-count-display"' not in page
+    assert 'quotes to warm up' not in page
+    assert 'quotes now in the' not in page
+    assert 'id="readiness-gates"' in page          # what replaced it
 
 
 def test_a_collapsed_sigma_is_named_instead_of_collecting_data(client):
@@ -1078,24 +1080,23 @@ def test_the_cost_block_is_absent_when_the_engine_has_not_published_it():
     assert signal['leg_a_notional'] is None
 
 
-def test_the_warm_counter_shows_one_span_only(client):
-    """Two numbers over DIFFERENT spans on one line reads as a rate.
-    The count covers the last LOOKBACK_SEC (older quotes are dropped);
-    uptime does not. Uptime belongs in the tooltip."""
+def test_the_feed_rate_took_the_counter_s_place(client):
+    """A feed going thin is what collapses sigma, so the RATE is worth
+    a tile even though the raw count was not."""
     page = client.get('/').get_data(as_text=True)
-    assert "humanDuration(history) + ' collected'" not in page
+    assert 'id="data-count-rate"' in page
+    assert "rateLabel.textContent = 'quotes/min'" in page
+    assert 'quoteRate < 6' in page                  # the amber threshold
+    assert 'collapses sigma' in page
+
+
+def test_the_progress_bar_shows_a_percentage_not_a_running_total(client):
+    """The gate NUMBERS live on the readiness line, each against the
+    threshold it is judged by. A second running total up here only
+    duplicated or contradicted it."""
+    page = client.get('/').get_data(as_text=True)
+    assert "? Math.round(percent) + '%' : ''" in page
     assert 'const heldSec' not in page            # the pinned ratio, gone
-    assert "'quotes now in the ' +" in page
-    assert 'This is a rolling count, NOT a total' in page
-    assert "' Collecting for ' + humanDuration(history)" in page
-
-
-def test_each_warm_up_line_carries_one_unit(client):
-    """Mixed units on one line ("quotes in 2h window · 7,200/7,200s")
-    is what made it unreadable."""
-    page = client.get('/').get_data(as_text=True)
-    assert "'minutes collected'" in page
-    assert "'quotes collected'" in page
 
 
 def test_the_engine_publishes_its_measured_refresh_rate():

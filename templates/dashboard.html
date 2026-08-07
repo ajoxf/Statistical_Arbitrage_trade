@@ -180,14 +180,18 @@
                     </div>
                 </div>
             </div>
+            <!-- The raw "N quotes in the 2h window" count used to sit
+                 here. Removed at the operator's request (2026-08-07):
+                 it is a rolling occupancy, so it falls whenever the
+                 market quietens, and no decision depends on it. The
+                 readiness gates below answer the question it was there
+                 for — is there enough data to trust the mean and SD —
+                 against the thresholds that actually gate trading.
+                 What IS kept is the arrival rate, because a feed going
+                 thin is what collapses sigma. -->
             <div class="text-end">
-                <div id="data-count-display" class="fw-bold font-monospace">0 / {{ config.min_samples }}</div>
-                <small class="text-secondary" id="data-count-label">quotes to warm up</small>
-                <!-- The count is a rolling occupancy and FALLS when the
-                     market quietens, which reads as losing data. The
-                     arrival rate is the quantity actually changing. -->
-                <div class="text-secondary" id="data-count-rate"
-                     style="font-size: 0.65rem;"></div>
+                <div id="data-count-rate" class="fw-bold font-monospace">&mdash;</div>
+                <small class="text-secondary" id="data-rate-label">feed rate</small>
             </div>
         </div>
         <!-- Readiness gates, always shown and always as ratios: "have
@@ -195,9 +199,7 @@
              yes/no question, and the answer is only legible next to
              the threshold it is being judged against. Both ratios are
              CAPPED at their gate, so a met gate reads 7,200 / 7,200s
-             rather than growing past its own denominator. Kept apart
-             from the live window count above, which measures a
-             different span. -->
+             rather than growing past its own denominator. -->
         <div class="mt-1 pt-1 border-top d-flex gap-3 flex-wrap"
              id="readiness-gates" style="font-size: 0.7rem;"
              title="Both gates must be met before the engine will trade: enough elapsed collection AND enough quotes in the window. The mean and standard deviation the z-score is built from are only trustworthy once both are green.">
@@ -3290,8 +3292,6 @@ function updateFilterStatus(elementId, passed, value) {
         const statusDetail = document.getElementById('trading-status-detail');
         const progressBar = document.getElementById('trading-progress-bar');
         const progressText = document.getElementById('trading-progress-text');
-        const dataCountDisplay = document.getElementById('data-count-display');
-        const dataCountLabel = document.getElementById('data-count-label');
 
         // minSamples is a THRESHOLD to clear, not a target to hold at.
         // Once cleared, "10,894 / 300" reads like a broken denominator —
@@ -3309,74 +3309,45 @@ function updateFilterStatus(elementId, passed, value) {
             ? Math.min(quotePct, timePct) : 100;
 
         progressBar.style.width = percent + '%';
-        // ONE fact per line, and never a ratio against a threshold that
-        // has already been met — "7,200 / 7,200s" was as meaningless as
-        // the "10,894 / 300" it replaced. While a gate is filling the
-        // big number is that gate's progress; once both are met it is
-        // the plain count, with elapsed collection as a DURATION that
-        // keeps growing rather than a pinned fraction.
-        if (needHistory) {
-            progressText.textContent = Math.round(percent) + '%';
-            dataCountDisplay.textContent = Math.floor(history / 60) + ' / ' +
-                Math.round(minHistory / 60);
-            if (dataCountLabel) dataCountLabel.textContent = 'minutes collected';
-        } else if (warming) {
-            progressText.textContent = Math.round(percent) + '%';
-            dataCountDisplay.textContent = dataPoints.toLocaleString() +
-                ' / ' + minSamples.toLocaleString();
-            if (dataCountLabel) dataCountLabel.textContent = 'quotes collected';
-        } else {
-            // Once warm, ONE fact: how many quotes the window holds and
-            // what span that window covers. Elapsed uptime was shown
-            // beside it and the two are measured over DIFFERENT spans —
-            // the count only covers the last LOOKBACK_SEC, because
-            // older samples are dropped. "13,752 quotes · 2h 8m" reads
-            // as a rate, and after eight hours it would read as a rate
-            // wrong by four times. Uptime moves to the tooltip, where
-            // it cannot be mistaken for the count's denominator.
-            progressText.textContent = '';
-            dataCountDisplay.textContent = dataPoints.toLocaleString();
-            if (dataCountLabel) {
-                // "in" not "collected": it is what the window HOLDS
-                // right now, and old quotes leave as new ones arrive.
-                dataCountLabel.textContent = 'quotes now in the ' +
-                    windowLabel(lookbackSec);
-            }
-            const holder = dataCountDisplay.parentElement;
-            if (holder) {
-                holder.title = dataPoints.toLocaleString() +
-                    ' quotes inside the ' + windowLabel(lookbackSec) +
-                    '. This is a rolling count, NOT a total: a quote ' +
-                    'leaves the window ' + windowLabel(lookbackSec) +
-                    ' after it arrived, so the number FALLS whenever ' +
-                    'the market is quieter now than it was then, and ' +
-                    'rises when it is busier. Nothing is being lost. ' +
-                    'The arrival rate below is the figure that is ' +
-                    'actually changing.' +
-                    (history ? ' Collecting for ' + humanDuration(history) +
-                               '.' : '');
-            }
-        }
+        // Progress % while a gate is still filling, blank once both are
+        // met. The gate NUMBERS live on the readiness line below, which
+        // states each against the threshold it is judged by; a second
+        // running total up here only ever duplicated or contradicted it.
+        progressText.textContent = (needHistory || warming)
+            ? Math.round(percent) + '%' : '';
 
-        // Arrival rate — why the count above moves.
+        // Feed rate. The raw window count that used to sit here was
+        // removed at the operator's request: it is a rolling occupancy,
+        // it falls whenever the market quietens, and nothing decides
+        // anything from it. The RATE is the diagnostic worth a tile —
+        // a feed going thin is what collapses sigma and produces a
+        // nonsense z-score.
         const rateEl = document.getElementById('data-count-rate');
+        const rateLabel = document.getElementById('data-rate-label');
         if (rateEl) {
             if (quoteRate == null) {
-                rateEl.textContent = '';
+                rateEl.textContent = '—';
+                rateEl.className = 'fw-bold font-monospace text-secondary';
+                rateEl.title = 'No quote rate yet — the window needs at '
+                    + 'least two quotes to measure one.';
+                if (rateLabel) rateLabel.textContent = 'feed rate';
             } else {
-                const perMin = Math.round(quoteRate);
-                rateEl.textContent = perMin.toLocaleString()
-                    + ' quotes/min arriving';
-                // A window this thin is what collapses sigma.
                 const thin = quoteRate < 6;
-                rateEl.className = thin ? 'text-warning' : 'text-secondary';
+                rateEl.textContent = Math.round(quoteRate).toLocaleString();
+                rateEl.className = 'fw-bold font-monospace '
+                    + (thin ? 'text-warning' : '');
+                if (rateLabel) {
+                    rateLabel.textContent = 'quotes/min';
+                    rateLabel.className = thin ? 'text-warning'
+                                               : 'text-secondary';
+                }
                 rateEl.title = thin
                     ? 'The feed is very slow right now. A thin window '
                       + 'gives an unreliable standard deviation, which is '
                       + 'what produces a nonsense z-score.'
-                    : 'New quotes per minute, measured across the window. '
-                      + 'The count above rises when this is faster than it '
-                      + 'was a window ago and falls when it is slower.';
+                    : 'New quotes per minute, measured across the '
+                      + windowLabel(lookbackSec) + '. This is the honest '
+                      + 'measure of feed health.';
             }
         }
 
