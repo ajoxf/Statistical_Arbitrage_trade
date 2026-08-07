@@ -379,6 +379,36 @@ Three separate floods, all fixed:
   returns a constant `[]` (resting orders are not wired to it); now
   15s.
 
+## The log says what is working (2026-08-07, operator)
+
+"I am more interested to get details on what is working and what is
+not working." A repeated price tick never answered that. The status
+line is now a HEALTH BLOCK — every subsystem, its verdict, and the
+reason:
+
+```
+GOLD spot 4292.61 | fut 4351.55 | spread +58.94 — held up by: stats, sizing
+    feed     OK      118 quotes/min
+    stats    BLOCKED still collecting — 45 more minutes needed
+    sizing   BLOCKED the hedge for 0.05 lots on leg A is under leg B's
+                     0.1-lot minimum — needs at least $42,926 per leg
+    entries  BLOCKED edge gate
+    exits    --      flat
+    risk     OK      no breaker, 0/500 lots today
+```
+
+`Coordinator._health` returns `[(subsystem, state, detail)]`; only the
+STATE column decides whether to reprint, so a drifting sigma is not
+news and the flood does not come back. Also published to
+runtime_status as `health` for the UI.
+
+Writing it exposed a real bug: `_sizing_plan` read symbol limits from
+`executor._meta`, which **PaperExecutor does not have** — so in PAPER
+the plan was computed with no volume step and no minimum at all
+(fractional lots, and the minimum-notional guard never fired). It now
+reads `leg.ensure_symbol` directly, cached per (leg, symbol) because a
+RemoteLeg answers over IPC and this runs every poll.
+
 ## A manual trade's own target is what gets measured (2026-08-07)
 
 Operator armed SHORT at 59.00 with TP 57 / SL 69, it triggered at

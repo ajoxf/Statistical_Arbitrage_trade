@@ -157,6 +157,7 @@ class Coordinator:
         self._last_logged_quote = {}   # asset -> last quote_id persisted
         self._last_status_state = {}   # asset -> last LOGGED state
         self._plan_refusal = None      # why the last entry was blocked
+        self._meta_cache = {}          # (leg, symbol) -> volume limits
         self._server_clock = {}        # leg -> broker clock offset vs UTC
         self._scenario_result = None   # last round-trip scenario outcome
         self._last_confirmation = None  # last MT5 ticket read-back
@@ -742,6 +743,30 @@ class Coordinator:
                 self.data_logger.log_sd_touch(asset_key, level, 'DOWN',
                                               z, spread)
 
+    def _symbol_meta(self, leg, symbol):
+        """Volume step / minimum / maximum for one symbol, cached.
+
+        Read from the LEG, not from the executor: PaperExecutor has no
+        `_meta`, so the previous lookup silently returned nothing in
+        paper mode and the plan was computed with no step and no
+        minimum at all — fractional lots no broker would accept, and
+        the minimum-notional guard never fired. Paper is supposed to
+        mirror LIVE, so it has to see the same instrument limits.
+
+        Cached because a RemoteLeg answers over IPC and this runs on
+        every poll; symbol specs do not change while we are running.
+        """
+        if not symbol or leg is None:
+            return None
+        key = (getattr(leg, 'name', '?'), symbol)
+        if key not in self._meta_cache:
+            try:
+                meta = leg.ensure_symbol(symbol)
+            except Exception:
+                meta = None
+            self._meta_cache[key] = meta if (meta and meta.get('ok')) else None
+        return self._meta_cache[key]
+
     def _sizing_plan(self, asset_key, market_data=None):
         """Resolve this entry's lots for BOTH legs.
 
@@ -758,21 +783,9 @@ class Coordinator:
         contract_a = float(asset.get('lot_size') or 1.0)
         contract_b = float(asset.get('fut_lot_size') or contract_a)
         legs = self.active_assets.get(asset_key) or {}
-        meta_a = meta_b = None
-        for leg, symbol_key, target in (
-                (self.spot_leg, 'spot_symbol', 'a'),
-                (self.futures_leg, 'futures_symbol', 'b')):
-            symbol = legs.get(symbol_key)
-            probe = getattr(self.executor, '_meta', None)
-            if symbol and callable(probe):
-                try:
-                    meta = probe(leg, symbol)
-                except Exception:
-                    meta = None
-                if target == 'a':
-                    meta_a = meta
-                else:
-                    meta_b = meta
+        meta_a = self._symbol_meta(self.spot_leg, legs.get('spot_symbol'))
+        meta_b = self._symbol_meta(self.futures_leg,
+                                   legs.get('futures_symbol'))
         return sizing.plan(
             self.config, contract_a, contract_b,
             market_data.get('spot_price'), market_data.get('futures_price'),
@@ -1768,6 +1781,12 @@ class Coordinator:
             'margin_breaker': self._margin_breaker_state(),
             'manual_order': self.manual_order,
             'manual_note': self.manual_note,
+            # The same what-is-working breakdown the log prints, so a
+            # UI can show it without re-deriving any of the verdicts.
+            'health': {key: [
+                {'subsystem': name, 'state': state, 'detail': detail}
+                for name, state, detail in self._health(key, md)]
+                for key, md in (all_market_data or {}).items()},
         }
         try:
             tmp = self.status_path + '.tmp'
@@ -2112,43 +2131,128 @@ class Coordinator:
             count += 1
         return f"🚨 CLOSEALL: {count} position(s) sent to market close"
 
-    def _status_state(self, asset_key, md):
-        """The facts worth a log line, and nothing that merely moves.
+    OK, BLOCKED, FAILED, IDLE = 'OK', 'BLOCKED', 'FAILED', '--'
 
-        Prices and z change on every tick; whether the engine is warm,
-        what it would do, and whether it is halted do not. Only the
-        latter are events."""
+    def _health(self, asset_key, md):
+        """What is working and what is not, subsystem by subsystem.
+
+        Operator, 2026-08-07: "I am more interested to get details on
+        what is working and what is not working". A price tick repeated
+        every few seconds never answered that; this does, in one block,
+        naming the thing that is stopping the engine trading rather
+        than leaving it to be inferred from the absence of trades.
+
+        Returns [(subsystem, state, detail)] — detail carries the live
+        numbers, state carries the verdict, and only the STATE is used
+        to decide whether to reprint (see log_status), so a drifting
+        sigma does not count as news.
+        """
+        cfg = self.config.SIGNALS
         stats = self.stats.get(asset_key)
+        rows = []
+
+        # -- feed --
+        age_ms = md.get('tick_age_ms')
+        rate = stats.quote_rate_per_min if stats else None
+        if age_ms is not None and age_ms > 10_000:
+            rows.append(('feed', self.FAILED,
+                         f'no tick for {age_ms / 1000:.0f}s — '
+                         f'check both terminals'))
+        elif rate is not None and rate < 6:
+            rows.append(('feed', self.BLOCKED,
+                         f'only {rate:.0f} quotes/min — too thin to '
+                         f'trust a standard deviation'))
+        else:
+            rows.append(('feed', self.OK,
+                         f'{rate:.0f} quotes/min' if rate
+                         else 'ticking'))
+
+        # -- statistics --
         if stats is None:
-            return 'no-stats', None
-        if not stats.warm:
-            if stats.degenerate and len(stats.samples) >= \
-                    self.config.SIGNALS.get('MIN_SAMPLES', 0):
-                return 'no-usable-z', None
-            return 'collecting', None
-        halted, why = self.risk_manager.halted()
-        if halted:
-            return 'halted', why
-        signal = getattr(self.last_signals.get(asset_key), 'value',
-                         'NO_SIGNAL')
+            rows.append(('stats', self.FAILED, 'no window for this asset'))
+        elif stats.warm:
+            rows.append(('stats', self.OK,
+                         f'warm — mu {stats.mu:.4f}, sigma '
+                         f'{stats.sigma:.4f}'))
+        elif stats.degenerate and len(stats.samples) >= \
+                cfg.get('MIN_SAMPLES', 0):
+            rows.append(('stats', self.BLOCKED,
+                         'enough quotes but the spread has barely moved '
+                         '— sigma too small for a usable z'))
+        else:
+            need_hist = stats.min_history_sec - stats.history_sec
+            need_qty = cfg.get('MIN_SAMPLES', 0) - len(stats.samples)
+            gate = (f'{need_hist / 60:.0f} more minutes'
+                    if need_hist > 0 else f'{need_qty:.0f} more quotes')
+            rows.append(('stats', self.BLOCKED,
+                         f'still collecting — {gate} needed'))
+
+        # -- sizing --
+        size = self._sizing_plan(asset_key, md)
+        if size.get('reason'):
+            rows.append(('sizing', self.BLOCKED, size['reason']))
+        else:
+            rows.append(('sizing', self.OK,
+                         f"{size['leg_a_lots']:g} / {size['leg_b_lots']:g} "
+                         f"lots, {size['imbalance_pct']:+.1f}% balance"))
+
+        # -- entries --
         held = len(self.position_manager.get_positions_for_asset(asset_key))
-        return f'ready:{signal}:{held}', None
+        halted, why = self.risk_manager.halted()
+        blocking = getattr(self.z_gen, '_blocking', {}).get(asset_key)
+        if not self.algo_enabled:
+            rows.append(('entries', self.IDLE,
+                         'algo stopped (exits and armed manual trades '
+                         'still run)'))
+        elif halted:
+            rows.append(('entries', self.BLOCKED, f'circuit breaker: {why}'))
+        elif held:
+            rows.append(('entries', self.IDLE,
+                         f'{held} position(s) already open'))
+        elif blocking:
+            rows.append(('entries', self.BLOCKED, f'{blocking} gate'))
+        elif stats is not None and stats.warm and stats.z is not None:
+            rows.append(('entries', self.OK,
+                         f'armed — z {stats.z:+.2f}, need '
+                         f"|z| >= {cfg['ENTRY_Z']:g}"))
+        else:
+            rows.append(('entries', self.BLOCKED, 'waiting on statistics'))
+
+        # -- exits --
+        rows.append(('exits', self.OK if held else self.IDLE,
+                     f'{held} position(s) being managed' if held
+                     else 'flat'))
+
+        # -- risk --
+        target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
+        done = self.risk_manager.lots_traded_today(asset_key)
+        rows.append(('risk', self.BLOCKED if halted else self.OK,
+                     why if halted else
+                     (f'no breaker, {done:.0f}/{target:.0f} lots today'
+                      if target else 'no breaker tripped')))
+        return rows
+
+    def _status_state(self, asset_key, md):
+        """The verdicts only — what changing would be news. Live
+        numbers move on every tick and must not trigger a reprint."""
+        return tuple(state for _, state, _ in self._health(asset_key, md))
 
     def _status_line(self, asset_key, md, prefix=''):
-        target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
-        stats = self.stats.get(asset_key)
-        z = stats.z if stats else None
-        done = self.risk_manager.lots_traded_today(asset_key)
-        progress = f" | today {done:.0f}/{target:.0f} lots" if target else ""
-        halted, why = self.risk_manager.halted()
-        state = f" | HALTED: {why}" if halted else ""
-        z_str = f"{z:+.2f}" if z is not None else "warm-up"
+        """One health block. Prices first, because they anchor the
+        rest, then every subsystem with its verdict and the reason it
+        holds — so "what is working and what is not" is readable
+        without inferring it from the absence of trades."""
+        rows = self._health(asset_key, md)
+        blocked = [name for name, state, _ in rows
+                   if state in (self.BLOCKED, self.FAILED)]
+        headline = ('all systems go' if not blocked
+                    else 'held up by: ' + ', '.join(blocked))
         logging.info(
-            "%s%s spot %.2f | fut %.2f | spread %+.2f | z %s | %s%s%s",
+            "%s%s spot %.2f | fut %.2f | spread %+.2f — %s",
             prefix, asset_key, md['spot_price'], md['futures_price'],
-            md['spread'], z_str,
-            getattr(self.last_signals.get(asset_key), 'value', 'NO_SIGNAL'),
-            progress, state)
+            md['spread'], headline)
+        for name, state, detail in rows:
+            logging.info("    %-8s %-7s %s", name, state, detail)
 
     def log_status(self, all_market_data, heartbeat=False):
         """Log what CHANGED, plus an occasional heartbeat.
@@ -2164,7 +2268,7 @@ class Coordinator:
         a quiet log still proves the engine is alive.
         """
         for asset_key, md in all_market_data.items():
-            state, detail = self._status_state(asset_key, md)
+            state = self._status_state(asset_key, md)
             changed = self._last_status_state.get(asset_key) != state
             if not changed and not heartbeat:
                 continue

@@ -458,3 +458,127 @@ def test_the_hedge_mode_hot_reloads():
     applied, _ = live.hot_apply(fresh)
     assert 'TRADING.HEDGE_MODE' in applied
     assert live.TRADING['HEDGE_MODE'] == 'notional'
+
+
+# --- the health report (2026-08-07) ---------------------------------------
+
+@pytest.fixture
+def coord(tmp_path, monkeypatch, config):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator, PaperExecutor
+
+    class Leg:
+        name = 'broker'
+
+        def ensure_symbol(self, sym):
+            spot = 'XAU' in sym
+            return {'ok': True,
+                    'volume_step': 0.01 if spot else 0.1,
+                    'volume_min': 0.01 if spot else 0.1,
+                    'volume_max': 100.0, 'point': 0.01}
+
+        def tick(self, s):
+            return None
+
+        def account_info(self):
+            return {}
+
+        def order_log(self, hours=24):
+            return []
+
+        def ping(self):
+            return True
+
+    config.TRADING.update({'SIZING_MODE': 'notional',
+                           'NOTIONAL_PER_LEG_USD': 20_000.0,
+                           'HEDGE_RATIO': 1.0})
+    c = Coordinator(config, trading_mode='PAPER')
+    c.spot_leg = c.futures_leg = Leg()
+    c.executor = PaperExecutor(c.spot_leg, c.futures_leg, config)
+    c.active_assets['GOLD'] = {'config': config.ASSETS['GOLD'],
+                               'spot_symbol': 'XAUUSD_',
+                               'futures_symbol': 'GC1226',
+                               'last_data': None}
+    return c
+
+
+def gold_md(**over):
+    md = {'spot_price': 4292.61, 'futures_price': 4351.55, 'spread': 58.94,
+          'spot_bid': 4292.55, 'spot_ask': 4292.68,
+          'futures_bid': 4351.38, 'futures_ask': 4351.72,
+          'basis_pct': 1.37, 'tick_age_ms': 180, 'quote_id': 'q1'}
+    md.update(over)
+    return md
+
+
+def states(coord, md=None):
+    return {name: state for name, state, _ in
+            coord._health('GOLD', md or gold_md())}
+
+
+def details(coord, md=None):
+    return {name: detail for name, _, detail in
+            coord._health('GOLD', md or gold_md())}
+
+
+def test_paper_sees_the_same_volume_limits_as_live(coord):
+    """PaperExecutor has no `_meta`, so the plan used to be computed
+    with no step and no minimum: fractional lots no broker would take,
+    and the minimum-notional guard never fired in paper at all."""
+    plan = coord._sizing_plan('GOLD', gold_md())
+    assert plan['leg_a_lots'] == pytest.approx(0.05)     # stepped, not 0.0466
+    assert plan['reason'] is not None                    # guard DOES fire
+
+
+def test_symbol_limits_are_fetched_once(coord):
+    """A RemoteLeg answers over IPC and this runs on every poll."""
+    calls = []
+    real = coord.spot_leg.ensure_symbol
+    coord.spot_leg.ensure_symbol = lambda s: (calls.append(s), real(s))[1]
+    for _ in range(5):
+        coord._sizing_plan('GOLD', gold_md())
+    assert len(calls) <= 2          # one per symbol, then cached
+
+
+def test_the_health_report_names_every_subsystem(coord):
+    """Operator: "I am more interested to get details on what is
+    working and what is not working"."""
+    assert set(states(coord)) == {'feed', 'stats', 'sizing', 'entries',
+                                  'exits', 'risk'}
+
+
+def test_a_dead_feed_is_reported_as_failed(coord):
+    assert states(coord, gold_md(tick_age_ms=45_000))['feed'] == 'FAILED'
+    assert 'check both terminals' in \
+        details(coord, gold_md(tick_age_ms=45_000))['feed']
+
+
+def test_the_blocking_gate_is_named(coord):
+    coord.z_gen._blocking['GOLD'] = 'edge'
+    assert states(coord)['entries'] == 'BLOCKED'
+    assert 'edge' in details(coord)['entries']
+
+
+def test_a_stopped_algo_says_exits_still_run(coord):
+    coord.algo_enabled = False
+    assert states(coord)['entries'] == '--'
+    assert 'exits and armed manual trades still run' in \
+        details(coord)['entries']
+
+
+def test_the_sizing_refusal_appears_in_the_report(coord):
+    """The operator's live blocker, stated in the health block rather
+    than only when a trade is attempted."""
+    assert states(coord)['sizing'] == 'BLOCKED'
+    assert '42,926' in details(coord)['sizing']
+
+
+def test_only_the_verdicts_decide_whether_to_reprint(coord):
+    """Live numbers move every tick; reprinting on those would put the
+    flood straight back."""
+    first = coord._status_state('GOLD', gold_md())
+    same = coord._status_state('GOLD', gold_md(spot_price=4293.9,
+                                               spread=58.97))
+    assert first == same
+    changed = coord._status_state('GOLD', gold_md(tick_age_ms=45_000))
+    assert changed != first
