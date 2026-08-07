@@ -379,6 +379,41 @@ Three separate floods, all fixed:
   returns a constant `[]` (resting orders are not wired to it); now
   15s.
 
+## A restart replayed every command ever sent (2026-08-07)
+
+LIVE. The operator restarted the launcher and, inside half a second,
+the engine re-ran the whole history of `control.json`:
+
+```
+18:00:14,089 - Manual trade ARMED: GOLD SELL_BASIS at spread 59.0000
+18:00:14,091 - [TEST] connection ping: PASS
+18:00:14,164 - [DIAGNOSE] PASS: 28 pass, 0 warn, 0 fail
+18:00:14,208 - [SCENARIO] BUY_SPOT LIMIT normal: FAIL
+18:00:14,493 - Reconciliation requested via web UI
+18:00:14,516 - Manual trade TRIGGERED: spread 59.5400 reached 59.0000
+18:00:14,524 - MANUAL SPREAD TRADE via web UI: GOLD SELL_BASIS 1.00 lots
+```
+
+That opened a **second unintended LIVE position** (POS_0001, tickets
+102322325 / 102322326) and placed real min-lot SCENARIO orders on the
+account. The armed order triggered instantly because the spread had
+already travelled through its entry level while the process was down.
+
+`control.json` is a PERSISTENT file and every command in it carries a
+`ts`. All six watermarks (`_last_close_ts`, `_last_open_ts`,
+`_last_test_ts`, `_last_diag_ts`, `_last_scenario_ts`,
+`_last_recon_ts`) initialised to **0**, so the first `_read_control()`
+of a fresh process saw every historical command as newer than "never
+seen" and executed the lot in one pass.
+
+`Coordinator._prime_control()` now reads the file at construction and
+ADOPTS its timestamps without running anything, so only commands
+written after the process starts are acted on. `algo_enabled` is
+deliberately excluded — it is persistent STATE (an algo the operator
+stopped must stay stopped across a restart), not a command. The
+distinction is the whole fix: `_CONTROL_COMMANDS` lists exactly the
+keys that EXECUTE something, and everything on that list is primed.
+
 ## A failed close made the engine believe it was flat (2026-08-07)
 
 LIVE, the worst state this system can reach. A manual 1-lot gold pair

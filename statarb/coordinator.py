@@ -202,6 +202,8 @@ class Coordinator:
         self.last_signals = {}
         self.last_data = {}
 
+        self._prime_control()
+
         logging.info("Coordinator initialized: spot on [%s], futures on "
                      "[%s], mode %s, signals %s", self.spot_leg.name,
                      self.futures_leg.name, trading_mode,
@@ -1047,6 +1049,65 @@ class Coordinator:
             return
         positions_open = bool(self.position_manager.get_active_positions())
         self.config.hot_apply(fresh, positions_open=positions_open)
+
+    # One-shot commands in control.json, by their watermark attribute.
+    # Everything here EXECUTES something (places orders, runs a scenario
+    # of real round trips, force-closes a position), so it must fire once
+    # only, when the operator asks for it — never again on restart.
+    _CONTROL_COMMANDS = (
+        ('close', '_last_close_ts'),
+        ('open', '_last_open_ts'),
+        ('test', '_last_test_ts'),
+        ('diagnose', '_last_diag_ts'),
+        ('scenario', '_last_scenario_ts'),
+        ('reconcile', '_last_recon_ts'),
+    )
+
+    def _prime_control(self):
+        """Adopt whatever is already in control.json WITHOUT executing it.
+
+        control.json is a persistent file, and every command in it carries
+        a `ts`. The watermarks all started at 0, so the first
+        `_read_control()` of a fresh process saw every historical command
+        as newer than "never seen" and ran the lot.
+
+        Live 2026-08-07, on a plain restart, in under half a second: an
+        armed manual order re-armed and immediately TRIGGERED (the spread
+        was already through its level), opening a second unintended LIVE
+        gold pair; a SCENARIO of real min-lot round trips re-ran; a
+        reconciliation and a connectivity diagnose re-ran too.
+
+        So startup adopts the file's timestamps as already-seen. Only
+        commands written AFTER the process starts are acted on.
+        `algo_enabled` is deliberately excluded: it is persistent state
+        (the operator stopped the algo and it must stay stopped across a
+        restart), not a command.
+        """
+        try:
+            self._control_mtime = os.path.getmtime(self.control_path)
+            with open(self.control_path, 'r', encoding='utf-8') as f:
+                control = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(control, dict):
+            return
+
+        self.algo_enabled = bool(control.get('algo_enabled', True))
+
+        adopted = []
+        for key, attr in self._CONTROL_COMMANDS:
+            cmd = control.get(key) or {}
+            ts = cmd.get('ts', 0) if isinstance(cmd, dict) else 0
+            if ts:
+                setattr(self, attr, ts)
+                adopted.append(key)
+        if adopted:
+            logging.info("Ignoring %s already in control.json from a "
+                         "previous session — one-shot commands are not "
+                         "replayed on startup", ', '.join(sorted(adopted)))
+        if not self.algo_enabled:
+            logging.warning("Algo is DISABLED (carried over from "
+                            "control.json) — exits keep running")
 
     def _read_control(self):
         """control.json: {'algo_enabled': bool, 'close': {'position_id',
