@@ -499,11 +499,52 @@ class PairExecutor:
         if not result.get('ok'):
             logging.error("Close ticket %s on [%s] failed: %s",
                           ticket, leg.name, result.get('error'))
+            # A retcode alone does not say WHY. Ask MT5 what it has for
+            # this ticket: still open (and at what volume), or already
+            # gone. Live 2026-08-07 two closes came back "10013 Invalid
+            # request" with no way to tell whether the position had
+            # vanished underneath us or the request was malformed —
+            # and the same code path had closed a scenario position
+            # successfully seconds earlier.
+            self._explain_close_failure(leg, trade, ticket, volume)
             return {'filled': 0.0, 'price': None, 'tickets': [],
                     'ok': False, 'error': result.get('error')}
         got = float(result.get('filled_volume') or volume)
         return {'filled': got, 'price': result.get('price'), 'tickets': [],
                 'ok': True, 'error': None}
+
+    def _explain_close_failure(self, leg, trade, ticket, volume):
+        """Log the broker's own view of a ticket we failed to close."""
+        verify = getattr(leg, 'verify_order', None)
+        if callable(verify):
+            try:
+                record = verify(ticket) or {}
+            except Exception as e:
+                record = {'error': str(e)}
+            if record.get('position_open'):
+                logging.error(
+                    "  MT5 still holds ticket %s: %s lots of %s — the "
+                    "close request was rejected, not the position",
+                    ticket, record.get('volume'), trade.symbol)
+            elif record.get('found'):
+                logging.error(
+                    "  MT5 has no OPEN position for ticket %s (it shows "
+                    "%s) — it may already be closed; reconciliation will "
+                    "settle the engine's view",
+                    ticket, record.get('state') or 'history only')
+            else:
+                logging.error(
+                    "  MT5 has no record of ticket %s at all — the "
+                    "ticket the engine stored is not one the broker "
+                    "recognises, so the close could never work", ticket)
+        try:
+            live = leg.positions(trade.symbol) or []
+        except Exception:
+            return
+        logging.error("  [%s] currently holds %d %s position(s): %s",
+                      leg.name, len(live), trade.symbol,
+                      ', '.join(f"#{p.get('ticket')} {p.get('volume')}"
+                                for p in live) or 'none')
 
     def _close_leg(self, leg, trade, comment, urgent):
         """Close one leg. Tickets recorded -> close each by ticket
