@@ -202,3 +202,87 @@ def test_unequal_contracts_still_balance_in_money(config):
     assert p['leg_b_lots'] == pytest.approx(p['leg_a_lots'] * 100 / 1000,
                                             abs=0.01)
     assert abs(p['imbalance_pct']) < 2.0
+
+
+# --- the settings have to actually reach the running engine ---------------
+
+def test_sizing_settings_hot_reload_into_a_running_engine(tmp_path):
+    """Operator, 2026-08-07: saved notional sizing, and the dashboard
+    kept reporting "Sized from 50 lots per leg". A key absent from
+    HOT_TRADING_KEYS is written to config.json and then ignored until a
+    restart — silently, because hot_apply only reports what it DID
+    apply."""
+    from statarb.config import AlgoTradingConfig
+    live = AlgoTradingConfig()
+    fresh = AlgoTradingConfig()
+    fresh.TRADING['SIZING_MODE'] = 'notional'
+    fresh.TRADING['NOTIONAL_PER_LEG_USD'] = 20_000.0
+
+    applied, blocked = live.hot_apply(fresh)
+    assert 'TRADING.SIZING_MODE' in applied
+    assert 'TRADING.NOTIONAL_PER_LEG_USD' in applied
+    assert live.TRADING['SIZING_MODE'] == 'notional'
+    assert live.TRADING['NOTIONAL_PER_LEG_USD'] == 20_000.0
+    assert not blocked
+
+
+def test_leverage_hot_reloads_and_changes_the_margin(tmp_path):
+    """Owner: "if I change the leverage on the legs - the notional
+    value calculations should reflect accordingly and not be 100x
+    always"."""
+    from statarb.config import AlgoTradingConfig
+    live = AlgoTradingConfig()
+    live.TRADING.update({'SIZING_MODE': 'notional',
+                         'NOTIONAL_PER_LEG_USD': 1_000_000.0})
+    live.EXITS['SPOT_LEVERAGE'] = 100
+    live.EXITS['FUT_LEVERAGE'] = 100
+    before = sizing.plan(live, 100, 100, 4265.0, 4324.0)
+    assert before['leg_a_leverage'] == 100
+
+    # Only the leverage differs; hot_apply copies whatever `fresh`
+    # holds, so the sizing keys have to carry over too.
+    fresh = AlgoTradingConfig()
+    fresh.TRADING.update({'SIZING_MODE': 'notional',
+                          'NOTIONAL_PER_LEG_USD': 1_000_000.0})
+    fresh.EXITS['SPOT_LEVERAGE'] = 20
+    fresh.EXITS['FUT_LEVERAGE'] = 50
+    live.hot_apply(fresh)
+
+    after = sizing.plan(live, 100, 100, 4265.0, 4324.0)
+    assert after['leg_a_leverage'] == 20
+    assert after['leg_b_leverage'] == 50
+    # Same notional, five times the margin on leg A.
+    assert after['leg_a_notional_usd'] == pytest.approx(
+        before['leg_a_notional_usd'])
+    assert after['leg_a_margin_usd'] == pytest.approx(
+        before['leg_a_margin_usd'] * 5)
+
+
+def test_the_two_legs_can_carry_different_leverage():
+    """They are different accounts at (possibly) different brokers."""
+    from statarb.config import AlgoTradingConfig
+    cfg = AlgoTradingConfig()
+    cfg.TRADING.update({'SIZING_MODE': 'notional',
+                        'NOTIONAL_PER_LEG_USD': 1_000_000.0})
+    cfg.EXITS['SPOT_LEVERAGE'] = 30
+    cfg.EXITS['FUT_LEVERAGE'] = 200
+    p = sizing.plan(cfg, 100, 100, 4265.0, 4324.0)
+    assert p['leg_a_margin_usd'] == pytest.approx(
+        p['leg_a_notional_usd'] / 30)
+    assert p['leg_b_margin_usd'] == pytest.approx(
+        p['leg_b_notional_usd'] / 200)
+
+
+def test_the_engine_publishes_the_leverage_it_used():
+    """The card read leg_a_leverage/leg_b_leverage; nothing published
+    them, so it kept the number baked into the page at load time and
+    showed the same leverage however the settings changed."""
+    from statarb import webapi
+    ui = webapi.status_to_ui({'assets': [{
+        'asset': 'GOLD', 'z': 1.0,
+        'sizing': {'leg_a_leverage': 20, 'leg_b_leverage': 50,
+                   'leg_a_margin_usd': 1000.0, 'leg_b_margin_usd': 400.0},
+    }]}, {})
+    assert ui['signal']['leg_a_leverage'] == 20
+    assert ui['signal']['leg_b_leverage'] == 50
+    assert ui['signal']['leg_a_margin'] == 1000.0

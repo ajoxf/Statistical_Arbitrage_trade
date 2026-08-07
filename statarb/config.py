@@ -323,8 +323,16 @@ class AlgoTradingConfig:
     HOT_SECTIONS = ('SIGNAL_THRESHOLDS', 'SIGNALS', 'EXITS', 'COSTS',
                     'RISK_LIMITS', 'EXECUTION', 'TELEGRAM', 'RECONCILE',
                     'MANUAL')
+    # A key absent from here is saved to config.json and then IGNORED by
+    # the running coordinator until a restart — with no warning, because
+    # hot_apply only reports what it DID apply. SIZING_MODE and the leg
+    # notional were missing when they were added, so the operator saved
+    # notional sizing and the dashboard kept reporting the old clip
+    # (2026-08-07). Anything the operator can change on the Settings
+    # page and expects to take effect belongs in this tuple.
     HOT_TRADING_KEYS = ('CLIP_LOTS', 'SLICE_LOTS', 'DAILY_LOT_TARGET',
-                        'POLL_INTERVAL_SEC')
+                        'POLL_INTERVAL_SEC', 'SIZING_MODE',
+                        'NOTIONAL_PER_LEG_USD')
 
     def hot_apply(self, fresh, positions_open=False):
         """Apply a freshly-loaded config to this live one in place.

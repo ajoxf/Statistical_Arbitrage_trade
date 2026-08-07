@@ -390,6 +390,27 @@ residual imbalance (green within 2%, red beyond — rounding to a
 tradable lot makes exact balance impossible, so the residual is stated
 rather than implied away).
 
+Follow-ups the operator found the same day:
+- **"Cannot change clip sizing."** The inactive sizing field was hidden
+  outright, so an operator who wanted to change the clip could not find
+  it. Both fields are now always visible and editable; the mode only
+  decides which one the engine USES, and each carries an IN USE /
+  "not in use" badge. MAX_LOT_SIZE stays in lots whichever mode is
+  active, so the notional preview now states the derived lots against
+  the cap and goes red when the cap would block every entry.
+- **Saving notional sizing did nothing.** `SIZING_MODE` and
+  `NOTIONAL_PER_LEG_USD` were not in `HOT_TRADING_KEYS`, so they were
+  written to config.json and then IGNORED until a restart — silently,
+  because `hot_apply` only reports what it DID apply. The dashboard
+  kept reading "Sized from 50 lots per leg". Any key the operator can
+  change on the Settings page belongs in that tuple.
+- **Leverage always read 100x.** The card read `leg_a_leverage` /
+  `leg_b_leverage`; nothing ever published them, so it kept the value
+  Jinja baked into the page at load time and never followed a config
+  change. Now published from the engine's own sizing plan, along with
+  each leg's margin, so a leverage change reaches the card without a
+  browser reload.
+
 Also fixed: `_isDerivative` / `_settingsIsDerivative` were W3's
 hyphen-counting symbol test for a crypto venue. No MT5 symbol matches
 it, so BOTH pages rendered every leg as unlevered cash and the

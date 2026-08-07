@@ -1487,11 +1487,17 @@ def test_the_operator_can_save_a_leg_notional(client):
     assert trading['NOTIONAL_PER_LEG_USD'] == 2_500_000
 
 
-def test_only_one_sizing_control_is_shown_at_a_time(client):
-    """Showing both invites setting one and having the other win."""
+def test_neither_sizing_control_is_ever_hidden(client):
+    """Hiding the inactive field meant an operator who wanted to change
+    the clip could not find it at all (operator, 2026-08-07: "Cannot
+    change clip sizing"). The mode decides which value the engine uses,
+    not which one exists."""
     page = client.get('/settings').get_data(as_text=True)
     assert 'function updateSizingMode' in page
-    assert "mode === 'notional' ? '' : 'none'" in page
+    assert "style.display =\n            mode === 'notional'" not in page
+    # Both are badged instead, so which one wins is still unambiguous.
+    assert 'id="clip_badge"' in page and 'id="notional_badge"' in page
+    assert "'IN USE' : 'not in use'" in page
 
 
 def test_the_settings_preview_derives_lots_from_the_notional(client):
@@ -1524,3 +1530,19 @@ def test_configured_leverage_reaches_the_margin_figures(client):
     assert '_engineSizing.leg_a_margin_usd' in page
     settings = client.get('/settings').get_data(as_text=True)
     assert '(symbol.match(/-/g) || []).length >= 2' not in settings
+
+
+def test_the_lot_cap_is_related_to_the_notional(client):
+    """The cap is in LOTS while the size is in dollars. Without the
+    conversion a cap that blocks every entry looks like nothing."""
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'id="max_lot_hint"' in page
+    assert 'ABOVE this' in page and 'every entry would be refused' in page
+
+
+def test_the_card_takes_leverage_from_the_engine(client):
+    """It read a value Jinja baked in at page load, so a Settings
+    change never reached it (operator: "not be 100x always")."""
+    page = client.get('/').get_data(as_text=True)
+    assert '_engineSizing.leg_a_leverage' in page
+    assert '_engineSizing.leg_b_leverage' in page

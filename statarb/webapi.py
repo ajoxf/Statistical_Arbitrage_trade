@@ -470,6 +470,9 @@ def status_to_ui(status, config_raw):
     first = assets[0] if assets else {}
     positions = status.get('positions') or []
     open_position = positions[0] if positions else None
+    # The engine's resolved sizing decision: lots, notional and margin
+    # per leg, and the leverage each was computed with.
+    sizing_block = first.get('sizing') or {}
 
     signal = None
     if first:
@@ -509,6 +512,15 @@ def status_to_ui(status, config_raw):
             'clip_lots': first.get('clip_lots'),
             'contract_size': first.get('contract_size'),
             'sizing': first.get('sizing'),
+            # Per-leg leverage as the ENGINE currently has it. The card
+            # already read these two keys; nothing published them, so it
+            # kept the value baked into the page at load time and showed
+            # the same leverage however the settings changed. Now they
+            # follow a hot-reload without touching the browser.
+            'leg_a_leverage': (sizing_block or {}).get('leg_a_leverage'),
+            'leg_b_leverage': (sizing_block or {}).get('leg_b_leverage'),
+            'leg_a_margin': (sizing_block or {}).get('leg_a_margin_usd'),
+            'leg_b_margin': (sizing_block or {}).get('leg_b_margin_usd'),
             'mean': first.get('mu'), 'std': first.get('sigma'),
             # The Statistics & Regime card is rendered by updateSignal(),
             # which receives THIS block — not the top level. Publishing

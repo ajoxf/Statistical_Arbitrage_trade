@@ -2213,7 +2213,11 @@
 
         // Leg A
         const aIsDeriv = _isDerivative(_legASymbol);
-        const aLev = aIsDeriv ? _legALeverage : 1;
+        // Prefer the ENGINE's leverage over the value baked into the
+        // page at load time: a Settings change hot-reloads into the
+        // engine, and the card must follow it without a browser reload.
+        const aLev = (_engineSizing && _engineSizing.leg_a_leverage)
+            || _legALeverage;
         // Prefer the engine's own figure: it sizes in LOTS, so notional
         // is lots x contract size x live mid. `ps` is W3's configured
         // USD position size, which this engine does not use and which
@@ -2235,7 +2239,8 @@
 
         // Leg B
         const bIsDeriv = _isDerivative(_legBSymbol);
-        const bLev = bIsDeriv ? _legBLeverage : 1;
+        const bLev = (_engineSizing && _engineSizing.leg_b_leverage)
+            || _legBLeverage;
         let bNotional = ps;
         if (_engineLegBNotional != null) {
             bNotional = _engineLegBNotional;     // lots x contract x mid

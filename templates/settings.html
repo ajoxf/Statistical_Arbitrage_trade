@@ -515,7 +515,10 @@
                             two different instruments end up balanced against each other.</small>
                         </div>
                         <div class="col-md-6" id="notional_field">
-                            <label class="form-label">Leg Notional Value ($ per leg)</label>
+                            <label class="form-label">Leg Notional Value ($ per leg)
+                                <span class="badge ms-1" id="notional_badge"
+                                      style="font-size:0.6rem;"></span>
+                            </label>
                             <input type="number" class="form-control" id="position_size_usd"
                                    name="position_size_usd" value="{{ config.position_size_usd }}"
                                    step="1000" min="0">
@@ -529,7 +532,10 @@
                                    id="notional_preview"></small>
                         </div>
                         <div class="col-md-6" id="clip_lots_field">
-                            <label class="form-label">Clip Size (LOTS per leg)</label>
+                            <label class="form-label">Clip Size (LOTS per leg)
+                                <span class="badge ms-1" id="clip_badge"
+                                      style="font-size:0.6rem;"></span>
+                            </label>
                             <input type="number" class="form-control" id="clip_lots" name="clip_lots" value="{{ config.clip_lots }}" step="0.01" min="0.01">
                             <small class="text-secondary d-block">LOTS, not dollars &mdash; this is
                             <code>CLIP_LOTS</code>. Notional = lots &times; contract size &times; price,
@@ -546,8 +552,10 @@
                             <label class="form-label">Max Position Size (LOTS)</label>
                             <input type="number" class="form-control" id="max_lot_size" name="max_lot_size" value="{{ config.max_lot_size }}" step="0.01" min="0.01">
                             <small class="text-secondary d-block">Hard cap &mdash; <code>MAX_LOT_SIZE</code>.
-                            The risk manager refuses any entry whose clip exceeds it, so it must be
-                            at least the Clip Size or nothing can ever fill.</small>
+                            The risk manager refuses any entry whose Leg A lots exceed it. Always in
+                            LOTS, whichever way you size: when sizing by notional the derived lots
+                            must still clear this, so a cap below them blocks every trade.
+                            <span id="max_lot_hint" class="d-block mt-1"></span></small>
                         </div>
                         <div class="col-md-6 mt-3">
                             <label class="form-label">Slice Size (LOTS per child order)</label>
@@ -1268,15 +1276,27 @@
 
     // Which sizing control applies. Showing both at once invites the
     // operator to set one and have the other silently win.
+    // Both sizing fields stay VISIBLE and editable whatever the mode.
+    // Hiding the inactive one meant an operator who wanted to change
+    // the clip could not find it at all (2026-08-07). The mode decides
+    // which value the engine uses, not which one exists, so each is
+    // badged ACTIVE or "not in use" and the inactive one is dimmed.
     function updateSizingMode() {
         const mode = (document.getElementById('sizing_mode') || {}).value
                      || 'lots';
-        const notionalField = document.getElementById('notional_field');
-        const lotsField = document.getElementById('clip_lots_field');
-        if (notionalField) notionalField.style.display =
-            mode === 'notional' ? '' : 'none';
-        if (lotsField) lotsField.style.display =
-            mode === 'notional' ? 'none' : '';
+        const byNotional = mode === 'notional';
+        const mark = (fieldId, badgeId, active) => {
+            const field = document.getElementById(fieldId);
+            const badge = document.getElementById(badgeId);
+            if (field) field.style.opacity = active ? '' : '0.55';
+            if (badge) {
+                badge.textContent = active ? 'IN USE' : 'not in use';
+                badge.className = 'badge ms-1 '
+                    + (active ? 'bg-success' : 'bg-secondary');
+            }
+        };
+        mark('notional_field', 'notional_badge', byNotional);
+        mark('clip_lots_field', 'clip_badge', !byNotional);
         updateCapitalPreview();
     }
 
@@ -1297,11 +1317,35 @@
         const preview = document.getElementById('notional_preview');
         if (!target || !(_cachedLegAPrice > 0)) {
             if (preview) preview.textContent = _cachedLegAPrice > 0
-                ? '' : 'Waiting for a live price on Leg A to convert this '
-                     + 'into lots.';
+                ? ''
+                : 'Lots are shown here once Leg A has a live price — the '
+                + 'coordinator must be running and the symbol streaming. '
+                + 'The value saves either way; the engine converts it at '
+                + 'the price current when a trade fires.';
             return 0;
         }
         const lots = target / (contract * _cachedLegAPrice);
+        // The cap is in LOTS while the size is in dollars, so relate
+        // the two explicitly — otherwise a cap that blocks every trade
+        // looks like nothing at all.
+        const capEl = document.getElementById('max_lot_hint');
+        const cap = parseFloat(
+            (document.getElementById('max_lot_size') || {}).value) || 0;
+        if (capEl) {
+            if (cap > 0 && lots > cap) {
+                capEl.className = 'd-block mt-1 text-danger';
+                capEl.textContent = 'Your ' + _fmtUsdShort(target)
+                    + ' per leg is ≈' + lots.toFixed(2) + ' lots, ABOVE this '
+                    + cap + '-lot cap — every entry would be refused.';
+            } else if (cap > 0) {
+                capEl.className = 'd-block mt-1 text-secondary';
+                capEl.textContent = 'Your ' + _fmtUsdShort(target)
+                    + ' per leg is ≈' + lots.toFixed(2) + ' lots, within this '
+                    + cap + '-lot cap.';
+            } else {
+                capEl.textContent = '';
+            }
+        }
         if (preview) {
             const contractB = parseFloat(
                 (document.getElementById('fut_contract_size') || {}).value)
@@ -1595,8 +1639,8 @@
     // Wire the capital preview to every input that affects the math.
     // Symbols are already covered — they fire fetchBetaSuggestion which
     // calls updateCapitalPreview once prices land.
-    ['clip_lots', 'position_size_usd', 'sizing_mode', 'hedge_ratio',
-     'spot_leverage', 'futures_leverage', 'm2m_buffer_pct']
+    ['clip_lots', 'position_size_usd', 'sizing_mode', 'max_lot_size',
+     'hedge_ratio', 'spot_leverage', 'futures_leverage', 'm2m_buffer_pct']
         .forEach(function(id) {
             const el = document.getElementById(id);
             if (!el) return;
