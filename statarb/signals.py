@@ -52,6 +52,14 @@ class ZSignalGenerator:
         self.last_close_time = {}       # asset -> t
         self.last_stop_time = {}        # asset -> t
         self.blocked_direction = {}     # asset -> SignalType blocked until z-reset
+        # Gates are evaluated on EVERY poll — three times a second — and
+        # each used to log its rejection every time. With the edge
+        # filter failing persistently (which is its correct behaviour
+        # when sigma does not cover costs) that alone wrote ~10,000
+        # identical lines an hour and buried everything that mattered.
+        # A gate is worth one line when it STARTS blocking and one when
+        # it stops, not one per tick.
+        self._blocking = {}             # asset -> the gate now blocking
 
     # -- state fed by the coordinator ---------------------------------
 
@@ -71,6 +79,18 @@ class ZSignalGenerator:
                 logging.info("%s: z-reset — re-entry unblocked", asset)
                 del self.blocked_direction[asset]
 
+    def _blocked(self, asset, gate, message, *args):
+        """Log a gate rejection only when the blocking gate CHANGES."""
+        if self._blocking.get(asset) != gate:
+            self._blocking[asset] = gate
+            logging.info(message, *args)
+        return None
+
+    def _unblocked(self, asset):
+        """Nothing is holding this asset back any more."""
+        if self._blocking.pop(asset, None) is not None:
+            logging.info("%s: entry gates clear", asset)
+
     # -- entry evaluation ----------------------------------------------
 
     def entry_signal(self, asset, stats, market_data, active_positions,
@@ -81,14 +101,18 @@ class ZSignalGenerator:
 
         z = stats.z
         if z is None or abs(z) < cfg['ENTRY_Z']:
+            # Not a rejection — |z| below the entry threshold is the
+            # normal resting state and says nothing worth a line.
+            self._blocking.pop(asset, None)
             return None
 
         ceiling = cfg.get('MAX_ENTRY_Z', cfg['STOP_Z'])
         if abs(z) >= ceiling:
-            logging.info("%s: |z|=%.2f beyond entry ceiling %.2f — a z "
-                         "this stretched is a momentum spike mid-flight, "
-                         "not a better entry", asset, abs(z), ceiling)
-            return None
+            return self._blocked(
+                asset, 'ceiling',
+                "%s: |z|=%.2f beyond entry ceiling %.2f — a z this "
+                "stretched is a momentum spike mid-flight, not a better "
+                "entry (further ticks suppressed)", asset, abs(z), ceiling)
 
         # Basis rich (z>0): sell it. Basis cheap (z<0): buy it.
         direction = SignalType.SELL_BASIS if z > 0 else SignalType.BUY_BASIS
@@ -98,13 +122,13 @@ class ZSignalGenerator:
             # Never fight the tape: SELL_BASIS profits when the spread
             # falls — blocked while it is rising, and vice versa.
             if direction == SignalType.SELL_BASIS and slope > 0:
-                logging.info("%s: trend filter — spread rising, "
-                             "SELL_BASIS blocked", asset)
-                return None
+                return self._blocked(
+                    asset, 'trend-up', "%s: trend filter — spread rising, "
+                    "SELL_BASIS blocked (further ticks suppressed)", asset)
             if direction == SignalType.BUY_BASIS and slope < 0:
-                logging.info("%s: trend filter — spread falling, "
-                             "BUY_BASIS blocked", asset)
-                return None
+                return self._blocked(
+                    asset, 'trend-down', "%s: trend filter — spread falling, "
+                    "BUY_BASIS blocked (further ticks suppressed)", asset)
 
         now = self.clock()
         if now - self.last_close_time.get(asset, -1e18) \
@@ -120,11 +144,12 @@ class ZSignalGenerator:
             z, stats.sigma, lots, contract_size, market_data,
             self.config.COSTS)
         if not passes:
-            logging.info("%s: edge filter — capture $%.0f < %.1fx cost "
-                         "$%.0f, no trade", asset, capture,
-                         self.config.COSTS['MIN_EDGE_MULTIPLE'], cost)
-            return None
+            return self._blocked(
+                asset, 'edge', "%s: edge filter — capture $%.0f < %.1fx "
+                "cost $%.0f, no trade (further ticks suppressed)", asset,
+                capture, self.config.COSTS['MIN_EDGE_MULTIPLE'], cost)
 
+        self._unblocked(asset)
         logging.info("%s: ENTRY %s — z=%.2f, capture $%.0f vs cost $%.0f",
                      asset, direction.value, z, capture, cost)
         return direction

@@ -519,6 +519,7 @@ def status_to_ui(status, config_raw):
             # follow a hot-reload without touching the browser.
             'leg_a_leverage': (sizing_block or {}).get('leg_a_leverage'),
             'leg_b_leverage': (sizing_block or {}).get('leg_b_leverage'),
+            'min_notional_usd': (sizing_block or {}).get('min_notional_usd'),
             'leg_a_margin': (sizing_block or {}).get('leg_a_margin_usd'),
             'leg_b_margin': (sizing_block or {}).get('leg_b_margin_usd'),
             'mean': first.get('mu'), 'std': first.get('sigma'),

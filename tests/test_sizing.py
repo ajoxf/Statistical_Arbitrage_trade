@@ -163,10 +163,71 @@ def test_lots_mode_still_anchors_on_the_clip(config):
     assert p['target_notional_usd'] is None
 
 
-def test_a_notional_too_small_to_trade_is_refused_with_a_reason(config):
+def test_a_notional_too_small_to_trade_names_the_minimum(config):
+    """The refusal has to carry the number the operator can act on.
+    "the hedge rounds to zero" is the same fact with the useful part
+    left out (operator, 2026-08-07)."""
     p = plan_for(config, notional=100)
     assert p['leg_a_lots'] == 0.0
-    assert 'below one tradable lot' in p['reason']
+    assert 'minimum of $' in p['reason']
+    assert p['min_notional_usd'] == pytest.approx(4265.0, abs=1)
+
+
+def test_the_binding_minimum_is_the_larger_legs(config):
+    """Live on CFI: spot XAUUSD_ trades from 0.01 lots but futures
+    GC1226 from 0.1, so the futures leg sets the floor at ten times
+    what leg A alone would need. Sizing to leg A's minimum produces a
+    spot order the hedge cannot match."""
+    p = sizing.plan(config, 100, 100, 4292.61, 4351.55,
+                    meta_a={'volume_step': 0.01, 'volume_min': 0.01},
+                    meta_b={'volume_step': 0.1, 'volume_min': 0.1})
+    assert p['min_notional_usd'] == pytest.approx(42_926, abs=5)
+
+
+def test_the_operators_20k_on_gold_is_refused_with_the_real_floor(config):
+    """Exactly the screenshot: $20,000 gives 0.04 spot lots and a hedge
+    of 0.04 against a 0.1-lot minimum, so leg B is zero and the pair is
+    100% unbalanced."""
+    config.TRADING.update({'SIZING_MODE': 'notional',
+                           'NOTIONAL_PER_LEG_USD': 20_000.0,
+                           'HEDGE_RATIO': 1.0})
+    p = sizing.plan(config, 100, 100, 4292.61, 4351.55,
+                    meta_a={'volume_step': 0.01, 'volume_min': 0.01},
+                    meta_b={'volume_step': 0.1, 'volume_min': 0.1})
+    assert p['leg_a_lots'] == pytest.approx(0.04)
+    assert p['leg_b_lots'] == 0.0
+    assert "0.1-lot minimum" in p['reason']
+    assert '42,926' in p['reason']
+
+
+def gold_plan(config, notional):
+    config.TRADING.update({'SIZING_MODE': 'notional',
+                           'NOTIONAL_PER_LEG_USD': notional,
+                           'HEDGE_RATIO': 1.0})
+    return sizing.plan(config, 100, 100, 4292.61, 4351.55,
+                       meta_a={'volume_step': 0.01, 'volume_min': 0.01},
+                       meta_b={'volume_step': 0.1, 'volume_min': 0.1})
+
+
+def test_a_coarse_step_on_leg_b_leaves_a_real_imbalance(config):
+    """Above the floor the pair trades — but leg B's 0.1-lot STEP is
+    ten times leg A's, so at small sizes the hedge is coarse: 0.23 spot
+    lots against 0.2 futures is 12% under-hedged, and that residual is
+    naked directional risk, not basis. The card shows it in red."""
+    p = gold_plan(config, 100_000.0)
+    assert p['reason'] is None
+    assert p['leg_a_lots'] == pytest.approx(0.23)
+    assert p['leg_b_lots'] == pytest.approx(0.2)      # stepped down
+    assert abs(p['imbalance_pct']) > 2                # flagged, not hidden
+
+
+def test_size_washes_the_step_rounding_out(config):
+    """The same coarse step is negligible once the position is large
+    enough that one step is a small fraction of it."""
+    p = gold_plan(config, 2_000_000.0)
+    assert p['reason'] is None
+    # 4.66 spot lots vs 4.6 futures: the residual step is now ~1%.
+    assert abs(p['imbalance_pct']) < 2.0
 
 
 def test_no_price_is_refused_rather_than_defaulted(config):

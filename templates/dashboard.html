@@ -2301,13 +2301,18 @@
                 basisEl.textContent = '';
             } else if (sz.reason) {
                 basisEl.className = 'text-danger mt-1';
-                basisEl.textContent = 'Cannot size this trade: ' + sz.reason;
+                basisEl.textContent = 'Cannot size this trade: ' + sz.reason
+                    + '. Raise the Leg Notional Value in Settings.';
             } else if (sz.mode === 'notional') {
                 basisEl.className = 'text-secondary mt-1';
                 basisEl.textContent = 'Sized from '
                     + _fmtMoney(sz.target_notional_usd || 0)
                     + ' per leg (Settings → Leg Notional Value); lots '
-                    + 'follow the live price.';
+                    + 'follow the live price.'
+                    + (sz.min_notional_usd
+                        ? ' This pair cannot trade below '
+                          + _fmtMoney(sz.min_notional_usd) + ' per leg.'
+                        : '');
             } else {
                 basisEl.className = 'text-secondary mt-1';
                 basisEl.textContent = 'Sized from ' + (sz.leg_a_lots || 0)

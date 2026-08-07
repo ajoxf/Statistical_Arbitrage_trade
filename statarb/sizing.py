@@ -119,6 +119,32 @@ def margin(notional_usd, leverage):
     return notional_usd / float(leverage)
 
 
+def minimum_notional(contract_a, contract_b, price_a, price_b, beta,
+                     min_a=0.0, min_b=0.0):
+    """The smallest per-leg notional this PAIR can actually trade.
+
+    Both legs have a minimum volume and they are usually different —
+    live on CFI, spot XAUUSD_ is 0.01 lots and futures GC1226 is 0.1,
+    ten times larger. The binding constraint is whichever leg needs
+    more money, and it is almost always the futures leg: sizing leg A
+    to a notional that leaves the hedge under leg B's minimum produces
+    a spot order with no hedge, which the engine then refuses.
+
+    Returning the number lets the UI say "you need at least $43,515"
+    instead of "the hedge rounds to zero", which is the same fact
+    without the one figure the operator can act on."""
+    beta = float(beta or 1.0)
+    if not contract_a or not contract_b or not price_a or not price_b:
+        return None
+    needs = [min_a * contract_a * price_a] if min_a else []
+    if min_b:
+        # Leg B's minimum, expressed as the leg A notional that would
+        # generate it: L_A = L_B * beta * C_B / C_A.
+        lots_a_needed = min_b * beta * contract_b / contract_a
+        needs.append(lots_a_needed * contract_a * price_a)
+    return max(needs) if needs else None
+
+
 def plan(config, contract_a, contract_b, price_a, price_b,
          meta_a=None, meta_b=None, size_multiplier=1.0):
     """Resolve one entry's sizing, whichever mode is configured.
@@ -156,9 +182,16 @@ def plan(config, contract_a, contract_b, price_a, price_b,
 
     lots_a = round_step(lots_a * float(size_multiplier or 1.0), step_a, min_a)
     lots_b = hedge_lots(lots_a, contract_a, contract_b, beta, step_b, min_b)
+    floor = minimum_notional(contract_a, contract_b, price_a, price_b,
+                             beta, min_a, min_b)
     if lots_a > 0 and lots_b <= 0 and not reason:
-        reason = ('the hedge for that size rounds to zero on leg B '
-                  f'(minimum {min_b:g} lots)')
+        reason = (f"the hedge for {lots_a:g} lots on leg A is under leg B's "
+                  f"{min_b:g}-lot minimum"
+                  + (f' — this pair needs at least ${floor:,.0f} per leg'
+                     if floor else ''))
+    elif lots_a <= 0 and mode == 'notional' and floor and target_notional:
+        reason = (f'${target_notional:,.0f} per leg is below this pair\'s '
+                  f'minimum of ${floor:,.0f}')
 
     notional_a = notional(lots_a, contract_a, price_a)
     notional_b = notional(lots_b, contract_b, price_b)
@@ -187,5 +220,8 @@ def plan(config, contract_a, contract_b, price_a, price_b,
         'imbalance_usd': notional_a - notional_b,
         'imbalance_pct': (100.0 * (notional_a - notional_b) / bigger
                           if bigger else 0.0),
+        # The smallest per-leg notional this pair can trade at all,
+        # so the operator has a target rather than a rejection.
+        'min_notional_usd': floor,
         'reason': reason,
     }

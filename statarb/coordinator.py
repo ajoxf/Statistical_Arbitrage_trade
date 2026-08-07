@@ -155,6 +155,7 @@ class Coordinator:
         self._last_diag_ts = 0
         self._last_order_log = 0.0
         self._last_logged_quote = {}   # asset -> last quote_id persisted
+        self._last_status_state = {}   # asset -> last LOGGED state
         self._server_clock = {}        # leg -> broker clock offset vs UTC
         self._scenario_result = None   # last round-trip scenario outcome
         self._last_confirmation = None  # last MT5 ticket read-back
@@ -1548,7 +1549,7 @@ class Coordinator:
     # that rate and must not be re-fetched at it. The margin breaker
     # reads this cache, so keep the interval well inside a reconcile.
     ACCOUNT_REFRESH_SEC = 5.0
-    STATUS_LOG_SEC = 10.0        # the one-line status in the log
+    STATUS_LOG_SEC = 300.0       # heartbeat fallback; see LOG_HEARTBEAT_SEC
     CONFIG_RELOAD_SEC = 10.0     # hot-apply of the safe config sections
 
     def _sizing_and_cost(self, asset_key, md, stats):
@@ -2090,27 +2091,64 @@ class Coordinator:
             count += 1
         return f"🚨 CLOSEALL: {count} position(s) sent to market close"
 
-    def log_status(self, all_market_data):
-        """The LOG line only — the dashboard's status file is written on
-        every poll (see run()), because a price the operator watches has
-        to move at the feed's rate, not at the log's."""
-        target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
+    def _status_state(self, asset_key, md):
+        """The facts worth a log line, and nothing that merely moves.
+
+        Prices and z change on every tick; whether the engine is warm,
+        what it would do, and whether it is halted do not. Only the
+        latter are events."""
+        stats = self.stats.get(asset_key)
+        if stats is None:
+            return 'no-stats', None
+        if not stats.warm:
+            if stats.degenerate and len(stats.samples) >= \
+                    self.config.SIGNALS.get('MIN_SAMPLES', 0):
+                return 'no-usable-z', None
+            return 'collecting', None
         halted, why = self.risk_manager.halted()
+        if halted:
+            return 'halted', why
+        signal = getattr(self.last_signals.get(asset_key), 'value',
+                         'NO_SIGNAL')
+        held = len(self.position_manager.get_positions_for_asset(asset_key))
+        return f'ready:{signal}:{held}', None
+
+    def _status_line(self, asset_key, md, prefix=''):
+        target = self.config.TRADING.get('DAILY_LOT_TARGET', 0)
+        stats = self.stats.get(asset_key)
+        z = stats.z if stats else None
+        done = self.risk_manager.lots_traded_today(asset_key)
+        progress = f" | today {done:.0f}/{target:.0f} lots" if target else ""
+        halted, why = self.risk_manager.halted()
+        state = f" | HALTED: {why}" if halted else ""
+        z_str = f"{z:+.2f}" if z is not None else "warm-up"
+        logging.info(
+            "%s%s spot %.2f | fut %.2f | spread %+.2f | z %s | %s%s%s",
+            prefix, asset_key, md['spot_price'], md['futures_price'],
+            md['spread'], z_str,
+            getattr(self.last_signals.get(asset_key), 'value', 'NO_SIGNAL'),
+            progress, state)
+
+    def log_status(self, all_market_data, heartbeat=False):
+        """Log what CHANGED, plus an occasional heartbeat.
+
+        Operator, 2026-08-07: "in the log lets only have relevant and
+        important live updates and information - not every second
+        updates". A fixed cadence line wrote the same sentence 360
+        times an hour with only the prices differing — and the prices
+        are on the dashboard, live, which the log is not competing
+        with. What the log is for is the record of what happened: went
+        warm, lost the feed, started/stopped signalling, halted. Those
+        are logged the moment they occur; the heartbeat exists only so
+        a quiet log still proves the engine is alive.
+        """
         for asset_key, md in all_market_data.items():
-            stats = self.stats.get(asset_key)
-            z = stats.z if stats else None
-            done = self.risk_manager.lots_traded_today(asset_key)
-            progress = (f" | today {done:.0f}/{target:.0f} lots"
-                        if target else "")
-            state = f" | HALTED: {why}" if halted else ""
-            z_str = f"{z:+.2f}" if z is not None else "warm-up"
-            logging.info(
-                "%s spot %.2f | fut %.2f | spread %+.2f | z %s | "
-                "%s%s%s",
-                asset_key, md['spot_price'], md['futures_price'],
-                md['spread'], z_str,
-                getattr(self.last_signals.get(asset_key), 'value',
-                        'NO_SIGNAL'), progress, state)
+            state, detail = self._status_state(asset_key, md)
+            changed = self._last_status_state.get(asset_key) != state
+            if not changed and not heartbeat:
+                continue
+            self._last_status_state[asset_key] = state
+            self._status_line(asset_key, md, '' if changed else '[heartbeat] ')
 
     # ------------------------------------------------------------------
     # Loop
@@ -2139,9 +2177,14 @@ class Coordinator:
                     # Every poll: the dashboard reads this file, so its
                     # prices are only as live as this write.
                     self._write_runtime_status(all_market_data)
-                    if started - last_log >= self.STATUS_LOG_SEC:
+                    # Transitions go out immediately; the heartbeat is
+                    # deliberately rare (LOG_HEARTBEAT_SEC, 5 min).
+                    beat = (started - last_log
+                            >= self.config.TRADING.get('LOG_HEARTBEAT_SEC',
+                                                       self.STATUS_LOG_SEC))
+                    if beat:
                         last_log = started
-                        self.log_status(all_market_data)
+                    self.log_status(all_market_data, heartbeat=beat)
                 else:
                     consecutive_errors += 1
                     if consecutive_errors % 20 == 1:

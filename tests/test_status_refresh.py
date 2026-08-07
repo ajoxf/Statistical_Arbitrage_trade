@@ -102,7 +102,7 @@ def test_polling_faster_does_not_make_the_log_noisier(coord, monkeypatch):
     coord.get_all_market_data = lambda: market_data()
     coord.process_asset = lambda *a, **k: None
     logged = []
-    coord.log_status = lambda md: logged.append(md)
+    coord.log_status = lambda md, heartbeat=False: logged.append(heartbeat)
 
     laps = []
 
@@ -115,7 +115,10 @@ def test_polling_faster_does_not_make_the_log_noisier(coord, monkeypatch):
     coord.run()
 
     assert len(laps) == 50           # 50 polls, all inside 10s of wall clock
-    assert len(logged) == 1          # one status line
+    # log_status is called every poll now — it decides for itself
+    # whether anything changed — but only ONE of those is a heartbeat.
+    assert len(logged) == 50
+    assert logged.count(True) == 1
 
 
 def test_the_poll_interval_is_reread_so_a_hot_reload_applies(coord,
