@@ -629,6 +629,25 @@ running the page in the bundled Chromium under Playwright and reading
   7,200s`), the same unit as the setting, capped once met so it never
   reads like a broken denominator.
 
+- **Position Sizing was labelled in USD but holds LOTS** (operator,
+  2026-08-07: "can't seem to find CLIP_LOTS / SLICE_LOTS /
+  MAX_LOT_SIZE"). Two of the three were on the Settings page the whole
+  time as "Position Size (USD)" (`clip_lots`) and "Max Position Size
+  (USD)" (`max_lot_size`) — the same units mislabel as Lookback Period.
+  SLICE_LOTS had no control at all, despite gating whether a child
+  order clears each leg's minimum. All three are now labelled LOTS with
+  the notional consequence spelled out. The inline "Capital required
+  (live)" preview also read the lot count as dollars ("$100" for a clip
+  whose real notional is $42m); it now converts lots x contract size x
+  live mid and shows that conversion in the breakdown.
+- **config.example.json ships PRODUCTION scale** (CLIP_LOTS 50,
+  SLICE_LOTS 10, MAX_LOT_SIZE 50, DAILY_LOT_TARGET 500) and start.py
+  copies it verbatim on first run, so a fresh install is ~$43m of gold
+  notional out of the box. The code defaults in config.py are 1.0, but
+  they only apply when a key is ABSENT. Note MAX_LOT_SIZE 50 does NOT
+  block a 50-lot clip, and there is no pre-trade margin guard — only
+  the edge filter and MT5's own margin rejection stand in the way.
+
 ## Dialogs (2026-08-06)
 
 Owner: "Make all the Dialog Boxes Professional and also Everytime new

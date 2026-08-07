@@ -502,8 +502,12 @@
                             <h6 class="text-secondary mb-3">Position Sizing</h6>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Position Size (USD)</label>
+                            <label class="form-label">Clip Size (LOTS per leg)</label>
                             <input type="number" class="form-control" id="clip_lots" name="clip_lots" value="{{ config.clip_lots }}" step="0.01" min="0.01">
+                            <small class="text-secondary d-block">LOTS, not dollars &mdash; this is
+                            <code>CLIP_LOTS</code>. Notional = lots &times; contract size &times; price,
+                            so 50 lots of gold at 100&nbsp;oz/lot is over $21m per leg. The futures
+                            leg's minimum is usually larger than spot's; keep this at or above it.</small>
                             <small class="text-secondary mt-1 d-block" style="font-size: 0.7rem;"
                                    id="capital_preview"
                                    title="Live preview of the same math the runtime balance guard uses: (Leg A margin + Leg B margin) × 1.10 buffer. Updates as you change size, leverage, β, or legs.">
@@ -512,8 +516,19 @@
                             </small>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Max Position Size (USD)</label>
+                            <label class="form-label">Max Position Size (LOTS)</label>
                             <input type="number" class="form-control" id="max_lot_size" name="max_lot_size" value="{{ config.max_lot_size }}" step="0.01" min="0.01">
+                            <small class="text-secondary d-block">Hard cap &mdash; <code>MAX_LOT_SIZE</code>.
+                            The risk manager refuses any entry whose clip exceeds it, so it must be
+                            at least the Clip Size or nothing can ever fill.</small>
+                        </div>
+                        <div class="col-md-6 mt-3">
+                            <label class="form-label">Slice Size (LOTS per child order)</label>
+                            <input type="number" class="form-control" id="slice_lots" name="slice_lots" value="{{ config.slice_lots }}" step="0.01" min="0">
+                            <small class="text-secondary d-block">A clip is worked in child orders of
+                            this size &mdash; <code>SLICE_LOTS</code>. 0 = send the whole clip at once.
+                            A child order below EITHER leg's minimum volume is rejected before
+                            anything is placed.</small>
                         </div>
                         <div class="col-md-6 mt-3">
                             <label class="form-label">M2M Buffer (%)</label>
@@ -1249,11 +1264,20 @@
         const aLev = aIsDeriv ? Math.max(aLevRaw, 1) : 1;   // spot ignores leverage
         const bLev = bIsDeriv ? Math.max(bLevRaw, 1) : 1;
 
-        // Leg B notional: use live β-scaled if we have prices, else assume dollar-neutral
-        const notA = ps;
-        let notB = ps;
-        if (_cachedLegAPrice > 0 && _cachedLegBPrice > 0) {
-            notB = ps * (_cachedLegBPrice / (beta * _cachedLegAPrice));
+        // ps is LOTS. Notional = lots x contract size x price. Treating
+        // it as dollars showed "$100 required" for a clip whose real
+        // notional is $42m.
+        const contract = parseFloat(
+            (document.getElementById('contract_size') || {}).value) ||
+            {{ config.contract_size or 100 }};
+        const notA = (_cachedLegAPrice > 0)
+            ? ps * contract * _cachedLegAPrice : null;
+        const notB = (_cachedLegBPrice > 0)
+            ? ps * beta * contract * _cachedLegBPrice : null;
+        if (notA == null || notB == null) {
+            valEl.textContent = '—';
+            breakEl.textContent = ' (waiting for live prices on both legs)';
+            return;
         }
         const marginA = notA / aLev;
         const marginB = notB / bLev;
@@ -1265,13 +1289,13 @@
         // Spell out the breakdown so the math is auditable
         const aDesc = aIsDeriv ? (aLev + 'x lev') : 'cash';
         const bDesc = bIsDeriv ? (bLev + 'x lev') : 'cash';
-        const pricesNote = (_cachedLegAPrice > 0 && _cachedLegBPrice > 0)
-            ? '' : '  (assuming β ≈ live ratio)';
         const mult = (1 + bufPct / 100).toFixed(2);
         breakEl.innerHTML =
             ' &nbsp;= (Leg A ' + _fmtUsdShort(marginA) + ' ' + aDesc +
             ' + Leg B ' + _fmtUsdShort(marginB) + ' ' + bDesc + ') × ' + mult +
-            ' (' + bufPct + '% M2M)' + pricesNote;
+            ' (' + bufPct + '% M2M) &nbsp;·&nbsp; notional ' +
+            _fmtUsdShort(notA) + ' + ' + _fmtUsdShort(notB) +
+            ' from ' + ps + ' lots × ' + contract + '/lot';
     }
 
     function fetchBetaSuggestion() {
@@ -1634,6 +1658,7 @@
             rfq_notional_threshold_usd: parseFloat(document.getElementById('rfq_notional_threshold_usd').value) || 0,
             rfq_max_markup_bps: parseFloat(document.getElementById('rfq_max_markup_bps').value) || 0,
             clip_lots: parseFloat(document.getElementById('clip_lots').value),
+            slice_lots: parseFloat(document.getElementById('slice_lots').value) || 0,
             max_lot_size: parseFloat(document.getElementById('max_lot_size').value),
             spot_leverage: parseInt(document.getElementById('spot_leverage').value),
             futures_leverage: parseInt(document.getElementById('futures_leverage').value),
@@ -1930,6 +1955,7 @@
                 document.getElementById('min_std_multiple').value = config.min_std_multiple;
                 document.getElementById('min_entry_rr_multiple').value = config.min_entry_rr_multiple || 0;
                 document.getElementById('clip_lots').value = config.clip_lots;
+                document.getElementById('slice_lots').value = config.slice_lots;
                 document.getElementById('max_lot_size').value = config.max_lot_size;
                 document.getElementById('spot_leverage').value = config.spot_leverage || 1;
                 document.getElementById('futures_leverage').value = config.futures_leverage || 1;

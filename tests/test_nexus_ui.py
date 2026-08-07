@@ -1218,3 +1218,50 @@ def test_the_card_updater_is_fed_the_signal_block(client):
     to move with it."""
     page = client.get('/').get_data(as_text=True)
     assert 'updateSignal(data.signal)' in page
+
+
+# ---------------------------------------------------------------------------
+# Position Sizing is in LOTS, not dollars
+# ---------------------------------------------------------------------------
+# Operator, 2026-08-07: could not find CLIP_LOTS / SLICE_LOTS /
+# MAX_LOT_SIZE. Two of them were on the page all along, labelled
+# "Position Size (USD)" and "Max Position Size (USD)" — the same
+# units mislabel as "Lookback Period". The third was not there at all.
+
+def test_the_sizing_fields_are_labelled_in_lots(client):
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'Clip Size (LOTS per leg)' in page
+    assert 'Max Position Size (LOTS)' in page
+    assert 'Position Size (USD)' not in page
+    assert 'Max Position Size (USD)' not in page
+
+
+def test_the_slice_size_has_a_control(client):
+    """SLICE_LOTS gates whether a child order clears each leg's minimum,
+    and it had no field anywhere."""
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'id="slice_lots"' in page
+    assert 'Slice Size (LOTS per child order)' in page
+
+
+def test_saving_the_slice_size_reaches_the_config(client):
+    client.post('/api/config', json={'slice_lots': 0.1})
+    with open(client.tmp_path / 'config.json') as f:
+        assert json.load(f)['trading']['SLICE_LOTS'] == 0.1
+
+
+def test_saving_the_clip_and_cap_reach_the_config(client):
+    client.post('/api/config', json={'clip_lots': 0.1, 'max_lot_size': 0.5})
+    with open(client.tmp_path / 'config.json') as f:
+        raw = json.load(f)
+    assert raw['trading']['CLIP_LOTS'] == 0.1
+    assert raw['risk_limits']['MAX_LOT_SIZE'] == 0.5
+
+
+def test_the_capital_preview_converts_lots_to_notional(client):
+    """It read the lot count as dollars — "$100 required" for a clip
+    whose real notional is $42m."""
+    page = client.get('/settings').get_data(as_text=True)
+    assert 'ps * contract * _cachedLegAPrice' in page
+    assert 'ps * beta * contract * _cachedLegBPrice' in page
+    assert 'lots ×' in page          # the breakdown states the conversion
