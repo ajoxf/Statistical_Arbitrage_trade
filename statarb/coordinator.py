@@ -1652,6 +1652,18 @@ class Coordinator:
             'rt_spread_usd': max(cost - commissions, 0.0),
             'rt_cost_bps': cost / denom * 1e4,
             'rt_fees_bps': commissions / denom * 1e4,
+            # The inputs, so the card can show the derivation rather
+            # than a bare number the operator has to take on trust.
+            'rt_spot_spread': ((md.get('spot_ask') or 0)
+                               - (md.get('spot_bid') or 0)),
+            'rt_fut_spread': ((md.get('futures_ask') or 0)
+                              - (md.get('futures_bid') or 0)),
+            'rt_spread_factor': self.config.COSTS.get(
+                'SPREAD_COST_FACTOR', 1.0),
+            'rt_commission_per_lot': (
+                self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0)
+                + self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0)),
+            'rt_units': lots * contract,
             'capture_usd': capture,
             'edge_ratio': (capture / cost) if cost else None,
             'edge_required': self.config.COSTS.get('MIN_EDGE_MULTIPLE', 1.5),

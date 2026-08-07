@@ -666,7 +666,7 @@
                     </div>
                     <div class="d-flex justify-content-between mt-1">
                         <span class="text-secondary">Round-trip:</span>
-                        <span id="round-trip-cost" title="Entry (spot+fut) + Exit (spot+fut) + slippage × 4 legs">-</span>
+                        <span id="round-trip-cost">-</span>
                     </div>
                     <div id="std-explanation" class="text-secondary mt-1" style="font-size: 0.65rem;">
                         Spread must cover trading costs
@@ -2834,16 +2834,63 @@
                 }
             }
 
+            // Round-trip cost, with the whole derivation in the
+            // tooltip. The old text described W3's model ("Entry +
+            // Exit + slippage x 4 legs"), which is not what this
+            // engine charges: each leg pays its full bid-ask ONCE
+            // across the round trip, and there is no slippage term in
+            // the estimate at all.
             const rtEl = document.getElementById('round-trip-cost');
-            if (rtEl && data.round_trip_cost_bps !== undefined) {
-                const fees = data.round_trip_fees_bps;
-                const slip = data.round_trip_slippage_bps;
-                let txt = data.round_trip_cost_bps.toFixed(1) + ' bps';
-                if (slip !== undefined && slip > 0) {
-                    txt += ' (' + fees.toFixed(1) + ' fees + ' + slip.toFixed(1) + ' slip)';
-                }
-                rtEl.textContent = txt;
+            if (rtEl && data.round_trip_cost_bps != null) {
+                const bps = data.round_trip_cost_bps;
+                const ss = data.rt_spot_spread, fs = data.rt_fut_spread;
+                const factor = data.rt_spread_factor;
+                const comm = data.rt_commission_per_lot;
+                const oz = data.rt_units, usd = data.round_trip_cost_usd;
+                const notional = data.rt_leg_a_notional;
+                rtEl.textContent = bps.toFixed(1) + ' bps'
+                    + (usd != null ? '  ($' + usd.toFixed(2) + ')' : '');
                 rtEl.className = 'fw-bold';
+
+                if (ss != null && fs != null) {
+                    const n = (x, d) => (x == null ? '?' : x.toFixed(d));
+                    const combined = ss + fs;
+                    rtEl.title =
+  'What one full round trip costs, as a fraction of ONE leg\'s notional.\n'
++ '\n'
++ 'Per unit (oz/bbl), from the live book:\n'
++ '    Leg A ask − bid          ' + n(ss, 4) + '\n'
++ '    Leg B ask − bid          ' + n(fs, 4) + '\n'
++ '    ─────────────────────────────────\n'
++ '    combined bid-ask         ' + n(combined, 4) + '\n'
++ '    × spread cost factor     ' + n(factor, 2)
+      + (factor < 1 ? '  (assumes some limit fills)' : '  (assumes crossing)')
+      + '\n'
++ '    = ' + n(combined * (factor == null ? 1 : factor), 4) + ' per unit\n'
++ '\n'
++ 'Each leg pays its spread ONCE, not twice: you enter on one side of\n'
++ 'the book and exit on the other. Four executions, two spreads.\n'
++ '\n'
++ 'In money, at ' + n(oz, 2) + ' units per leg:\n'
++ '    spread cost              $'
+      + n(combined * (factor == null ? 1 : factor) * (oz || 0), 2) + '\n'
++ '    + commissions            $' + n((comm || 0) * (oz && data.clip_lots
+      ? data.clip_lots : 0), 2)
+      + (comm ? '' : '   ← COMMISSION_PER_LOT is 0; set it') + '\n'
++ '    = round trip             $' + n(usd, 2) + '\n'
++ '\n'
++ 'As bps of leg A notional ($' + (notional == null ? '?'
+      : Math.round(notional).toLocaleString()) + '):\n'
++ '    $' + n(usd, 2) + ' ÷ $' + (notional == null ? '?'
+      : Math.round(notional).toLocaleString()) + ' × 10,000 = '
+      + n(bps, 2) + ' bps\n'
++ '\n'
++ 'Size cancels out — the units multiply into both the cost and the\n'
++ 'notional — so this is really (combined bid-ask ÷ leg A price). It\n'
++ 'is the hurdle the spread has to clear, independent of how much you\n'
++ 'trade. The Net P&L / Cost row above compares the expected capture\n'
++ 'against it.';
+                }
             }
         }
 

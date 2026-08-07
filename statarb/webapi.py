@@ -500,6 +500,15 @@ def status_to_ui(status, config_raw):
             'round_trip_fees_bps': first.get('rt_fees_bps'),
             'round_trip_slippage_bps': None,
             'round_trip_cost_usd': first.get('rt_cost_usd'),
+            # The cost's own INPUTS, so the Filters card can spell the
+            # calculation out with live numbers instead of asking the
+            # operator to take a lone figure on trust.
+            'rt_spot_spread': first.get('rt_spot_spread'),
+            'rt_fut_spread': first.get('rt_fut_spread'),
+            'rt_spread_factor': first.get('rt_spread_factor'),
+            'rt_commission_per_lot': first.get('rt_commission_per_lot'),
+            'rt_units': first.get('rt_units'),
+            'rt_leg_a_notional': first.get('spot_notional'),
             'expected_capture_usd': first.get('capture_usd'),
             'fee_bps_used': (round(first['rt_fees_bps'], 2)
                              if first.get('rt_fees_bps') is not None else None),

@@ -1617,3 +1617,95 @@ def test_the_stub_endpoint_is_not_polled_every_second(client):
     page = client.get('/').get_data(as_text=True)
     assert 'setInterval(updateActiveOrders, 1000)' not in page
     assert 'setInterval(updateActiveOrders, 15000)' in page
+
+
+# --- the round-trip cost explains itself (2026-08-07) ---------------------
+
+def test_the_round_trip_row_no_longer_describes_w3s_model(client):
+    """The tooltip said "Entry (spot+fut) + Exit (spot+fut) + slippage
+    x 4 legs". This engine charges each leg its bid-ask ONCE across the
+    round trip, and carries no slippage term in the estimate at all."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'slippage × 4 legs' not in page
+    assert 'Four executions, two spreads' in page
+
+
+def test_the_round_trip_tooltip_shows_the_derivation(client):
+    page = client.get('/').get_data(as_text=True)
+    for piece in ('Leg A ask − bid', 'Leg B ask − bid',
+                  'combined bid-ask', 'spread cost factor',
+                  'As bps of leg A notional', 'Size cancels out'):
+        assert piece in page, piece
+
+
+def test_a_zero_commission_is_called_out(client):
+    """COMMISSION_PER_LOT_* ship at 0.0 and must be set before LIVE —
+    an under-stated cost model lets through trades that cannot pay."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'COMMISSION_PER_LOT is 0; set it' in page
+
+
+def test_the_cost_inputs_are_published():
+    """The card cannot show a derivation it has not been given."""
+    ui = webapi.status_to_ui({'assets': [{
+        'asset': 'GOLD', 'z': 1.0, 'rt_cost_bps': 1.09,
+        'rt_spot_spread': 0.13, 'rt_fut_spread': 0.34,
+        'rt_spread_factor': 1.0, 'rt_commission_per_lot': 0.0,
+        'rt_units': 5.0, 'rt_cost_usd': 2.35,
+        'spot_notional': 21463.07}]}, {})
+    sig = ui['signal']
+    assert sig['rt_spot_spread'] == 0.13
+    assert sig['rt_fut_spread'] == 0.34
+    assert sig['rt_leg_a_notional'] == pytest.approx(21463.07)
+    assert sig['round_trip_cost_usd'] == pytest.approx(2.35)
+
+
+def test_the_published_bps_matches_the_stated_arithmetic(tmp_path,
+                                                         monkeypatch,
+                                                         config):
+    """bps = combined bid-ask ÷ leg A price × 10,000, size-independent —
+    which is what the tooltip claims."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator, PaperExecutor
+
+    class Leg:
+        name = 'b'
+
+        def ensure_symbol(self, s):
+            return {'ok': True, 'volume_step': 0.01, 'volume_min': 0.01,
+                    'volume_max': 100.0, 'point': 0.01}
+
+        def tick(self, s):
+            return None
+
+        def account_info(self):
+            return {}
+
+        def order_log(self, hours=24):
+            return []
+
+        def ping(self):
+            return True
+
+    config.TRADING.update({'SIZING_MODE': 'lots', 'CLIP_LOTS': 0.05,
+                           'HEDGE_RATIO': 1.0})
+    config.COSTS['SPREAD_COST_FACTOR'] = 1.0
+    coord = Coordinator(config, trading_mode='PAPER')
+    coord.spot_leg = coord.futures_leg = Leg()
+    coord.executor = PaperExecutor(coord.spot_leg, coord.futures_leg, config)
+    coord.active_assets['GOLD'] = {'config': config.ASSETS['GOLD'],
+                                   'spot_symbol': 'XAUUSD_',
+                                   'futures_symbol': 'GC1226',
+                                   'last_data': None}
+    md = {'spot_price': 4292.615, 'futures_price': 4351.55,
+          'spot_bid': 4292.55, 'spot_ask': 4292.68,
+          'futures_bid': 4351.38, 'futures_ask': 4351.72,
+          'spread': 58.94, 'basis_pct': 1.37}
+    block = coord._sizing_and_cost('GOLD', md, None)
+    combined = 0.13 + 0.34
+    assert block['rt_cost_bps'] == pytest.approx(
+        combined / 4292.615 * 1e4, abs=0.01)
+    # Size-independent: ten times the clip, same bps.
+    config.TRADING['CLIP_LOTS'] = 0.5
+    assert coord._sizing_and_cost('GOLD', md, None)['rt_cost_bps'] == \
+        pytest.approx(block['rt_cost_bps'], abs=0.01)
