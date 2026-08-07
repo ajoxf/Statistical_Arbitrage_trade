@@ -559,7 +559,7 @@
                     <div class="col-6">
                         <div class="text-center p-1" style="background: var(--bg-tertiary); border-radius: 4px;">
                             <div class="fw-bold" style="font-size: 0.9rem;" id="half-life-value">—</div>
-                            <div style="font-size: 0.65rem;" class="text-secondary">Half-Life (periods)</div>
+                            <div style="font-size: 0.65rem;" class="text-secondary">Half-Life (minutes)</div>
                         </div>
                     </div>
                     <div class="col-6">
@@ -2357,14 +2357,41 @@
         }
 
         const meanEl = document.getElementById('spread-mean');
-        if (meanEl) meanEl.textContent = (data.spread_mean || 0).toFixed(2);
-        document.getElementById('spread-std').textContent = (data.spread_std || 0).toFixed(2);
+        if (meanEl) {
+            meanEl.textContent = (data.spread_mean != null)
+                ? data.spread_mean.toFixed(4) : '—';
+        }
+        const stdEl = document.getElementById('spread-std');
+        if (stdEl) {
+            // 4 dp, not 2: a sigma of 0.0631 rounds to "0.06", and the
+            // whole viability question is sigma against the combined
+            // bid-ask. Two decimals hide the answer.
+            stdEl.textContent = (data.spread_std != null)
+                ? data.spread_std.toFixed(4) : '—';
+        }
 
-        const hurst = data.hurst || 0.5;
+        // Hurst is NOT computed by this engine. It used to default to
+        // 0.5000, which looks like a measurement of a random walk
+        // rather than the absence of one.
         const hurstEl = document.getElementById('hurst-value');
-        hurstEl.textContent = hurst.toFixed(4);
-        hurstEl.classList.remove('price-up', 'price-down', 'price-neutral');
-        hurstEl.classList.add(hurst < 0.5 ? 'price-up' : hurst > 0.5 ? 'price-down' : 'price-neutral');
+        if (hurstEl) {
+            const hurst = data.hurst;
+            hurstEl.classList.remove('price-up', 'price-down', 'price-neutral');
+            if (hurst == null) {
+                hurstEl.textContent = '—';
+                hurstEl.classList.add('price-neutral');
+                if (hurstEl.parentElement) {
+                    hurstEl.parentElement.title =
+                        'Not computed by this engine — the mean-reversion ' +
+                        'read comes from the AR(1) half-life instead.';
+                }
+            } else {
+                hurstEl.textContent = hurst.toFixed(4);
+                hurstEl.classList.add(hurst < 0.5 ? 'price-up'
+                                      : hurst > 0.5 ? 'price-down'
+                                      : 'price-neutral');
+            }
+        }
 
         // Half-Life and the window it suggests
         const hlEl = document.getElementById('half-life-value');

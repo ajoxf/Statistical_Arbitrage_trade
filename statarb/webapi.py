@@ -493,6 +493,19 @@ def status_to_ui(status, config_raw):
         'futures_tick': futures_tick,
         'open_trade': open_trade,
         'tick_age_ms': status.get('tick_age_ms'),
+        # The Statistics & Regime card reads these at the TOP level; the
+        # signal block's 'mean'/'std' were never seen by it, so it
+        # rendered 0.00 against a live mu of 58.8.
+        'spread_mean': first.get('mu'),
+        'spread_std': first.get('sigma'),
+        'half_life': first.get('half_life_min'),
+        'trend_slope': first.get('trend_slope'),
+        'regime': first.get('regime'),
+        # This engine does not compute Hurst. Publishing None keeps the
+        # card honest — it used to default to a fabricated 0.5000, which
+        # reads as a measurement.
+        'hurst': None,
+        'hurst_ok': None,
         # How fast the engine is ACTUALLY refreshing, measured.
         'write_interval_ms': status.get('write_interval_ms'),
         'poll_interval_sec': status.get('poll_interval_sec'),

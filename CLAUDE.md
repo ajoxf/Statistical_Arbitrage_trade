@@ -601,8 +601,23 @@ running the page in the bundled Chromium under Playwright and reading
   `costs.edge_ok`; `Coordinator._sizing_and_cost` now publishes it.
   Notionals come from lots x contract size x live mid, because this
   engine's sizing anchor is CLIP_LOTS and W3's `position_size_usd` is
-  never set. Margin Details staying blank with no position is correct —
-  the card says so.
+  never set.
+- **Statistics & Regime showed Mean/Std 0.00** against a live mu of
+  58.8: the card reads `data.spread_mean`/`spread_std` at the TOP
+  level, but those only existed inside the `signal` block. Now
+  published, at 4 dp — 2 dp rounds sigma 0.0631 to "0.06" and hides
+  the whole sigma-vs-cost question. `regime` is a direct reading of the
+  AR(1) fit (half-life present = MEAN_REVERTING, absent while warm =
+  TRENDING), and Hurst is published as None: this engine does not
+  compute it, and the card used to default to a fabricated 0.5000 that
+  reads as a measurement. Half-Life is labelled MINUTES, not "periods".
+- **Margin Details**: IMR/MMR/Margin Ratio/liquidation ARE per-position
+  and correctly blank while flat — the card says so. But `Capital req`
+  is knowable flat and was hidden because `capital_required` was never
+  published; it now comes from `_sizing_and_cost` (each leg's notional
+  over ITS OWN leverage, plus the M2M buffer) via /api/account-info,
+  with a util badge against available. That is the pre-trade
+  affordability check for the configured CLIP_LOTS.
 - **Prices refreshing slower than 0.3s**: `config.example.json` pinned
   `POLL_INTERVAL_SEC: 0.5`, and `start.py` copies it to config.json on
   first run, so the 0.3 default never applied on an existing install —

@@ -1080,3 +1080,113 @@ def test_the_engine_publishes_its_measured_refresh_rate():
                               'assets': [{'asset': 'GOLD', 'z': 1.0}]}, {})
     assert ui['write_interval_ms'] == 302
     assert ui['poll_interval_sec'] == 0.3
+
+
+# ---------------------------------------------------------------------------
+# Statistics & Regime card
+# ---------------------------------------------------------------------------
+# Operator, 2026-08-07: "The values are not updated in this card" —
+# Mean 0.00 and Std Dev 0.00 against a live mu of 58.8 and sigma 0.063.
+# The card reads data.spread_mean / data.spread_std at the TOP level;
+# status_to_ui only put mean/std inside the signal block.
+
+def stats_status():
+    return {'assets': [{'asset': 'GOLD', 'z': 1.9, 'mu': 58.7985,
+                        'sigma': 0.0631, 'half_life_min': 12.5,
+                        'trend_slope': -0.0001, 'regime': 'MEAN_REVERTING',
+                        'samples': 14160, 'min_samples': 300}]}
+
+
+def test_the_mean_and_sigma_reach_the_statistics_card():
+    ui = webapi.status_to_ui(stats_status(), {})
+    assert ui['spread_mean'] == 58.7985
+    assert ui['spread_std'] == 0.0631
+
+
+def test_the_regime_comes_from_the_ar1_fit():
+    assert webapi.status_to_ui(stats_status(), {})['regime'] == 'MEAN_REVERTING'
+
+
+def test_hurst_is_published_as_absent_not_as_a_half():
+    """0.5000 reads as "measured a random walk". We do not compute it."""
+    ui = webapi.status_to_ui(stats_status(), {})
+    assert ui['hurst'] is None and ui['hurst_ok'] is None
+
+
+def test_the_card_shows_a_dash_rather_than_a_fabricated_hurst(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'const hurst = data.hurst || 0.5' not in page
+    assert 'Not computed by this engine' in page
+
+
+def test_sigma_is_shown_to_four_decimals(client):
+    """0.0631 rounds to "0.06" at two decimals, which hides the whole
+    sigma-versus-cost question."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'data.spread_std.toFixed(4)' in page
+
+
+def test_the_half_life_is_labelled_in_minutes(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'Half-Life (minutes)' in page
+    assert 'Half-Life (periods)' not in page
+
+
+# ---------------------------------------------------------------------------
+# Margin Details with a flat book
+# ---------------------------------------------------------------------------
+# Operator, 2026-08-07: "This is still blank". IMR/MMR/Margin Ratio and
+# the liquidation prices ARE per-position and correctly blank while
+# flat — the card says so. But "Capital req" is knowable with no
+# position, and it answers the question that actually matters before a
+# trade: can this account afford the configured clip?
+
+def account_status():
+    return {'mode': 'PAPER',
+            'accounts': {'acct': {'account': 'acct', 'login': 1,
+                                  'equity': 49908.78, 'balance': 49908.78,
+                                  'margin': 0.0, 'margin_free': 49908.78,
+                                  'profit': 0.0}},
+            'assets': [{'asset': 'GOLD', 'clip_lots': 0.1,
+                        'capital_required': 8574.6,
+                        'capital_buffer_pct': 0.0}]}
+
+
+def test_the_capital_requirement_shows_while_flat(client):
+    with open(client.tmp_path / 'runtime_status.json', 'w') as f:
+        json.dump(account_status(), f)
+    with open(client.tmp_path / 'config.json', 'w') as f:
+        json.dump({'accounts': {'acct': {'login': 1}}}, f)
+    body = client.get('/api/account-info').get_json()
+    assert body['capital_required'] == 8574.6
+    assert body['capital_buffer_pct'] == 0.0
+    assert body['clip_lots'] == 0.1
+
+
+def test_the_capital_requirement_is_absent_when_unknown(client):
+    with open(client.tmp_path / 'runtime_status.json', 'w') as f:
+        json.dump({'accounts': {}}, f)
+    body = client.get('/api/account-info').get_json()
+    assert body['capital_required'] is None      # hides its row, no fake zero
+
+
+def test_the_engine_publishes_per_leg_margin_and_the_buffer(tmp_path,
+                                                            monkeypatch,
+                                                            config):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    from statarb.spread import SpreadStats
+    coord = Coordinator(config, trading_mode='PAPER')
+    config.TRADING.update({'CLIP_LOTS': 0.1, 'HEDGE_RATIO': 1.0})
+    config.EXITS.update({'SPOT_LEVERAGE': 100.0, 'FUT_LEVERAGE': 500.0,
+                         'M2M_BUFFER_PCT': 10.0})
+    md = {'spot_price': 4258.0, 'futures_price': 4316.6,
+          'spot_bid': 4257.9, 'spot_ask': 4258.1,
+          'futures_bid': 4316.4, 'futures_ask': 4316.8}
+    block = coord._sizing_and_cost('GOLD', md, SpreadStats(config.SIGNALS))
+    # Each leg divided by ITS OWN leverage, then the M2M buffer.
+    assert block['spot_margin'] == pytest.approx(4258.0 * 10 / 100)
+    assert block['fut_margin'] == pytest.approx(4316.6 * 10 / 500)
+    assert block['capital_required'] == pytest.approx(
+        (block['spot_margin'] + block['fut_margin']) * 1.10)
+    assert block['capital_buffer_pct'] == 10.0

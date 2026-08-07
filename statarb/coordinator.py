@@ -1397,6 +1397,25 @@ class Coordinator:
         # is normally costed in — and the same basis as "combined
         # bid-ask in bps".
         denom = spot_notional or 1.0
+        # What the pre-trade balance guard would require to open this
+        # clip. Knowable with a FLAT book, which is exactly when the
+        # operator needs it: it answers "can this account afford the
+        # configured CLIP_LOTS?" before any order is sent. Unlevered
+        # legs are treated as cash (leverage 1), matching how the
+        # sizing card labels them.
+        exits = self.config.EXITS
+        shared = exits.get('LEVERAGE', 0) or 0
+        spot_lev = exits.get('SPOT_LEVERAGE', 0) or shared or 1.0
+        fut_lev = exits.get('FUT_LEVERAGE', 0) or shared or 1.0
+        buffer_pct = exits.get('M2M_BUFFER_PCT', 0) or 0
+        block.update({
+            'spot_margin': spot_notional / spot_lev,
+            'fut_margin': fut_notional / fut_lev,
+            'capital_required': ((spot_notional / spot_lev
+                                  + fut_notional / fut_lev)
+                                 * (1 + buffer_pct / 100.0)),
+            'capital_buffer_pct': buffer_pct,
+        })
         block.update({
             'rt_cost_usd': cost,
             'rt_fees_usd': commissions,
@@ -1459,6 +1478,15 @@ class Coordinator:
                 'history_sec': stats.history_sec if stats else 0.0,
                 'min_history_sec': (stats.min_history_sec if stats else 0.0),
                 'degenerate': bool(stats.degenerate) if stats else False,
+                'trend_slope': (stats.trend_slope() if stats else None),
+                # A direct reading of the AR(1) fit we already do:
+                # _estimate_half_life returns None when phi <= 0 or
+                # phi >= 1, i.e. when the window is NOT mean-reverting.
+                # No separate model, and no invented number.
+                'regime': ('COLLECTING' if not (stats and stats.warm)
+                           else 'MEAN_REVERTING'
+                           if (stats and stats.half_life_sec)
+                           else 'TRENDING'),
                 'basis': md['actual_basis'],
                 'spread': md['spread'],
                 'hedge_ratio': md.get('hedge_ratio', 1.0),

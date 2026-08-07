@@ -540,6 +540,11 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                            'margin_level': level}
         totals['margin_level'] = (100 * totals['equity'] / totals['margin']
                                   if totals['margin'] else None)
+        # What the NEXT trade would tie up. IMR/MMR/liquidation are
+        # per-position and stay blank until one is open, but this is
+        # knowable while flat — and it is the number that says whether
+        # the configured clip is affordable at all.
+        first_asset = (status.get('assets') or [{}])[0]
         return jsonify({
             'exchange': 'MT5',
             'connected': any(a.get('connected') for a in accounts),
@@ -554,6 +559,9 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             'margin_free': totals['margin_free'],
             'margin_level': totals['margin_level'],
             'unrealized_pnl': totals['profit'],
+            'capital_required': first_asset.get('capital_required'),
+            'capital_buffer_pct': first_asset.get('capital_buffer_pct'),
+            'clip_lots': first_asset.get('clip_lots'),
         })
 
     @app.route('/api/active-orders')
