@@ -379,6 +379,61 @@ Three separate floods, all fixed:
   returns a constant `[]` (resting orders are not wired to it); now
   15s.
 
+## Expected value at entry (2026-08-08, owner asked for it)
+
+Owner: "When we enter a trade and have a Break even and Take Profit
+calculated. Can we calculate the Expected Value as well rather than a
+BE + % Exit". The ladder already froze a target and a stop; nothing
+stated the arithmetic they imply. `statarb/expectancy.py` does.
+
+    EV = p x TP - (1 - p) x (STOP + cost)
+
+- **The loss leg carries the cost.** TAKE_PROFIT fires on NET so a win
+  banks exactly `tp_usd`; DOLLAR_STOP fires on GROSS so a loss books
+  `stop_usd + rt_cost` net. An EV that forgets this flatters every
+  trade by the price of the trade.
+- **p comes from the OU two-barrier probability**, not from a guess.
+  In z-units (the stationary sd IS the unit a z-score is measured in)
+  the scale function is `S'(z) = exp(z^2/2)` and
+  `p = integral(z_entry..z_stop) / integral(z_target..z_stop)`.
+  **The reversion speed cancels** — theta appears nowhere — which
+  matters because this engine's AR(1) half-life is fitted on 0.6s
+  quotes and is often measuring tick noise. Replace `exp(z^2/2)` with
+  1 and it reduces exactly to the driftless `b/(a+b)`, so the gap
+  between the two IS the mean-reversion edge, measured not asserted.
+  Integrals are computed factored by `exp(peak^2/2)` because the raw
+  integrand overflows a float near z=38 and MAX_ABS_Z defaults to 25.
+- **The no-reversion baseline is always exactly `-cost`**, for every
+  combination of levels — it falls out of the algebra
+  (`(S*T - (T+c)(S+c))/(T+S+c) = -c`). Printed beside the real EV, it
+  proves the cost accounting is self-consistent and makes the point
+  that every dollar of edge comes from reversion and nothing else.
+- **`needs_overshoot`** flags a target sitting PAST the mean, which
+  needs the spread to overshoot rather than come home — a different
+  bet from the one z measured. build_plan's full-reversion veto keeps
+  SIGNAL entries out of it, but a manual target lands there easily.
+  The barrier ratio can read reassuringly while BOTH barriers are out
+  of reach and the clock is what actually closes the trade.
+- **What it does NOT model, stated everywhere it is shown:** the clock
+  (MAX_HOLD / TIME_STOP / the reversion gate can close a trade that
+  touched neither barrier), sigma being real, and a stationary mean.
+  It is the run-to-a-barrier EV. The Analysis page's `expectancy` is
+  the realised counterpart that actually scores the strategy.
+- `EXITS.EV_MIN_USD` is an OPT-IN veto, default 0 = off. A negative-EV
+  trade is worth refusing, but that changes what the engine trades and
+  must not switch itself on. Manual entries are never vetoed by it.
+
+Surfaced in: the `Exit plan (VALUE)` log line, an EXPECTED VALUE block
+in the Telegram entry message, and an "Expected value" row on the
+in-position card (hidden, never zeroed, when unmeasurable).
+
+Writing it made the edge problem legible in the unit that matters. At
+sigma 0.2247 on 110 oz, one sigma of spread is **$24.72**, so a $47
+round trip is **1.9 sigma of travel before a cent of profit**. From
+z = 3 that leaves 1.1 sigma of reachable target — any target above
+~$27 already needs an overshoot. That is the same conclusion as the
+edge filter's, arrived at independently and readable at a glance.
+
 ## A pair could be created but never removed (2026-08-07)
 
 Assets were only ever created — implicitly, by saving a symbol on a

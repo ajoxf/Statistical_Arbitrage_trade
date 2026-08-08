@@ -483,6 +483,13 @@
                             <span id="position-levels-usd" class="font-monospace">-</span>
                         </div>
                     </div>
+                    <div class="row mb-1" id="position-ev-row" style="display:none;">
+                        <div class="col-12" style="font-size: 0.75rem;"
+                             title="What this trade was worth GOING IN, from the levels frozen at entry: EV = p x TP − (1−p) x (STOP + fees). A win banks the target NET; a loss books the stop GROSS, so the round trip is paid on the way out of a loser too and sits on the loss side. p is the chance of reaching the target before the stop for a mean-reverting (Ornstein-Uhlenbeck) spread, computed from the z-distance to each level — the reversion SPEED cancels out, so this does not depend on the AR(1) half-life. The baseline beside it is the same trade on a spread that does NOT revert, which is always worth exactly minus the round trip: every dollar of edge here comes from reversion. It does not model the clock — MAX_HOLD, the time stop and the reversion gate can all close a trade that reached neither level.">
+                            <span class="text-secondary">Expected value:</span>
+                            <span id="position-ev" class="font-monospace">-</span>
+                        </div>
+                    </div>
                     <div class="row mb-1" id="position-slippage-row" style="display:none;">
                         <div class="col-12" style="font-size: 0.75rem;"
                              title="What the signal saw versus what MT5 gave us, split into two costs that behave differently. CROSSING is mid-to-touch: quoted on the screen before you trade and already in the cost model — paying it is normal. SLIPPAGE is touch-to-fill: the market moving between the decision and the fill, or the broker filling away from its own quote. A negative slippage is price improvement, which limit orders do produce.">
@@ -3233,6 +3240,33 @@ function updateFilterStatus(elementId, passed, value) {
                     pnlBarRow.style.display = '';
                 } else if (pnlBarRow) {
                     pnlBarRow.style.display = 'none';
+                }
+
+                // Expected value — what the frozen geometry is worth per
+                // trade. Hidden rather than zeroed when unmeasurable: a
+                // "$0.00" EV reads as a break-even trade, which is a
+                // different and much more confident claim than "unknown".
+                const evRow = document.getElementById('position-ev-row');
+                const evEl  = document.getElementById('position-ev');
+                const ev    = t.expectancy || {};
+                if (evRow && evEl && ev.ev_usd != null) {
+                    const money = parseFloat(ev.ev_usd);
+                    const win   = parseFloat(ev.p_win) * 100;
+                    const be    = parseFloat(ev.be_win_rate) * 100;
+                    const tone  = money >= 0 ? 'text-success' : 'text-danger';
+                    evEl.innerHTML =
+                        '<span class="' + tone + '">' + (money >= 0 ? '+$' : '−$')
+                        + Math.abs(money).toFixed(2) + '</span>'
+                        + ' <span class="text-secondary">('
+                        + (ev.ev_ratio != null
+                            ? (parseFloat(ev.ev_ratio) >= 0 ? '+' : '−')
+                              + Math.abs(parseFloat(ev.ev_ratio)).toFixed(2) + 'R · '
+                            : '')
+                        + win.toFixed(0) + '% win vs ' + be.toFixed(0)
+                        + '% needed)</span>';
+                    evRow.style.display = '';
+                } else if (evRow) {
+                    evRow.style.display = 'none';
                 }
 
                 // Level P&L row — the net dollar value each spread level equals,

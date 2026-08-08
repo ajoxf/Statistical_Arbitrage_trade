@@ -607,6 +607,9 @@ def status_to_ui(status, config_raw):
             'exit_target_usd': open_position.get('tp_usd'),
             'exit_stop_usd': open_position.get('stop_usd'),
             'exit_gate_floor_usd': open_position.get('gate_floor_usd'),
+            # What the frozen geometry was worth going in. None (not 0)
+            # whenever it could not be computed.
+            'expectancy': open_position.get('expectancy') or {},
             'spread_levels': {
                 'break_even': levels.get('be'),
                 'gate_release': levels.get('ex'),

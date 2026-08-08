@@ -231,6 +231,27 @@ class TelegramNotifier:
                       + f" {mark}"))
         return rows
 
+    def _expectancy_rows(self, block):
+        """What the frozen geometry is worth per trade. Silent when it
+        cannot be computed — a blank EV is honest, a 0.00 reads as a
+        break-even trade."""
+        if not block or block.get('ev_usd') is None:
+            return []
+        R = self._row
+        p_win = block['p_win']
+        mark = "✅" if block['ev_usd'] > 0 else "⚠️"
+        return [
+            "", "<b>EXPECTED VALUE</b>",
+            R("EV/trade", f"${block['ev_usd']:+,.0f}  "
+                          f"({block['ev_ratio']:+.2f}R) {mark}"),
+            R("Win", f"{p_win * 100:.0f}% x +${block['win_usd']:,.0f}"),
+            R("Lose", f"{(1 - p_win) * 100:.0f}% x "
+                      f"-${block['loss_usd']:,.0f}"),
+            R("Break-even", f"needs {block['be_win_rate'] * 100:.0f}% wins"),
+            R("Reversion", f"+{block['reversion_edge'] * 100:.0f}pp over a "
+                           f"non-reverting spread"),
+        ]
+
     def notify_startup(self, mode, spot_leg, futures_leg, assets):
         self._send(
             f"🚀 <b>COORDINATOR STARTED</b>\n"
@@ -301,6 +322,7 @@ class TelegramNotifier:
         breakeven_move = fees / oz if oz else 0
         rows += ["", R("Est. Fees", f"-${fees:,.2f}  (round-trip)"),
                  R("Breakeven", f"{breakeven_move:+.4f} spread move")]
+        rows += self._expectancy_rows(plan.get('expectancy'))
         if plan.get('source') == 'MANUAL':
             rows.append(R("Source", "MANUAL (web UI)"))
 

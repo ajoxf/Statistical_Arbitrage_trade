@@ -238,6 +238,11 @@ class AlgoTradingConfig:
             # reversion time shorter than this is a measurement
             # artefact, not a tradable horizon.
             'MIN_MAX_HOLD_SEC': 300.0,
+            # Minimum expected value, in dollars, for a SIGNAL entry
+            # (0 = off, and off is the default). The plan always
+            # publishes its EV; this decides whether the EV can also
+            # veto. Manual trades are never vetoed by it.
+            'EV_MIN_USD': 0.0,
             # Suppress MAX_HOLD while z-progress toward home >= this,
             # ONLY when a TP exists (never wait for a TP that is off)
             'MAX_HOLD_PROGRESS_SUPPRESS': 0.5,

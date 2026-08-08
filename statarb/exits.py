@@ -32,6 +32,7 @@ Priority each tick (risk first):
 import logging
 
 from . import costs as costs_mod
+from . import expectancy
 from .models import SignalType
 
 
@@ -182,6 +183,13 @@ class ExitLadder:
                 max_hold * exits.get('HARD_TIME_STOP_MULT', 0), floor_sec)
             max_hold = floor_sec
 
+        # What the trade is worth going in. The ladder has always frozen
+        # a target and a stop; this states the arithmetic they imply
+        # instead of leaving the operator to do it. Reference only — no
+        # gate reads it (see EV_MIN_USD below for the opt-in one).
+        expectancy_block = expectancy.trade_expectancy(
+            tp, stop, rt_cost, entry_z, sigma, oz)
+
         plan = {
             'tp_usd': tp,
             'stop_usd': stop,
@@ -192,7 +200,27 @@ class ExitLadder:
             'rt_cost_usd': rt_cost,
             'capital_at_risk': capital,
             'half_life_sec': half_life_sec,
+            'expectancy': expectancy_block,
         }
+
+        # An OPT-IN veto (0 = off, the default). A negative-EV trade is
+        # one the geometry says loses money on average, so refusing it
+        # is defensible — but it is a real change in what the engine
+        # trades, and it must not switch itself on behind the operator.
+        # Manual entries are never vetoed: manual means manual.
+        floor_ev = exits.get('EV_MIN_USD', 0.0) or 0.0
+        if floor_ev and manual_target_usd is None \
+                and expectancy_block.get('ev_usd') is not None \
+                and expectancy_block['ev_usd'] < floor_ev:
+            self.last_refusal = (
+                f"expected value is ${expectancy_block['ev_usd']:+,.0f} "
+                f"against a floor of ${floor_ev:,.0f} — "
+                f"{expectancy_block['p_win'] * 100:.0f}% chance of "
+                f"${expectancy_block['win_usd']:,.0f} does not pay for a "
+                f"{(1 - expectancy_block['p_win']) * 100:.0f}% chance of "
+                f"-${expectancy_block['loss_usd']:,.0f}")
+            logging.info("Exit plan not viable: %s", self.last_refusal)
+            return None
         # Print the RESOLVED levels, not the configs — a cost floor can
         # silently pin a %-target higher at the operating size
         logging.info("Exit plan (RESOLVED): TP=$%s STOP=$%.0f gate=$%.0f "
@@ -202,6 +230,8 @@ class ExitLadder:
                      max_hold * exits.get('HARD_TIME_STOP_MULT', 0) / 60,
                      rt_cost,
                      f", capital ${capital:,.0f}" if capital else "")
+        logging.info("Exit plan (VALUE): %s",
+                     expectancy.summarise(expectancy_block))
         return plan
 
     # ------------------------------------------------------------------

@@ -1026,6 +1026,7 @@ class Coordinator:
                 'stop_usd': plan.get('stop_usd'),
                 'rt_cost_usd': plan.get('rt_cost_usd'),
                 'gate_floor_usd': plan.get('gate_floor_usd'),
+                'expectancy': plan.get('expectancy'),
                 'max_hold_sec': plan.get('max_hold_sec'),
                 'half_life_min': ((plan.get('half_life_sec') or 0) / 60
                                   or None),
