@@ -1767,6 +1767,18 @@ class Coordinator:
             'rt_commission_per_lot': (
                 self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0)
                 + self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0)),
+            # Split per leg, and named, so the card can show a line per
+            # thing actually paid rather than one combined figure the
+            # operator has to take apart to check against a broker's
+            # schedule.
+            'rt_commission_spot': self.config.COSTS.get(
+                'COMMISSION_PER_LOT_SPOT', 0.0),
+            'rt_commission_fut': self.config.COSTS.get(
+                'COMMISSION_PER_LOT_FUT', 0.0),
+            'rt_spot_symbol': (self.active_assets.get(asset_key) or {})
+            .get('spot_symbol'),
+            'rt_fut_symbol': (self.active_assets.get(asset_key) or {})
+            .get('futures_symbol'),
             'rt_units': lots * contract,
             # Per ONE lot, and the lot count separately. The operator
             # reasons about a single lot ("one round trip costs me

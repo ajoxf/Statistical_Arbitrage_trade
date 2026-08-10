@@ -671,13 +671,37 @@
                         <span class="text-secondary">Fee:</span>
                         <span id="fee-type-used">-</span>
                     </div>
-                    <div class="d-flex justify-content-between mt-1">
-                        <span class="text-secondary">Round-trip (1 lot):</span>
-                        <span id="round-trip-per-lot">-</span>
-                    </div>
-                    <div class="d-flex justify-content-between mt-1">
-                        <span class="text-secondary" id="round-trip-scale-label">&times; lots:</span>
-                        <span id="round-trip-cost">-</span>
+                    <!-- Every component of the round trip on its own
+                         line. One combined figure hid which half was
+                         the problem, and could not be checked against
+                         a broker's own schedule without arithmetic. -->
+                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
+                        <div class="text-secondary mb-1" style="font-size: 0.7rem;">
+                            Round-trip cost, per lot
+                        </div>
+                        <table class="w-100" style="font-size: 0.7rem;"
+                               id="round-trip-breakdown">
+                            <tbody>
+                                <tr><td class="text-secondary" id="rt-legA-label">Leg A spread</td>
+                                    <td class="text-end text-secondary" id="rt-legA-calc">-</td>
+                                    <td class="text-end font-monospace" id="rt-legA-usd">-</td></tr>
+                                <tr><td class="text-secondary" id="rt-legB-label">Leg B spread</td>
+                                    <td class="text-end text-secondary" id="rt-legB-calc">-</td>
+                                    <td class="text-end font-monospace" id="rt-legB-usd">-</td></tr>
+                                <tr id="rt-comm-row"><td class="text-secondary">Commission</td>
+                                    <td class="text-end text-secondary" id="rt-comm-calc">-</td>
+                                    <td class="text-end font-monospace" id="rt-comm-usd">-</td></tr>
+                                <tr style="border-top: 1px solid var(--border-color);">
+                                    <td class="fw-bold pt-1">Per lot</td>
+                                    <td class="text-end text-secondary pt-1" id="rt-perlot-unit">-</td>
+                                    <td class="text-end fw-bold font-monospace pt-1"
+                                        id="round-trip-per-lot">-</td></tr>
+                                <tr><td class="text-secondary" id="round-trip-scale-label">&times; lots</td>
+                                    <td class="text-end text-secondary" id="rt-total-bps">-</td>
+                                    <td class="text-end fw-bold font-monospace"
+                                        id="round-trip-cost">-</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                     <div id="std-explanation" class="text-secondary mt-1" style="font-size: 0.65rem;">
                         Spread must cover trading costs
@@ -2859,31 +2883,53 @@
                 const comm = data.rt_commission_per_lot;
                 const oz = data.rt_units, usd = data.round_trip_cost_usd;
                 const notional = data.rt_leg_a_notional;
-                rtEl.textContent = bps.toFixed(1) + ' bps'
-                    + (usd != null ? '  ($' + usd.toFixed(2) + ')' : '');
-                rtEl.className = 'fw-bold';
+                rtEl.textContent = usd != null ? '$' + usd.toFixed(2) : '-';
 
-                // One lot first, then the scaling. The per-lot figure is
-                // the one that can be reasoned about and compared against
-                // a sigma; the position total is just it times the lots.
-                const perLotEl = document.getElementById('round-trip-per-lot');
-                const scaleEl  = document.getElementById('round-trip-scale-label');
-                const perLot   = data.rt_cost_per_lot;
-                const lots     = data.rt_lots;
-                const csize    = data.rt_contract_size;
-                if (perLotEl) {
-                    perLotEl.className = 'fw-bold';
-                    perLotEl.textContent = perLot != null
-                        ? '$' + perLot.toFixed(2)
-                          + (csize ? '  ($' + (perLot / csize).toFixed(4)
-                                     + '/unit)' : '')
-                        : '-';
+                // One line per thing actually paid, then the per-lot
+                // total, then the scaling. A single combined number hid
+                // which half was the problem — spread or commission —
+                // and the two have completely different remedies.
+                const perLot = data.rt_cost_per_lot;
+                const lots   = data.rt_lots;
+                const csize  = data.rt_contract_size || 0;
+                const cSpot  = data.rt_commission_spot;
+                const cFut   = data.rt_commission_fut;
+                const f      = (factor == null ? 1 : factor);
+                const set = (id, text) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = text;
+                };
+                const money = (x) => (x == null ? '-' : '$' + x.toFixed(2));
+
+                set('rt-legA-label', (data.rt_spot_symbol || 'Leg A') + ' spread');
+                set('rt-legB-label', (data.rt_fut_symbol || 'Leg B') + ' spread');
+                set('rt-legA-calc', ss != null
+                    ? ss.toFixed(4) + (f !== 1 ? '×' + f : '') + ' × ' + csize : '');
+                set('rt-legB-calc', fs != null
+                    ? fs.toFixed(4) + (f !== 1 ? '×' + f : '') + ' × ' + csize : '');
+                set('rt-legA-usd', money(ss == null ? null : ss * f * csize));
+                set('rt-legB-usd', money(fs == null ? null : fs * f * csize));
+
+                const commTotal = (cSpot || 0) + (cFut || 0);
+                set('rt-comm-calc', commTotal
+                    ? money(cSpot) + ' + ' + money(cFut)
+                    : 'not set');
+                const commEl = document.getElementById('rt-comm-usd');
+                if (commEl) {
+                    commEl.textContent = money(commTotal);
+                    // Zero commission is almost never true and it makes
+                    // every trade look cheaper than it is.
+                    commEl.className = 'text-end font-monospace'
+                        + (commTotal ? '' : ' text-danger');
                 }
-                if (scaleEl) {
-                    scaleEl.textContent = lots != null
-                        ? '× ' + (+lots.toFixed(2)) + ' lots:'
-                        : '× lots:';
-                }
+
+                set('rt-perlot-unit', (perLot != null && csize)
+                    ? '$' + (perLot / csize).toFixed(4) + '/unit' : '');
+                set('round-trip-per-lot', money(perLot));
+                set('round-trip-scale-label', lots != null
+                    ? '× ' + (+lots.toFixed(2)) + ' lots' : '× lots');
+                set('rt-total-bps', bps != null
+                    ? bps.toFixed(1) + ' bps' : '');
 
                 if (ss != null && fs != null) {
                     const n = (x, d) => (x == null ? '?' : x.toFixed(d));
