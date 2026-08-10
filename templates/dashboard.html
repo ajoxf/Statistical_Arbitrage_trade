@@ -668,8 +668,14 @@
                          maker/taker split that does not exist on MT5,
                          and always read 0; commissions are itemised in
                          the round-trip breakdown below instead.) -->
+                    <!-- Both inputs named, because BOTH move. Sigma has
+                         been the more volatile of the two on this feed
+                         (0.0155 -> 0.0437 -> 0.0246 inside one session),
+                         so a heading that mentioned only Z invited the
+                         reading that the row changes when the spread
+                         moves and is otherwise stable. -->
                     <div class="text-secondary mb-1" style="font-size: 0.7rem;">
-                        Edge check, at the current Z
+                        Edge check, at the current Z and Std Dev
                     </div>
                     <table class="w-100" style="font-size: 0.7rem;" id="edge-breakdown">
                         <tbody>
