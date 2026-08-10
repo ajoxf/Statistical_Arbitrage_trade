@@ -35,7 +35,7 @@ try:
 except ImportError:
     SocketIO = None            # UI falls back to polling
 
-from . import diagnostics, ipc, scenarios, sizing, webapi
+from . import diagnostics, hedgeratio, ipc, scenarios, sizing, webapi
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
@@ -266,10 +266,35 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         raw, env_updates, notes = webapi.apply_ui_config(raw, payload)
         if env_updates:
             update_env_file(env_path, env_updates)
+        _stamp_beta(raw, old_beta)
         save_config_raw(raw)
         note = " ".join(notes) or \
             "Saved — the engine hot-reloads within ~10s."
         return jsonify({'success': True, 'status': 'ok', 'note': note})
+
+    def _stamp_beta(raw, old_beta):
+        """Record which PAIR a hand-set HEDGE_RATIO was chosen for.
+
+        The engine re-derives beta at startup whenever the stamp does
+        not match the running pair. Without stamping the operator's own
+        save, this sequence loses their choice: change the symbols,
+        type the right beta in Settings, restart — and the engine sees
+        a stamp still naming the OLD pair and overwrites the number
+        that was just typed. A beta the operator set IS set for the
+        currently configured pair, by definition.
+        """
+        trading = raw.get('trading') or {}
+        new_beta = trading.get('HEDGE_RATIO')
+        if new_beta is None or float(new_beta) == float(old_beta or 0.0):
+            return
+        asset = next((v for v in (raw.get('assets') or {}).values()
+                      if v.get('enabled', True)), {})
+        spot = (asset.get('spot_symbols') or [''])[0]
+        futures = (asset.get('futures_symbols') or [''])[0]
+        if spot and futures:
+            trading['HEDGE_RATIO_FOR'] = hedgeratio.pair_signature(spot,
+                                                                   futures)
+            raw['trading'] = trading
 
     def _save_sectioned(raw, payload, status, in_trade):
         note = 'Saved — coordinator hot-reloads within ~10s'
@@ -324,6 +349,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 note = ('Saved. Trading-mode change takes effect when the '
                         'launcher is restarted.')
             raw['trading_mode'] = payload['trading_mode']
+        _stamp_beta(raw, old_beta)
         save_config_raw(raw)
         return jsonify({'ok': True, 'success': True, 'note': note})
 
@@ -681,24 +707,17 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return jsonify({'success': False, 'error': 'unavailable',
                             **prices})
 
-        # WHAT to suggest depends on the pair, and suggesting the price
-        # ratio for a basis pair would be actively harmful: on gold spot
-        # vs its own future the ratio is ~1.014, and using it as beta
-        # collapses the spread to roughly zero — deleting the very basis
-        # the strategy trades. Same underlying means beta is 1.
+        # WHAT to suggest depends on the pair, and the rule lives in
+        # hedgeratio.suggest — the same function the engine adopts from
+        # at startup. Two copies would let the page recommend one beta
+        # while a restart silently applied another.
         asset = next((v for v in (load_config_raw().get('assets')
                                   or {}).values()
                       if v.get('enabled', True)), {})
         pair_type = (asset.get('pair_type') or 'SPOT_FUTURE').upper()
-        if pair_type in ('SPOT_FUTURE', 'FUTURE_FUTURE'):
-            beta, why = 1.0, (f'{pair_type} — the two legs are the same '
-                              f'underlying, so the spread IS the basis and '
-                              f'beta is 1')
-        else:
-            beta = b_price / a_price
-            why = (f'{wanted_b} {b_price:,.4f} / {wanted_a} {a_price:,.4f} '
-                   f'— equalises the two legs in money, which is what makes '
-                   f'a spread between different instruments meaningful')
+        beta, why = hedgeratio.suggest(pair_type, a_price, b_price)
+        if beta is None:
+            return jsonify({'success': False, 'error': why, **prices})
         return jsonify({'success': True, 'suggested_beta': beta,
                         'reason': why, 'pair_type': pair_type,
                         'leg_a_price': a_price, 'leg_b_price': b_price,

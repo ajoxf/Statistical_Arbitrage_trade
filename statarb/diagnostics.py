@@ -13,7 +13,7 @@ checklist is testable without MT5.
 
 from datetime import datetime
 
-from . import mt5_errors
+from . import hedgeratio, mt5_errors
 
 PASS, WARN, FAIL, INFO = 'PASS', 'WARN', 'FAIL', 'INFO'
 _RANK = {PASS: 0, INFO: 0, WARN: 1, FAIL: 2}
@@ -489,16 +489,31 @@ def check_pair(checklist, spot, futures, config):
                    'resulting spread': round(spread, 4)}
         # A pair spread is a small DIFFERENCE between comparable prices.
         # Dwarfing the prices is the signature of a beta error.
-        if abs(spread) > 0.5 * min(spot_price, fut_price):
+        if hedgeratio.implausible(hedge_ratio, spot_price, fut_price,
+                                  spread) is not None:
+            asset_cfg = next((v for v in (config.ASSETS or {}).values()
+                              if v.get('enabled', True)), {})
+            pair_type = (asset_cfg.get('pair_type') or 'SPOT_FUTURE').upper()
+            suggested, _ = hedgeratio.suggest(pair_type, spot_price,
+                                              fut_price)
             checklist.add(
                 'PAIR', 'Hedge ratio', FAIL,
                 f'HEDGE_RATIO {hedge_ratio:g} gives a spread of '
                 f'{spread:+.4f} on legs priced {spot_price:.4f} / '
                 f'{fut_price:.4f} — the "spread" is bigger than the '
                 f'instruments, so mu, sigma, z and every exit level '
-                f'would describe a series that does not exist.',
+                f'would describe a series that does not exist. Entries '
+                f'are blocked while this is true; exits still run.',
                 details=details,
-                fix=['For the SAME underlying (spot vs its future), '
+                fix=[(f'Restart the launcher — the engine re-derives '
+                      f'HEDGE_RATIO ({suggested:g} for this pair, '
+                      f'pair type {pair_type}) whenever the pair it was '
+                      f'set for has changed'
+                      if suggested is not None else
+                      'Restart the launcher — the engine re-derives '
+                      'HEDGE_RATIO whenever the pair it was set for has '
+                      'changed'),
+                     'For the SAME underlying (spot vs its future), '
                      'HEDGE_RATIO is 1',
                      f'For two different instruments, a spread only '
                      f'makes sense near the price ratio '

@@ -362,7 +362,7 @@ def test_different_instruments_are_suggested_the_price_ratio(tmp_path,
     legs comparable at all."""
     body = _beta_client(tmp_path, monkeypatch, 'RELATED', 64.686, 4352.26)
     assert body['suggested_beta'] == pytest.approx(4352.26 / 64.686)
-    assert 'money' in body['reason']
+    assert 'price ratio' in body['reason']
 
 
 @pytest.mark.parametrize('pair_type', ['SPOT_FUTURE', 'FUTURE_FUTURE'])

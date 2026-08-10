@@ -26,6 +26,7 @@ from .exits import ExitLadder, outcome_tag, overnight_exit
 from .legs import LocalLeg, RemoteLeg
 from . import costs as costs_mod
 from . import fairvalue
+from . import hedgeratio
 from .marketdata import compute_market_data
 from .models import Position, SignalType, Trade, OrderSide
 from .notify import TelegramNotifier
@@ -370,6 +371,8 @@ class Coordinator:
             if spot_symbol and futures_symbol:
                 self._adopt_broker_specs(asset_key, asset_cfg,
                                          spot_symbol, futures_symbol)
+                self._adopt_hedge_ratio(asset_key, asset_cfg,
+                                        spot_symbol, futures_symbol)
                 self.active_assets[asset_key] = {
                     'config': asset_cfg,
                     'spot_symbol': spot_symbol,
@@ -483,6 +486,103 @@ class Coordinator:
         self._persist_specs(asset_key, persist)
         self._log_spread_definition(asset_key)
         self._log_fair_value(asset_key, asset_cfg)
+
+    def _adopt_hedge_ratio(self, asset_key, asset_cfg, spot_symbol,
+                           futures_symbol):
+        """Re-derive HEDGE_RATIO when the pair it was set for is gone.
+
+        Operator, 2026-08-10: "Can you make sure the Hedge Ratio is
+        calculated and changed everytime the pair is changed?" — after
+        66.94, computed for XAGUSD/XAUUSD, was left behind on
+        USOIL/UKOIL and defined the spread as -5469.59 on legs priced
+        82.61 and 86.05.
+
+        Runs here, inside _setup_symbols, for a reason: `_series_key`
+        includes beta, and `_warm_start` seeds the rolling window from
+        rows matching that key. Changing beta after the warm start
+        would seed the window on the old series and hand the strategy a
+        mu and sigma the live spread never visits.
+
+        Two things it will not do:
+
+        * Touch beta while a position is open. Beta defines the series
+          the position was entered on; redefining it underneath a live
+          trade orphans its entry geometry. The book is read from the
+          DB because position recovery has not run yet at this point.
+        * Overwrite a beta that is stamped for THIS pair. Beta is a
+          strategy parameter and an operator who tuned it keeps their
+          number — the stamp is what separates "tuned" from "stale".
+        """
+        beta = float(self.config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0)
+        stamp = self.config.TRADING.get('HEDGE_RATIO_FOR')
+        signature = hedgeratio.pair_signature(spot_symbol, futures_symbol)
+
+        prices = {}
+        for role, leg, symbol in (('a', self.spot_leg, spot_symbol),
+                                  ('b', self.futures_leg, futures_symbol)):
+            try:
+                tick = leg.tick(symbol)
+            except Exception:
+                tick = None
+            prices[role] = ((tick['bid'] + tick['ask']) / 2
+                            if tick and tick.get('bid') and tick.get('ask')
+                            else None)
+
+        new_beta, why = hedgeratio.resolve(
+            beta, stamp, asset_cfg.get('pair_type'), spot_symbol,
+            futures_symbol, prices['a'], prices['b'])
+
+        if new_beta is None:
+            if stamp != signature and prices['a'] and prices['b']:
+                self._persist_trading({'HEDGE_RATIO_FOR': signature})
+                self.config.TRADING['HEDGE_RATIO_FOR'] = signature
+            logging.info("%s: %s", asset_key, why)
+            return
+
+        open_positions = self.data_logger.load_open_position_states()
+        if open_positions:
+            logging.critical(
+                "%s: HEDGE_RATIO should be %g — %s. NOT changing it: %d "
+                "position(s) are open and beta defines the series they "
+                "were entered on. Close them, then restart.",
+                asset_key, new_beta, why, len(open_positions))
+            return
+
+        logging.warning("%s: HEDGE_RATIO %g -> %g — %s",
+                        asset_key, beta, new_beta, why)
+        self.config.TRADING['HEDGE_RATIO'] = new_beta
+        self.config.TRADING['HEDGE_RATIO_FOR'] = signature
+        self._persist_trading({'HEDGE_RATIO': new_beta,
+                               'HEDGE_RATIO_FOR': signature})
+
+    def _persist_trading(self, updates):
+        """Write TRADING keys back to config.json.
+
+        `_persist_specs` is deliberately specs-only — strategy
+        parameters belong to the operator. This is the one exception
+        and it is narrow: a beta computed for a pair that is no longer
+        configured is not the operator's choice, it is a leftover, and
+        leaving it in the file means the Exchanges checklist keeps
+        reporting a fault the engine has already corrected in memory.
+        """
+        if not self.config_path or not updates:
+            return
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            trading = raw.setdefault('trading', {})
+            if all(trading.get(k) == v for k, v in updates.items()):
+                return
+            trading.update(updates)
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(raw, f, indent=2)
+            # Adopt our own write, or hot_apply reads the mtime change
+            # as an operator edit on the next pass.
+            self._config_mtime = os.path.getmtime(self.config_path)
+            logging.info("Saved to config: %s",
+                         ', '.join(f'{k}={v}' for k, v in updates.items()))
+        except (OSError, ValueError) as e:
+            logging.debug("Could not persist trading config: %s", e)
 
     def _log_fair_value(self, asset_key, asset_cfg):
         """Reference only — say once at startup whether a fair value is
@@ -828,10 +928,12 @@ class Coordinator:
         """
         spot_px = md.get('spot_price') or 0
         fut_px = md.get('futures_price') or 0
-        smaller = min(abs(spot_px), abs(fut_px))
-        if not smaller or abs(md.get('spread') or 0) <= 0.5 * smaller:
-            return None
         beta = self.config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0
+        # One threshold, shared with the startup adoption — the engine
+        # must never adopt a beta it will then refuse to trade on.
+        if hedgeratio.implausible(beta, spot_px, fut_px,
+                                  md.get('spread')) is None:
+            return None
         ratio = (fut_px / spot_px) if spot_px else 0
         return (f'spread {md["spread"]:+.2f} dwarfs the leg prices '
                 f'({spot_px:.2f} / {fut_px:.2f}) — HEDGE_RATIO '

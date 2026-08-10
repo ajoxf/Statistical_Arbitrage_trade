@@ -804,3 +804,155 @@ def test_a_symbol_with_no_leg_chosen_is_still_refused(client):
         'name': 'nowhere', 'endpoint': '127.0.0.1:9109', 'symbol': 'USOIL'})
     assert response.status_code == 400
     assert 'leg' in response.get_json()['error'].lower()
+
+
+# --- HEDGE_RATIO follows the pair ----------------------------------------
+# Operator, 2026-08-10: "Can you make sure the Hedge Ratio is calculated
+# and changed everytime the pair is changed?" — after 66.94, computed for
+# XAGUSD/XAUUSD, was left behind on USOIL/UKOIL and defined the spread as
+# -5469.59 on legs priced 82.61 and 86.05.
+
+class PricedLeg(SymbolFakeLeg):
+    """A leg that also quotes, so beta can be derived from live prices."""
+
+    def __init__(self, name, available, price):
+        super().__init__(name, available)
+        self.price = price
+
+    def tick(self, symbol):
+        if symbol not in self.available:
+            return None
+        return {'bid': self.price - 0.05, 'ask': self.price + 0.05,
+                'time': 0}
+
+
+def oil_coordinator(config, tmp_path, monkeypatch, beta, stamp,
+                    pair_type='RELATED'):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'config.json').write_text(json.dumps(
+        {'trading': {'HEDGE_RATIO': beta}}))
+    from statarb.coordinator import Coordinator
+    config.ASSETS = {'OIL': dict(config.ASSETS['GOLD'],
+                                 spot_symbols=['USOIL'],
+                                 futures_symbols=['UKOIL'],
+                                 pair_type=pair_type)}
+    config.TRADING['HEDGE_RATIO'] = beta
+    if stamp is None:
+        config.TRADING.pop('HEDGE_RATIO_FOR', None)
+    else:
+        config.TRADING['HEDGE_RATIO_FOR'] = stamp
+    coord = Coordinator(config, trading_mode='PAPER',
+                        config_path=str(tmp_path / 'config.json'))
+    coord.spot_leg = PricedLeg('MT5', {'USOIL': 'WTI'}, 82.61)
+    coord.futures_leg = PricedLeg('MT5', {'UKOIL': 'Brent'}, 86.05)
+    return coord
+
+
+def test_changing_the_pair_re_derives_the_hedge_ratio(config, tmp_path,
+                                                      monkeypatch, caplog):
+    """The live incident: 66.94 belonged to XAGUSD/XAUUSD."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 66.94,
+                            'XAGUSD|XAUUSD')
+    with caplog.at_level('WARNING'):
+        assert coord._setup_symbols() is True
+    assert config.TRADING['HEDGE_RATIO'] == pytest.approx(86.05 / 82.61,
+                                                          rel=1e-4)
+    assert config.TRADING['HEDGE_RATIO_FOR'] == 'USOIL|UKOIL'
+    assert 'XAGUSD/XAUUSD' in caplog.text        # names the pair it left
+
+
+def test_the_new_hedge_ratio_reaches_config_json(config, tmp_path,
+                                                 monkeypatch):
+    """In-memory only would leave the Exchanges checklist reporting a
+    fault the engine had already corrected — the same unfixable warning
+    the contract-size adoption exists to avoid."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 66.94,
+                            'XAGUSD|XAUUSD')
+    coord._setup_symbols()
+    saved = json.loads((tmp_path / 'config.json').read_text())['trading']
+    assert saved['HEDGE_RATIO'] == pytest.approx(86.05 / 82.61, rel=1e-4)
+    assert saved['HEDGE_RATIO_FOR'] == 'USOIL|UKOIL'
+
+
+def test_a_hedge_ratio_set_for_THIS_pair_is_left_alone(config, tmp_path,
+                                                       monkeypatch):
+    """Beta is a strategy parameter. An operator who tuned it on their
+    own pair keeps their number — the stamp is what separates a tuned
+    beta from a stale one."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 1.0,
+                            'USOIL|UKOIL')
+    coord._setup_symbols()
+    assert config.TRADING['HEDGE_RATIO'] == 1.0
+
+
+def test_an_unstamped_but_plausible_ratio_is_kept_and_stamped(config,
+                                                              tmp_path,
+                                                              monkeypatch):
+    """An install predating the stamp: which pair the number was meant
+    for is unknowable, so a usable value is not second-guessed."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 1.0, None)
+    coord._setup_symbols()
+    assert config.TRADING['HEDGE_RATIO'] == 1.0
+    assert config.TRADING['HEDGE_RATIO_FOR'] == 'USOIL|UKOIL'
+
+
+def test_an_unstamped_impossible_ratio_is_corrected(config, tmp_path,
+                                                    monkeypatch):
+    """66.94 on legs priced 82.61 and 86.05 settles the question by
+    itself: no operator chose a spread of -5469."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 66.94, None)
+    coord._setup_symbols()
+    assert config.TRADING['HEDGE_RATIO'] == pytest.approx(86.05 / 82.61,
+                                                          rel=1e-4)
+
+
+def test_an_open_position_freezes_the_hedge_ratio(config, tmp_path,
+                                                  monkeypatch, caplog):
+    """Beta defines the series a position was entered on. Redefining it
+    underneath a live trade orphans its entry geometry."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 66.94,
+                            'XAGUSD|XAUUSD')
+    coord.data_logger.load_open_position_states = lambda: [{'id': 'POS_0001'}]
+    with caplog.at_level('CRITICAL'):
+        coord._setup_symbols()
+    assert config.TRADING['HEDGE_RATIO'] == 66.94
+    assert 'NOT changing it' in caplog.text
+    assert 'Close them' in caplog.text
+
+
+def test_a_basis_pair_is_re_derived_to_one(config, tmp_path, monkeypatch):
+    """Same underlying: the spread IS the basis, so beta is 1 — and it
+    needs no price, which is why a quiet feed cannot block it."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 66.94,
+                            'XAGUSD|XAUUSD', pair_type='SPOT_FUTURE')
+    coord._setup_symbols()
+    assert config.TRADING['HEDGE_RATIO'] == 1.0
+
+
+def test_the_ratio_is_settled_before_the_window_is_seeded(config, tmp_path,
+                                                          monkeypatch):
+    """`_series_key` includes beta and `_warm_start` seeds from rows
+    matching it, so a beta changed after the warm start would hand the
+    strategy a mu and sigma the live spread never visits. The adoption
+    therefore runs inside _setup_symbols, which start() calls first."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 66.94,
+                            'XAGUSD|XAUUSD')
+    before = coord._series_key('OIL')
+    coord._setup_symbols()
+    assert coord._series_key('OIL') != before
+    assert str(round(86.05 / 82.61, 6)) in coord._series_key('OIL')
+
+
+def test_a_hand_set_ratio_is_stamped_so_a_restart_keeps_it(client):
+    """Change the symbols, type the right beta in Settings, restart —
+    without stamping the operator's own save the engine would see a
+    stamp naming the OLD pair and overwrite the number just typed."""
+    client.post('/api/exchanges', json={
+        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'symbol': 'USOIL', 'futures_symbol': 'UKOIL'})
+    response = client.post('/api/config', json={'hedge_ratio': 1.0416})
+    assert response.status_code == 200
+    with open(client.tmp_path / 'config.json') as f:
+        trading = json.load(f)['trading']
+    assert trading['HEDGE_RATIO'] == 1.0416
+    assert trading['HEDGE_RATIO_FOR'] == 'USOIL|UKOIL'

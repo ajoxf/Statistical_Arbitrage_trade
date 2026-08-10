@@ -677,6 +677,73 @@ Also: `build_plan` sets `last_refusal` and the coordinator puts it in
 for the broker/engine reason" — which sent the operator to a file to
 find a decision the engine had already made.
 
+## HEDGE_RATIO belongs to the PAIR (2026-08-10, operator)
+
+Operator: "Can you make sure the Hedge Ratio is calculated and changed
+everytime the pair is changed?" Beta is a property of the pair, and
+nothing carried it across a pair change — the symbols are edited on the
+Exchanges page, the launcher restarts, and the previous instrument's
+beta is still in config.json defining the spread. Three incidents in
+one day, all the same shape:
+
+    beta 10       USOIL/UKOIL at 81.76 / 85.07  ->  spread  -732.53
+    beta 0.0149   XAGUSD/XAUUSD                 ->  a 5,167-lot hedge
+    beta 66.94    left on USOIL/UKOIL           ->  spread -5469.59
+
+Two of those came from advice this repo used to give (the contract-size
+check told the operator to "correct HEDGE_RATIO for the difference" —
+wrong, and now gone). The third needed no advice at all: changing the
+instruments was enough.
+
+`statarb/hedgeratio.py` holds the whole rule, shared by the startup
+adoption, the Settings suggestion and the Exchanges checklist — three
+copies of "what should beta be" would eventually recommend one number
+while a restart applied another.
+
+- **The value is STAMPED** with `TRADING.HEDGE_RATIO_FOR`, the pair it
+  was computed for (`"USOIL|UKOIL"`). Without a stamp a stale beta and
+  a deliberately tuned one are indistinguishable, and the engine would
+  have to either overwrite the operator's work or ignore the problem.
+- **Stamp matches the running pair -> left alone.** Beta is a strategy
+  parameter; an operator who tuned it keeps their number.
+- **Stamp names a DIFFERENT pair -> re-derived** and written back to
+  config.json. This is the case the operator asked for.
+- **No stamp** (an install predating this) -> the value is KEPT and
+  merely stamped, unless it is implausible against the live prices,
+  which settles the question on its own.
+- **`suggest()` depends on `pair_type` and is harmful backwards.** Same
+  underlying -> beta is 1 and the spread IS the basis; the price ratio
+  there (~1.014 on gold) collapses the spread to pennies and deletes
+  what the strategy trades. Two different instruments -> the price
+  ratio, because beta 1 on XAGUSD (38) against XAUUSD (4,000) is not a
+  spread, it is gold's price with a rounding error subtracted.
+- **It runs inside `_setup_symbols`, before `_warm_start`**, because
+  `_series_key` includes beta and the warm start seeds the window from
+  rows matching it. Re-deriving after the seed would hand the strategy
+  a mu and sigma the live spread never visits.
+- **Never while a position is open.** Beta defines the series the
+  position was entered on. The book is read from the DB directly, since
+  position recovery has not run at that point; it logs CRITICAL and
+  leaves the value alone.
+- **The UI stamps its own saves** (`webapp._stamp_beta`). Otherwise:
+  change the symbols, type the right beta in Settings, restart — and
+  the engine sees a stamp naming the old pair and overwrites the number
+  just typed.
+
+Alongside it, `Coordinator._implausible_spread` now **BLOCKS entries**
+rather than warning. It was a WARN, deliberately outside the "held up
+by" set, and that was the wrong call for this check: the engine must
+not open a position on a series it can prove is not the difference
+between the two prices it is quoting. Exits are evaluated earlier in
+`process_asset` and are untouched — a wrong beta must never trap a live
+position. The threshold (spread > half the smaller leg) lives in
+`hedgeratio.implausible` so the engine cannot adopt a beta it will then
+refuse to trade on.
+
+The drift badge also stops saturating: as a percentage OF the
+configured beta, 66.94 against a live 1.0413 reads "-98.44%" and so
+would 6,694. Past 2x it now says "64.3x too high".
+
 ## Position sizing: notional per leg (2026-08-07, owner)
 
 Owner: "the way we had it before in the W3 project is — User fixes the
