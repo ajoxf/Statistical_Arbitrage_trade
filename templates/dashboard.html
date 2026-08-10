@@ -2217,7 +2217,18 @@
         }
         const driftPct = ((liveBeta - _configuredBeta) / _configuredBeta) * 100;
         const sign = driftPct >= 0 ? '+' : '';
-        driftEl.textContent = sign + driftPct.toFixed(2) + '%';
+        // As a percentage OF the configured beta, a badly wrong beta
+        // saturates: 66.94 against a live 1.04 reads "-98.44%", and so
+        // would 6,694. That is the one regime where the size of the
+        // error is the whole story, so past 2x it is stated as a
+        // multiple instead. Live 2026-08-10: 66.94 left over from
+        // XAGUSD/XAUUSD on USOIL/UKOIL was 64x out and the badge said
+        // 98%, which reads like a drift rather than a wrong series.
+        const factor = _configuredBeta / liveBeta;
+        driftEl.textContent = (factor > 2 || factor < 0.5)
+            ? (factor > 1 ? factor.toFixed(factor >= 100 ? 0 : 1) + '× too high'
+                          : (1 / factor).toFixed(1) + '× too low')
+            : sign + driftPct.toFixed(2) + '%';
         const absDrift = Math.abs(driftPct);
         driftEl.className = 'badge ' + (
             absDrift < 0.5 ? 'bg-success'
