@@ -342,6 +342,8 @@ def plan(config, contract_a, contract_b, price_a, price_b,
         # ten times its spot minimum.
         'leg_a_min_lots': min_a,
         'leg_b_min_lots': min_b,
+        'leg_a_step': step_a,
+        'leg_b_step': step_b,
         'leg_a_min_notional_usd': (min_a * contract_a * price_a
                                    if price_a else None),
         'leg_b_min_notional_usd': (min_b * contract_b * price_b

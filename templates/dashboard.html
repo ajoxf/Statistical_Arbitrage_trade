@@ -2390,8 +2390,15 @@
                         : 'the nearest tradable lot gives '
                           + _fmtMoney(sz.leg_a_notional_usd) + ' ('
                           + (gap >= 0 ? '+' : '') + gap.toFixed(1) + '%'
+                          // lot_step_usd is step x contract x price — one
+                          // STEP, not one lot. On oil that is 0.01 lots
+                          // at $799 against a full lot at $79,895, so
+                          // "one lot" understated it a hundredfold.
                           + (sz.lot_step_usd
-                              ? ', one lot = ' + _fmtMoney(sz.lot_step_usd)
+                              ? ', one ' + (sz.leg_a_step
+                                    ? (+sz.leg_a_step.toFixed(4)) + '-lot'
+                                    : 'lot') + ' step = '
+                                + _fmtMoney(sz.lot_step_usd)
                               : '') + ').')
                     + (sz.min_notional_usd
                         ? ' This pair cannot trade below '
