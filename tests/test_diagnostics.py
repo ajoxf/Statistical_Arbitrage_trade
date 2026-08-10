@@ -870,3 +870,77 @@ def test_a_wrong_symbol_is_named_without_a_coordinator(leg_runner_client):
     symbol_check = next(c for c in data['checks'] if c['name'] == 'Symbol')
     assert symbol_check['status'] == 'FAIL'
     assert 'does not exist' in symbol_check['message']
+
+
+# --- contract size, settled by arithmetic ---------------------------
+
+def test_the_tick_value_confirms_the_contract_size(cfg):
+    """Operator, 2026-08-10: "Checked with the Broker - his
+    configuration is correct at 5000 not 100".
+
+    trade_contract_size is a declaration. tick_value / tick_size is
+    what MT5 will actually multiply a price move by to make profit, so
+    it is the tiebreaker when a spec sheet and the terminal disagree.
+    """
+    spot = side(sym=symbol(contract_size=100.0, tick_size=0.01,
+                           tick_value=1.0))
+    check = find(report(cfg, spot=spot), 'Contract size check', 'SPOT')
+    assert check['status'] == 'PASS'
+    assert check['details']['contract size implied by tick value'] == 100.0
+
+
+def test_a_tick_value_that_contradicts_the_declaration_fails(cfg):
+    """100 declared but a tick worth 50x that is a 50x error in every
+    dollar level the engine computes."""
+    spot = side(sym=symbol(contract_size=100.0, tick_size=0.01,
+                           tick_value=50.0))
+    check = find(report(cfg, spot=spot), 'Contract size check', 'SPOT')
+    assert check['status'] == 'FAIL'
+    assert '5000' in check['message']
+    fixes = ' '.join(check['fix'])
+    assert 'minimum-lot round trip' in fixes
+    assert 'symbol suffix' in fixes
+
+
+def test_no_tick_value_means_no_verdict(cfg):
+    """Older leg runners do not report it; silence beats a guess."""
+    spot = side(sym=symbol(contract_size=100.0, tick_value=None))
+    assert find(report(cfg, spot=spot), 'Contract size check', 'SPOT') is None
+
+
+def test_each_leg_is_checked_against_its_own_contract_size(cfg):
+    """Live 2026-08-10: a gold/silver pair reported "Broker says 100
+    per lot, config still says 5000" on the futures leg — XAUUSD's real
+    100 measured against SILVER's 5000, because both legs were compared
+    against Leg A's lot_size. The operator went to the broker to verify
+    a number that was already correct.
+    """
+    asset = {'lot_size': 5000.0, 'fut_lot_size': 100.0}
+    spot = side(sym=symbol(symbol='XAGUSD', contract_size=5000.0),
+                asset=asset)
+    futures = side('futures', 'account_b',
+                   sym=symbol(symbol='XAUUSD', contract_size=100.0),
+                   asset=asset)
+    result = report(cfg, spot=spot, futures=futures)
+    assert find(result, 'Contract size', 'SPOT')['status'] == 'PASS'
+    assert find(result, 'Contract size', 'FUTURES')['status'] == 'PASS'
+
+
+def test_leg_b_falls_back_to_leg_a_when_it_has_no_size_of_its_own(cfg):
+    """fut_lot_size is only written once specs are adopted; before
+    that, both legs sharing one size is the right assumption."""
+    asset = {'lot_size': 100.0}
+    futures = side('futures', 'account_b',
+                   sym=symbol(symbol='GC1225', contract_size=100.0),
+                   asset=asset)
+    assert find(report(cfg, futures=futures),
+                'Contract size', 'FUTURES')['status'] == 'PASS'
+
+
+def test_a_real_leg_b_mismatch_is_still_caught(cfg):
+    asset = {'lot_size': 5000.0, 'fut_lot_size': 100.0}
+    futures = side('futures', 'account_b',
+                   sym=symbol(symbol='XAUUSD', contract_size=250.0),
+                   asset=asset)
+    check = find(report(cfg, futures=futures), 'Contract size', 'FUTURES')
+    assert check['status'] == 'WARN' and '250' in check['message']

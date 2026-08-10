@@ -192,6 +192,13 @@ class BrokerSession:
             'tick_size': (getattr(info, 'trade_tick_size', 0)
                           or getattr(info, 'point', None)),
             'contract_size': getattr(info, 'trade_contract_size', None),
+            # What MT5 says one tick of movement is WORTH on one lot.
+            # tick_value / tick_size is the contract size the terminal
+            # will actually compute profit from, whatever
+            # trade_contract_size claims — so when a broker's spec
+            # sheet and the terminal disagree, this settles it, because
+            # this is what the money is calculated from.
+            'tick_value': getattr(info, 'trade_tick_value', None),
             'volume_min': getattr(info, 'volume_min', None),
             'volume_max': getattr(info, 'volume_max', None),
             'volume_step': getattr(info, 'volume_step', None),

@@ -247,7 +247,17 @@ def _check_symbol(checklist, scope, role, report, config, asset, terminal):
                       f'(min {minimum}, step {step}, max {maximum})',
                       details=details)
 
-    configured_contract = (asset or {}).get('lot_size')
+    # Each leg has its OWN configured contract size: `lot_size` for Leg
+    # A, `fut_lot_size` for Leg B (sizing.plan reads exactly these).
+    # This compared BOTH legs against Leg A's, so on a pair whose legs
+    # genuinely differ it reported a mismatch that did not exist —
+    # live 2026-08-10, XAUUSD's real 100 was measured against silver's
+    # 5000 and read as "Broker says 100 per lot, config still says
+    # 5000", sending the operator to the broker to check a number that
+    # was already right.
+    asset = asset or {}
+    configured_contract = (asset.get('fut_lot_size') or asset.get('lot_size')
+                           if role == 'futures' else asset.get('lot_size'))
     contract = report.get('contract_size')
     if contract and configured_contract:
         if abs(contract - configured_contract) < 1e-9:
@@ -274,6 +284,44 @@ def _check_symbol(checklist, scope, role, report, config, asset, terminal):
                      'resolving: specs are only adopted when both legs '
                      'are found',
                      'Restart the launcher after fixing the symbol'])
+
+    # Settle "the broker told me a different number" arithmetically.
+    # trade_contract_size is a declaration; tick_value / tick_size is
+    # what MT5 will actually multiply a price move by to produce
+    # profit. When the two disagree the money follows the second one,
+    # so it is the tiebreaker — and when they agree, a spec sheet
+    # saying otherwise is describing a different product (a different
+    # symbol suffix, or the exchange contract rather than the CFD).
+    tick_value = report.get('tick_value')
+    tick_size = report.get('tick_size')
+    if contract and tick_value and tick_size:
+        implied = tick_value / tick_size
+        details = {'trade_contract_size': contract,
+                   'tick_value': tick_value, 'tick_size': tick_size,
+                   'contract size implied by tick value': round(implied, 6)}
+        if abs(implied - contract) <= max(1e-6, contract * 0.01):
+            checklist.add(
+                scope, 'Contract size check', PASS,
+                f'{contract:g} per lot is confirmed by the tick value: '
+                f'one {tick_size:g} tick is worth {tick_value:g}, so a '
+                f'1.00 price move on one lot pays {contract:g}. This is '
+                f'the number MT5 computes P&L from.', details=details)
+        else:
+            checklist.add(
+                scope, 'Contract size check', FAIL,
+                f'MT5 declares {contract:g} per lot but its own tick '
+                f'value implies {implied:g} — one {tick_size:g} tick is '
+                f'worth {tick_value:g}. P&L follows the tick value, so '
+                f'position sizing and every dollar level would be off '
+                f'by {implied / contract:.4g}x.',
+                details=details,
+                fix=['Place one minimum-lot round trip and compare MT5\'s '
+                     'own profit against the price move — that is the '
+                     'ground truth',
+                     'Check the symbol suffix: brokers list the same '
+                     'metal in several contract sizes',
+                     'Ask the broker which figure the platform uses, not '
+                     'which the spec sheet quotes'])
 
     if role == 'futures':
         _check_expiry(checklist, scope, report, asset)
