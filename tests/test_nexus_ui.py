@@ -1875,3 +1875,101 @@ def test_the_published_leg_costs_add_up_to_the_model(config, tmp_path,
 
     # Gold's leg must not be charged silver's contract size
     assert block['rt_leg_b_cost'] < 100.0
+
+
+# --- broker commission reaches the cost model ----------------------------
+# The Settings page carried four maker/taker bps boxes from W3's crypto
+# venue (defaulting to 8/10/2/5) that were NOT in webapi.FIELD_MAP: they
+# posted to the server and were dropped. Meanwhile COMMISSION_PER_LOT_SPOT
+# and _FUT — what statarb/costs.py actually charges — had no control at
+# all and sat at 0. An operator entering their brokerage saw a summary
+# line update and nothing change in the engine.
+
+def test_the_commission_controls_exist_and_are_mapped(client):
+    """Every input in the Broker Charges block must reach a real config
+    key, or it is decoration on the page that decides whether a trade is
+    profitable."""
+    from statarb import webapi
+    page = client.get('/settings').get_data(as_text=True)
+    for field in ('commission_per_lot_spot', 'commission_per_lot_futures',
+                  'spread_cost_factor'):
+        assert f'id="{field}"' in page, f'{field} has no control'
+        assert field in webapi.FIELD_MAP, f'{field} goes nowhere'
+
+
+def test_the_dead_bps_fee_inputs_are_gone(client):
+    """They were never wired up, and they sat where an operator would
+    reasonably type their commission."""
+    page = client.get('/settings').get_data(as_text=True)
+    for dead in ('spot_maker_fee_bps', 'spot_taker_fee_bps',
+                 'futures_maker_fee_bps', 'futures_taker_fee_bps'):
+        assert dead not in page, f'{dead} is back'
+
+
+def test_commission_saves_into_the_costs_the_engine_reads(client):
+    """End to end: the field name the page posts must land on the key
+    costs.round_trip_cost looks up."""
+    response = client.post('/api/config', json={
+        'commission_per_lot_spot': 3.5,
+        'commission_per_lot_futures': 4.25})
+    assert response.status_code == 200
+    with open(client.tmp_path / 'config.json') as f:
+        costs = json.load(f)['costs']
+    assert costs['COMMISSION_PER_LOT_SPOT'] == 3.5
+    assert costs['COMMISSION_PER_LOT_FUT'] == 4.25
+
+
+def test_a_saved_commission_changes_the_round_trip_cost():
+    """The point of the control. Same trade, commission set: the cost
+    the edge filter measures against goes up by exactly the per-lot
+    charge on each leg's OWN lots."""
+    from statarb import costs
+    md = {'spot_bid': 82.92, 'spot_ask': 83.10,
+          'futures_bid': 86.22, 'futures_ask': 86.39}
+    free = costs.round_trip_cost(md, 1.2, 1000, {}, lots_b=1.16,
+                                 contract_b=1000)
+    charged = costs.round_trip_cost(
+        md, 1.2, 1000,
+        {'COMMISSION_PER_LOT_SPOT': 3.5, 'COMMISSION_PER_LOT_FUT': 4.25},
+        lots_b=1.16, contract_b=1000)
+    assert charged - free == pytest.approx(3.5 * 1.2 + 4.25 * 1.16)
+
+
+def test_commission_is_never_defaulted_to_a_made_up_number(client):
+    """The dead fields defaulted to 8/10/2/5 bps. A fabricated cost is
+    charged against every trade by the edge filter and the operator has
+    no way to tell it was never their figure."""
+    page = client.get('/settings').get_data(as_text=True)
+    block = page[page.index("commission_per_lot_spot').value ="):]
+    block = block[:block.index('spread_cost_factor')]
+    assert '?? 0' in block, 'commission must default to zero'
+
+
+def test_the_account_row_actions_cannot_wrap():
+    """Live 2026-08-10: the four per-account buttons were inline
+    elements with me-1 margins in a fixed 15rem cell, so the delete
+    button dropped onto a second line and the rows stopped lining up.
+    A destructive action that has fallen out of its own group and sits
+    under an unrelated row is worse than untidy."""
+    page = template_source('setup.html')
+    assert 'class="action-group"' in page
+    group = page[page.index('.action-group {'):]
+    group = group[:group.index('}')]
+    assert 'flex-wrap: nowrap' in group
+    # stretch, not center: an icon-only button is sized by its glyph and
+    # came out shorter than the labelled ones.
+    assert 'align-items: stretch' in group
+    # The gap comes from the flex container now; per-button margins
+    # were what made the last one wrap.
+    markup = page[page.index('<div class="action-group">'):
+                  page.index('deleteBroker')]
+    assert 'me-1' not in markup
+
+
+def test_the_icon_only_buttons_say_what_they_do():
+    """No label means the only thing telling an operator that this
+    button deletes the account is its tooltip."""
+    page = template_source('setup.html')
+    for action in ('Edit account', 'Remove account'):
+        assert f'aria-label="{action}"' in page
+        assert f'title="{action}"' in page

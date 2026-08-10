@@ -677,6 +677,51 @@ Also: `build_plan` sets `last_refusal` and the coordinator puts it in
 for the broker/engine reason" — which sent the operator to a file to
 find a decision the engine had already made.
 
+## Commission had no control and four dead ones (2026-08-10, operator)
+
+Operator: "for every lot traded - the broker charges a commission or
+brokerage. This would get included in the cost and the edge filter.
+Provide a section in the Settings - near the charges where this can
+also be included."
+
+The engine side was already right — `costs.round_trip_cost` charges
+`COMMISSION_PER_LOT_SPOT x lots_a + COMMISSION_PER_LOT_FUT x lots_b`,
+each leg on its OWN lots — and `COSTS` is a hot-reload section. What
+was missing was any way to set it, and what was there instead was
+worse than nothing:
+
+- **The four maker/taker bps boxes were decoration.** `spot_maker_fee_bps`
+  and friends are not in `webapi.FIELD_MAP`, so the page posted them and
+  the server dropped them. They defaulted to W3's crypto-venue numbers
+  (8/10/2/5 bps) and sat under a summary line that totalled them, so the
+  panel looked like it was working. An operator entering their brokerage
+  there changed nothing at all.
+- **`COMMISSION_PER_LOT_SPOT` / `_FUT` and `SPREAD_COST_FACTOR` were
+  mapped but had no control anywhere**, which is why CLAUDE.md has said
+  "COMMISSION_PER_LOT_* are still 0.0 and MUST be set" since the cost
+  measurements were taken, with no way to act on it.
+
+Replaced by a **Broker Charges** section holding the three real keys.
+Notes:
+
+- Commission is **per lot, per leg, round turn**, and the field is
+  labelled with the running symbol — a lot is a different amount of
+  money on each instrument, and "/ lot" alone invites the Leg B figure
+  being typed into the Leg A box.
+- **It defaults to 0 and must never default to anything else.** A
+  fabricated cost is charged against every trade by the edge filter and
+  the operator cannot tell it was never their number. The dead fields
+  defaulting to 8 bps is exactly that failure.
+- The preview computes the round trip with the SAME arithmetic as
+  `costs.round_trip_cost`, from the engine's published `rt_lots_a/b`,
+  `rt_contract_a/b`, `rt_spot_spread`, `rt_fut_spread` — recomputing
+  the sizing in the page would be a second implementation that drifts.
+  It states commission's share of the total and what the edge filter
+  therefore demands, because that is the only reason the number matters.
+- `SPREAD_COST_FACTOR` is on the same panel and says plainly that
+  lowering it without measuring limit fills is how a model starts
+  trading through its own costs.
+
 ## HEDGE_RATIO belongs to the PAIR (2026-08-10, operator)
 
 Operator: "Can you make sure the Hedge Ratio is calculated and changed

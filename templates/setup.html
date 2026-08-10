@@ -3,6 +3,51 @@
 {% block title %}MT5 Brokers - Nexus{% endblock %}
 
 {% block content %}
+<style>
+/* Row actions.
+   These four buttons were laid out as inline elements with me-1
+   margins in a fixed 15rem cell, so the delete button wrapped onto a
+   second line and the rows no longer lined up with each other. A
+   destructive action that has fallen out of its own group and sits
+   under an unrelated row is worse than untidy.
+   One nowrap flex row instead: labelled actions first, a hairline
+   divider, then the two icon-only buttons as equal squares so the
+   pencil and the bin form a column down the table. */
+.row-actions { white-space: nowrap; width: 1%; }
+.action-group {
+    display: flex;
+    flex-wrap: nowrap;
+    /* stretch, not center: a button with only an icon in it is sized
+       by the glyph, so it came out 8px shorter than "Test" and sat
+       floating in the middle of the row. Stretch makes every button
+       the height of the tallest, which also holds if the icon font
+       fails to load and the glyph collapses to nothing. */
+    align-items: stretch;
+    justify-content: flex-end;
+    gap: .375rem;
+}
+.action-group .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    line-height: 1.2;
+}
+/* Square, so icon-only buttons match each other and the labelled ones
+   in height. Bootstrap sizes a button from its text; with no text the
+   pencil and the bin came out narrower than they were tall. */
+.action-group .btn-icon {
+    width: 2rem;
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+}
+.action-divider {
+    align-self: stretch;
+    width: 1px;
+    margin: .125rem .25rem;
+    background: var(--bs-border-color, rgba(0, 0, 0, .15));
+}
+</style>
 <div class="container py-4">
     <h4 class="mb-1">MT5 Brokers</h4>
     <p class="text-secondary">Each MT5 terminal serves one account. Configure
@@ -263,7 +308,8 @@ async function loadBrokers() {
         <table class="table table-sm table-dark align-middle mb-0">
             <thead><tr><th>Account</th><th>Leg</th><th>Symbol</th><th>Login</th>
             <th>Server</th><th>Terminal</th><th>Leg runner endpoint</th>
-            <th>Leverage</th><th>Status</th><th style="width:15rem;"></th></tr></thead>
+            <th>Leverage</th><th>Status</th>
+            <th class="row-actions text-end">Actions</th></tr></thead>
             <tbody>${brokers.map(b => {
                 const live = LIVE_ACCOUNTS[b.name] || {};
                 return `
@@ -283,19 +329,26 @@ async function loadBrokers() {
                     <td id="broker-status-${b.name}">${live.connected
                         ? '<span class="badge bg-success">connected</span>'
                         : '<span class="badge bg-secondary">not connected</span>'}</td>
-                    <td class="text-end">
-                        <button class="btn btn-sm btn-outline-primary me-1"
-                                onclick="testBroker('${b.name}')" title="Test connection">
-                            <i class="bi bi-plug"></i> Test</button>
-                        <button class="btn btn-sm btn-outline-warning me-1"
-                                onclick="runDiagnostics('${b.name}')" title="Diagnose this account">
-                            <i class="bi bi-heart-pulse"></i> Diagnose</button>
-                        <button class="btn btn-sm btn-outline-secondary me-1"
-                                onclick="editBroker('${b.name}')" title="Edit">
-                            <i class="bi bi-pencil"></i></button>
-                        <button class="btn btn-sm btn-outline-danger"
-                                onclick="deleteBroker('${b.name}')" title="Remove">
-                            <i class="bi bi-trash"></i></button>
+                    <td class="row-actions">
+                        <div class="action-group">
+                            <button class="btn btn-sm btn-outline-primary"
+                                    onclick="testBroker('${b.name}')"
+                                    title="Test connection">
+                                <i class="bi bi-plug"></i> Test</button>
+                            <button class="btn btn-sm btn-outline-warning"
+                                    onclick="runDiagnostics('${b.name}')"
+                                    title="Run the full checklist for this account">
+                                <i class="bi bi-heart-pulse"></i> Diagnose</button>
+                            <span class="action-divider"></span>
+                            <button class="btn btn-sm btn-outline-secondary btn-icon"
+                                    onclick="editBroker('${b.name}')"
+                                    title="Edit account" aria-label="Edit account">
+                                <i class="bi bi-pencil"></i></button>
+                            <button class="btn btn-sm btn-outline-danger btn-icon"
+                                    onclick="deleteBroker('${b.name}')"
+                                    title="Remove account" aria-label="Remove account">
+                                <i class="bi bi-trash"></i></button>
+                        </div>
                     </td>
                 </tr>`; }).join('')}
             </tbody></table>`

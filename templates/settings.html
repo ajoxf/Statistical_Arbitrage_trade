@@ -701,59 +701,76 @@
 
                     <div class="row mb-4">
                         <div class="col-12">
-                            <h6 class="text-secondary mb-3">Fee Estimates (for STD Filter)</h6>
+                            <h6 class="text-secondary mb-3">Broker Charges (round-trip cost)</h6>
                             <small class="text-secondary d-block mb-2">
-                                The STD Filter calculates the minimum spread required to profit after fees.
-                                Spot and Futures fees differ — set them separately for an accurate calculation.
+                                What one complete trade costs — four executions:
+                                open both legs, close both legs. This is the number the
+                                <strong>Edge Filter</strong> measures the expected capture
+                                against, the <strong>Profit Cost Floor</strong> stands on,
+                                and the <strong>Expected Value</strong> charges to the losing
+                                side. Setting it too high silently blocks every good trade;
+                                too low and the engine trades through its own costs.
                             </small>
                             <div class="alert alert-info py-2 px-3 mb-3" style="font-size:0.82rem;">
-                                <strong>Round-trip cost</strong> =
-                                Entry (Spot + Futures) + Exit (Spot + Futures)<br>
+                                <strong>Round trip</strong> = the bid-ask you cross on each
+                                leg (measured live from the feed — nothing to type) +
+                                <strong>commission per lot</strong> (below).<br>
                                 <span id="fee-summary-text" class="text-muted">—</span>
                             </div>
                         </div>
 
-                        <!-- Leg A Fees (spot tier) -->
+                        <!-- Commission per lot. The ONLY charge the engine cannot
+                             measure for itself: the bid-ask comes off the live feed
+                             every tick, but no MT5 field carries the commission
+                             schedule, so it has to be typed from the contract specs. -->
                         <div class="col-12 mb-2">
-                            <span class="badge bg-primary me-1">LEG A · spot tier</span>
-                            <small class="text-secondary">Broker commission on the spot leg. Check your contract specs.</small>
+                            <span class="badge bg-success me-1">COMMISSION</span>
+                            <small class="text-secondary">Charged per lot traded, on each
+                                leg separately — a lot is a different amount of money on
+                                each symbol, so one figure cannot cover both.</small>
                         </div>
-                        <div class="col-md-3">
-                            <label class="form-label">Leg A Maker (bps)</label>
-                            <input type="number" class="form-control fee-input" id="spot_maker_fee_bps" name="spot_maker_fee_bps" value="{{ config.spot_maker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Limit orders on the spot leg</small>
+                        <div class="col-md-4">
+                            <label class="form-label">Leg A commission ($ per lot, round turn)</label>
+                            <div class="input-group">
+                                <span class="input-group-text">$</span>
+                                <input type="number" class="form-control fee-input"
+                                       id="commission_per_lot_spot" name="commission_per_lot_spot"
+                                       value="{{ config.commission_per_lot_spot }}"
+                                       step="any" min="0" max="500" oninput="updateFeeSummary()">
+                                <span class="input-group-text" id="comm-a-symbol">/ lot</span>
+                            </div>
+                            <small class="text-secondary">Open <em>and</em> close together.
+                                If your broker quotes it per side, enter double.</small>
                         </div>
-                        <div class="col-md-3">
-                            <label class="form-label">Leg A Taker (bps)</label>
-                            <input type="number" class="form-control fee-input" id="spot_taker_fee_bps" name="spot_taker_fee_bps" value="{{ config.spot_taker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Market orders on the spot leg</small>
+                        <div class="col-md-4">
+                            <label class="form-label">Leg B commission ($ per lot, round turn)</label>
+                            <div class="input-group">
+                                <span class="input-group-text">$</span>
+                                <input type="number" class="form-control fee-input"
+                                       id="commission_per_lot_futures" name="commission_per_lot_futures"
+                                       value="{{ config.commission_per_lot_futures }}"
+                                       step="any" min="0" max="500" oninput="updateFeeSummary()">
+                                <span class="input-group-text" id="comm-b-symbol">/ lot</span>
+                            </div>
+                            <small class="text-secondary">Exchange futures usually charge
+                                commission; CFD accounts usually bury it in a wider
+                                spread and charge $0.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Spread Cost Factor</label>
+                            <input type="number" class="form-control fee-input"
+                                   id="spread_cost_factor" name="spread_cost_factor"
+                                   value="{{ config.spread_cost_factor }}"
+                                   step="0.05" min="0" max="1" oninput="updateFeeSummary()">
+                            <small class="text-secondary">How much of the bid-ask a round trip
+                                actually pays. <strong>1.0</strong> = crossing both ways; lower
+                                it only once resting limits are <em>measured</em> to fill —
+                                assuming a discount you do not get is the fastest way to
+                                trade at a loss.</small>
                         </div>
 
-                        <!-- Leg B Fees (derivative tier) -->
-                        <div class="col-12 mb-2 mt-3">
-                            <span class="badge bg-warning text-dark me-1">LEG B · derivative tier</span>
-                            <small class="text-secondary">Broker commission on the futures leg. Check your contract specs.</small>
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label">Leg B Maker (bps)</label>
-                            <input type="number" class="form-control fee-input" id="futures_maker_fee_bps" name="futures_maker_fee_bps" value="{{ config.futures_maker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Limit orders on the derivative leg</small>
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label">Leg B Taker (bps)</label>
-                            <input type="number" class="form-control fee-input" id="futures_taker_fee_bps" name="futures_taker_fee_bps" value="{{ config.futures_taker_fee_bps }}" step="any" min="0" max="50" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Market orders on the derivative leg</small>
-                        </div>
-
-                        <!-- Slippage -->
-                        <div class="col-12 mb-2 mt-3">
-                            <span class="badge bg-secondary me-1">SLIPPAGE</span>
-                            <small class="text-secondary">Extra cost per leg even with LIMIT orders (queue position, amendment delays, market impact)</small>
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label">Slippage per Leg (bps)</label>
-                            <input type="number" class="form-control fee-input" id="slippage_bps" name="slippage_bps" value="{{ config.slippage_bps }}" step="any" min="0" max="20" oninput="updateFeeSummary()">
-                            <small class="text-secondary">Applied to all 4 legs (×4 round-trip)</small>
+                        <div class="col-12 mt-3">
+                            <div id="commission-preview" class="small text-secondary"></div>
                         </div>
                     </div>
 
@@ -1793,36 +1810,99 @@
         updateFeeSummary();
     }
 
-    // Live fee round-trip summary
+    // What the round trip costs at the sizing that is actually
+    // configured, priced from the LIVE feed.
+    //
+    // This used to be four maker/taker bps boxes carried over from W3's
+    // crypto venue, defaulting to 8/10/2/5. None of them was in
+    // UI_FIELD_MAP, so they were posted to the server and dropped: an
+    // operator entering their commission there changed nothing at all,
+    // while COMMISSION_PER_LOT_SPOT/_FUT — the values the cost model
+    // really reads — had no control anywhere and sat at 0. The summary
+    // line under them totalled the dead numbers, which made the whole
+    // thing look like it was working.
+    let _COST_LIVE = null;      // engine's published per-leg breakdown
+
     function updateFeeSummary() {
-        const spotMaker  = parseFloat(document.getElementById('spot_maker_fee_bps').value) || 0;
-        const spotTaker  = parseFloat(document.getElementById('spot_taker_fee_bps').value) || 0;
-        const futMaker   = parseFloat(document.getElementById('futures_maker_fee_bps').value) || 0;
-        const futTaker   = parseFloat(document.getElementById('futures_taker_fee_bps').value) || 0;
-        const slippage   = parseFloat(document.getElementById('slippage_bps').value) || 0;
+        const commA = parseFloat(
+            document.getElementById('commission_per_lot_spot').value) || 0;
+        const commB = parseFloat(
+            document.getElementById('commission_per_lot_futures').value) || 0;
+        const factor = parseFloat(
+            document.getElementById('spread_cost_factor').value);
+        const f = isNaN(factor) ? 1 : factor;
 
-        const entryMode = document.getElementById('entry_execution_mode').value;
-        const exitMode  = document.getElementById('exit_execution_mode').value;
+        const summary = document.getElementById('fee-summary-text');
+        const preview = document.getElementById('commission-preview');
+        if (!summary || !preview) return;
+        const d = _COST_LIVE;
+        const money = (x) => '$' + (Math.abs(x) < 10 ? x.toFixed(2)
+                                   : Math.round(x).toLocaleString());
 
-        // LIMIT uses maker rates, MARKET uses taker rates
-        const spotEntryFee = entryMode === 'LIMIT' ? spotMaker : spotTaker;
-        const futEntryFee  = entryMode === 'LIMIT' ? futMaker  : futTaker;
-        const entryCost    = spotEntryFee + futEntryFee;
+        if (!d || !d.lotsA || !d.lotsB) {
+            summary.textContent = 'Waiting for the engine to publish live '
+                + 'prices and sizing — the commission saves either way.';
+            preview.innerHTML = '';
+            return;
+        }
 
-        const spotExitFee = exitMode === 'LIMIT' ? spotMaker : spotTaker;
-        const futExitFee  = exitMode === 'LIMIT' ? futMaker  : futTaker;
-        const exitCost    = spotExitFee + futExitFee;
+        // Same arithmetic as statarb/costs.round_trip_cost: each leg's
+        // bid-ask on ITS OWN units, plus commission on ITS OWN lots.
+        const spreadA = d.spreadA * d.lotsA * d.contractA * f;
+        const spreadB = d.spreadB * d.lotsB * d.contractB * f;
+        const feeA = commA * d.lotsA, feeB = commB * d.lotsB;
+        const total = spreadA + spreadB + feeA + feeB;
+        const commTotal = feeA + feeB;
+        const share = total > 0 ? (100 * commTotal / total) : 0;
 
-        const totalSlippage = slippage * 4;  // 4 legs
-        const totalCost  = entryCost + exitCost + totalSlippage;
-        const entryLabel = entryMode === 'LIMIT' ? 'maker' : 'taker';
-        const exitLabel  = exitMode  === 'LIMIT' ? 'maker' : 'taker';
+        summary.textContent =
+            `${d.symbolA} ${money(spreadA + feeA)} + ${d.symbolB} `
+            + `${money(spreadB + feeB)} = ${money(total)} per round trip, `
+            + `at ${d.lotsA} / ${d.lotsB} lots`;
 
-        document.getElementById('fee-summary-text').textContent =
-            `Entry (${entryLabel}): ${entryCost} bps  ·  ` +
-            `Exit (${exitLabel}): ${exitCost} bps  ·  ` +
-            `Slippage (4 legs): ${totalSlippage} bps  ·  ` +
-            `Total: ${totalCost} bps (${(totalCost / 100).toFixed(3)}%)`;
+        // The edge filter is the whole reason this number matters, so
+        // state the consequence instead of leaving it to be inferred.
+        const mult = parseFloat(
+            document.getElementById('min_std_multiple').value) || 1.5;
+        preview.innerHTML =
+            `<strong>Commission is ${money(commTotal)} of that</strong> `
+            + `(${share.toFixed(0)}%) — ${money(feeA)} on ${d.lotsA} lots of `
+            + `${d.symbolA}, ${money(feeB)} on ${d.lotsB} lots of `
+            + `${d.symbolB}. Crossing the bid-ask is the other `
+            + `${money(spreadA + spreadB)}`
+            + (f !== 1 ? ` (x${f} spread cost factor)` : '') + '.'
+            + `<br>The Edge Filter therefore needs an expected capture of `
+            + `at least <strong>${money(mult * total)}</strong> (${mult}x `
+            + `cost) before it lets a trade through.`;
+    }
+
+    // The engine publishes the live spreads, lots and contract sizes it
+    // is actually costing with. Recomputing them here would be a second
+    // implementation of the sizing plan, and the two would drift.
+    async function loadLiveCostInputs() {
+        try {
+            const d = await (await fetch('/api/engine/status')).json();
+            const s = d.signal || {};
+            if (s.rt_lots_a && s.rt_contract_a) {
+                _COST_LIVE = {
+                    lotsA: s.rt_lots_a, lotsB: s.rt_lots_b,
+                    contractA: s.rt_contract_a, contractB: s.rt_contract_b,
+                    spreadA: s.rt_spot_spread || 0,
+                    spreadB: s.rt_fut_spread || 0,
+                    symbolA: s.rt_spot_symbol || 'Leg A',
+                    symbolB: s.rt_fut_symbol || 'Leg B',
+                };
+                // Name the instrument on the field. A commission is
+                // per lot OF SOMETHING, and the two legs can be very
+                // different instruments — "/ lot" alone invites the
+                // Leg B figure being typed into the Leg A box.
+                const tagA = document.getElementById('comm-a-symbol');
+                const tagB = document.getElementById('comm-b-symbol');
+                if (tagA) tagA.textContent = '/ lot ' + _COST_LIVE.symbolA;
+                if (tagB) tagB.textContent = '/ lot ' + _COST_LIVE.symbolB;
+            }
+        } catch (e) { /* the panel degrades to "waiting" */ }
+        updateFeeSummary();
     }
 
     updateLimitSettingsVisibility(); // Initial state (also calls updateFeeSummary)
@@ -1925,11 +2005,12 @@
             max_lot_size: parseFloat(document.getElementById('max_lot_size').value),
             spot_leverage: parseInt(document.getElementById('spot_leverage').value),
             futures_leverage: parseInt(document.getElementById('futures_leverage').value),
-            spot_maker_fee_bps: parseFloat(document.getElementById('spot_maker_fee_bps').value),
-            spot_taker_fee_bps: parseFloat(document.getElementById('spot_taker_fee_bps').value),
-            futures_maker_fee_bps: parseFloat(document.getElementById('futures_maker_fee_bps').value),
-            futures_taker_fee_bps: parseFloat(document.getElementById('futures_taker_fee_bps').value),
-            slippage_bps: parseFloat(document.getElementById('slippage_bps').value),
+            commission_per_lot_spot: parseFloat(
+                document.getElementById('commission_per_lot_spot').value) || 0,
+            commission_per_lot_futures: parseFloat(
+                document.getElementById('commission_per_lot_futures').value) || 0,
+            spread_cost_factor: parseFloat(
+                document.getElementById('spread_cost_factor').value),
             auto_tune_enabled: document.getElementById('auto_tune_enabled').checked,
             paper_trading: document.getElementById('paper_trading').checked,
             entry_execution_mode: document.getElementById('entry_execution_mode').value,
@@ -2231,11 +2312,16 @@
                 document.getElementById('max_lot_size').value = config.max_lot_size;
                 document.getElementById('spot_leverage').value = config.spot_leverage || 1;
                 document.getElementById('futures_leverage').value = config.futures_leverage || 1;
-                document.getElementById('spot_maker_fee_bps').value = config.spot_maker_fee_bps || 8.0;
-                document.getElementById('spot_taker_fee_bps').value = config.spot_taker_fee_bps || 10.0;
-                document.getElementById('futures_maker_fee_bps').value = config.futures_maker_fee_bps || 2.0;
-                document.getElementById('futures_taker_fee_bps').value = config.futures_taker_fee_bps || 5.0;
-                document.getElementById('slippage_bps').value = config.slippage_bps ?? 3.0;
+                // Commission defaults to 0 and MUST NOT default to
+                // anything else: a fabricated figure is charged against
+                // every trade by the edge filter, and the operator has
+                // no way to tell it was never their number.
+                document.getElementById('commission_per_lot_spot').value =
+                    config.commission_per_lot_spot ?? 0;
+                document.getElementById('commission_per_lot_futures').value =
+                    config.commission_per_lot_futures ?? 0;
+                document.getElementById('spread_cost_factor').value =
+                    config.spread_cost_factor ?? 1.0;
                 document.getElementById('auto_tune_enabled').checked = config.auto_tune_enabled || false;
                 document.getElementById('paper_trading').checked = config.paper_trading;
                 document.getElementById('entry_execution_mode').value = config.entry_execution_mode || 'LIMIT';
@@ -2861,6 +2947,8 @@
     updateSizingMode();
     refreshPairMinimum();
     loadPairs();
+    loadLiveCostInputs();
     setInterval(refreshPairMinimum, 10000);
+    setInterval(loadLiveCostInputs, 10000);
 </script>
 {% endblock %}
