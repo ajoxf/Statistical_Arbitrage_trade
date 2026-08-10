@@ -1768,6 +1768,13 @@ class Coordinator:
                 self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0)
                 + self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0)),
             'rt_units': lots * contract,
+            # Per ONE lot, and the lot count separately. The operator
+            # reasons about a single lot ("one round trip costs me
+            # $120") and then scales it; a combined figure at 6.41 lots
+            # is a number they have to divide before it means anything.
+            'rt_cost_per_lot': (cost / lots) if lots else None,
+            'rt_lots': lots,
+            'rt_contract_size': contract,
             'capture_usd': capture,
             'edge_ratio': (capture / cost) if cost else None,
             'edge_required': self.config.COSTS.get('MIN_EDGE_MULTIPLE', 1.5),

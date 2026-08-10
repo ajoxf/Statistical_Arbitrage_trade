@@ -1709,3 +1709,46 @@ def test_the_published_bps_matches_the_stated_arithmetic(tmp_path,
     config.TRADING['CLIP_LOTS'] = 0.5
     assert coord._sizing_and_cost('GOLD', md, None)['rt_cost_bps'] == \
         pytest.approx(block['rt_cost_bps'], abs=0.01)
+
+
+def test_the_round_trip_is_published_per_lot_and_scaled(config, tmp_path,
+                                                        monkeypatch):
+    """The operator reasons about ONE lot ("a round trip costs me $94")
+    and then scales it. A single figure at 6.41 lots has to be divided
+    before it means anything, and cannot be compared against a sigma."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator, PaperExecutor
+
+    class Leg:
+        name = 'acct'
+
+        def ensure_symbol(self, symbol):
+            return {'ok': True, 'volume_min': 0.01, 'volume_step': 0.01,
+                    'volume_max': 100.0}
+
+    config.ASSETS = {'GOLD': dict(config.ASSETS['GOLD'], lot_size=1000.0,
+                                  fut_lot_size=1000.0)}
+    config.TRADING.update({'SIZING_MODE': 'lots', 'CLIP_LOTS': 6.41,
+                           'HEDGE_RATIO': 1.0})
+    config.COSTS.update({'COMMISSION_PER_LOT_SPOT': 15.0,
+                         'COMMISSION_PER_LOT_FUT': 15.0})
+    coord = Coordinator(config, trading_mode='PAPER')
+    coord.spot_leg = coord.futures_leg = Leg()
+    coord.executor = PaperExecutor(coord.spot_leg, coord.futures_leg, config)
+    coord.active_assets['GOLD'] = {'config': config.ASSETS['GOLD'],
+                                   'spot_symbol': 'USOIL_U6',
+                                   'futures_symbol': 'UKOIL_V6',
+                                   'last_data': None}
+    md = {'spot_price': 77.96, 'futures_price': 83.455,
+          'spot_bid': 77.944, 'spot_ask': 77.976,
+          'futures_bid': 83.439, 'futures_ask': 83.471,
+          'spread': 5.495, 'basis_pct': 7.05}
+    block = coord._sizing_and_cost('GOLD', md, None)
+
+    # (0.032 + 0.032) x 1000 bbl + $30 commission
+    assert block['rt_cost_per_lot'] == pytest.approx(94.0, abs=0.01)
+    assert block['rt_contract_size'] == 1000.0
+    assert block['rt_lots'] == pytest.approx(6.41)
+    # ...and the position total is exactly the per-lot figure scaled
+    assert block['rt_cost_usd'] == pytest.approx(
+        block['rt_cost_per_lot'] * block['rt_lots'], rel=1e-9)

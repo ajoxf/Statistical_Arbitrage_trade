@@ -672,7 +672,11 @@
                         <span id="fee-type-used">-</span>
                     </div>
                     <div class="d-flex justify-content-between mt-1">
-                        <span class="text-secondary">Round-trip:</span>
+                        <span class="text-secondary">Round-trip (1 lot):</span>
+                        <span id="round-trip-per-lot">-</span>
+                    </div>
+                    <div class="d-flex justify-content-between mt-1">
+                        <span class="text-secondary" id="round-trip-scale-label">&times; lots:</span>
                         <span id="round-trip-cost">-</span>
                     </div>
                     <div id="std-explanation" class="text-secondary mt-1" style="font-size: 0.65rem;">
@@ -2859,6 +2863,28 @@
                     + (usd != null ? '  ($' + usd.toFixed(2) + ')' : '');
                 rtEl.className = 'fw-bold';
 
+                // One lot first, then the scaling. The per-lot figure is
+                // the one that can be reasoned about and compared against
+                // a sigma; the position total is just it times the lots.
+                const perLotEl = document.getElementById('round-trip-per-lot');
+                const scaleEl  = document.getElementById('round-trip-scale-label');
+                const perLot   = data.rt_cost_per_lot;
+                const lots     = data.rt_lots;
+                const csize    = data.rt_contract_size;
+                if (perLotEl) {
+                    perLotEl.className = 'fw-bold';
+                    perLotEl.textContent = perLot != null
+                        ? '$' + perLot.toFixed(2)
+                          + (csize ? '  ($' + (perLot / csize).toFixed(4)
+                                     + '/unit)' : '')
+                        : '-';
+                }
+                if (scaleEl) {
+                    scaleEl.textContent = lots != null
+                        ? '× ' + (+lots.toFixed(2)) + ' lots:'
+                        : '× lots:';
+                }
+
                 if (ss != null && fs != null) {
                     const n = (x, d) => (x == null ? '?' : x.toFixed(d));
                     const combined = ss + fs;
@@ -2878,13 +2904,16 @@
 + 'Each leg pays its spread ONCE, not twice: you enter on one side of\n'
 + 'the book and exit on the other. Four executions, two spreads.\n'
 + '\n'
-+ 'In money, at ' + n(oz, 2) + ' units per leg:\n'
++ 'For ONE lot (' + n(csize, 0) + ' units):\n'
 + '    spread cost              $'
-      + n(combined * (factor == null ? 1 : factor) * (oz || 0), 2) + '\n'
-+ '    + commissions            $' + n((comm || 0) * (oz && data.clip_lots
-      ? data.clip_lots : 0), 2)
+      + n(combined * (factor == null ? 1 : factor) * (csize || 0), 2) + '\n'
++ '    + commissions            $' + n(comm || 0, 2)
       + (comm ? '' : '   ← COMMISSION_PER_LOT is 0; set it') + '\n'
-+ '    = round trip             $' + n(usd, 2) + '\n'
++ '    = per lot                $' + n(perLot, 2) + '\n'
++ '\n'
++ 'Scaled to the position (' + n(lots, 2) + ' lots, ' + n(oz, 2)
+      + ' units per leg):\n'
++ '    $' + n(perLot, 2) + ' × ' + n(lots, 2) + ' = $' + n(usd, 2) + '\n'
 + '\n'
 + 'As bps of leg A notional ($' + (notional == null ? '?'
       : Math.round(notional).toLocaleString()) + '):\n'
