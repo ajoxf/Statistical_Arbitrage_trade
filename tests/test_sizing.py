@@ -727,3 +727,50 @@ def test_leg_a_has_a_ceiling_too(config):
 def test_a_broker_that_reports_no_maximum_is_not_second_guessed(config):
     result = _plan(config, beta=0.0149, volume_max=None)
     assert not result['reason']      # nothing to check it against
+
+
+# --- "per leg" has to mean something on BOTH legs -------------------
+
+def _notional_plan(config, hedge_mode, beta=0.0150):
+    config.TRADING.update({'SIZING_MODE': 'notional',
+                           'NOTIONAL_PER_LEG_USD': 500_000.0,
+                           'HEDGE_RATIO': beta, 'HEDGE_MODE': hedge_mode})
+    meta = {'volume_min': 0.01, 'volume_step': 0.01, 'volume_max': 100000.0}
+    return sizing.plan(config, 5000.0, 100.0, 65.191, 4360.51,
+                       meta_a=dict(meta), meta_b=dict(meta))
+
+
+def test_a_hedge_nowhere_near_the_money_asked_for_is_refused(config):
+    """Live 2026-08-10: "$500,000 per leg" gave $498,726 on XAGUSD and
+    $2,238,784,332 on XAUUSD, and the card still said "Asked for
+    $500,000 per leg". An inverted beta, reported as fine."""
+    result = _notional_plan(config, 'units', beta=0.0150)
+    assert result['leg_a_notional_usd'] == pytest.approx(500_000, rel=0.01)
+    assert result['reason']
+    assert 'HEDGE_RATIO 0.015' in result['reason']
+    assert 'price ratio' in result['reason']
+
+
+def test_the_right_beta_lands_both_legs_on_the_target(config):
+    """At beta near the price ratio, unit-neutral and dollar-neutral
+    coincide, so "per leg" comes out true on both sides."""
+    result = _notional_plan(config, 'units', beta=66.89)
+    assert result['leg_b_notional_usd'] == pytest.approx(500_000, rel=0.02)
+    assert not result['reason']
+
+
+def test_the_hedge_construction_is_still_the_owners_choice(config):
+    """Unit-neutral is NOT overridden: for a basis pair the pair's P&L
+    is the spread move the z-score is measured on, and the legs'
+    notionals differing by the basis is the trade, not an error."""
+    config.TRADING.update({'SIZING_MODE': 'notional',
+                           'NOTIONAL_PER_LEG_USD': 2_000_000.0,
+                           'HEDGE_RATIO': 1.0, 'HEDGE_MODE': 'units'})
+    meta = {'volume_min': 0.01, 'volume_step': 0.01, 'volume_max': 1000.0}
+    result = sizing.plan(config, 100.0, 100.0, 4292.61, 4351.55,
+                         meta_a=dict(meta), meta_b=dict(meta))
+    assert result['hedge_mode'] == 'units'
+    assert not result['reason']
+    # the legs differ by the basis, ~1.4%, and that is allowed
+    gap = abs(result['leg_b_notional_usd'] - result['leg_a_notional_usd'])
+    assert gap / result['leg_a_notional_usd'] < 0.05

@@ -292,6 +292,33 @@ def plan(config, contract_a, contract_b, price_a, price_b,
     # the plan reported it as fine. MT5 would have rejected it with
     # 10014 — AFTER leg A had already filled, leaving a naked position
     # exactly as the pair executor exists to prevent.
+    # "Leg Notional Value" says PER LEG. Unit-neutral hedging leaves the
+    # two legs' notionals differing by the basis, which is small and is
+    # the trade — but a WRONG beta turns that into orders of magnitude
+    # while the card still reads "Asked for $500,000 per leg". Live
+    # 2026-08-10: $500,000 per leg gave $498,726 on XAGUSD and
+    # $2,238,784,332 on XAUUSD, and nothing objected.
+    #
+    # The hedge construction is the owner's choice and is NOT overridden
+    # here (unit-neutral is right for a basis pair: the pair's P&L is
+    # then the spread move the z-score is measured on). What is refused
+    # is a leg B that bears no relation to the money asked for, because
+    # that is always a beta error, never an intended hedge.
+    if not reason and mode == 'notional' and target_notional:
+        notional_b_now = notional(lots_b, contract_b, price_b)
+        if notional_b_now and abs(notional_b_now - target_notional) \
+                > 0.5 * target_notional:
+            ratio = notional_b_now / target_notional
+            reason = (
+                f'you asked for ${target_notional:,.0f} per leg and leg A '
+                f'is right, but the hedge comes to '
+                f'${notional_b_now:,.0f} — {ratio:,.4g}x the target. '
+                f'HEDGE_RATIO {beta:g} is the cause: leg B is leg A x '
+                f'contract A / (beta x contract B), so a beta that is '
+                f'too small inflates it. The price ratio is '
+                f'{(price_b / price_a):,.4f}.'
+                if price_a else '')
+
     max_a = meta_a.get('volume_max') or 0.0
     max_b = meta_b.get('volume_max') or 0.0
     if not reason and max_a and lots_a > max_a + 1e-9:
