@@ -612,3 +612,66 @@ def test_an_order_outside_the_window_reads_unknown_not_a_guess(fake_mt5):
              history_orders=[])
     rows = make_session().order_log(hours=0)
     assert rows[0]['order_type'] == 'unknown'
+
+
+# --- a filled pending is a POSITION before it is a deal --------------
+
+class FillStateMT5:
+    """MT5 after a pending order fills: the order is gone from the book,
+    positions_get shows it under the ORDER's ticket, and deal history
+    has not caught up yet."""
+
+    def __init__(self, deals=(), positions=(), open_orders=()):
+        self._deals, self._positions = deals, positions
+        self._open = open_orders
+
+    def history_deals_get(self, ticket=None, **kwargs):
+        return tuple(d for d in self._deals if d.order == ticket)
+
+    def orders_get(self, ticket=None):
+        return tuple(o for o in self._open if o.ticket == ticket)
+
+    def positions_get(self, ticket=None):
+        return tuple(p for p in self._positions if p.ticket == ticket)
+
+
+def _state(fake, ticket=68):
+    broker_module.mt5 = fake
+    session = broker_module.BrokerSession.__new__(broker_module.BrokerSession)
+    return session.order_fill_state(ticket)
+
+
+def test_a_fill_visible_only_as_a_position_still_counts(monkeypatch):
+    """Live 2026-08-10: a 120-second hold closed in nine seconds. The
+    order had filled, but deal history lagged, so order_fill_state
+    reported no fill and the scenario fell into leak recovery — which
+    flattens immediately."""
+    position = SimpleNamespace(ticket=68, volume=0.01, price_open=64.96)
+    state = _state(FillStateMT5(positions=[position]))
+    assert state['filled_volume'] == 0.01
+    assert state['price'] == pytest.approx(64.96)
+    assert state['position_tickets'] == [68]
+    assert state['still_open'] is False
+
+
+def test_the_deal_history_is_preferred_once_it_arrives(monkeypatch):
+    """When both are visible the deal is the record; the position must
+    not be added on top of it."""
+    filled = deal(ticket=142, order=68, volume=0.01, price=64.909)
+    position = SimpleNamespace(ticket=68, volume=0.01, price_open=64.96)
+    state = _state(FillStateMT5(deals=[filled], positions=[position]))
+    assert state['filled_volume'] == 0.01          # not 0.02
+    assert state['price'] == pytest.approx(64.909)
+
+
+def test_an_order_still_resting_is_not_a_fill(monkeypatch):
+    resting = SimpleNamespace(ticket=68)
+    state = _state(FillStateMT5(open_orders=[resting]))
+    assert state['filled_volume'] == 0.0
+    assert state['still_open'] is True
+
+
+def test_a_cancelled_order_reports_no_fill(monkeypatch):
+    state = _state(FillStateMT5())
+    assert state['filled_volume'] == 0.0
+    assert state['still_open'] is False

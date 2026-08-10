@@ -767,6 +767,8 @@ class BrokerSession:
             if state['filled_volume'] == 0 and not state['still_open']:
                 time.sleep(0.05)   # deal history lag after cancel
                 state = self.order_fill_state(ticket)
+            if state.get('from_position'):
+                state['leaked_fill'] = True
             if state['filled_volume'] == 0:
                 # Deal history can still be behind. MT5 turns a filled
                 # pending order into a POSITION carrying the same
@@ -799,6 +801,11 @@ class BrokerSession:
         filled = 0.0
         notional = 0.0
         position_tickets = []
+        # Whether the fill was found as a POSITION rather than a deal.
+        # cancel_pending turns this into `leaked_fill`: a cancel that
+        # did not prevent a fill is a distinct event and has to stay
+        # visible in the report, not be smoothed into a normal fill.
+        from_position = False
         try:
             deals = mt5.history_deals_get(ticket=ticket) or ()
             for deal in deals:
@@ -809,6 +816,25 @@ class BrokerSession:
                 if deal.position_id and deal.position_id not in position_tickets:
                     position_tickets.append(deal.position_id)
             still_open = bool(mt5.orders_get(ticket=ticket))
+            if not filled and not still_open:
+                # Gone from the book with no deal recorded yet. MT5
+                # turns a filled pending into a POSITION carrying the
+                # ORDER's ticket, and positions_get shows it BEFORE
+                # deal history does — the same lag cancel_pending
+                # already works around.
+                #
+                # Reading deals alone therefore called a real fill "no
+                # fill", so the scenario went down leak recovery, which
+                # flattens at once: live 2026-08-10 a 120-second hold
+                # closed in nine seconds because of it. The position IS
+                # the fill; report it as one.
+                for position in (mt5.positions_get(ticket=int(ticket))
+                                 or ()):
+                    filled += position.volume
+                    notional += position.volume * position.price_open
+                    if position.ticket not in position_tickets:
+                        position_tickets.append(position.ticket)
+                        from_position = True
         except Exception as e:
             return {'ok': False, 'filled_volume': filled, 'price': None,
                     'position_tickets': position_tickets,
@@ -816,6 +842,7 @@ class BrokerSession:
         vwap = notional / filled if filled > 0 else None
         return {'ok': True, 'filled_volume': filled, 'price': vwap,
                 'position_tickets': position_tickets,
+                'from_position': from_position,
                 'still_open': still_open, 'error': None}
 
     def close_position_ticket(self, symbol, ticket, volume, entry_side,

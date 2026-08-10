@@ -548,3 +548,18 @@ def test_the_placement_is_logged_once_not_twice():
     out = run.run('BUY_SPOT', 'LIMIT')
     assert out['detail'].count('place @') == 1
     assert 'no fill in 15s' in out['detail']
+
+
+def test_a_leak_stays_flagged_now_that_the_fill_state_finds_it_first(mt5):
+    """order_fill_state now reports a fill it can only see as a
+    POSITION, so cancel_pending no longer reaches its own positions
+    check. The leak must still be flagged: a cancel that failed to
+    prevent a fill is a distinct event and has to stay visible in the
+    scenario report rather than read as a normal fill."""
+    mt5(LeakyCancelMT5(position=SimpleNamespace(
+        ticket=102269437, volume=0.01, price_open=4259.915,
+        symbol='XAUUSD_')))
+    state = session().cancel_pending(102269437)
+    assert state['filled_volume'] == 0.01
+    assert state['leaked_fill'] is True
+    assert state['from_position'] is True
