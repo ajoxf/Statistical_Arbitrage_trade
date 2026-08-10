@@ -201,3 +201,40 @@ def test_a_pair_with_money_on_it_is_not_a_config_row(pairs_client, tmp_path,
     assert pairs_client.delete('/api/assets/GOLD').status_code == 409
     assert pairs_client.post('/api/assets/GOLD',
                              json={'enabled': False}).status_code == 409
+
+
+# --- beta sanity ----------------------------------------------------
+
+def _health_rows(config, tmp_path, monkeypatch, beta, spot, fut):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    config.TRADING['HEDGE_RATIO'] = beta
+    coord = Coordinator(config, trading_mode='PAPER')
+    md = {'spot_price': spot, 'futures_price': fut,
+          'spread': fut - beta * spot, 'tick_age_ms': 100}
+    return {name: (state, detail)
+            for name, state, detail in coord._health('GOLD', md)}
+
+
+def test_a_beta_that_wrecks_the_spread_is_called_out(config, tmp_path,
+                                                     monkeypatch):
+    """Live 2026-08-10: HEDGE_RATIO 10 on USOIL/UKOIL at 81.76/85.07
+    gave a spread of -732.53. Every downstream number — mu, sigma, z,
+    the exit levels — then describes a series that does not exist."""
+    rows = _health_rows(config, tmp_path, monkeypatch, 10.0, 81.76, 85.07)
+    assert 'beta' in rows
+    state, detail = rows['beta']
+    from statarb.coordinator import Coordinator
+    assert state == Coordinator.WARN            # reports, does not block
+    assert '-732' in detail and 'HEDGE_RATIO 10' in detail
+    assert 'NOT a contract-size or lot ratio' in detail
+
+
+def test_a_sane_beta_is_silent(config, tmp_path, monkeypatch):
+    """Both the real pairs this engine has run must stay quiet."""
+    # WTI vs Brent at beta 1: a $3 differential on $80 legs
+    assert 'beta' not in _health_rows(config, tmp_path, monkeypatch,
+                                      1.0, 81.76, 85.07)
+    # Gold spot vs future at beta 1: a $59 basis on $4,300 legs
+    assert 'beta' not in _health_rows(config, tmp_path, monkeypatch,
+                                      1.0, 4292.61, 4351.55)

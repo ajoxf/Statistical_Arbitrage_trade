@@ -2390,6 +2390,33 @@ class Coordinator:
                          f'{rate:.0f} quotes/min' if rate
                          else 'ticking'))
 
+        # -- beta sanity --
+        # A pair spread is a small DIFFERENCE between two comparable
+        # prices. When it dwarfs the prices themselves, HEDGE_RATIO is
+        # wrong and every number downstream — mu, sigma, z, the exit
+        # levels — describes a series that does not exist.
+        #
+        # Live 2026-08-10: the contract-size check advised "or correct
+        # HEDGE_RATIO for the difference" on a 10x contract mismatch,
+        # the operator set beta to 10, and USOIL/UKOIL at 81.76/85.07
+        # became a spread of -732.53. Beta is the PRICE coefficient;
+        # contract sizes are handled by the hedge formula. That advice
+        # is gone, but nothing was checking the result.
+        spot_px = md.get('spot_price') or 0
+        fut_px = md.get('futures_price') or 0
+        beta = self.config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0
+        smaller = min(abs(spot_px), abs(fut_px))
+        if smaller and abs(md.get('spread') or 0) > 0.5 * smaller:
+            ratio = (fut_px / spot_px) if spot_px else 0
+            rows.append(('beta', self.WARN,
+                         f'spread {md["spread"]:+.2f} dwarfs the leg prices '
+                         f'({spot_px:.2f} / {fut_px:.2f}) — HEDGE_RATIO '
+                         f'{beta:g} looks wrong. The price ratio is '
+                         f'{ratio:.4f}. Beta is the spread\'s price '
+                         f'coefficient, NOT a contract-size or lot ratio; '
+                         f'differing contract sizes are already handled '
+                         f'when sizing the hedge.'))
+
         # -- pair definition --
         # Reference only, so it never blocks; but a basis label that
         # cannot describe this pair belongs in the log rather than
