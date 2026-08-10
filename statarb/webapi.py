@@ -498,6 +498,13 @@ def status_to_ui(status, config_raw):
             # "-" against every row.
             'std_ratio': first.get('edge_ratio'),
             'std_ratio_required': first.get('edge_required'),
+            # The Edge badge's verdict. It belongs in THIS block, not at
+            # the top level: updateSignal() is called as
+            # `updateSignal(d.signal)`, so everything the Filters card
+            # reads is looked up inside `signal`. The badge sat at "-"
+            # because nothing ever published the field at all, and
+            # publishing it one level up would have left it there.
+            'std_filter_ok': first.get('edge_ok'),
             'edge_capture_fraction': first.get('edge_capture_fraction'),
             'edge_z': first.get('edge_z'),
             'edge_sigma': first.get('edge_sigma'),

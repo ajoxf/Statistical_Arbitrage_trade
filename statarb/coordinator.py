@@ -1804,6 +1804,16 @@ class Coordinator:
             # comparison an operator can hold in their head, and it
             # does not change when the position size does.
             'edge_capture_per_lot': (capture / lots) if lots else None,
+            # The verdict itself. The Filters card has an Edge badge
+            # that reads this; nothing ever published it, so the badge
+            # showed "-" while the table directly beneath it spelled out
+            # the whole shortfall. None (not False) without a usable z:
+            # "not measured yet" is a different statement from "the
+            # edge failed", and warm-up should not read as a rejection.
+            'edge_ok': (
+                None if (stats is None or stats.z is None)
+                else capture >= cost * self.config.COSTS.get(
+                    'MIN_EDGE_MULTIPLE', 1.5)),
             'edge_required_usd': (
                 cost * self.config.COSTS.get('MIN_EDGE_MULTIPLE', 1.5)),
             'edge_gap_usd': (

@@ -118,7 +118,11 @@
                                 trading; delete what you never meant to create.
                                 The settings above apply to the <em>first enabled</em> pair.
                             </p>
-                            <div id="pairs-list" class="small text-secondary">Loading&hellip;</div>
+                            <!-- The row is deliberately wide (six columns
+                                 plus three actions). It scrolls inside its
+                                 own box rather than stretching the page. -->
+                            <div id="pairs-list" class="small text-secondary"
+                                 style="overflow-x: auto;">Loading&hellip;</div>
                         </div>
                     </div>
 
@@ -2727,31 +2731,46 @@
             return;
         }
         if (!pairs.length) { host.textContent = 'No pairs configured.'; return; }
+        // The action cell is sized and set to nowrap explicitly. Left to
+        // itself the three buttons wrapped onto a second line at a
+        // ragged right edge, and every row wrapped at a different point.
+        // Equal min-widths keep the columns of buttons aligned DOWN the
+        // table as well as across each row.
+        const btn = 'btn btn-sm';
+        const btnStyle = 'min-width:5.25rem;';
         host.innerHTML = `
-        <table class="table table-sm align-middle mb-0">
-            <thead><tr><th>Pair</th><th>Leg A</th><th>Leg B</th><th>Type</th>
-            <th>State</th><th style="width:13rem;"></th></tr></thead>
+        <table class="table table-sm align-middle mb-0" style="min-width:44rem;">
+            <thead><tr>
+                <th>Pair</th><th>Leg A</th><th>Leg B</th><th>Type</th>
+                <th>State</th>
+                <th class="text-end" style="width:17rem; white-space:nowrap;">Actions</th>
+            </tr></thead>
             <tbody>${pairs.map(p => `
                 <tr>
                     <td><strong>${esc(p.key)}</strong></td>
                     <td><code>${esc(p.spot_symbol || '—')}</code></td>
                     <td><code>${esc(p.futures_symbol || '—')}</code></td>
                     <td>${esc(p.pair_type)}</td>
-                    <td>${p.enabled
+                    <td style="white-space:nowrap;">${p.enabled
                         ? '<span class="badge bg-success">enabled</span>'
                         : '<span class="badge bg-secondary">disabled</span>'}
                         ${p.has_open_position
                         ? ' <span class="badge bg-warning text-dark">position open</span>'
                         : ''}</td>
-                    <td class="text-end">
-                        <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                    <td class="text-end" style="white-space:nowrap;">
+                        <span style="display:inline-flex; gap:.375rem;">
+                        <button type="button" class="${btn} btn-outline-secondary"
+                                style="${btnStyle}"
                                 data-pair-toggle="${esc(p.key)}"
                                 data-enabled="${p.enabled ? '1' : '0'}">
                             ${p.enabled ? 'Disable' : 'Enable'}</button>
-                        <button type="button" class="btn btn-sm btn-outline-primary me-1"
+                        <button type="button" class="${btn} btn-outline-primary"
+                                style="${btnStyle}"
                                 data-pair-rename="${esc(p.key)}">Rename</button>
-                        <button type="button" class="btn btn-sm btn-outline-danger"
+                        <button type="button" class="${btn} btn-outline-danger"
+                                style="${btnStyle}"
                                 data-pair-delete="${esc(p.key)}">Delete</button>
+                        </span>
                     </td>
                 </tr>`).join('')}
             </tbody></table>`;

@@ -1752,3 +1752,66 @@ def test_the_round_trip_is_published_per_lot_and_scaled(config, tmp_path,
     # ...and the position total is exactly the per-lot figure scaled
     assert block['rt_cost_usd'] == pytest.approx(
         block['rt_cost_per_lot'] * block['rt_lots'], rel=1e-9)
+
+
+def test_the_edge_badge_verdict_reaches_the_signal_block():
+    """The Filters card's Edge badge reads signal.std_filter_ok, and
+    NOTHING ever published it — so it sat at "-" while the edge table
+    directly beneath it spelled out the whole shortfall.
+
+    It has to live in the `signal` block specifically: the dashboard
+    calls updateSignal(d.signal), so a field published one level up is
+    invisible to every control on that card.
+    """
+    from statarb import webapi
+
+    status = {'assets': [{'asset': 'GOLD', 'z': 0.24, 'edge_ok': False,
+                          'edge_ratio': 0.09, 'edge_required': 1.5}]}
+    signal = webapi.status_to_ui(status, {})['signal']
+    assert signal['std_filter_ok'] is False
+
+    status['assets'][0]['edge_ok'] = True
+    assert webapi.status_to_ui(status, {})['signal']['std_filter_ok'] is True
+
+    # Unmeasured stays None, never False: warm-up is not a rejection,
+    # and the badge renders "-" rather than a red NO.
+    status['assets'][0]['edge_ok'] = None
+    assert webapi.status_to_ui(status, {})['signal']['std_filter_ok'] is None
+
+
+def test_the_edge_verdict_is_none_until_there_is_a_usable_z(config, tmp_path,
+                                                            monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator, PaperExecutor
+
+    class Leg:
+        name = 'acct'
+
+        def ensure_symbol(self, symbol):
+            return {'ok': True, 'volume_min': 0.01, 'volume_step': 0.01,
+                    'volume_max': 100.0}
+
+    coord = Coordinator(config, trading_mode='PAPER')
+    coord.spot_leg = coord.futures_leg = Leg()
+    coord.executor = PaperExecutor(coord.spot_leg, coord.futures_leg, config)
+    coord.active_assets['GOLD'] = {'config': config.ASSETS['GOLD'],
+                                   'spot_symbol': 'XAUUSD_',
+                                   'futures_symbol': 'GC1226',
+                                   'last_data': None}
+    md = {'spot_price': 4292.615, 'futures_price': 4351.55,
+          'spot_bid': 4292.55, 'spot_ask': 4292.68,
+          'futures_bid': 4351.38, 'futures_ask': 4351.72,
+          'spread': 58.94, 'basis_pct': 1.37}
+
+    # No stats at all -> unmeasured
+    assert coord._sizing_and_cost('GOLD', md, None)['edge_ok'] is None
+
+    class Stats:
+        z = None
+        sigma = 0.2
+    assert coord._sizing_and_cost('GOLD', md, Stats())['edge_ok'] is None
+
+    # A real but tiny z -> a real, negative verdict
+    class Thin(Stats):
+        z = 0.24
+    assert coord._sizing_and_cost('GOLD', md, Thin())['edge_ok'] is False
