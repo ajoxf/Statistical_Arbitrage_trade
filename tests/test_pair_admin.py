@@ -238,3 +238,49 @@ def test_a_sane_beta_is_silent(config, tmp_path, monkeypatch):
     # Gold spot vs future at beta 1: a $59 basis on $4,300 legs
     assert 'beta' not in _health_rows(config, tmp_path, monkeypatch,
                                       1.0, 4292.61, 4351.55)
+
+
+# --- saved vs running symbols ---------------------------------------
+
+def _ui(running_a, running_b, configured_a, configured_b):
+    from statarb import webapi
+    status = {'assets': [{'asset': 'GOLD',
+                          'rt_spot_symbol': running_a,
+                          'rt_fut_symbol': running_b}]}
+    raw = {'assets': {'GOLD': {'enabled': True,
+                               'spot_symbols': [configured_a],
+                               'futures_symbols': [configured_b]}}}
+    return webapi.status_to_ui(status, raw)['signal']
+
+
+def test_the_cards_are_labelled_with_what_the_engine_streams():
+    """Live 2026-08-10: the cards read "XAGUSD 82.0050" and "XAUUSD
+    85.3500" — the newly saved names over the old pair's oil prices,
+    because the labels came from config and the prices from the
+    engine. A picture that cannot be true."""
+    signal = _ui('USOIL', 'UKOIL', 'XAGUSD', 'XAUUSD')
+    assert signal['leg_a_symbol'] == 'USOIL'
+    assert signal['leg_b_symbol'] == 'UKOIL'
+
+
+def test_a_saved_symbol_the_engine_has_not_adopted_is_flagged():
+    pending = _ui('USOIL', 'UKOIL', 'XAGUSD', 'XAUUSD')[
+        'symbols_pending_restart']
+    assert set(pending) == {'spot', 'futures'}
+    assert pending['spot'] == {'running': 'USOIL', 'configured': 'XAGUSD'}
+    assert pending['futures'] == {'running': 'UKOIL', 'configured': 'XAUUSD'}
+
+    # One leg changed, one not
+    half = _ui('USOIL', 'UKOIL', 'USOIL', 'XAUUSD')['symbols_pending_restart']
+    assert set(half) == {'futures'}
+
+
+def test_agreement_is_silent():
+    assert _ui('USOIL', 'UKOIL', 'USOIL', 'UKOIL')[
+        'symbols_pending_restart'] == {}
+
+
+def test_nothing_is_claimed_before_the_engine_has_published():
+    """No running symbols yet is not a mismatch — it is a cold start."""
+    assert _ui(None, None, 'USOIL', 'UKOIL')[
+        'symbols_pending_restart'] == {}

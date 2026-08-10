@@ -466,6 +466,29 @@ def manual_level_error(direction, entry, take_profit, stop):
     return None
 
 
+def _pending_symbols(first, config_raw):
+    """Saved symbols that the running engine has not picked up.
+
+    Returns {'spot': (running, configured), ...} for whichever legs
+    disagree, or {} when they match or the engine has not published
+    what it is streaming. Symbols are structural — a save only takes
+    effect on restart — so this is the difference between "the card is
+    wrong" and "the card is waiting for you".
+    """
+    running = {'spot': first.get('rt_spot_symbol'),
+               'futures': first.get('rt_fut_symbol')}
+    if not any(running.values()):
+        return {}
+    assets = (config_raw or {}).get('assets') or {}
+    asset = next((v for v in assets.values() if v.get('enabled', True)), {})
+    configured = {'spot': (asset.get('spot_symbols') or [''])[0],
+                  'futures': (asset.get('futures_symbols') or [''])[0]}
+    return {leg: {'running': running[leg], 'configured': configured[leg]}
+            for leg in ('spot', 'futures')
+            if running[leg] and configured[leg]
+            and running[leg] != configured[leg]}
+
+
 def status_to_ui(status, config_raw):
     """runtime_status.json -> the /api/engine/status shape the Nexus
     dashboard consumes."""
@@ -505,6 +528,18 @@ def status_to_ui(status, config_raw):
             # because nothing ever published the field at all, and
             # publishing it one level up would have left it there.
             'std_filter_ok': first.get('edge_ok'),
+            # The symbols the engine is ACTUALLY streaming, and whether
+            # they still match config.json. Symbols are structural, so
+            # a save takes effect only on restart — and the leg cards
+            # were labelled from config while priced from the engine.
+            # Live 2026-08-10 that put "XAGUSD 82.0050" and "XAUUSD
+            # 85.3500" on screen: new labels over the old pair's oil
+            # prices, a picture that cannot be true. In the SIGNAL
+            # block because updateSignal() is called as
+            # updateSignal(d.signal).
+            'leg_a_symbol': first.get('rt_spot_symbol'),
+            'leg_b_symbol': first.get('rt_fut_symbol'),
+            'symbols_pending_restart': _pending_symbols(first, config_raw),
             'edge_capture_fraction': first.get('edge_capture_fraction'),
             'edge_z': first.get('edge_z'),
             'edge_sigma': first.get('edge_sigma'),

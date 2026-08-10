@@ -214,6 +214,9 @@
 <div class="row g-3">
     <!-- Left Column: Prices and Signal -->
     <div class="col-lg-5">
+        <!-- Saved symbols the running engine has not adopted yet. Empty
+             and invisible whenever config and the engine agree. -->
+        <div id="symbol-restart-notice"></div>
         <!-- Price Cards Row -->
         <div class="row g-2 mb-3">
             <div class="col-6">
@@ -2265,6 +2268,14 @@
         if (aSymEl) aSymEl.textContent = _legASymbol || '';
         if (bSymEl) bSymEl.textContent = _legBSymbol || '';
 
+        // The price-card badges too. Jinja stamped them from config at
+        // page load and nothing ever refreshed them, so they named the
+        // SAVED symbol above the RUNNING pair's price.
+        const aBadge = document.getElementById('spot-symbol');
+        const bBadge = document.getElementById('futures-symbol');
+        if (aBadge && _legASymbol) aBadge.textContent = _legASymbol;
+        if (bBadge && _legBSymbol) bBadge.textContent = _legBSymbol;
+
         // Notional, leverage, margin per leg — recomputed from live mids + β.
         // Leg A notional = position_size_usd exactly (that's the sizing anchor).
         // Leg B notional = position_size × (mid_B / (β · mid_A)) — equals
@@ -2689,8 +2700,13 @@
         if (data.position_size_usd !== undefined) { _positionSizeUsd = data.position_size_usd; needsRefresh = true; }
         if (data.leg_a_leverage !== undefined) { _legALeverage = data.leg_a_leverage; needsRefresh = true; }
         if (data.leg_b_leverage !== undefined) { _legBLeverage = data.leg_b_leverage; needsRefresh = true; }
-        if (data.leg_a_symbol !== undefined) { _legASymbol = data.leg_a_symbol; needsRefresh = true; }
-        if (data.leg_b_symbol !== undefined) { _legBSymbol = data.leg_b_symbol; needsRefresh = true; }
+        // The RUNNING symbols, not the configured ones. Labelling the
+        // cards from config while pricing them from the engine printed
+        // new symbol names over the old pair's prices whenever a save
+        // was waiting on a restart.
+        if (data.leg_a_symbol) { _legASymbol = data.leg_a_symbol; needsRefresh = true; }
+        if (data.leg_b_symbol) { _legBSymbol = data.leg_b_symbol; needsRefresh = true; }
+        renderSymbolRestartNotice(data.symbols_pending_restart);
         if (needsRefresh) { updateLiveBeta(); updateLegSizing(); }
         const bxs = data.beta_x_spot;
         const fdb = data.fut_div_beta;
@@ -2843,7 +2859,31 @@
             percentEl.textContent = Math.round(progressPercent);
         }
 
-        // Update Trading Status Banner
+        // A saved symbol the engine has not adopted is not an error, but
+    // it MUST be visible: until the restart, the prices on screen
+    // belong to the other pair.
+    function renderSymbolRestartNotice(pending) {
+        const host = document.getElementById('symbol-restart-notice');
+        if (!host) return;
+        const legs = pending && typeof pending === 'object'
+            ? Object.keys(pending) : [];
+        if (!legs.length) { host.innerHTML = ''; return; }
+        const rows = legs.map(function (leg) {
+            const p = pending[leg];
+            return (leg === 'spot' ? 'Leg A' : 'Leg B') + ': streaming <code>'
+                 + p.running + '</code>, saved <code>' + p.configured
+                 + '</code>';
+        }).join(' &nbsp;·&nbsp; ');
+        host.innerHTML =
+            '<div class="alert alert-warning py-2 px-3 small mb-2">'
+          + '<i class="bi bi-arrow-repeat me-2"></i>'
+          + '<strong>Restart pending.</strong> ' + rows
+          + '. Symbols are structural, so the engine keeps the old pair '
+          + 'until the launcher restarts — the prices and spread below '
+          + 'are the ones being streamed, not the ones you saved.</div>';
+    }
+
+    // Update Trading Status Banner
         updateTradingStatus(dataPoints, lookback, data.data_ready,
                             data.hurst_ok, data.std_filter_ok,
                             data.lookback_sec, data.degenerate,

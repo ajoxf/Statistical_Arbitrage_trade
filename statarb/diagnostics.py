@@ -397,30 +397,72 @@ def check_pair(checklist, spot, futures, config):
                       f"{spot_sym['symbol']} (spot) vs "
                       f"{fut_sym['symbol']} (futures)")
 
+    # Contract sizes and HEDGE_RATIO are DIFFERENT things, and this
+    # check used to conflate them: it computed spot_contract /
+    # fut_contract, called it the "implied hedge ratio" and told the
+    # operator to set HEDGE_RATIO to it.
+    #
+    # Beta is the PRICE coefficient of the spread series
+    # (spread = P_fut - beta * P_spot). Contract sizes are handled when
+    # sizing the hedge: L_B = L_A * C_A / (beta * C_B). Feeding a
+    # contract ratio into beta redefines the series instead.
+    #
+    # Live 2026-08-10 the operator followed exactly that advice on a
+    # 10x contract mismatch, and USOIL/UKOIL at 81.76 / 85.07 became a
+    # spread of -732.53 with a hedge a tenth of the size it should be.
+    # The advice is gone; what is left reports the facts and checks
+    # beta against the thing it actually has to be comparable with —
+    # the live price ratio.
     spot_contract = spot_sym.get('contract_size')
     fut_contract = fut_sym.get('contract_size')
-    hedge_ratio = config.TRADING.get('HEDGE_RATIO', 1.0)
+    hedge_ratio = config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0
+    spot_price = spot_sym.get('bid')
+    fut_price = fut_sym.get('bid')
+
     if spot_contract and fut_contract:
-        implied = spot_contract / fut_contract
-        details = {'spot contract': spot_contract,
-                   'futures contract': fut_contract,
-                   'implied hedge ratio': round(implied, 4),
-                   'configured HEDGE_RATIO': hedge_ratio}
-        if abs(implied - hedge_ratio) < 0.01:
-            checklist.add('PAIR', 'Hedge ratio', PASS,
-                          f'{spot_contract:g} oz spot vs {fut_contract:g} oz '
-                          f'futures per lot — HEDGE_RATIO {hedge_ratio:g} '
-                          f'is right', details=details)
-        else:
+        lot_ratio = spot_contract / (hedge_ratio * fut_contract)
+        checklist.add(
+            'PAIR', 'Contract sizes', INFO,
+            f'{spot_contract:g} per lot on Leg A vs {fut_contract:g} on '
+            f'Leg B. The hedge is sized from BOTH, so Leg B trades '
+            f'{lot_ratio:.4g} lots for every 1 on Leg A. This does NOT '
+            f'set HEDGE_RATIO.',
+            details={'spot contract': spot_contract,
+                     'futures contract': fut_contract,
+                     'lots on Leg B per lot on Leg A': round(lot_ratio, 4),
+                     'configured HEDGE_RATIO': hedge_ratio})
+
+    if spot_price and fut_price:
+        ratio = fut_price / spot_price
+        spread = fut_price - hedge_ratio * spot_price
+        details = {'Leg A price': spot_price, 'Leg B price': fut_price,
+                   'price ratio (Leg B / Leg A)': round(ratio, 4),
+                   'configured HEDGE_RATIO': hedge_ratio,
+                   'resulting spread': round(spread, 4)}
+        # A pair spread is a small DIFFERENCE between comparable prices.
+        # Dwarfing the prices is the signature of a beta error.
+        if abs(spread) > 0.5 * min(spot_price, fut_price):
             checklist.add(
                 'PAIR', 'Hedge ratio', FAIL,
-                f'Contract sizes imply a hedge ratio of {implied:.4f} but '
-                f'HEDGE_RATIO is {hedge_ratio:g} — the hedge would be '
-                f'{abs(implied / hedge_ratio - 1) * 100:.0f}% off',
+                f'HEDGE_RATIO {hedge_ratio:g} gives a spread of '
+                f'{spread:+.4f} on legs priced {spot_price:.4f} / '
+                f'{fut_price:.4f} — the "spread" is bigger than the '
+                f'instruments, so mu, sigma, z and every exit level '
+                f'would describe a series that does not exist.',
                 details=details,
-                fix=[f'Set HEDGE_RATIO to {implied:.4f} in Settings',
-                     'This is the number that decides whether the "hedged" '
-                     'position is actually flat'])
+                fix=['For the SAME underlying (spot vs its future), '
+                     'HEDGE_RATIO is 1',
+                     f'For two different instruments, a spread only '
+                     f'makes sense near the price ratio '
+                     f'({ratio:.4f} right now)',
+                     'It is NOT the contract-size ratio — contract sizes '
+                     'are already handled when sizing the hedge'])
+        else:
+            checklist.add(
+                'PAIR', 'Hedge ratio', PASS,
+                f'HEDGE_RATIO {hedge_ratio:g} gives a spread of '
+                f'{spread:+.4f} against prices {spot_price:.4f} / '
+                f'{fut_price:.4f}', details=details)
 
     spot_price = spot_sym.get('bid')
     fut_price = fut_sym.get('bid')

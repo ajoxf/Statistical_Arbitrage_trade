@@ -630,10 +630,49 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
     @app.route('/api/leg-prices')
     def api_leg_prices():
-        status = runtime_status()
-        first = (status.get('assets') or [{}])[0]
-        return jsonify({'leg_a': first.get('spot_price'),
-                        'leg_b': first.get('futures_price')})
+        """Mid prices for the two symbols the operator is looking at.
+
+        The beta suggestion and the capital preview both read this. It
+        used to return only the RUNNING asset's prices, so it went
+        blank — "unavailable" — in exactly the situations where the
+        operator needs it: setting a pair up for the first time, or
+        after changing a symbol that the engine has not adopted yet.
+        The symbols are passed in, so ask the broker about THOSE rather
+        than reporting whatever the engine happens to be streaming.
+        """
+        wanted_a = (request.args.get('leg_a') or '').strip()
+        wanted_b = (request.args.get('leg_b') or '').strip()
+        first = (runtime_status().get('assets') or [{}])[0]
+        prices = {'leg_a': None, 'leg_b': None}
+
+        # The engine's own figures are free and already fresh, but only
+        # when they belong to the symbols being asked about.
+        if wanted_a and first.get('rt_spot_symbol') == wanted_a:
+            prices['leg_a'] = first.get('spot_price')
+        if wanted_b and first.get('rt_fut_symbol') == wanted_b:
+            prices['leg_b'] = first.get('futures_price')
+
+        for key, symbol, role in (('leg_a', wanted_a, 'spot'),
+                                  ('leg_b', wanted_b, 'futures')):
+            if prices[key] or not symbol:
+                continue
+            _, leg = leg_for_role(role)
+            if leg is None:
+                continue
+            try:
+                specs = leg.ensure_symbol(symbol) or {}
+                bid, ask = specs.get('bid'), specs.get('ask')
+                if bid and ask:
+                    prices[key] = (bid + ask) / 2
+                elif bid or ask:
+                    prices[key] = bid or ask
+            except Exception:
+                pass                    # a blank suggestion, not a 500
+            finally:
+                close = getattr(leg, 'close', None)
+                if close:
+                    close()
+        return jsonify(prices)
 
     @app.route('/api/leg-specs')
     def api_leg_specs():
@@ -1133,7 +1172,18 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         if account:
             sql += ' WHERE account = ?'
             args.append(account)
-        sql += ' ORDER BY filled_at DESC LIMIT ?'
+        # Order on REAL time, not on the stamp as stored. `filled_at` is
+        # the broker's own wall clock encoded as an epoch, so two
+        # accounts on different server timezones are not comparable:
+        # live 2026-08-10 a UTC+3 broker's rows sorted three hours
+        # "newer" than a UTC+0 broker's, pushing the genuinely newest
+        # fills below the LIMIT where the operator could not see them
+        # and reported the log as not updating. Subtracting each row's
+        # own recorded offset puts every account on one clock; rows
+        # from before the offset was captured fall back to raw, which
+        # is what they were sorted on anyway.
+        sql += (' ORDER BY (filled_at - COALESCE(server_offset_sec, 0)'
+                ' * 1000) DESC LIMIT ?')
         args.append(limit)
 
         accounts = runtime_status().get('accounts') or {}

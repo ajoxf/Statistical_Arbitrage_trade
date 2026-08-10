@@ -288,24 +288,49 @@ def test_currency_mismatch_warns_about_the_combined_totals(cfg):
     assert check['status'] == 'WARN' and 'EUR' in check['message']
 
 
-def test_hedge_ratio_is_checked_against_both_contract_sizes(cfg):
-    """CLAUDE.md's open item: HEDGE_RATIO must be verified against the
-    brokers' real contract specs before LIVE. This is that check."""
+def test_contract_sizes_are_reported_but_never_as_a_beta_instruction(cfg):
+    """This check used to divide the contract sizes, call the result
+    the "implied hedge ratio" and tell the operator to set HEDGE_RATIO
+    to it. Live 2026-08-10 they did exactly that on a 10x mismatch and
+    the spread became -732 on legs priced 81 and 85.
+
+    Beta is the spread's PRICE coefficient. Contract sizes are handled
+    when sizing the hedge: L_B = L_A * C_A / (beta * C_B).
+    """
     cfg.TRADING['HEDGE_RATIO'] = 1.0
     futures = side('futures', 'account_b',
                    sym=symbol(symbol='GC1225', contract_size=50.0))
+    check = find(report(cfg, futures=futures), 'Contract sizes')
+    assert check['status'] == 'INFO'
+    assert 'does NOT set HEDGE_RATIO' in check['message']
+    # the hedge trades 2 lots on B for every 1 on A, at beta 1
+    assert check['details']['lots on Leg B per lot on Leg A'] == 2.0
+    assert 'implied hedge ratio' not in check.get('details', {})
+    assert not check.get('fix')
+
+
+def test_a_sane_beta_passes_on_the_prices_it_has_to_work_with(cfg):
+    """Gold spot vs its future at beta 1: a $20 basis on $3,300 legs."""
+    cfg.TRADING['HEDGE_RATIO'] = 1.0
+    futures = side('futures', 'account_b',
+                   sym=symbol(symbol='GC1225', bid=3320.0, ask=3320.2))
     check = find(report(cfg, futures=futures), 'Hedge ratio')
-    assert check['status'] == 'FAIL'
-    assert '2.0000' in check['message']
-    assert check['details']['implied hedge ratio'] == 2.0
+    assert check['status'] == 'PASS'
 
 
-def test_hedge_ratio_matching_the_specs_passes(cfg):
+def test_a_beta_that_wrecks_the_spread_fails_and_says_why(cfg):
+    """Beta 2 on a same-underlying pair turns a $20 basis into -$3,280
+    — bigger than the instruments themselves."""
     cfg.TRADING['HEDGE_RATIO'] = 2.0
     futures = side('futures', 'account_b',
-                   sym=symbol(symbol='GC1225', contract_size=50.0))
-    assert find(report(cfg, futures=futures), 'Hedge ratio')['status'] == \
-        'PASS'
+                   sym=symbol(symbol='GC1225', bid=3320.0, ask=3320.2))
+    check = find(report(cfg, futures=futures), 'Hedge ratio')
+    assert check['status'] == 'FAIL'
+    assert 'bigger than the instruments' in check['message']
+    fixes = ' '.join(check['fix'])
+    assert 'HEDGE_RATIO is 1' in fixes           # same underlying
+    assert 'price ratio' in fixes                # cross pairs
+    assert 'NOT the contract-size ratio' in fixes
 
 
 def test_both_legs_on_one_symbol_and_one_account_is_no_spread(cfg):
