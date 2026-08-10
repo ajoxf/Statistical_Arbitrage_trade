@@ -153,6 +153,11 @@
                 the coordinator refuses to run otherwise. Spread scenarios roll the
                 first leg back if the second one fails, so no test leaves a naked
                 position behind.
+                <!-- The banner claimed "minimum lot size" without ever
+                     saying what that was, so the only way to find out
+                     what a 40-scenario run would put through the account
+                     was to run it. -->
+                <div id="scenario-lot-sizes" class="mt-2"></div>
             </div>
             <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
                 <button type="button" class="btn btn-info" id="scenario-run-all"
@@ -183,6 +188,10 @@
                             <th style="width: 14em;">Scenario</th>
                             <th style="width: 5em;">Mode</th>
                             <th style="width: 7em;">Type</th>
+                            <th style="width: 11em;" class="text-nowrap">Lots
+                                <i class="bi bi-info-circle text-secondary"
+                                   title="The volume this row will send, read from the broker's own volume_min. Single-leg rows use that leg's minimum. Spread rows size the smaller leg UP so both clear their minimum at the hedge ratio — equal lots on unequal minimums is not a hedge, it is a naked position in the difference."></i>
+                            </th>
                             <th style="width: 6em;">Status</th>
                             <th>Detail</th>
                             <th style="width: 5em;"></th>
@@ -505,6 +514,7 @@ function renderScenarioRows() {
             <td class="small">${s.name}</td>
             <td><span class="badge ${s.mode === 'LIMIT' ? 'bg-primary' : 'bg-dark'}">${s.mode}</span></td>
             <td class="small text-secondary">${s.type}</td>
+            <td class="small text-nowrap" id="scenario-lots-${i}">—</td>
             <td id="scenario-status-${i}">${scenarioStatusBadge(scenarioState[i])}</td>
             <td id="scenario-detail-${i}" class="small text-secondary"
                 style="white-space: pre-wrap; font-family: var(--bs-font-monospace, monospace); font-size: 11px;"></td>
@@ -512,6 +522,43 @@ function renderScenarioRows() {
                         onclick="runSingleScenario(${i})">Run</button></td>
         </tr>`).join('');
     document.getElementById('scenario-total').textContent = SCENARIOS.length;
+    renderScenarioLots();
+}
+
+// Per-row volumes. These are LIVE orders, so the size belongs on the
+// row the operator is about to press Run on, not only in a banner
+// above the table that scrolls out of view during a 40-scenario run.
+let SCENARIO_SIZING = null;
+
+function renderScenarioLots() {
+    const s = SCENARIO_SIZING;
+    const legLots = (lots, symbol, notional) => {
+        if (lots == null) return '<span class="text-secondary">—</span>';
+        const money = notional == null ? ''
+            : ` <span class="text-secondary">$${Math.round(notional).toLocaleString()}</span>`;
+        return `<span class="font-monospace">${+lots.toFixed(4)}</span>`
+             + (symbol ? ` <span class="text-secondary">${symbol}</span>` : '')
+             + money;
+    };
+    SCENARIOS.forEach((scenario, i) => {
+        const cell = document.getElementById(`scenario-lots-${i}`);
+        if (!cell) return;
+        if (!s) { cell.innerHTML = '<span class="text-secondary">—</span>'; return; }
+        const type = String(scenario.type || '');
+        if (type.includes('SPR')) {
+            // Both legs go out, matched — show both.
+            cell.innerHTML =
+                legLots(s.pair_min_lots_a, s.leg_a_symbol, s.pair_min_notional_a_usd)
+                + '<br>'
+                + legLots(s.pair_min_lots_b, s.leg_b_symbol, s.pair_min_notional_b_usd);
+        } else if (type.includes('FUT')) {
+            cell.innerHTML = legLots(s.leg_b_min_lots, s.leg_b_symbol,
+                                     s.leg_b_min_notional_usd);
+        } else {
+            cell.innerHTML = legLots(s.leg_a_min_lots, s.leg_a_symbol,
+                                     s.leg_a_min_notional_usd);
+        }
+    });
 }
 
 function updateScenarioCounters() {
@@ -618,10 +665,52 @@ async function showScenarioAccounts() {
     }
 }
 
+// State the actual minimums, read from the broker, before anyone
+// presses a button that sends 40 real round trips. The two legs are
+// NOT the same size — on CFI the futures minimum is ten times the spot
+// minimum — so one figure would be wrong for one of them.
+async function showScenarioLotSizes() {
+    const host = document.getElementById('scenario-lot-sizes');
+    if (!host) return;
+    let s, d, sig;
+    try {
+        d = await (await fetch('/api/engine/status')).json();
+        // `sizing` is published INSIDE the signal block, not at the top
+        // level. Reading it from the wrong one is a silent "—".
+        sig = d.signal || {};
+        s = Object.assign({}, sig.sizing || d.sizing || {});
+    } catch (e) { return; }
+    s.leg_a_symbol = sig.rt_spot_symbol || '';
+    s.leg_b_symbol = sig.rt_fut_symbol || '';
+    SCENARIO_SIZING = s;
+    renderScenarioLots();
+    if (s.leg_a_min_lots == null && s.leg_b_min_lots == null) {
+        host.innerHTML = '<strong class="text-danger">Lot sizes unknown</strong>'
+            + ' — the engine has not read the symbol specs yet. Start the'
+            + ' launcher and re-check before running: these are LIVE orders'
+            + ' and you should know the size before sending them.';
+        return;
+    }
+    const money = (x) => (x == null ? '' :
+        ' ≈ $' + Math.round(x).toLocaleString());
+    const leg = (lots, notional) => (lots == null ? '—'
+        : (+lots.toFixed(4)) + ' lots' + money(notional));
+    host.innerHTML =
+        '<strong>Sizes this run will use:</strong> '
+        + 'Leg A ' + leg(s.leg_a_min_lots, s.leg_a_min_notional_usd)
+        + ' &nbsp;·&nbsp; Leg B ' + leg(s.leg_b_min_lots, s.leg_b_min_notional_usd)
+        + '. Single-leg scenarios use that leg’s own minimum; spread '
+        + 'scenarios size the smaller leg UP so both clear their minimum '
+        + 'at the hedge ratio (equal lots on unequal minimums is not a '
+        + 'hedge, it is a naked position in the difference).';
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     loadScenarios();
     showScenarioAccounts();
+    showScenarioLotSizes();
     setInterval(showScenarioAccounts, 15000);
+    setInterval(showScenarioLotSizes, 15000);
 });
 </script>
 {% endblock %}

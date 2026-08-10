@@ -32,34 +32,12 @@ try:
 except ImportError:
     mt5 = None
 
-# What MT5's initialize errors actually mean, and what to do about them.
-INIT_ERRORS = {
-    -10003: ("IPC initialize failed — Python could not start or attach "
-             "to a terminal", [
-                 "Open the MT5 terminal yourself and log in, THEN run this "
-                 "again (attaching to a running terminal is far more "
-                 "reliable than launching it)",
-                 "If terminal_path is set in config, check it points at "
-                 "the real terminal64.exe for THIS account",
-                 "Python must be 64-bit to talk to a 64-bit terminal",
-                 "A terminal started in portable mode (/portable) will not "
-                 "accept IPC from a normally-started one"]),
-    -10004: ("IPC timeout — the terminal did not answer in time", [
-        "The terminal may still be starting; wait and retry",
-        "Close and reopen the terminal, then retry"]),
-    -10005: ("No IPC — the terminal is not accepting API connections", [
-        "Tools > Options > Expert Advisors > Allow algorithmic trading",
-        "Restart the terminal after changing that"]),
-    -6: ("Authorization failed — login, password or server is wrong", [
-        "Check the login number and server string EXACTLY as the broker "
-        "gave them (server names are case- and space-sensitive)",
-        "Check the password in .env — the Settings page writes it there",
-        "An investor password connects but cannot trade; use the master "
-        "password"]),
-    -2: ("Invalid parameters passed to initialize", [
-        "Usually a bad terminal_path — clear it and let the app attach to "
-        "the running terminal"]),
-}
+# What MT5's initialize errors mean, and what to do about them.
+# Shared with statarb/diagnostics.py so the standalone checker and
+# the Exchanges-page checklist can never give different advice for
+# the same code — they did, and the web one was the wrong half.
+from statarb.mt5_errors import INIT_ERRORS      # noqa: E402
+
 
 ORDER_ERRORS = {
     10004: "Requote — the price moved; retry",

@@ -21,6 +21,8 @@ operator reads to decide the plumbing is sound.
 import math
 import time
 
+from . import sizing
+
 SCENARIO_TYPES = [
     ('BUY_SPOT', 'BUY_SPOT'),
     ('SELL_FUT', 'SELL_FUTURES'),
@@ -204,17 +206,17 @@ class ScenarioRunner:
         (10 oz), so a "LONG_SPR" built that way is 9 oz net short, and
         its reported cost is ~94% one leg. Size up the smaller leg until
         both clear their minimum at the configured hedge ratio.
+
+        The arithmetic lives in sizing.matched_minimum_lots, shared with
+        the sizing plan the Full Order Test Suite DISPLAYS. Two copies
+        would drift, and the copy on screen before a live run is the
+        one that must not be wrong.
         """
-        ratio = float(self.hedge_ratio or 1.0)
-        spot_min = self._volume(self.spot)
-        fut_min = self._volume(self.futures)
-        step = self.spot.specs().get('volume_step') or 0.01
-        spot_lots = max(spot_min, fut_min / ratio if ratio else fut_min)
-        # Round UP to the spot step so the minimum is never undercut.
-        spot_lots = math.ceil(spot_lots / step - 1e-9) * step
-        fut_step = self.futures.specs().get('volume_step') or 0.01
-        fut_lots = math.ceil(spot_lots * ratio / fut_step - 1e-9) * fut_step
-        return round(spot_lots, 8), round(fut_lots, 8)
+        return sizing.matched_minimum_lots(
+            self._volume(self.spot), self._volume(self.futures),
+            self.spot.specs().get('volume_step'),
+            self.futures.specs().get('volume_step'),
+            self.hedge_ratio)
 
     def open_market(self, side_leg, side, comment='SCENARIO MKT',
                     volume=None):

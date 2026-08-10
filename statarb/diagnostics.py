@@ -13,6 +13,8 @@ checklist is testable without MT5.
 
 from datetime import datetime
 
+from . import mt5_errors
+
 PASS, WARN, FAIL, INFO = 'PASS', 'WARN', 'FAIL', 'INFO'
 _RANK = {PASS: 0, INFO: 0, WARN: 1, FAIL: 2}
 
@@ -64,12 +66,18 @@ def check_leg(checklist, role, leg_name, terminal, symbol_report, config,
                            'The package is Windows-only'])
         return
     if not terminal.get('terminal'):
+        # Decode the code rather than printing one generic list. A live
+        # -10001 with the terminal open and logged in used to answer
+        # "Open the MT5 terminal" and "Log in", which describes work the
+        # operator had already done and reads as the tool being broken.
+        raw = terminal.get('error') or 'Cannot reach the terminal'
+        summary, fixes = mt5_errors.explain(raw)
         checklist.add(scope, 'MT5 terminal', FAIL,
-                      terminal.get('error') or 'Cannot reach the terminal',
-                      fix=['Open the MT5 terminal for this account',
-                           'Log in to the trading account',
-                           'Check the terminal path in Settings',
-                           'Start the leg runner for this account'])
+                      f'{summary} {raw}' if summary else raw,
+                      fix=fixes or ['Open the MT5 terminal for this account',
+                                    'Log in to the trading account',
+                                    'Check the terminal path in Settings',
+                                    'Start the leg runner for this account'])
         return
     checklist.add(scope, 'MT5 terminal', PASS,
                   f"Attached to {terminal.get('terminal_name') or 'MT5'}"

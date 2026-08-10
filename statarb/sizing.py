@@ -174,6 +174,31 @@ def margin(notional_usd, leverage):
     return notional_usd / float(leverage)
 
 
+def matched_minimum_lots(min_a, min_b, step_a, step_b, beta=1.0):
+    """The smallest MATCHED pair both legs can actually trade.
+
+    Each leg's own minimum is right for a single-leg test, but using
+    both on a pair is not a hedge: on CFI the spot minimum is 0.01
+    (1 oz) and the futures minimum is 0.1 (10 oz), so a "LONG_SPR"
+    built that way is 9 oz net short. Size the smaller leg UP until
+    both clear their minimum at the hedge ratio.
+
+    Shared by ScenarioRunner.pair_volumes (which trades it) and the
+    published sizing plan (which displays it), so the number shown on
+    the Full Order Test Suite before a run is the number that run
+    sends. Two implementations of this would eventually disagree, and
+    the one on screen would be the wrong one.
+    """
+    ratio = float(beta or 1.0)
+    step_a = step_a or 0.01
+    step_b = step_b or 0.01
+    lots_a = max(min_a or 0.0, (min_b or 0.0) / ratio if ratio else 0.0)
+    # Round UP, always: the minimum must never be undercut.
+    lots_a = math.ceil(lots_a / step_a - 1e-9) * step_a
+    lots_b = math.ceil(lots_a * ratio / step_b - 1e-9) * step_b
+    return round(lots_a, 8), round(lots_b, 8)
+
+
 def minimum_notional(contract_a, contract_b, price_a, price_b, beta,
                      min_a=0.0, min_b=0.0, mode='units'):
     """The smallest per-leg notional this PAIR can actually trade.
@@ -222,6 +247,8 @@ def plan(config, contract_a, contract_b, price_a, price_b,
     step_b = meta_b.get('volume_step') or 0.0
     min_a = meta_a.get('volume_min') or 0.0
     min_b = meta_b.get('volume_min') or 0.0
+    pair_min_a, pair_min_b = matched_minimum_lots(
+        min_a, min_b, step_a, step_b, beta)
 
     target_notional = float(trading.get('NOTIONAL_PER_LEG_USD', 0.0) or 0.0)
     reason = None
@@ -307,5 +334,25 @@ def plan(config, contract_a, contract_b, price_a, price_b,
         'min_notional_usd': floor,
         'lot_step_usd': step_usd,
         'notional_gap_pct': shortfall_pct,
+        # Each leg's own broker minimum, and what one of them is worth.
+        # The Full Order Test Suite trades at exactly these sizes and
+        # places REAL orders, but nothing published them, so the only
+        # way to find out what a run would cost was to run it. They are
+        # NOT interchangeable between legs — CFI's futures minimum is
+        # ten times its spot minimum.
+        'leg_a_min_lots': min_a,
+        'leg_b_min_lots': min_b,
+        'leg_a_min_notional_usd': (min_a * contract_a * price_a
+                                   if price_a else None),
+        'leg_b_min_notional_usd': (min_b * contract_b * price_b
+                                   if price_b else None),
+        # What a SPREAD scenario trades: the smaller leg sized up so
+        # both clear their minimum. Same function the runner calls.
+        'pair_min_lots_a': pair_min_a,
+        'pair_min_lots_b': pair_min_b,
+        'pair_min_notional_a_usd': (pair_min_a * contract_a * price_a
+                                    if price_a else None),
+        'pair_min_notional_b_usd': (pair_min_b * contract_b * price_b
+                                    if price_b else None),
         'reason': reason,
     }
