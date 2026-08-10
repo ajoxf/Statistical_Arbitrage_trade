@@ -1790,6 +1790,20 @@ class Coordinator:
             'capture_usd': capture,
             'edge_ratio': (capture / cost) if cost else None,
             'edge_required': self.config.COSTS.get('MIN_EDGE_MULTIPLE', 1.5),
+            # The edge test stated in MONEY. A bare "0.15x vs 1.5x" says
+            # a trade was refused without saying by how much, and the
+            # gap is the whole decision: $62 of capture against $615 of
+            # requirement is a different conversation from $600 vs $615.
+            'edge_capture_fraction': self.config.COSTS.get(
+                'TARGET_FRACTION', 0.5),
+            'edge_z': (abs(stats.z) if stats and stats.z is not None
+                       else None),
+            'edge_sigma': stats.sigma if stats else None,
+            'edge_required_usd': (
+                cost * self.config.COSTS.get('MIN_EDGE_MULTIPLE', 1.5)),
+            'edge_gap_usd': (
+                capture - cost * self.config.COSTS.get(
+                    'MIN_EDGE_MULTIPLE', 1.5)),
         })
         return block
 

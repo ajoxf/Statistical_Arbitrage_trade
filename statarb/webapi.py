@@ -498,6 +498,11 @@ def status_to_ui(status, config_raw):
             # "-" against every row.
             'std_ratio': first.get('edge_ratio'),
             'std_ratio_required': first.get('edge_required'),
+            'edge_capture_fraction': first.get('edge_capture_fraction'),
+            'edge_z': first.get('edge_z'),
+            'edge_sigma': first.get('edge_sigma'),
+            'edge_required_usd': first.get('edge_required_usd'),
+            'edge_gap_usd': first.get('edge_gap_usd'),
             'round_trip_cost_bps': first.get('rt_cost_bps'),
             'rt_cost_per_lot': first.get('rt_cost_per_lot'),
             'rt_lots': first.get('rt_lots'),

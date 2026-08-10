@@ -661,16 +661,32 @@
                     </div>
                 </div>
                 <div class="p-2" style="background: var(--bg-tertiary); border-radius: 4px; font-size: 0.75rem;">
-                    <div class="d-flex justify-content-between" title="Net profit target of the next trade ÷ its round-trip cost (fees + slippage). The Edge Filter only enters when this is ≥ the required multiple.">
-                        <span class="text-secondary">Net P&L / Cost:</span>
-                        <span id="std-ratio-value" class="fw-bold">-</span>
-                        <span class="text-secondary">/ req:</span>
-                        <span id="std-ratio-required">-</span>
+                    <!-- The edge test in MONEY. "0.15x vs 1.5x" said a
+                         trade was refused without saying by how much,
+                         and the size of the gap is the whole decision.
+                         (The Fee row that used to sit here reported a
+                         maker/taker split that does not exist on MT5,
+                         and always read 0; commissions are itemised in
+                         the round-trip breakdown below instead.) -->
+                    <div class="text-secondary mb-1" style="font-size: 0.7rem;">
+                        Edge check, at the current Z
                     </div>
-                    <div class="d-flex justify-content-between mt-1">
-                        <span class="text-secondary">Fee:</span>
-                        <span id="fee-type-used">-</span>
-                    </div>
+                    <table class="w-100" style="font-size: 0.7rem;" id="edge-breakdown">
+                        <tbody>
+                            <tr><td class="text-secondary">Expected capture</td>
+                                <td class="text-end text-secondary" id="edge-capture-calc">-</td>
+                                <td class="text-end font-monospace" id="edge-capture-usd">-</td></tr>
+                            <tr><td class="text-secondary">Required</td>
+                                <td class="text-end text-secondary" id="edge-required-calc">-</td>
+                                <td class="text-end font-monospace" id="edge-required-usd">-</td></tr>
+                            <tr style="border-top: 1px solid var(--border-color);">
+                                <td class="fw-bold pt-1" id="edge-gap-label">Shortfall</td>
+                                <td class="text-end text-secondary pt-1" id="std-ratio-value">-</td>
+                                <td class="text-end fw-bold font-monospace pt-1"
+                                    id="edge-gap-usd">-</td></tr>
+                        </tbody>
+                    </table>
+                    <span id="std-ratio-required" class="d-none">-</span>
                     <!-- Every component of the round trip on its own
                          line. One combined figure hid which half was
                          the problem, and could not be checked against
@@ -2831,12 +2847,14 @@
             const hasRequired = data.std_ratio_required !== null && data.std_ratio_required !== undefined;
 
             if (hasRatio) {
-                stdRatioValue.textContent = data.std_ratio.toFixed(2) + 'x';
+                stdRatioValue.textContent = data.std_ratio.toFixed(2) + 'x of '
+                    + (hasRequired ? data.std_ratio_required.toFixed(1) + 'x' : '?');
                 const meetsRequirement = hasRequired && data.std_ratio >= data.std_ratio_required;
-                stdRatioValue.className = meetsRequirement ? 'price-up fw-bold' : 'price-down fw-bold';
+                stdRatioValue.className = 'text-end pt-1 '
+                    + (meetsRequirement ? 'price-up' : 'price-down');
             } else {
                 stdRatioValue.textContent = '-';
-                stdRatioValue.className = 'fw-bold';
+                stdRatioValue.className = 'text-end text-secondary pt-1';
             }
 
             if (hasRequired) {
@@ -2857,17 +2875,46 @@
                 }
             }
 
-            const feeTypeEl = document.getElementById('fee-type-used');
-            if (feeTypeEl && data.order_mode && data.fee_bps_used !== undefined) {
-                const feeType = data.order_mode === 'LIMIT' ? 'Maker' : 'Taker';
-                feeTypeEl.textContent = feeType + ' (' + data.fee_bps_used + ' bps/side)';
-                const cb = data.cost_breakdown;
-                if (cb) {
-                    feeTypeEl.title =
-                        'Entry: spot ' + cb.entry_spot_bps + ' + fut ' + cb.entry_fut_bps + ' bps (' + cb.entry_mode + ')\n' +
-                        'Exit:  spot ' + cb.exit_spot_bps  + ' + fut ' + cb.exit_fut_bps  + ' bps (' + cb.exit_mode  + ')';
-                }
-            }
+            // The same test, in dollars. The ratio alone never said
+            // whether a refusal was near-miss or hopeless, and on this
+            // engine that has been the difference between "wait for a
+            // better z" and "this pair cannot be traded here".
+            const eSet = (id, text, cls) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.textContent = text;
+                if (cls != null) el.className = cls;
+            };
+            const cash = (x) => (x == null ? '-'
+                : (x < 0 ? '−$' : '$') + Math.abs(x).toFixed(2));
+            const cap  = data.expected_capture_usd;
+            const need = data.edge_required_usd;
+            const gap  = data.edge_gap_usd;
+            const frac = data.edge_capture_fraction;
+            const eZ   = data.edge_z, eSig = data.edge_sigma;
+            const units = data.rt_units;
+
+            eSet('edge-capture-calc',
+                 (frac != null && eZ != null && eSig != null && units != null)
+                 ? frac + ' × z ' + eZ.toFixed(2) + ' × σ ' + eSig.toFixed(4)
+                   + ' × ' + Math.round(units)
+                 : (eZ == null ? 'no usable Z yet' : ''));
+            eSet('edge-capture-usd', cash(cap), 'text-end font-monospace');
+            eSet('edge-required-calc',
+                 (data.std_ratio_required != null
+                  && data.round_trip_cost_usd != null)
+                 ? data.std_ratio_required.toFixed(1) + ' × round trip '
+                   + cash(data.round_trip_cost_usd) : '');
+            eSet('edge-required-usd', cash(need), 'text-end font-monospace');
+
+            const short = gap != null && gap < 0;
+            eSet('edge-gap-label', gap == null ? 'Gap'
+                 : (short ? 'Shortfall' : 'Surplus'),
+                 'fw-bold pt-1 ' + (gap == null ? '' :
+                     (short ? 'price-down' : 'price-up')));
+            eSet('edge-gap-usd', cash(gap),
+                 'text-end fw-bold font-monospace pt-1 '
+                 + (gap == null ? '' : (short ? 'price-down' : 'price-up')));
 
             // Round-trip cost, with the whole derivation in the
             // tooltip. The old text described W3's model ("Entry +
