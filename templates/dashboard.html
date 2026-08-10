@@ -679,8 +679,11 @@
                     </div>
                     <table class="w-100" style="font-size: 0.7rem;" id="edge-breakdown">
                         <tbody>
-                            <tr><td class="text-secondary">Expected capture</td>
+                            <tr><td class="text-secondary">Capture, per lot</td>
                                 <td class="text-end text-secondary" id="edge-capture-calc">-</td>
+                                <td class="text-end font-monospace" id="edge-capture-per-lot">-</td></tr>
+                            <tr><td class="text-secondary" id="edge-capture-scale-label">&times; lots</td>
+                                <td class="text-end text-secondary"></td>
                                 <td class="text-end font-monospace" id="edge-capture-usd">-</td></tr>
                             <tr><td class="text-secondary">Required</td>
                                 <td class="text-end text-secondary" id="edge-required-calc">-</td>
@@ -2900,11 +2903,19 @@
             const eZ   = data.edge_z, eSig = data.edge_sigma;
             const units = data.rt_units;
 
+            // Per lot, then scaled — the same shape as the round-trip
+            // table below, so the two totals can be read against each
+            // other at either size without dividing anything by hand.
+            const csizeE = data.rt_contract_size;
             eSet('edge-capture-calc',
-                 (frac != null && eZ != null && eSig != null && units != null)
+                 (frac != null && eZ != null && eSig != null && csizeE != null)
                  ? frac + ' × z ' + eZ.toFixed(2) + ' × σ ' + eSig.toFixed(4)
-                   + ' × ' + Math.round(units)
+                   + ' × ' + Math.round(csizeE)
                  : (eZ == null ? 'no usable Z yet' : ''));
+            eSet('edge-capture-per-lot', cash(data.edge_capture_per_lot),
+                 'text-end font-monospace');
+            eSet('edge-capture-scale-label', data.rt_lots != null
+                 ? '× ' + (+data.rt_lots.toFixed(2)) + ' lots' : '× lots');
             eSet('edge-capture-usd', cash(cap), 'text-end font-monospace');
             eSet('edge-required-calc',
                  (data.std_ratio_required != null

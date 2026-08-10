@@ -501,6 +501,7 @@ def status_to_ui(status, config_raw):
             'edge_capture_fraction': first.get('edge_capture_fraction'),
             'edge_z': first.get('edge_z'),
             'edge_sigma': first.get('edge_sigma'),
+            'edge_capture_per_lot': first.get('edge_capture_per_lot'),
             'edge_required_usd': first.get('edge_required_usd'),
             'edge_gap_usd': first.get('edge_gap_usd'),
             'round_trip_cost_bps': first.get('rt_cost_bps'),

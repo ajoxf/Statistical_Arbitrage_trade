@@ -1799,6 +1799,11 @@ class Coordinator:
             'edge_z': (abs(stats.z) if stats and stats.z is not None
                        else None),
             'edge_sigma': stats.sigma if stats else None,
+            # Per lot as well as scaled, for the same reason the round
+            # trip is: "$5 of capture against $64 of cost" is a
+            # comparison an operator can hold in their head, and it
+            # does not change when the position size does.
+            'edge_capture_per_lot': (capture / lots) if lots else None,
             'edge_required_usd': (
                 cost * self.config.COSTS.get('MIN_EDGE_MULTIPLE', 1.5)),
             'edge_gap_usd': (
