@@ -342,6 +342,21 @@ class ScenarioRunner:
             if state.get('filled_volume'):
                 break
             if not state.get('still_open'):
+                # Gone from the book with nothing reported filled. MT5
+                # turns a filled pending into a POSITION carrying the
+                # ORDER's ticket, and deal history lags that by a beat,
+                # so a zero here is not yet an answer — CLAUDE.md's own
+                # rule, applied on the way OUT of the book as well as
+                # after a cancel. Believing the first read sent the
+                # scenario down the leak-recovery path, which flattens
+                # at once: live 2026-08-10 a 120s hold closed in 4s
+                # because of it.
+                for _ in range(3):
+                    self.sleep(0.3)
+                    state = (side_leg.leg.order_state(place_action['order'])
+                             or state)
+                    if state.get('filled_volume'):
+                        break
                 break
             self.sleep(0.3)
         if not state.get('filled_volume'):

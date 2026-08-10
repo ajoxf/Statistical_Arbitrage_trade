@@ -802,3 +802,37 @@ def test_a_long_hold_is_reported_in_the_scenario_output():
     quiet, _, _ = make_runner(hold_sec=0.5)
     assert 'holding the position' not in quiet.run(
         'BUY_SPOT', 'MARKET', 'normal')['detail']
+
+
+def test_a_fill_reported_late_is_still_a_fill():
+    """MT5 turns a filled pending into a POSITION carrying the ORDER's
+    ticket, and deal history lags that by a beat. wait_for_fill
+    believed the first zero-fill read the moment the order left the
+    book, so the scenario fell into leak recovery and flattened at
+    once — live 2026-08-10 a 120-second hold closed in four seconds.
+    """
+    runner, spot_leg, _ = make_runner(hold_sec=120.0)
+    reads = {'n': 0}
+
+    def lagging_state(ticket):
+        reads['n'] += 1
+        if reads['n'] == 1:                 # gone, nothing filled yet
+            return {'still_open': False, 'filled_volume': 0.0}
+        return {'still_open': False, 'filled_volume': 0.01,
+                'price': 65.201, 'position_tickets': [63]}
+
+    spot_leg.order_state = lagging_state
+    placed = {'ok': True, 'order': 64, 'side': 'BUY', 'tgt': 65.245,
+              'volume': 0.01}
+    assert runner.wait_for_fill(runner.spot, placed) is not None
+    assert reads['n'] > 1                   # it re-read rather than gave up
+
+
+def test_an_order_that_really_did_not_fill_still_reports_nothing():
+    """The re-read must not manufacture a fill out of patience."""
+    runner, spot_leg, _ = make_runner()
+    spot_leg.order_state = lambda ticket: {'still_open': False,
+                                           'filled_volume': 0.0}
+    placed = {'ok': True, 'order': 64, 'side': 'BUY', 'tgt': 65.245,
+              'volume': 0.01}
+    assert runner.wait_for_fill(runner.spot, placed) is None
