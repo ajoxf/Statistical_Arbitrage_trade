@@ -756,12 +756,24 @@ while a restart applied another.
 - **No stamp** (an install predating this) -> the value is KEPT and
   merely stamped, unless it is implausible against the live prices,
   which settles the question on its own.
-- **`suggest()` depends on `pair_type` and is harmful backwards.** Same
-  underlying -> beta is 1 and the spread IS the basis; the price ratio
-  there (~1.014 on gold) collapses the spread to pennies and deletes
-  what the strategy trades. Two different instruments -> the price
-  ratio, because beta 1 on XAGUSD (38) against XAUUSD (4,000) is not a
-  spread, it is gold's price with a rounding error subtracted.
+- **`suggest()` depends on `pair_type` AND on whether the two prices
+  are on the same scale.** Three cases, and two of them are beta 1:
+  - Same underlying -> 1, and the spread IS the basis. The price ratio
+    there (~1.014 on gold) collapses a $59 basis to pennies.
+  - Different instruments, SAME scale (WTI 83 vs Brent 86, both $/bbl)
+    -> 1, and the spread is the DIFFERENTIAL. This case used to fall
+    into the ratio branch and produced the operator's "Why is the
+    spread Incorrect?" (2026-08-10): +3.30 became -0.05. Nothing was
+    miscomputed — 86.4550 - 1.04 x 83.1750 really is -0.047 — but the
+    ratio CENTRES the series on zero by construction, discarding the
+    level that names the trade. It buys nothing: the legs move together
+    so sigma is all but identical, and only readability changes.
+  - Different instruments, DIFFERENT scale (silver 65 vs gold 4,352)
+    -> the price ratio, because beta 1 there is not a spread at all,
+    it is gold's own price with a rounding error subtracted.
+  The boundary is `COMPARABLE_LOW/HIGH` (0.5-2.0), deliberately wide:
+  the only question it answers is "would beta 1 be dominated by one
+  leg?", and at 2x it still would not be.
 - **It runs inside `_setup_symbols`, before `_warm_start`**, because
   `_series_key` includes beta and the warm start seeds the window from
   rows matching it. Re-deriving after the seed would hand the strategy

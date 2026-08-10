@@ -827,14 +827,15 @@ class PricedLeg(SymbolFakeLeg):
 
 
 def oil_coordinator(config, tmp_path, monkeypatch, beta, stamp,
-                    pair_type='RELATED'):
+                    pair_type='RELATED', legs=('USOIL', 'UKOIL'),
+                    prices=(82.61, 86.05)):
     monkeypatch.chdir(tmp_path)
     (tmp_path / 'config.json').write_text(json.dumps(
         {'trading': {'HEDGE_RATIO': beta}}))
     from statarb.coordinator import Coordinator
     config.ASSETS = {'OIL': dict(config.ASSETS['GOLD'],
-                                 spot_symbols=['USOIL'],
-                                 futures_symbols=['UKOIL'],
+                                 spot_symbols=[legs[0]],
+                                 futures_symbols=[legs[1]],
                                  pair_type=pair_type)}
     config.TRADING['HEDGE_RATIO'] = beta
     if stamp is None:
@@ -843,9 +844,16 @@ def oil_coordinator(config, tmp_path, monkeypatch, beta, stamp,
         config.TRADING['HEDGE_RATIO_FOR'] = stamp
     coord = Coordinator(config, trading_mode='PAPER',
                         config_path=str(tmp_path / 'config.json'))
-    coord.spot_leg = PricedLeg('MT5', {'USOIL': 'WTI'}, 82.61)
-    coord.futures_leg = PricedLeg('MT5', {'UKOIL': 'Brent'}, 86.05)
+    coord.spot_leg = PricedLeg('MT5', {legs[0]: 'Leg A'}, prices[0])
+    coord.futures_leg = PricedLeg('MT5', {legs[1]: 'Leg B'}, prices[1])
     return coord
+
+
+# WTI at 83 and Brent at 86 are the SAME scale, so the derived beta is
+# 1 and the spread is their difference. Silver at 65 against gold at
+# 4,352 is not, and there the price ratio is the only thing that makes
+# subtracting them mean anything.
+SCALED = {'legs': ('XAGUSD', 'XAUUSD'), 'prices': (64.686, 4352.26)}
 
 
 def test_changing_the_pair_re_derives_the_hedge_ratio(config, tmp_path,
@@ -855,8 +863,7 @@ def test_changing_the_pair_re_derives_the_hedge_ratio(config, tmp_path,
                             'XAGUSD|XAUUSD')
     with caplog.at_level('WARNING'):
         assert coord._setup_symbols() is True
-    assert config.TRADING['HEDGE_RATIO'] == pytest.approx(86.05 / 82.61,
-                                                          rel=1e-4)
+    assert config.TRADING['HEDGE_RATIO'] == 1.0
     assert config.TRADING['HEDGE_RATIO_FOR'] == 'USOIL|UKOIL'
     assert 'XAGUSD/XAUUSD' in caplog.text        # names the pair it left
 
@@ -870,7 +877,7 @@ def test_the_new_hedge_ratio_reaches_config_json(config, tmp_path,
                             'XAGUSD|XAUUSD')
     coord._setup_symbols()
     saved = json.loads((tmp_path / 'config.json').read_text())['trading']
-    assert saved['HEDGE_RATIO'] == pytest.approx(86.05 / 82.61, rel=1e-4)
+    assert saved['HEDGE_RATIO'] == 1.0
     assert saved['HEDGE_RATIO_FOR'] == 'USOIL|UKOIL'
 
 
@@ -902,8 +909,7 @@ def test_an_unstamped_impossible_ratio_is_corrected(config, tmp_path,
     itself: no operator chose a spread of -5469."""
     coord = oil_coordinator(config, tmp_path, monkeypatch, 66.94, None)
     coord._setup_symbols()
-    assert config.TRADING['HEDGE_RATIO'] == pytest.approx(86.05 / 82.61,
-                                                          rel=1e-4)
+    assert config.TRADING['HEDGE_RATIO'] == 1.0
 
 
 def test_an_open_position_freezes_the_hedge_ratio(config, tmp_path,
@@ -940,7 +946,7 @@ def test_the_ratio_is_settled_before_the_window_is_seeded(config, tmp_path,
     before = coord._series_key('OIL')
     coord._setup_symbols()
     assert coord._series_key('OIL') != before
-    assert str(round(86.05 / 82.61, 6)) in coord._series_key('OIL')
+    assert '1.000000' in coord._series_key('OIL')
 
 
 def test_a_hand_set_ratio_is_stamped_so_a_restart_keeps_it(client):
@@ -956,3 +962,28 @@ def test_a_hand_set_ratio_is_stamped_so_a_restart_keeps_it(client):
         trading = json.load(f)['trading']
     assert trading['HEDGE_RATIO'] == 1.0416
     assert trading['HEDGE_RATIO_FOR'] == 'USOIL|UKOIL'
+
+
+def test_two_instruments_on_different_scales_get_the_price_ratio(
+        config, tmp_path, monkeypatch):
+    """Silver at 65 against gold at 4,352: beta 1 there is not a spread,
+    it is gold's own price with a rounding error subtracted."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 1.0,
+                            'USOIL|UKOIL', **SCALED)
+    coord._setup_symbols()
+    assert config.TRADING['HEDGE_RATIO'] == pytest.approx(
+        4352.26 / 64.686, rel=1e-4)
+
+
+def test_a_same_scale_pair_keeps_the_level_that_names_the_trade(
+        config, tmp_path, monkeypatch):
+    """Operator, 2026-08-10: "Why is the spread Incorrect?" — the oil
+    spread had gone from +3.30 to -0.05. Nothing was miscomputed; beta
+    had been set to the price ratio, which centres the series on zero
+    by construction and throws away the differential the pair is
+    traded on."""
+    coord = oil_coordinator(config, tmp_path, monkeypatch, 66.94,
+                            'XAGUSD|XAUUSD')
+    coord._setup_symbols()
+    beta = config.TRADING['HEDGE_RATIO']
+    assert 86.05 - beta * 82.61 == pytest.approx(3.44, abs=0.01)

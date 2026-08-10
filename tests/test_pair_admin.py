@@ -362,7 +362,18 @@ def test_different_instruments_are_suggested_the_price_ratio(tmp_path,
     legs comparable at all."""
     body = _beta_client(tmp_path, monkeypatch, 'RELATED', 64.686, 4352.26)
     assert body['suggested_beta'] == pytest.approx(4352.26 / 64.686)
-    assert 'price ratio' in body['reason']
+    assert 'different scales' in body['reason']
+
+
+def test_two_related_instruments_at_the_same_price_are_suggested_one(
+        tmp_path, monkeypatch):
+    """WTI 83 vs Brent 86 are both dollars a barrel, so their
+    DIFFERENCE is the series traded. The price ratio (1.04) centres it
+    on zero and deletes that level for no gain in sigma — live
+    2026-08-10, the operator's +3.30 spread reading -0.05."""
+    body = _beta_client(tmp_path, monkeypatch, 'RELATED', 83.175, 86.455)
+    assert body['suggested_beta'] == 1.0
+    assert 'same scale' in body['reason']
 
 
 @pytest.mark.parametrize('pair_type', ['SPOT_FUTURE', 'FUTURE_FUTURE'])

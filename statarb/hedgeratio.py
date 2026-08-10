@@ -32,6 +32,13 @@ BASIS_TYPES = ('SPOT_FUTURE', 'FUTURE_FUTURE')
 # block blocks entries on.
 MAX_SPREAD_FRACTION = 0.5
 
+# When two different instruments are quoted close enough to each other
+# that subtracting one from the other is already meaningful. WTI 83 vs
+# Brent 86 is 1.04 and belongs here; silver 38 vs gold 4,000 is 105 and
+# does not. Deliberately wide — the question is only "is beta 1 going
+# to be dominated by one leg?", and at 2x it still is not.
+COMPARABLE_LOW, COMPARABLE_HIGH = 0.5, 2.0
+
 
 def pair_signature(spot_symbol, futures_symbol):
     """What a beta was computed FOR. Stamped beside the value so a pair
@@ -53,11 +60,24 @@ def suggest(pair_type, price_a, price_b):
         ratio of ~1.014, and a beta of 1.014 turns a $59 basis into
         pennies of rounding.
 
-    Two different instruments (WTI vs Brent, silver vs gold) — no
-        arbitrage ties them, so the price ratio is what makes a spread
-        between them mean anything. Beta 1 on XAGUSD (38) against
-        XAUUSD (4,000) is not a spread at all, it is gold's own price
-        with a rounding error subtracted.
+    Two different instruments priced on DIFFERENT scales (silver at 38
+        against gold at 4,000) — the price ratio, because beta 1 there
+        is not a spread at all, it is gold's own price with a rounding
+        error subtracted. The ratio is what brings them onto the same
+        scale.
+
+    Two different instruments priced on the SAME scale (WTI and Brent,
+        both dollars a barrel, 83 against 86) — beta 1 again, and the
+        spread is the DIFFERENTIAL. This case used to fall into the
+        price-ratio branch, which is how the operator's oil pair went
+        from a +3.30 spread to -0.05 (2026-08-10, "Why is the spread
+        Incorrect?"). Nothing was miscomputed — 86.4550 - 1.04 x 83.1750
+        really is -0.047 — but the ratio CENTRES the series on zero by
+        construction, so it throws away the level that names the trade
+        and leaves a number that reads as broken. It buys nothing for
+        it: sigma is all but identical between the two (the legs move
+        together and beta shifts by 4%), so the edge is the same and
+        only the readability differs.
     """
     pair_type = (pair_type or 'SPOT_FUTURE').upper()
     if pair_type in BASIS_TYPES:
@@ -66,10 +86,19 @@ def suggest(pair_type, price_a, price_b):
                      f'is 1')
     if not price_a or not price_b or price_a <= 0 or price_b <= 0:
         return None, 'both legs need a live price before beta can be derived'
-    return round(price_b / price_a, 6), (
-        f'{pair_type}: {price_b:,.4f} / {price_a:,.4f} — two different '
-        f'instruments have no basis tying them, so beta is the price '
-        f'ratio, which is what makes a spread between them meaningful')
+    ratio = price_b / price_a
+    if COMPARABLE_LOW <= ratio <= COMPARABLE_HIGH:
+        return 1.0, (
+            f'{pair_type}, but {price_a:,.4f} and {price_b:,.4f} are '
+            f'already on the same scale — beta 1 makes the spread their '
+            f'DIFFERENCE ({price_b - price_a:+,.4f}), which is the series '
+            f'this pair is actually traded on. The price ratio '
+            f'({ratio:,.4f}) would centre it on zero and throw that level '
+            f'away for no gain in sigma')
+    return round(ratio, 6), (
+        f'{pair_type}: {price_b:,.4f} / {price_a:,.4f} — the two legs are '
+        f'on different scales, so beta 1 would just be the bigger leg\'s '
+        f'own price; the ratio is what brings them onto the same scale')
 
 
 def spread_for(beta, price_a, price_b):
