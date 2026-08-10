@@ -102,6 +102,22 @@ class ExitLadder:
         buffer = 1 + exits.get('M2M_BUFFER_PCT', 0) / 100
         return margin * buffer
 
+    def _hedge_units(self, lots, contract_size):
+        """(contract size, lots) for Leg B, from the ASSET config.
+
+        The ladder is handed only Leg A's size, but the round trip pays
+        Leg B's bid-ask on Leg B's units. Falls back to Leg A's when
+        the asset has no separate futures contract size — which is the
+        common case and exactly the old behaviour.
+        """
+        asset = next((a for a in self.config.ASSETS.values()
+                      if a.get('enabled', True)), {})
+        contract_b = asset.get('fut_lot_size') or contract_size
+        beta = self.config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0
+        lots_b = (lots * contract_size / (beta * contract_b)
+                  if contract_b else lots)
+        return contract_b, lots_b
+
     def build_plan(self, lots, contract_size, entry_z, sigma, half_life_sec,
                    market_data, manual_target_usd=None):
         """Compute the frozen exit levels. Returns None when the trade
@@ -129,8 +145,12 @@ class ExitLadder:
         elif exits.get('TP_USD_PER_LOT', 0) > 0:
             tp = exits['TP_USD_PER_LOT'] * lots
 
+        # Leg B is priced in its own units. Derived here rather than
+        # passed in so every caller of build_plan gets it right.
+        contract_b, lots_b = self._hedge_units(lots, contract_size)
         rt_cost = costs_mod.round_trip_cost(
-            market_data, lots, contract_size, self.config.COSTS)
+            market_data, lots, contract_size, self.config.COSTS,
+            lots_b=lots_b, contract_b=contract_b)
 
         if manual_target_usd is not None:
             # The operator's level IS the plan. Their target still has

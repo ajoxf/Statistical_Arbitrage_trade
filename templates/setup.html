@@ -788,6 +788,16 @@ async function showScenarioLotSizes() {
     SCENARIO_SIZING = s;
     renderScenarioLots();
 
+    // A saved symbol the engine has not adopted means these buttons
+    // will trade the OLD pair, whatever the config now says.
+    const pending = (spec && spec.pending_restart) || {};
+    const stale = Object.keys(pending).map(function (leg) {
+        const p = pending[leg];
+        return (leg === 'spot' ? 'Leg A' : 'Leg B') + ' will trade <code>'
+             + p.running + '</code>, not the saved <code>' + p.configured
+             + '</code>';
+    });
+
     const broken = [s.leg_a_error && `Leg A: ${s.leg_a_error}`,
                     s.leg_b_error && `Leg B: ${s.leg_b_error}`]
                    .filter(Boolean);
@@ -810,7 +820,12 @@ async function showScenarioLotSizes() {
         + '. Single-leg scenarios use that leg’s own minimum; spread '
         + 'scenarios size the smaller leg UP so both clear their minimum '
         + 'at the hedge ratio (equal lots on unequal minimums is not a '
-        + 'hedge, it is a naked position in the difference).';
+        + 'hedge, it is a naked position in the difference).'
+        + (stale.length
+            ? '<div class="text-danger mt-1"><strong>Restart pending.</strong> '
+              + stale.join('; ') + '. These sizes are for the pair that '
+              + 'will actually trade.</div>'
+            : '');
 }
 
 document.addEventListener('DOMContentLoaded', function() {

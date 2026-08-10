@@ -1467,12 +1467,18 @@ class Coordinator:
         asset_key = (asset_key if asset_key in self.active_assets
                      else next(iter(self.active_assets)))
         asset = self.active_assets[asset_key]
-        contract = self.config.ASSETS.get(asset_key, {}).get('lot_size', 100.0)
+        # Each leg's OWN contract size. Passing Leg A's to both made
+        # every futures P&L in the scenario report wrong by the ratio
+        # between them — invisible on gold (100 oz both legs), a 50x
+        # error on a gold/silver pair.
+        cfg = self.config.ASSETS.get(asset_key, {})
+        contract_a = cfg.get('lot_size', 100.0)
+        contract_b = cfg.get('fut_lot_size') or contract_a
         spot = scenarios.Leg(
-            self.spot_leg, asset['spot_symbol'], 'SPOT', contract,
+            self.spot_leg, asset['spot_symbol'], 'SPOT', contract_a,
             self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0))
         futures = scenarios.Leg(
-            self.futures_leg, asset['futures_symbol'], 'FUTURES', contract,
+            self.futures_leg, asset['futures_symbol'], 'FUTURES', contract_b,
             self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0))
         return spot, futures, None
 
@@ -1780,8 +1786,10 @@ class Coordinator:
             'sizing': size,
         }
         try:
-            cost = costs_mod.round_trip_cost(md, lots, contract,
-                                             self.config.COSTS)
+            cost = costs_mod.round_trip_cost(
+                md, lots, contract, self.config.COSTS,
+                lots_b=size.get('leg_b_lots'),
+                contract_b=size.get('leg_b_contract'))
             capture = costs_mod.expected_capture(
                 stats.z if stats else None,
                 stats.sigma if stats else None, lots, contract,

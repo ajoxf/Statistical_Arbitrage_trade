@@ -691,10 +691,21 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         asset_key = next((k for k, v in assets.items()
                           if v.get('enabled', True)), None)
         asset = assets.get(asset_key) or {}
-        out = {'asset': asset_key, 'legs': {}}
+
+        # The symbols the scenarios will ACTUALLY trade. The runner
+        # builds its legs from the coordinator's active_assets, frozen
+        # at startup, so after a symbol change the saved name and the
+        # traded one differ until a restart. Quoting the saved one here
+        # would print the new symbol's lot sizes above buttons that
+        # send orders on the old symbol.
+        first = (runtime_status().get('assets') or [{}])[0]
+        running = {'spot': first.get('rt_spot_symbol'),
+                   'futures': first.get('rt_fut_symbol')}
+        out = {'asset': asset_key, 'legs': {},
+               'pending_restart': webapi._pending_symbols(first, raw)}
         for role, key in (('spot', 'spot_symbols'),
                           ('futures', 'futures_symbols')):
-            symbol = (asset.get(key) or [''])[0]
+            symbol = running.get(role) or (asset.get(key) or [''])[0]
             entry = {'symbol': symbol, 'ok': False}
             name, leg = leg_for_role(role)
             entry['account'] = name

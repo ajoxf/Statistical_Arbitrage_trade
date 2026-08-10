@@ -620,3 +620,59 @@ def test_close_retries_are_rate_limited(coord):
     assert not coord._close_is_due(pos)              # too soon
     pos.last_close_attempt = datetime.now() - timedelta(seconds=30)
     assert coord._close_is_due(pos)                  # cooldown elapsed
+
+
+# --- the round trip is priced per leg -------------------------------
+
+def test_each_leg_pays_its_own_spread_on_its_own_units():
+    """Live 2026-08-10 on XAGUSD/XAUUSD the cost card read:
+
+        XAGUSD spread 0.0460 x 5000 = $230.00
+        XAUUSD spread 0.2400 x 5000 = $1200.00   <-- gold is 100/lot
+
+    Both legs were multiplied by LEG A's units. Gold's real cost on
+    1.15 lots of a 100-unit contract is 0.24 x 100 x 1.15 = $27.60,
+    not $1,200 — and the edge filter, the exit ladder's cost floor and
+    the expected value all read that number.
+    """
+    from statarb import costs
+
+    md = {'spot_bid': 64.633, 'spot_ask': 64.679,
+          'futures_bid': 4349.91, 'futures_ask': 4350.15}
+    cfg = {'SPREAD_COST_FACTOR': 1.0}
+
+    cost = costs.round_trip_cost(md, lots=1.55, contract_size=5000.0,
+                                 costs_cfg=cfg,
+                                 lots_b=1.15, contract_b=100.0)
+    silver = 0.046 * 1.55 * 5000
+    gold = 0.24 * 1.15 * 100
+    assert cost == pytest.approx(silver + gold)
+    assert cost == pytest.approx(356.5 + 27.6, rel=1e-3)
+    # ...and nowhere near the figure the old model produced
+    assert cost < 1000
+
+
+def test_leg_b_defaults_to_leg_a_so_matched_pairs_are_unchanged():
+    """Gold spot vs its future: 100 oz both legs, equal lots. The old
+    single-size call must give exactly the same answer."""
+    from statarb import costs
+
+    md = {'spot_bid': 4292.55, 'spot_ask': 4292.68,
+          'futures_bid': 4351.38, 'futures_ask': 4351.72}
+    cfg = {'SPREAD_COST_FACTOR': 1.0}
+    one = costs.round_trip_cost(md, 1.15, 100.0, cfg)
+    both = costs.round_trip_cost(md, 1.15, 100.0, cfg,
+                                 lots_b=1.15, contract_b=100.0)
+    assert one == pytest.approx(both)
+    assert one == pytest.approx((0.13 + 0.34) * 1.15 * 100, rel=1e-9)
+
+
+def test_commission_is_charged_on_each_legs_own_lots():
+    from statarb import costs
+
+    md = {'spot_bid': 100.0, 'spot_ask': 100.0,
+          'futures_bid': 100.0, 'futures_ask': 100.0}
+    cfg = {'COMMISSION_PER_LOT_SPOT': 10.0, 'COMMISSION_PER_LOT_FUT': 20.0}
+    cost = costs.round_trip_cost(md, lots=2.0, contract_size=100.0,
+                                 costs_cfg=cfg, lots_b=0.5, contract_b=1000.0)
+    assert cost == pytest.approx(10.0 * 2.0 + 20.0 * 0.5)
