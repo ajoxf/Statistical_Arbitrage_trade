@@ -255,14 +255,25 @@ def _check_symbol(checklist, scope, role, report, config, asset, terminal):
                           f'{contract:g} per lot, matching the configured '
                           f'lot size')
         else:
+            # NOT an operator task. There is no contract-size field on
+            # the Settings page — the owner had it removed because MT5
+            # already knows the answer — and the engine adopts the
+            # broker's number at startup and writes it back to the
+            # config. So this is a WARN saying the adoption has not run
+            # yet, with the reason it has not, rather than a FAIL
+            # telling the operator to edit a control that is not there.
             checklist.add(
-                scope, 'Contract size', FAIL,
-                f'Broker says {contract:g} per lot but the asset is '
-                f'configured as {configured_contract:g} — P&L and the '
-                f'hedge ratio would be wrong by '
-                f'{contract / configured_contract:.2f}x',
-                fix=[f'Set the contract size to {contract:g} in Settings, '
-                     f'or correct HEDGE_RATIO for the difference'])
+                scope, 'Contract size', WARN,
+                f'Broker says {contract:g} per lot, config still says '
+                f'{configured_contract:g}. The engine takes the broker\'s '
+                f'number for P&L and sizing and saves it back, so this '
+                f'clears itself once startup has read BOTH symbols.',
+                fix=['Nothing to type — the contract size is read from '
+                     'the terminal, not entered',
+                     'If it persists, the OTHER leg\'s symbol is not '
+                     'resolving: specs are only adopted when both legs '
+                     'are found',
+                     'Restart the launcher after fixing the symbol'])
 
     if role == 'futures':
         _check_expiry(checklist, scope, report, asset)

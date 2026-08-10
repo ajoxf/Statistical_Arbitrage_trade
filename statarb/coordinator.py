@@ -401,6 +401,7 @@ class Coordinator:
         than from anything typed in. The broker's spec is what actually
         determines P&L and margin, so a typed value can only ever be
         right by luck — and wrong by 2x silently."""
+        persist = {}
         reports = {}
         for role, leg, symbol in (('spot', self.spot_leg, spot_symbol),
                                   ('futures', self.futures_leg,
@@ -430,6 +431,7 @@ class Coordinator:
                 logging.info("%s: contract size %g per lot (from %s)",
                              asset_key, broker_size, spot_symbol)
             asset_cfg['lot_size'] = broker_size
+            persist['lot_size'] = broker_size
 
         fut_report = reports.get('futures')
         if fut_report:
@@ -443,6 +445,7 @@ class Coordinator:
                 # they matched. That is the "wrong by 2x silently" this
                 # method exists to prevent, in the method itself.
                 asset_cfg['fut_lot_size'] = float(fut_size)
+                persist['fut_lot_size'] = float(fut_size)
             if fut_size and spot_size and abs(fut_size - spot_size) > 1e-9:
                 # NOT a reason to touch HEDGE_RATIO. Beta is the PRICE
                 # coefficient of the spread (futures - beta * spot);
@@ -476,6 +479,7 @@ class Coordinator:
                          "broker)", asset_key,
                          asset_cfg['spot_expiry'].date())
 
+        self._persist_specs(asset_key, persist)
         self._log_spread_definition(asset_key)
         self._log_fair_value(asset_key, asset_cfg)
 
@@ -497,6 +501,43 @@ class Coordinator:
             logging.info("%s: pair type %s — fair value shown on the "
                          "dashboard for REFERENCE, never used as a signal",
                          asset_key, pair_type)
+
+    def _persist_specs(self, asset_key, updates):
+        """Write adopted broker specs back to config.json.
+
+        `_adopt_broker_specs` took the terminal's contract size, expiry
+        and swap as authoritative but only ever updated the IN-MEMORY
+        config. So config.json kept whatever was typed there originally,
+        the Exchanges checklist read that file and warned "broker says
+        1000 but the asset is configured as 100" on every single run,
+        and the fix it offered — "set the contract size in Settings" —
+        pointed at a control that does not exist, because the owner had
+        it removed precisely on the grounds that MT5 already knows.
+        An unfixable warning trains the operator to ignore the
+        checklist, which is the opposite of what it is for.
+
+        SPECS ONLY. Symbols, legs and strategy parameters belong to the
+        operator and are never written back from here.
+        """
+        if not self.config_path or not updates:
+            return
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            asset = raw.setdefault('assets', {}).setdefault(asset_key, {})
+            if all(asset.get(k) == v for k, v in updates.items()):
+                return                       # already agrees; don't churn
+            asset.update(updates)
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(raw, f, indent=2)
+            # Adopt our own write, or the mtime change looks like an
+            # operator edit and hot_apply logs "assets change requires a
+            # restart" on every startup.
+            self._config_mtime = os.path.getmtime(self.config_path)
+            logging.info("%s: saved broker specs to config (%s)", asset_key,
+                         ', '.join(f'{k}={v}' for k, v in updates.items()))
+        except (OSError, ValueError) as e:
+            logging.debug("Could not persist broker specs: %s", e)
 
     def _series_key(self, asset_key):
         """Which spread series this is: the two symbols and the hedge

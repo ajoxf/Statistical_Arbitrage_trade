@@ -35,7 +35,7 @@ try:
 except ImportError:
     SocketIO = None            # UI falls back to polling
 
-from . import diagnostics, ipc, scenarios, webapi
+from . import diagnostics, ipc, scenarios, sizing, webapi
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
@@ -634,6 +634,65 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         first = (status.get('assets') or [{}])[0]
         return jsonify({'leg_a': first.get('spot_price'),
                         'leg_b': first.get('futures_price')})
+
+    @app.route('/api/leg-specs')
+    def api_leg_specs():
+        """Each leg's tradable volumes, straight from the broker.
+
+        The Full Order Test Suite must state the size it will send
+        BEFORE it sends it, and it cannot wait for the engine: specs
+        are only adopted once BOTH symbols resolve, so a single
+        unresolved symbol left every row reading "—" on a page whose
+        buttons place real orders. This asks the leg directly, the same
+        way symbol search and [Diagnose] do, so one broken leg no
+        longer hides the other leg's size.
+        """
+        raw = load_config_raw()
+        assets = raw.get('assets') or {}
+        asset_key = next((k for k, v in assets.items()
+                          if v.get('enabled', True)), None)
+        asset = assets.get(asset_key) or {}
+        out = {'asset': asset_key, 'legs': {}}
+        for role, key in (('spot', 'spot_symbols'),
+                          ('futures', 'futures_symbols')):
+            symbol = (asset.get(key) or [''])[0]
+            entry = {'symbol': symbol, 'ok': False}
+            name, leg = leg_for_role(role)
+            entry['account'] = name
+            if symbol and leg is not None:
+                try:
+                    specs = leg.ensure_symbol(symbol) or {}
+                except Exception as e:                  # broker/socket
+                    specs = {'ok': False, 'error': str(e)}
+                finally:
+                    close = getattr(leg, 'close', None)
+                    if close:
+                        close()
+                entry.update({
+                    'ok': bool(specs.get('ok')),
+                    'error': specs.get('error'),
+                    'volume_min': specs.get('volume_min'),
+                    'volume_step': specs.get('volume_step'),
+                    'volume_max': specs.get('volume_max'),
+                    'contract_size': specs.get('contract_size'),
+                    'bid': specs.get('bid'), 'ask': specs.get('ask'),
+                })
+            elif not symbol:
+                entry['error'] = f'No {role} symbol configured'
+            else:
+                entry['error'] = f'Cannot reach {name or "the account"}'
+            out['legs'][role] = entry
+
+        # What a SPREAD scenario sends: the smaller leg sized up so both
+        # clear their minimum. Same function the runner calls.
+        spot, fut = out['legs']['spot'], out['legs']['futures']
+        if spot.get('ok') and fut.get('ok'):
+            beta = (raw.get('trading') or {}).get('HEDGE_RATIO', 1.0) or 1.0
+            pair_a, pair_b = sizing.matched_minimum_lots(
+                spot.get('volume_min') or 0.0, fut.get('volume_min') or 0.0,
+                spot.get('volume_step'), fut.get('volume_step'), beta)
+            out['pair'] = {'spot_lots': pair_a, 'futures_lots': pair_b}
+        return jsonify(out)
 
     @app.route('/api/telegram/config', methods=['GET', 'POST'])
     def api_telegram_config():

@@ -209,13 +209,25 @@ def test_slice_off_the_volume_step_warns(cfg):
     assert find(result, 'Order size', 'SPOT')['status'] == 'WARN'
 
 
-def test_contract_size_mismatch_is_a_hard_failure(cfg):
-    """100 oz vs 10 oz per lot silently makes every P&L and hedge
-    number wrong by 10x."""
+def test_contract_size_mismatch_warns_and_names_the_real_cause(cfg):
+    """100 oz vs 10 oz per lot would make every P&L and hedge number
+    wrong by 10x — but the engine ADOPTS the broker's number and saves
+    it back, so this is a WARN about adoption not having run, not a
+    FAIL demanding the operator edit something.
+
+    It used to say "set the contract size in Settings". There is no
+    such field: the owner had it removed because MT5 already knows.
+    An unfixable warning trains the operator to ignore the checklist.
+    """
     result = report(cfg, spot=side(sym=symbol(contract_size=10.0),
                                    asset={'lot_size': 100.0}))
     check = find(result, 'Contract size', 'SPOT')
-    assert check['status'] == 'FAIL' and '10' in check['message']
+    assert check['status'] == 'WARN' and '10' in check['message']
+    assert 'saves it back' in check['message']
+    fixes = ' '.join(check.get('fix') or [])
+    assert 'Nothing to type' in fixes
+    assert 'in Settings' not in fixes          # the control does not exist
+    assert 'both legs are found' in fixes
 
 
 # --- futures expiry -------------------------------------------------------

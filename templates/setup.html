@@ -532,8 +532,13 @@ let SCENARIO_SIZING = null;
 
 function renderScenarioLots() {
     const s = SCENARIO_SIZING;
-    const legLots = (lots, symbol, notional) => {
-        if (lots == null) return '<span class="text-secondary">—</span>';
+    const legLots = (lots, symbol, notional, error) => {
+        // A row whose leg cannot be priced says WHY. A bare dash on a
+        // page that places live orders is the one thing it must not be.
+        if (lots == null) {
+            return '<span class="text-danger" title="' + (error || '') + '">'
+                 + (symbol ? symbol + ': ' : '') + 'unavailable</span>';
+        }
         const money = notional == null ? ''
             : ` <span class="text-secondary">$${Math.round(notional).toLocaleString()}</span>`;
         return `<span class="font-monospace">${+lots.toFixed(4)}</span>`
@@ -544,19 +549,22 @@ function renderScenarioLots() {
         const cell = document.getElementById(`scenario-lots-${i}`);
         if (!cell) return;
         if (!s) { cell.innerHTML = '<span class="text-secondary">—</span>'; return; }
+        const aErr = s.leg_a_error, bErr = s.leg_b_error;
         const type = String(scenario.type || '');
         if (type.includes('SPR')) {
             // Both legs go out, matched — show both.
             cell.innerHTML =
-                legLots(s.pair_min_lots_a, s.leg_a_symbol, s.pair_min_notional_a_usd)
+                legLots(s.pair_min_lots_a, s.leg_a_symbol,
+                        s.pair_min_notional_a_usd, aErr)
                 + '<br>'
-                + legLots(s.pair_min_lots_b, s.leg_b_symbol, s.pair_min_notional_b_usd);
+                + legLots(s.pair_min_lots_b, s.leg_b_symbol,
+                          s.pair_min_notional_b_usd, bErr);
         } else if (type.includes('FUT')) {
             cell.innerHTML = legLots(s.leg_b_min_lots, s.leg_b_symbol,
-                                     s.leg_b_min_notional_usd);
+                                     s.leg_b_min_notional_usd, bErr);
         } else {
             cell.innerHTML = legLots(s.leg_a_min_lots, s.leg_a_symbol,
-                                     s.leg_a_min_notional_usd);
+                                     s.leg_a_min_notional_usd, aErr);
         }
     });
 }
@@ -672,23 +680,58 @@ async function showScenarioAccounts() {
 async function showScenarioLotSizes() {
     const host = document.getElementById('scenario-lot-sizes');
     if (!host) return;
-    let s, d, sig;
+    // Ask the BROKER, not the engine. The engine only adopts specs once
+    // BOTH symbols resolve, so one unresolved leg used to blank the
+    // size for every row — including the rows whose leg was fine.
+    let spec = null;
     try {
-        d = await (await fetch('/api/engine/status')).json();
-        // `sizing` is published INSIDE the signal block, not at the top
-        // level. Reading it from the wrong one is a silent "—".
-        sig = d.signal || {};
-        s = Object.assign({}, sig.sizing || d.sizing || {});
-    } catch (e) { return; }
-    s.leg_a_symbol = sig.rt_spot_symbol || '';
-    s.leg_b_symbol = sig.rt_fut_symbol || '';
+        spec = await (await fetch('/api/leg-specs')).json();
+    } catch (e) { /* fall through to the engine's plan */ }
+
+    let s = {}, sig = {};
+    if (spec && spec.legs) {
+        const a = spec.legs.spot || {}, b = spec.legs.futures || {};
+        const worth = (lots, leg) => (lots != null && leg.contract_size
+            && (leg.ask || leg.bid)
+            ? lots * leg.contract_size * (leg.ask || leg.bid) : null);
+        s = {
+            leg_a_symbol: a.symbol || '', leg_b_symbol: b.symbol || '',
+            leg_a_min_lots: a.ok ? a.volume_min : null,
+            leg_b_min_lots: b.ok ? b.volume_min : null,
+            leg_a_min_notional_usd: a.ok ? worth(a.volume_min, a) : null,
+            leg_b_min_notional_usd: b.ok ? worth(b.volume_min, b) : null,
+            leg_a_error: a.ok ? null : (a.error || 'symbol unavailable'),
+            leg_b_error: b.ok ? null : (b.error || 'symbol unavailable'),
+        };
+        if (spec.pair) {
+            s.pair_min_lots_a = spec.pair.spot_lots;
+            s.pair_min_lots_b = spec.pair.futures_lots;
+            s.pair_min_notional_a_usd = worth(spec.pair.spot_lots, a);
+            s.pair_min_notional_b_usd = worth(spec.pair.futures_lots, b);
+        }
+    } else {
+        try {
+            const d = await (await fetch('/api/engine/status')).json();
+            // `sizing` is published INSIDE the signal block, not at the
+            // top level. Reading the wrong one is a silent "—".
+            sig = d.signal || {};
+            s = Object.assign({}, sig.sizing || d.sizing || {});
+            s.leg_a_symbol = sig.rt_spot_symbol || '';
+            s.leg_b_symbol = sig.rt_fut_symbol || '';
+        } catch (e) { return; }
+    }
     SCENARIO_SIZING = s;
     renderScenarioLots();
+
+    const broken = [s.leg_a_error && `Leg A: ${s.leg_a_error}`,
+                    s.leg_b_error && `Leg B: ${s.leg_b_error}`]
+                   .filter(Boolean);
     if (s.leg_a_min_lots == null && s.leg_b_min_lots == null) {
-        host.innerHTML = '<strong class="text-danger">Lot sizes unknown</strong>'
-            + ' — the engine has not read the symbol specs yet. Start the'
-            + ' launcher and re-check before running: these are LIVE orders'
-            + ' and you should know the size before sending them.';
+        host.innerHTML = '<strong class="text-danger">Lot sizes unknown —'
+            + ' do not run</strong>. ' + (broken.length ? broken.join('; ')
+                : 'The broker has not answered with the symbol specs.')
+            + ' These are LIVE orders; fix the symbol on the Exchanges page'
+            + ' above, then re-check.';
         return;
     }
     const money = (x) => (x == null ? '' :
