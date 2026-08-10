@@ -282,6 +282,28 @@ def plan(config, contract_a, contract_b, price_a, price_b,
         reason = (f'${target_notional:,.0f} per leg is below this pair\'s '
                   f'minimum of ${floor:,.0f}')
 
+    # The broker's CEILING, on both legs. Minimums were checked from the
+    # start and maximums never were, and only leg A was ever measured
+    # against MAX_LOT_SIZE — so an oversized HEDGE leg had nothing
+    # standing in front of it at all.
+    #
+    # Live 2026-08-10: an inverted HEDGE_RATIO (0.0149 where 67 was
+    # meant) sized leg B at 5,167.78 lots of gold, $2.25 BILLION, and
+    # the plan reported it as fine. MT5 would have rejected it with
+    # 10014 — AFTER leg A had already filled, leaving a naked position
+    # exactly as the pair executor exists to prevent.
+    max_a = meta_a.get('volume_max') or 0.0
+    max_b = meta_b.get('volume_max') or 0.0
+    if not reason and max_a and lots_a > max_a + 1e-9:
+        reason = (f'leg A wants {lots_a:g} lots but the broker\'s maximum '
+                  f'is {max_a:g} — the order would be rejected')
+    if not reason and max_b and lots_b > max_b + 1e-9:
+        reason = (f'the hedge wants {lots_b:g} lots on leg B but the '
+                  f'broker\'s maximum is {max_b:g}. Check HEDGE_RATIO '
+                  f'{beta:g}: leg B is sized as leg A x contract A / '
+                  f'(beta x contract B), so a beta that is too SMALL '
+                  f'inflates the hedge.')
+
     notional_a = notional(lots_a, contract_a, price_a)
     notional_b = notional(lots_b, contract_b, price_b)
     lev_a = exits.get('SPOT_LEVERAGE') or exits.get('LEVERAGE')

@@ -676,3 +676,54 @@ def test_commission_is_charged_on_each_legs_own_lots():
     cost = costs.round_trip_cost(md, lots=2.0, contract_size=100.0,
                                  costs_cfg=cfg, lots_b=0.5, contract_b=1000.0)
     assert cost == pytest.approx(10.0 * 2.0 + 20.0 * 0.5)
+
+
+# --- the broker's ceiling, on BOTH legs -----------------------------
+
+def _plan(config, beta, **meta_b_extra):
+    config.TRADING.update({'SIZING_MODE': 'lots', 'CLIP_LOTS': 1.54,
+                           'HEDGE_RATIO': beta, 'HEDGE_MODE': 'units'})
+    meta_a = {'volume_min': 0.01, 'volume_step': 0.01, 'volume_max': 50.0}
+    meta_b = {'volume_min': 0.01, 'volume_step': 0.01, 'volume_max': 50.0}
+    meta_b.update(meta_b_extra)
+    return sizing.plan(config, 5000.0, 100.0, 65.10, 4360.10,
+                       meta_a=meta_a, meta_b=meta_b)
+
+
+def test_an_oversized_hedge_leg_is_refused(config):
+    """Live 2026-08-10: an inverted HEDGE_RATIO (0.0149 where 67 was
+    meant) sized leg B at 5,167.78 lots of gold — $2.25 BILLION — and
+    the plan reported it as fine. Minimums were always checked;
+    maximums never were, and MAX_LOT_SIZE only ever measured leg A.
+    """
+    result = _plan(config, beta=0.0149)
+    assert result['leg_b_lots'] > 5000
+    assert result['reason']
+    assert 'maximum is 50' in result['reason']
+    assert 'HEDGE_RATIO 0.0149' in result['reason']
+    # and it names the direction of the mistake
+    assert 'too SMALL' in result['reason']
+
+
+def test_the_right_beta_passes_the_same_check(config):
+    """67 on the same pair gives ~1.15 lots — well inside the ceiling.
+    The hedge rounds DOWN (1.1498 -> 1.14): short is the recoverable
+    error, and the executor trims leg A to the matched size."""
+    result = _plan(config, beta=66.97)
+    assert result['leg_b_lots'] == pytest.approx(1.14, abs=0.001)
+    assert not result['reason']
+
+
+def test_leg_a_has_a_ceiling_too(config):
+    config.TRADING.update({'SIZING_MODE': 'lots', 'CLIP_LOTS': 500.0,
+                           'HEDGE_RATIO': 1.0})
+    result = sizing.plan(
+        config, 100.0, 100.0, 4292.0, 4351.0,
+        meta_a={'volume_min': 0.01, 'volume_step': 0.01, 'volume_max': 50.0},
+        meta_b={'volume_min': 0.01, 'volume_step': 0.01, 'volume_max': 50.0})
+    assert result['reason'] and 'leg A wants 500' in result['reason']
+
+
+def test_a_broker_that_reports_no_maximum_is_not_second_guessed(config):
+    result = _plan(config, beta=0.0149, volume_max=None)
+    assert not result['reason']      # nothing to check it against
