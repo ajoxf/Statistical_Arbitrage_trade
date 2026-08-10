@@ -1557,7 +1557,12 @@ def test_the_card_states_the_target_beside_the_achieved_notional(client):
     page = client.get('/').get_data(as_text=True)
     assert 'Asked for ' in page
     assert 'the nearest tradable lot gives' in page
-    assert 'one lot = ' in page
+    # The figure beside it is one volume STEP, not one lot: step x
+    # contract x price. Calling it "one lot" understated it a
+    # hundredfold wherever the step is 0.01 — on oil it read $798.95
+    # against a real lot of $79,895.
+    assert "' step = '" in page and "'-lot'" in page
+    assert 'one lot = ' not in page
 
 
 # --- log volume (operator, 2026-08-07: "Too many messages") ---------------
