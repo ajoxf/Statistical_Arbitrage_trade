@@ -43,6 +43,21 @@
         .navbar-brand {
             font-weight: 600;
             color: var(--text-primary) !important;
+            /* Not left to Bootstrap's d-flex: its CSS comes from a CDN,
+               and a locked-down box has already cost this app once. The
+               two marks must sit on one baseline either way. */
+            display: flex;
+            align-items: center;
+        }
+
+        /* Keeps the two marks reading as "Nexus, on MT5" rather than as
+           one combined logo. */
+        .brand-divider {
+            display: inline-block;
+            width: 1px;
+            height: 22px;
+            margin: 0 0.75rem;
+            background: var(--border-color);
         }
 
         .nav-link {
@@ -370,6 +385,9 @@
         <div class="container-fluid">
             <a class="navbar-brand d-flex align-items-center" href="/">
                 <img src="/static/logo-nexus.svg" alt="Nexus" height="32">
+                <span class="brand-divider" aria-hidden="true"></span>
+                <img src="/static/logo-mt5.svg" alt="MetaTrader 5" height="26"
+                     title="Orders route through MetaTrader 5">
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>

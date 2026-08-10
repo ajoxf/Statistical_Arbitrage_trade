@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 50" width="96" height="50"
+     role="img" aria-label="MetaTrader 5">
+  <title>MetaTrader 5</title>
+  <!-- An original mark, not the MetaQuotes trademark: a chart tile plus
+       a plain MT5 wordmark, drawn in the app's own palette so it sits
+       beside the Nexus logo as "this is the platform we trade through"
+       rather than impersonating the vendor's branding. -->
+  <defs>
+    <linearGradient id="mt5Word" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1e1e1e"/>
+      <stop offset="100%" stop-color="#374151"/>
+    </linearGradient>
+    <linearGradient id="mt5Tile" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0e7490"/>
+      <stop offset="100%" stop-color="#155e75"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(3, 10)">
+    <rect x="0" y="0" width="30" height="30" rx="7" fill="url(#mt5Tile)"/>
+    <!-- three ascending bars: legible even at 24px tall -->
+    <g fill="#ffffff">
+      <rect x="7"  y="17" width="4.5" height="7"  rx="1.2"/>
+      <rect x="14" y="12" width="4.5" height="12" rx="1.2"/>
+      <rect x="21" y="7"  width="4.5" height="17" rx="1.2"/>
+    </g>
+    <g fill="#67e8f9">
+      <rect x="7"  y="14" width="4.5" height="2.2" rx="1.1"/>
+      <rect x="14" y="9"  width="4.5" height="2.2" rx="1.1"/>
+      <rect x="21" y="4"  width="4.5" height="2.2" rx="1.1"/>
+    </g>
+  </g>
+
+  <text x="39" y="33" font-family="'Segoe UI', Arial, sans-serif"
+        font-size="21" font-weight="700" letter-spacing="1"
+        fill="url(#mt5Word)">MT5</text>
+</svg>
