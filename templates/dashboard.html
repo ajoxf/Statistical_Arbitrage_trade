@@ -2385,9 +2385,13 @@
             if (!sz) {
                 basisEl.textContent = '';
             } else if (sz.reason) {
+                // Each reason carries its OWN remedy. This used to
+                // append "Raise the Leg Notional Value in Settings" to
+                // every refusal — right for the below-minimum ones and
+                // exactly backwards for a beta error, where raising the
+                // notional makes the oversized leg bigger still.
                 basisEl.className = 'text-danger mt-1';
-                basisEl.textContent = 'Cannot size this trade: ' + sz.reason
-                    + '. Raise the Leg Notional Value in Settings.';
+                basisEl.textContent = 'Cannot size this trade: ' + sz.reason;
             } else if (sz.mode === 'notional') {
                 basisEl.className = 'text-secondary mt-1';
                 // Say what was ASKED FOR and what a tradable lot

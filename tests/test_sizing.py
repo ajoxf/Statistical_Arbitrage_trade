@@ -747,8 +747,13 @@ def test_a_hedge_nowhere_near_the_money_asked_for_is_refused(config):
     result = _notional_plan(config, 'units', beta=0.0150)
     assert result['leg_a_notional_usd'] == pytest.approx(500_000, rel=0.01)
     assert result['reason']
-    assert 'HEDGE_RATIO 0.015' in result['reason']
+    assert 'HEDGE_RATIO' in result['reason']
     assert 'price ratio' in result['reason']
+    # It must name the two things that actually fix it, and NOT
+    # suggest raising the notional — that inflates the oversized leg.
+    assert 'set HEDGE_RATIO to about 66' in result['reason']
+    assert 'dollar-neutral' in result['reason']
+    assert 'Raise the Leg Notional' not in result['reason']
 
 
 def test_the_right_beta_lands_both_legs_on_the_target(config):

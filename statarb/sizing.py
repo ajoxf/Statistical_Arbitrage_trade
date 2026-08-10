@@ -309,15 +309,17 @@ def plan(config, contract_a, contract_b, price_a, price_b,
         if notional_b_now and abs(notional_b_now - target_notional) \
                 > 0.5 * target_notional:
             ratio = notional_b_now / target_notional
+            live_beta = (price_b / price_a) if price_a else 0.0
             reason = (
                 f'you asked for ${target_notional:,.0f} per leg and leg A '
                 f'is right, but the hedge comes to '
                 f'${notional_b_now:,.0f} — {ratio:,.4g}x the target. '
-                f'HEDGE_RATIO {beta:g} is the cause: leg B is leg A x '
-                f'contract A / (beta x contract B), so a beta that is '
-                f'too small inflates it. The price ratio is '
-                f'{(price_b / price_a):,.4f}.'
-                if price_a else '')
+                f'Leg B is leg A x contract A / (HEDGE_RATIO x contract '
+                f'B), so a HEDGE_RATIO that is too small inflates it, '
+                f'and {beta:g} is far below the {live_beta:,.4f} price '
+                f'ratio. Either set HEDGE_RATIO to about {live_beta:,.2f}, '
+                f'or set Hedge Balance to dollar-neutral, which sizes '
+                f'leg B from the notional directly and ignores beta')
 
     max_a = meta_a.get('volume_max') or 0.0
     max_b = meta_b.get('volume_max') or 0.0
