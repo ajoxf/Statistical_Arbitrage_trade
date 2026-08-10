@@ -672,7 +672,37 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 close = getattr(leg, 'close', None)
                 if close:
                     close()
-        return jsonify(prices)
+
+        # The page reads success / suggested_beta / leg_a_price /
+        # leg_b_price; this returned only {leg_a, leg_b}, so the Hedge
+        # Ratio suggestion read "unavailable" from the day it shipped.
+        a_price, b_price = prices['leg_a'], prices['leg_b']
+        if not (a_price and b_price):
+            return jsonify({'success': False, 'error': 'unavailable',
+                            **prices})
+
+        # WHAT to suggest depends on the pair, and suggesting the price
+        # ratio for a basis pair would be actively harmful: on gold spot
+        # vs its own future the ratio is ~1.014, and using it as beta
+        # collapses the spread to roughly zero — deleting the very basis
+        # the strategy trades. Same underlying means beta is 1.
+        asset = next((v for v in (load_config_raw().get('assets')
+                                  or {}).values()
+                      if v.get('enabled', True)), {})
+        pair_type = (asset.get('pair_type') or 'SPOT_FUTURE').upper()
+        if pair_type in ('SPOT_FUTURE', 'FUTURE_FUTURE'):
+            beta, why = 1.0, (f'{pair_type} — the two legs are the same '
+                              f'underlying, so the spread IS the basis and '
+                              f'beta is 1')
+        else:
+            beta = b_price / a_price
+            why = (f'{wanted_b} {b_price:,.4f} / {wanted_a} {a_price:,.4f} '
+                   f'— equalises the two legs in money, which is what makes '
+                   f'a spread between different instruments meaningful')
+        return jsonify({'success': True, 'suggested_beta': beta,
+                        'reason': why, 'pair_type': pair_type,
+                        'leg_a_price': a_price, 'leg_b_price': b_price,
+                        **prices})
 
     @app.route('/api/leg-specs')
     def api_leg_specs():

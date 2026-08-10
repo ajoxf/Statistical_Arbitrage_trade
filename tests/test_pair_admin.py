@@ -284,3 +284,64 @@ def test_nothing_is_claimed_before_the_engine_has_published():
     """No running symbols yet is not a mismatch — it is a cold start."""
     assert _ui(None, None, 'USOIL', 'UKOIL')[
         'symbols_pending_restart'] == {}
+
+
+# --- the hedge ratio suggestion -------------------------------------
+
+def _beta_client(tmp_path, monkeypatch, pair_type, a_price, b_price):
+    from statarb.webapp import create_app
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'config.json').write_text(json.dumps({
+        'trading_mode': 'paper',
+        'assets': {'PAIR': {'enabled': True, 'pair_type': pair_type,
+                            'spot_symbols': ['A'],
+                            'futures_symbols': ['B']}}}))
+    (tmp_path / 'runtime_status.json').write_text(json.dumps({
+        'assets': [{'asset': 'PAIR', 'rt_spot_symbol': 'A',
+                    'rt_fut_symbol': 'B', 'spot_price': a_price,
+                    'futures_price': b_price}]}))
+    app = create_app(db_path=str(tmp_path / 'a.db'),
+                     status_path=str(tmp_path / 'runtime_status.json'),
+                     config_path=str(tmp_path / 'config.json'),
+                     control_path=str(tmp_path / 'control.json'),
+                     env_path=str(tmp_path / '.env'))
+    app.config['TESTING'] = True
+    return app.test_client().get(
+        '/api/leg-prices?leg_a=A&leg_b=B').get_json()
+
+
+def test_the_suggestion_speaks_the_shape_the_page_reads(tmp_path,
+                                                        monkeypatch):
+    """The page reads success / suggested_beta / leg_a_price /
+    leg_b_price; the endpoint returned only {leg_a, leg_b}, so the
+    Hedge Ratio suggestion read "unavailable" from the day it shipped.
+    """
+    body = _beta_client(tmp_path, monkeypatch, 'RELATED', 64.686, 4352.26)
+    assert body['success'] is True
+    assert set(body) >= {'suggested_beta', 'leg_a_price', 'leg_b_price',
+                         'reason'}
+
+
+def test_different_instruments_are_suggested_the_price_ratio(tmp_path,
+                                                             monkeypatch):
+    """Gold vs silver: beta near the price ratio is what makes the two
+    legs comparable at all."""
+    body = _beta_client(tmp_path, monkeypatch, 'RELATED', 64.686, 4352.26)
+    assert body['suggested_beta'] == pytest.approx(4352.26 / 64.686)
+    assert 'money' in body['reason']
+
+
+@pytest.mark.parametrize('pair_type', ['SPOT_FUTURE', 'FUTURE_FUTURE'])
+def test_the_same_underlying_is_suggested_one(tmp_path, monkeypatch,
+                                              pair_type):
+    """Gold spot vs its own future: the price ratio is ~1.014, and
+    using it as beta collapses the spread to zero — deleting the basis
+    the strategy exists to trade."""
+    body = _beta_client(tmp_path, monkeypatch, pair_type, 4292.61, 4351.55)
+    assert body['suggested_beta'] == 1.0
+    assert 'same underlying' in body['reason']
+
+
+def test_no_prices_means_no_suggestion(tmp_path, monkeypatch):
+    body = _beta_client(tmp_path, monkeypatch, 'RELATED', None, None)
+    assert body['success'] is False

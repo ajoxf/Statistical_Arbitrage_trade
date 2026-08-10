@@ -73,6 +73,8 @@
                                     suggestion: <span id="beta_suggestion_value" class="text-info">&mdash;</span>
                                     <a href="#" id="beta_suggestion_apply" class="ms-1"
                                        title="Apply the suggested β to the hedge ratio field">apply</a>
+                                    <div id="beta_suggestion_why" class="text-secondary"
+                                         style="font-size: 0.65rem;"></div>
                                 </span>
                             </label>
                             <input type="number" class="form-control" id="hedge_ratio" name="hedge_ratio"
@@ -82,7 +84,12 @@
                                 for the same underlying (e.g. XAUUSD vs GC1225). For a cross pair (e.g. gold vs silver)
                                 set &beta; so the legs are comparable &mdash; Leg A is scaled by &beta; to stay
                                 dollar-hedged. The suggestion above is mid(Leg B) &divide; mid(Leg A) from live
-                                broker prices &mdash; the ounce-neutral &beta;. Verify against both brokers' contract specs.
+                                broker prices when the legs are DIFFERENT instruments &mdash; that
+                                equalises them in money. For the same underlying (spot vs its own
+                                future) the suggestion is <strong>1</strong>: the spread there IS the
+                                basis, and scaling it away by the price ratio would delete the signal.
+                                &beta; is not a contract-size or lot ratio &mdash; contract sizes are
+                                handled when sizing the hedge.
                             </small>
                         </div>
                         <div class="col-12 mt-2">
@@ -1581,6 +1588,8 @@
                             ? beta.toFixed(2)
                             : beta.toFixed(4);
                         setBetaSuggestion(display, beta);
+                        const note = document.getElementById('beta_suggestion_why');
+                        if (note) note.textContent = res.body.reason || '';
                     } else {
                         _cachedLegAPrice = 0; _cachedLegBPrice = 0;
                         const msg = (res.body && res.body.error) || 'unavailable';
