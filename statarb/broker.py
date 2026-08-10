@@ -382,19 +382,43 @@ class BrokerSession:
             since = datetime.now() - timedelta(hours=hours) - slack
             now = datetime.now() + slack
 
+            order_types = {
+                getattr(mt5, name, -1): label for name, label in [
+                    ('ORDER_TYPE_BUY', 'market buy'),
+                    ('ORDER_TYPE_SELL', 'market sell'),
+                    ('ORDER_TYPE_BUY_LIMIT', 'buy limit'),
+                    ('ORDER_TYPE_SELL_LIMIT', 'sell limit'),
+                    ('ORDER_TYPE_BUY_STOP', 'buy stop'),
+                    ('ORDER_TYPE_SELL_STOP', 'sell stop')]}
+
+            # A DEAL record does not carry the order type, so the log
+            # used to print a literal "market/limit" on every filled
+            # row — the one column an operator checks to confirm the
+            # limit path actually rested rather than crossing. The
+            # ORDER that produced the deal does know, and deal.order
+            # points straight at it, so resolve it here rather than
+            # showing both and meaning neither.
+            history_orders = list(mt5.history_orders_get(since, now) or ())
+            type_by_order = {
+                str(o.ticket): order_types.get(o.type, str(o.type))
+                for o in history_orders}
+
             deal_types = {0: 'buy', 1: 'sell'}
             for deal in (mt5.history_deals_get(since, now) or ()):
                 if deal.type not in deal_types:
                     continue          # balance/credit entries, not trades
+                order_id = str(deal.order or deal.ticket)
                 rows.append({
-                    'order_id': str(deal.order or deal.ticket),
+                    'order_id': order_id,
                     'deal_id': str(deal.ticket),
                     'symbol': deal.symbol,
                     'inst_type': 'DEAL',
                     'side': deal_types[deal.type],
                     'pos_side': ('open' if deal.entry == mt5.DEAL_ENTRY_IN
                                  else 'close'),
-                    'order_type': 'market/limit',
+                    # Unknown only when the originating order has aged
+                    # out of the history window — never a guess.
+                    'order_type': type_by_order.get(order_id, 'unknown'),
                     'quantity': deal.volume,
                     'fill_qty': deal.volume,
                     'fill_price': deal.price,
@@ -408,14 +432,6 @@ class BrokerSession:
                     'comment': deal.comment or '',
                 })
 
-            order_types = {
-                getattr(mt5, name, -1): label for name, label in [
-                    ('ORDER_TYPE_BUY', 'market buy'),
-                    ('ORDER_TYPE_SELL', 'market sell'),
-                    ('ORDER_TYPE_BUY_LIMIT', 'buy limit'),
-                    ('ORDER_TYPE_SELL_LIMIT', 'sell limit'),
-                    ('ORDER_TYPE_BUY_STOP', 'buy stop'),
-                    ('ORDER_TYPE_SELL_STOP', 'sell stop')]}
             states = {
                 getattr(mt5, name, -1): label for name, label in [
                     ('ORDER_STATE_STARTED', 'started'),
@@ -428,7 +444,7 @@ class BrokerSession:
 
             # Orders that never produced a deal still matter — a
             # rejection or a cancel is exactly what you go looking for.
-            for order in (mt5.history_orders_get(since, now) or ()):
+            for order in history_orders:
                 state = states.get(order.state, str(order.state))
                 if state in ('filled', 'partial'):
                     continue          # already covered by its deal

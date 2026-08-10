@@ -35,6 +35,16 @@ SCENARIO_TYPES = [
 # Spacing the UI uses between scenarios in a full run (seconds).
 RUN_SPACING_SEC = {'LIMIT': 20, 'MARKET': 5}
 
+#: How long a scenario HOLDS an open position before closing it. The
+#: default is a formality — long enough for the fill to settle, short
+#: enough that a 40-scenario run is quick. An operator can raise it to
+#: watch positions behave in the live book (margin, swap, the terminal's
+#: own P&L), at the cost of real market exposure for that whole time
+#: and a much longer run. `quick_close` variants ignore it on purpose:
+#: testing the immediate close is the point of them.
+DEFAULT_HOLD_SEC = 0.5
+MAX_HOLD_SEC = 600.0
+
 LIMIT_FILL_TIMEOUT_SEC = 15.0
 
 
@@ -146,7 +156,8 @@ class ScenarioRunner:
 
     def __init__(self, spot, futures, spread_stats=None,
                  clock=time.time, sleep=time.sleep,
-                 fill_timeout=LIMIT_FILL_TIMEOUT_SEC, hedge_ratio=1.0):
+                 fill_timeout=LIMIT_FILL_TIMEOUT_SEC, hedge_ratio=1.0,
+                 hold_sec=DEFAULT_HOLD_SEC):
         self.spot = spot
         self.futures = futures
         # Spread scenarios size Leg B against Leg A with this, so a
@@ -156,6 +167,9 @@ class ScenarioRunner:
         self.clock = clock
         self.sleep = sleep
         self.fill_timeout = fill_timeout
+        # Clamped: a typo of 6000 would strand a live position for
+        # nearly two hours with the operator watching a frozen row.
+        self.hold_sec = max(0.0, min(float(hold_sec or 0.0), MAX_HOLD_SEC))
         self.actions = []
 
     # -- one action at a time ------------------------------------------
@@ -166,6 +180,32 @@ class ScenarioRunner:
     def _record(self, action):
         self.actions.append(action)
         return action
+
+    def _hold(self):
+        """Keep the position open for the configured time, then return.
+
+        Sliced rather than one long sleep. Scenarios run INLINE in the
+        coordinator loop (a RemoteLeg has one socket, so a thread would
+        interleave on it), which is fine at the half-second default and
+        emphatically not fine at two minutes: nothing else in the engine
+        runs while this blocks, so the price feed stops, the statistics
+        window ages out and the Stop button cannot be read. Slicing lets
+        the coordinator's own sleep function pump the feed and notice an
+        abort between slices.
+        """
+        remaining = self.hold_sec
+        if remaining <= 0:
+            return
+        if remaining > 1.0:
+            self._record({'ok': True, 'kind': 'hold', 'leg_label': '',
+                          'account': '', 'symbol': '', 'side': '',
+                          'time': self._stamp(),
+                          'note': f'holding the position {remaining:.0f}s '
+                                  f'before closing'})
+        slice_sec = 0.5
+        while remaining > 0:
+            self.sleep(min(slice_sec, remaining))
+            remaining -= slice_sec
 
     def _verify(self, side_leg, action):
         """Confirm with MT5 that the ticket we think we created really
@@ -443,7 +483,7 @@ class ScenarioRunner:
             if not opened['ok']:
                 return self._result(False, open_stats)
             if variant != 'quick_close':
-                self.sleep(0.5)
+                self._hold()
             closed = self.close(side_leg, opened)
             return self._result(closed['ok'], open_stats, self.spread_stats(),
                                 [(side_leg, side, opened, closed)])
@@ -467,6 +507,7 @@ class ScenarioRunner:
                                     reason=f'no fill in '
                                            f'{self.fill_timeout:.0f}s')
             return self._result(cancelled['ok'], open_stats)
+        self._hold()
         closed = self.close(side_leg, opened)
         return self._result(closed['ok'], open_stats, self.spread_stats(),
                             [(side_leg, side, opened, closed)])
@@ -492,7 +533,7 @@ class ScenarioRunner:
         opened = self.open_market(side_leg, side, comment='SCENARIO partial')
         if not opened['ok']:
             return self._result(False, open_stats)
-        self.sleep(0.3)
+        self._hold()
         closed = self.close(side_leg, opened, kind='recovery close')
         return self._result(closed['ok'], open_stats, self.spread_stats(),
                             [(side_leg, side, opened, closed)])
@@ -513,7 +554,7 @@ class ScenarioRunner:
             self.close(self.spot, spot_open, kind='rollback close')
             return self._result(False, open_stats, self.spread_stats())
         if variant != 'quick_close':
-            self.sleep(0.5)
+            self._hold()
         spot_close = self.close(self.spot, spot_open)
         fut_close = self.close(self.futures, fut_open)
         return self._result(
@@ -564,6 +605,12 @@ class ScenarioRunner:
             self.cancel(self.futures, fut_place,
                         reason=f'no fill in {self.fill_timeout:.0f}s')
 
+        # Hold BEFORE closing either leg, so the pair is open together
+        # for the whole time rather than one leg sitting naked while the
+        # other waits its turn.
+        if spot_open or fut_open:
+            self._hold()
+
         legs = []
         both = True
         for side_leg, side, opened in ((self.spot, spot_side, spot_open),
@@ -580,6 +627,10 @@ class ScenarioRunner:
     # -- the report the operator reads ----------------------------------
 
     def _fmt_action(self, action):
+        # The hold is not an order, so it has no leg, price or ticket —
+        # just the reason the row sat there.
+        if action.get('kind') == 'hold':
+            return f'... {action.get("note", "holding")}'
         label = action.get('leg_label', '?').strip() or '?'
         account = action.get('account')
         head = f'[{label} @ {account}]' if account else f'[{label}]'

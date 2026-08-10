@@ -158,6 +158,7 @@
                      what a 40-scenario run would put through the account
                      was to run it. -->
                 <div id="scenario-lot-sizes" class="mt-2"></div>
+                <div id="scenario-hold-note" class="mt-2"></div>
             </div>
             <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
                 <button type="button" class="btn btn-info" id="scenario-run-all"
@@ -172,6 +173,26 @@
                         onclick="resetScenarios()">
                     <i class="bi bi-arrow-counterclockwise me-2"></i>Reset
                 </button>
+                <div class="d-flex align-items-center gap-2 ms-3">
+                    <label for="scenario-hold" class="small text-secondary mb-0"
+                           style="white-space:nowrap;">Hold open</label>
+                    <input type="number" class="form-control form-control-sm"
+                           id="scenario-hold" value="0.5" min="0" max="600"
+                           step="0.5" style="width: 6rem;"
+                           onchange="showScenarioHoldNote()"
+                           title="Seconds to keep each position open before closing it. The default 0.5s just lets the fill settle. Raise it to watch positions behave in the live book — that is real market exposure for the whole time, on every scenario. Quick-close and cancel scenarios ignore it, since testing the immediate close is their point.">
+                    <span class="small text-secondary">s</span>
+                </div>
+                <div class="d-flex align-items-center gap-2 ms-3">
+                    <label for="scenario-gap" class="small text-secondary mb-0"
+                           style="white-space:nowrap;">Gap</label>
+                    <input type="number" class="form-control form-control-sm"
+                           id="scenario-gap" value="" min="0" max="900"
+                           step="5" placeholder="auto" style="width: 6rem;"
+                           onchange="showScenarioHoldNote()"
+                           title="Seconds to wait BETWEEN scenarios in a full run. Blank uses the built-in spacing (20s after a LIMIT, 5s after a MARKET). Raise it to let the book settle, or to watch each round trip land in the terminal before the next one starts.">
+                    <span class="small text-secondary">s</span>
+                </div>
                 <div class="ms-auto small">
                     <span class="badge bg-secondary"><span id="scenario-done">0</span> /
                         <span id="scenario-total">0</span></span>
@@ -525,6 +546,47 @@ function renderScenarioRows() {
     renderScenarioLots();
 }
 
+function scenarioGapSec() {
+    // null means "use the built-in per-mode spacing".
+    const el = document.getElementById('scenario-gap');
+    if (!el || el.value === '') return null;
+    const value = parseFloat(el.value);
+    return isNaN(value) ? null : Math.max(0, Math.min(900, value));
+}
+
+function scenarioHoldSec() {
+    const el = document.getElementById('scenario-hold');
+    const value = el ? parseFloat(el.value) : NaN;
+    return isNaN(value) ? 0.5 : Math.max(0, Math.min(600, value));
+}
+
+// A long hold is real exposure on every scenario AND a much longer run,
+// so both consequences are stated next to the control rather than
+// discovered forty scenarios in.
+function showScenarioHoldNote() {
+    const note = document.getElementById('scenario-hold-note');
+    if (!note) return;
+    const hold = scenarioHoldSec();
+    if (hold <= 1 && scenarioGapSec() == null) { note.textContent = ''; return; }
+    // Cancels never open anything and quick-closes exist to test the
+    // immediate close; every other scenario holds a live position.
+    const holders = (SCENARIOS || []).filter(
+        x => x.variant !== 'cancel' && x.variant !== 'quick_close').length
+        || 28;
+    const gap = scenarioGapSec();
+    const spacing = gap != null
+        ? gap * ((SCENARIOS || []).length || 40)
+        : (SCENARIOS || []).reduce((t, x) => t + (x.mode === 'LIMIT' ? 20 : 5), 0);
+    const mins = Math.round((holders * hold + spacing) / 60);
+    note.innerHTML = '<strong>Holding ' + hold + 's per scenario'
+        + (gap != null ? ', ' + gap + 's between them' : '') + '.</strong> '
+        + holders + ' of ' + ((SCENARIOS || []).length || 40)
+        + ' scenarios hold a position, so a full run takes roughly '
+        + mins + ' minutes and each position is exposed to the live '
+        + 'market for that whole time. Cancels and quick-closes are '
+        + 'unaffected — testing the immediate close is their point.';
+}
+
 // Per-row volumes. These are LIVE orders, so the size belongs on the
 // row the operator is about to press Run on, not only in a banner
 // above the table that scrolls out of view during a 40-scenario run.
@@ -599,7 +661,8 @@ async function runSingleScenario(idx) {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({id: s.id, type: s.type, mode: s.mode,
-                                  variant: s.variant}),
+                                  variant: s.variant,
+                                  hold_sec: scenarioHoldSec()}),
         });
         const data = await resp.json();
         setScenarioStatus(idx, data.success ? 'passed' : 'failed',
@@ -628,7 +691,9 @@ async function runAllScenarios() {
             if (scenarioStopRequested) break;
             await runSingleScenario(i);
             if (i < SCENARIOS.length - 1 && !scenarioStopRequested) {
-                const delay = (SPACING[SCENARIOS[i].mode] || 5) * 1000;
+                const override = scenarioGapSec();
+                const delay = (override != null ? override
+                               : (SPACING[SCENARIOS[i].mode] || 5)) * 1000;
                 await new Promise(r => setTimeout(r, delay));
             }
         }
@@ -752,6 +817,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadScenarios();
     showScenarioAccounts();
     showScenarioLotSizes();
+    showScenarioHoldNote();
     setInterval(showScenarioAccounts, 15000);
     setInterval(showScenarioLotSizes, 15000);
 });

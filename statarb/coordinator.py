@@ -1566,9 +1566,33 @@ class Coordinator:
         asset_key = (spec.get('asset') if spec.get('asset')
                      in self.active_assets
                      else next(iter(self.active_assets)))
+        def scenario_sleep(seconds):
+            """Sleep, but keep the engine breathing.
+
+            A scenario blocks the trading loop for its whole duration.
+            At the half-second default that is invisible; at a two-minute
+            hold it would stop the price feed dead, age the statistics
+            window out and leave the dashboard frozen with a live
+            position on the book. Poll the feed across the wait so the
+            window keeps filling and the operator can watch the position
+            they have open.
+            """
+            time.sleep(seconds)
+            try:
+                for key, md in self.get_all_market_data().items():
+                    stats = self.stats.get(key)
+                    if stats is not None:
+                        stats.update(md['spread'], md.get('quote_id'))
+                    self.last_data[key] = md
+                self._write_runtime_status(self.last_data or {})
+            except Exception:
+                pass          # a scenario must not die on a feed hiccup
+
         runner = scenarios.ScenarioRunner(
             spot, futures, spread_stats=self._scenario_stats(asset_key),
-            hedge_ratio=self.config.TRADING.get('HEDGE_RATIO', 1.0))
+            hedge_ratio=self.config.TRADING.get('HEDGE_RATIO', 1.0),
+            sleep=scenario_sleep,
+            hold_sec=spec.get('hold_sec', scenarios.DEFAULT_HOLD_SEC))
         try:
             outcome = runner.run(spec['type'], spec.get('mode', 'MARKET'),
                                  spec.get('variant', 'normal'))

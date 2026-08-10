@@ -1619,9 +1619,16 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             'id': spec.get('id'), 'type': spec['type'],
             'mode': spec.get('mode', 'MARKET'),
             'variant': spec.get('variant', 'normal'),
-            'asset': spec.get('asset'), 'ts': ts}})
+            'asset': spec.get('asset'),
+            # How long to HOLD the position before closing. Clamped in
+            # the runner; sent per request so it is a property of this
+            # run rather than saved state nobody remembers setting.
+            'hold_sec': spec.get('hold_sec'), 'ts': ts}})
 
-        deadline = time.time() + scenario_timeout
+        # A held scenario legitimately outruns the normal wait: the hold
+        # is on top of the fill timeout and the round trip itself.
+        deadline = time.time() + scenario_timeout + float(
+            spec.get('hold_sec') or 0)
         while time.time() < deadline:
             result = runtime_status().get('scenario_result') or {}
             if result.get('ts') == ts:

@@ -578,3 +578,37 @@ def test_the_coordinator_states_the_clock_difference(config, tmp_path,
                                  [{'server_offset_sec': 14400}])
     assert 'broker clock is UTC+4.0h' in caplog.text
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_a_filled_row_names_the_real_order_type(fake_mt5):
+    """Operator, 2026-08-10: "It shows Market / Limit".
+
+    A DEAL record carries no order type, so every filled row printed a
+    literal "market/limit" — the one column you check to confirm the
+    limit path actually rested instead of crossing. deal.order points
+    at the order that does know.
+    """
+    fake_mt5(
+        deals=[deal(ticket=5001, order=4001, symbol='USOIL'),
+               deal(ticket=5002, order=4002, symbol='UKOIL', type=1)],
+        history_orders=[
+            hist_order(ticket=4001, symbol='USOIL',
+                       type=FakeMT5.ORDER_TYPE_BUY_LIMIT,
+                       state=FakeMT5.ORDER_STATE_FILLED),
+            hist_order(ticket=4002, symbol='UKOIL',
+                       type=FakeMT5.ORDER_TYPE_SELL,
+                       state=FakeMT5.ORDER_STATE_FILLED)])
+    rows = {r['deal_id']: r for r in make_session().order_log(hours=0)}
+
+    assert rows['5001']['order_type'] == 'buy limit'
+    assert rows['5002']['order_type'] == 'market sell'
+    assert not any(r['order_type'] == 'market/limit' for r in rows.values())
+
+
+def test_an_order_outside_the_window_reads_unknown_not_a_guess(fake_mt5):
+    """The originating order can age out of the history window. Saying
+    'unknown' is honest; picking one of the two is not."""
+    fake_mt5(deals=[deal(ticket=5003, order=9999, symbol='USOIL')],
+             history_orders=[])
+    rows = make_session().order_log(hours=0)
+    assert rows[0]['order_type'] == 'unknown'

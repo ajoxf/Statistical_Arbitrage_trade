@@ -39,7 +39,8 @@ class ScenarioFakeLeg(LimitFakeLeg):
                                     slippage_points, comment)
 
 
-def make_runner(spot_leg=None, futures_leg=None, stats=(1.5, 1.0, 0.4, 1.25)):
+def make_runner(spot_leg=None, futures_leg=None, stats=(1.5, 1.0, 0.4, 1.25),
+                hold_sec=scenarios.DEFAULT_HOLD_SEC):
     spot_leg = spot_leg or ScenarioFakeLeg('account_a', price=3300.0)
     futures_leg = futures_leg or ScenarioFakeLeg('account_b', price=3320.0)
     spot = scenarios.Leg(spot_leg, 'XAUUSD', 'SPOT', contract_size=100.0,
@@ -49,7 +50,8 @@ def make_runner(spot_leg=None, futures_leg=None, stats=(1.5, 1.0, 0.4, 1.25)):
     clock = FakeClock()
     runner = scenarios.ScenarioRunner(
         spot, futures, spread_stats=lambda: stats,
-        clock=clock, sleep=clock.sleep)
+        clock=clock, sleep=clock.sleep, hold_sec=hold_sec)
+    runner.fake_clock = clock
     return runner, spot_leg, futures_leg
 
 
@@ -715,3 +717,88 @@ def test_a_clean_cancel_reports_no_leak():
     assert not cancels[-1].get('leaked')
     assert not cancels[-1].get('leak_handled')
     assert outcome['success']
+
+
+# --- holding the position open --------------------------------------
+
+def _held_seconds(runner, before):
+    return runner.fake_clock.t - before
+
+
+@pytest.mark.parametrize('kind,mode', [
+    ('BUY_SPOT', 'MARKET'), ('SELL_FUT', 'MARKET'), ('LONG_SPR', 'MARKET'),
+])
+def test_every_scenario_that_opens_a_position_holds_it(kind, mode):
+    """Operator, 2026-08-10: "open the position - keep it open for 2
+    minutes before closing"."""
+    runner, _, _ = make_runner(hold_sec=120.0)
+    before = runner.fake_clock.t
+    runner.run(kind, mode, 'normal')
+    assert _held_seconds(runner, before) >= 120.0
+
+
+@pytest.mark.parametrize('kind', ['BUY_SPOT', 'LONG_SPR'])
+def test_a_limit_holds_once_it_actually_fills(kind):
+    """The LIMIT path used to close the instant it filled, so the hold
+    would have applied to MARKET scenarios only."""
+    runner, _, _ = make_runner(hold_sec=120.0)
+    filled = {'ok': True, 'kind': 'open', 'leg_label': 'SPOT BUY',
+              'account': 'account_a', 'symbol': 'X', 'side': 'BUY',
+              'ticket': 1, 'volume': 0.01, 'fill': 3300.0, 'digits': 2,
+              'time': '00:00:00'}
+    runner.wait_for_fill = lambda leg, placed: dict(filled)
+    runner.close = lambda leg, opened, **kw: dict(filled, kind='close')
+    before = runner.fake_clock.t
+    runner.run(kind, 'LIMIT', 'normal')
+    assert _held_seconds(runner, before) >= 120.0
+
+
+@pytest.mark.parametrize('kind', ['BUY_SPOT', 'LONG_SPR'])
+def test_a_limit_that_never_fills_holds_nothing(kind):
+    """No fill means no position, and there is nothing to hold open."""
+    runner, _, _ = make_runner(hold_sec=120.0)
+    before = runner.fake_clock.t
+    runner.run(kind, 'LIMIT', 'normal')      # the fake never fills
+    assert _held_seconds(runner, before) < 120.0
+
+
+@pytest.mark.parametrize('variant', ['cancel', 'quick_close'])
+def test_the_variants_whose_point_is_not_holding_do_not_hold(variant):
+    """A cancel never opens anything, and a quick-close exists to test
+    the immediate close. Holding either would test nothing."""
+    mode = 'LIMIT' if variant == 'cancel' else 'MARKET'
+    runner, _, _ = make_runner(hold_sec=120.0)
+    before = runner.fake_clock.t
+    runner.run('BUY_SPOT', mode, variant)
+    assert _held_seconds(runner, before) < 60.0
+
+
+def test_the_hold_is_clamped_so_a_typo_cannot_strand_a_position():
+    runner, _, _ = make_runner(hold_sec=6000.0)
+    assert runner.hold_sec == scenarios.MAX_HOLD_SEC
+    runner, _, _ = make_runner(hold_sec=-5)
+    assert runner.hold_sec == 0.0
+
+
+def test_the_hold_is_sliced_so_the_engine_keeps_breathing():
+    """Scenarios run INLINE in the trading loop. One long sleep would
+    stop the price feed dead for the whole hold; slices let the
+    coordinator's sleep pump the feed between them."""
+    calls = []
+    runner, _, _ = make_runner(hold_sec=10.0)
+    runner.sleep = lambda seconds: calls.append(seconds)
+    runner._hold()
+    assert len(calls) >= 10          # not one 10-second sleep
+    assert max(calls) <= 0.5
+    assert abs(sum(calls) - 10.0) < 0.51
+
+
+def test_a_long_hold_is_reported_in_the_scenario_output():
+    """The operator should see WHY a row sat there for two minutes."""
+    runner, _, _ = make_runner(hold_sec=120.0)
+    outcome = runner.run('BUY_SPOT', 'MARKET', 'normal')
+    assert 'holding the position 120s' in outcome['detail']
+
+    quiet, _, _ = make_runner(hold_sec=0.5)
+    assert 'holding the position' not in quiet.run(
+        'BUY_SPOT', 'MARKET', 'normal')['detail']
