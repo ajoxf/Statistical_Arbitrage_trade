@@ -764,14 +764,35 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             out['legs'][role] = entry
 
         # What a SPREAD scenario sends: the smaller leg sized up so both
-        # clear their minimum. Same function the runner calls.
+        # clear their minimum. Same function the runner calls, with the
+        # same inputs — the ratio between the legs needs both CONTRACT
+        # SIZES as well as beta, and the contract sizes come from the
+        # config the runner reads (ScenarioRunner is built from
+        # lot_size / fut_lot_size), falling back to the broker's own
+        # figure so an unadopted spec still sizes rather than defaults.
         spot, fut = out['legs']['spot'], out['legs']['futures']
         if spot.get('ok') and fut.get('ok'):
-            beta = (raw.get('trading') or {}).get('HEDGE_RATIO', 1.0) or 1.0
+            trading = raw.get('trading') or {}
+            beta = trading.get('HEDGE_RATIO', 1.0) or 1.0
+            hedge_mode = str(trading.get('HEDGE_MODE', 'units')
+                             or 'units').lower()
+            contract_a = asset.get('lot_size') or spot.get('contract_size')
+            contract_b = (asset.get('fut_lot_size')
+                          or fut.get('contract_size') or contract_a)
+
+            def _mid(entry):
+                bid, ask = entry.get('bid'), entry.get('ask')
+                return (bid + ask) / 2 if (bid and ask) else None
+
             pair_a, pair_b = sizing.matched_minimum_lots(
                 spot.get('volume_min') or 0.0, fut.get('volume_min') or 0.0,
-                spot.get('volume_step'), fut.get('volume_step'), beta)
-            out['pair'] = {'spot_lots': pair_a, 'futures_lots': pair_b}
+                spot.get('volume_step'), fut.get('volume_step'), beta,
+                contract_a, contract_b, mode=hedge_mode,
+                price_a=_mid(spot), price_b=_mid(fut))
+            out['pair'] = {'spot_lots': pair_a, 'futures_lots': pair_b,
+                           'hedge_mode': hedge_mode, 'hedge_ratio': beta,
+                           'leg_a_contract': contract_a,
+                           'leg_b_contract': contract_b}
         return jsonify(out)
 
     @app.route('/api/telegram/config', methods=['GET', 'POST'])

@@ -123,6 +123,88 @@ def test_a_hedge_that_rounds_to_nothing_is_zero_not_a_token_lot():
                              step=0.1, minimum=0.1) == 0.0
 
 
+# --- the smallest MATCHED pair --------------------------------------------
+# The Full Order Test Suite trades this and the page above it displays
+# it, so it is the one size an operator reads before pressing a button
+# that sends real orders.
+
+def test_the_matched_minimum_uses_the_same_rule_as_the_hedge():
+    """One derivation, two callers. `L_B = L_A * C_A / (beta * C_B)`
+    — whatever the matched minimum returns, hedge_lots must agree."""
+    lots_a, lots_b = sizing.matched_minimum_lots(
+        0.01, 0.01, 0.01, 0.01, beta=2.0, contract_a=200.0,
+        contract_b=100.0)
+    assert lots_b == pytest.approx(
+        sizing.hedge_lots(lots_a, 200.0, 100.0, 2.0, step=0.01,
+                          minimum=0.01))
+
+
+def test_the_matched_minimum_accounts_for_the_contract_sizes():
+    """Live 2026-08-10: XAGUSD (5,000/lot) against XAUUSD (100/lot) at
+    beta 66.93 offered 0.01 against 0.67 lots — $3,250 of silver
+    against $292,000 of gold. Contract sizes are half the ratio and
+    were not in it at all."""
+    lots_a, lots_b = sizing.matched_minimum_lots(
+        0.01, 0.01, 0.01, 0.01, beta=66.93, contract_a=5000.0,
+        contract_b=100.0)
+    assert lots_b < lots_a                       # NOT 0.67 against 0.01
+    assert lots_a * 5000.0 == pytest.approx(66.93 * lots_b * 100.0,
+                                            rel=sizing.MATCH_TOLERANCE)
+
+
+@pytest.mark.parametrize('beta', [0.5, 1.0, 2.0, 66.93])
+@pytest.mark.parametrize('contracts', [(100, 100), (5000, 100),
+                                       (1000, 100), (100, 5000)])
+def test_the_matched_minimum_is_always_a_hedge(beta, contracts):
+    """Balanced in units to within the tolerance, for every pair the
+    engine can be pointed at — that is what 'matched' has to mean."""
+    contract_a, contract_b = contracts
+    lots_a, lots_b = sizing.matched_minimum_lots(
+        0.01, 0.01, 0.01, 0.01, beta=beta, contract_a=contract_a,
+        contract_b=contract_b)
+    assert lots_a * contract_a == pytest.approx(
+        beta * lots_b * contract_b, rel=sizing.MATCH_TOLERANCE)
+
+
+def test_the_matched_minimum_never_undercuts_either_broker_minimum():
+    """A pair that is beautifully balanced and rejected with 10014 is
+    no use. Both legs clear their own floor first."""
+    lots_a, lots_b = sizing.matched_minimum_lots(
+        0.05, 0.1, 0.01, 0.1, beta=1.0, contract_a=100.0,
+        contract_b=100.0)
+    assert lots_a >= 0.05 - 1e-9 and lots_b >= 0.1 - 1e-9
+
+
+def test_the_matched_minimum_stays_small_when_the_steps_allow_it():
+    """Gold on both legs at beta 1 is exact at the floor — the search
+    for a better match must not inflate a test order that is already
+    right."""
+    assert sizing.matched_minimum_lots(
+        0.01, 0.1, 0.01, 0.1, beta=1.0, contract_a=100.0,
+        contract_b=100.0) == (pytest.approx(0.1), pytest.approx(0.1))
+
+
+def test_the_matched_minimum_gives_up_rather_than_inflate_the_order():
+    """When the steps cannot express the ratio, the search is bounded:
+    it returns the best pair it found, not an ever-larger one."""
+    lots_a, _ = sizing.matched_minimum_lots(
+        0.01, 0.01, 0.01, 0.01, beta=1.0, contract_a=1.0,
+        contract_b=3.0)          # 1/3 lots of B per lot of A
+    assert lots_a <= 0.01 + sizing.MATCH_MAX_STEPS * 0.01 + 1e-9
+
+
+def test_the_matched_minimum_follows_the_hedge_mode():
+    """Dollar-neutral sizes leg B from the prices and ignores beta,
+    exactly as hedge_lots does — otherwise the smallest version of the
+    trade is a different trade from the one the engine places."""
+    lots_a, lots_b = sizing.matched_minimum_lots(
+        0.01, 0.01, 0.01, 0.01, beta=999.0, contract_a=100.0,
+        contract_b=100.0, mode='notional', price_a=4000.0,
+        price_b=2000.0)
+    assert lots_a * 100.0 * 4000.0 == pytest.approx(
+        lots_b * 100.0 * 2000.0, rel=sizing.MATCH_TOLERANCE)
+
+
 # --- leverage --------------------------------------------------------------
 
 def test_margin_is_notional_over_leverage():

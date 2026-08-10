@@ -1597,6 +1597,7 @@ class Coordinator:
         runner = scenarios.ScenarioRunner(
             spot, futures, spread_stats=self._scenario_stats(asset_key),
             hedge_ratio=self.config.TRADING.get('HEDGE_RATIO', 1.0),
+            hedge_mode=self.config.TRADING.get('HEDGE_MODE', 'units'),
             sleep=scenario_sleep,
             hold_sec=spec.get('hold_sec', scenarios.DEFAULT_HOLD_SEC))
         try:

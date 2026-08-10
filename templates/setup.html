@@ -813,14 +813,27 @@ async function showScenarioLotSizes() {
         ' ≈ $' + Math.round(x).toLocaleString());
     const leg = (lots, notional) => (lots == null ? '—'
         : (+lots.toFixed(4)) + ' lots' + money(notional));
+    // The spread pair is a SECOND pair of numbers and it is usually
+    // not the two minimums: leg B is sized from leg A by
+    // lots x contract A / (beta x contract B), and the steps are
+    // coarse, so the smallest genuinely hedged pair can sit a few
+    // steps above either floor. Printing only the minimums under a
+    // table whose spread rows say something else reads as a bug.
+    const pairLine = (s.pair_min_lots_a == null && s.pair_min_lots_b == null)
+        ? ''
+        : '<div class="mt-1"><strong>Spread scenarios:</strong> '
+          + 'Leg A ' + leg(s.pair_min_lots_a, s.pair_min_notional_a_usd)
+          + ' &nbsp;·&nbsp; Leg B ' + leg(s.pair_min_lots_b,
+                                          s.pair_min_notional_b_usd)
+          + ' — matched, so the two legs hold the same quantity once '
+          + 'the hedge ratio and both contract sizes are applied. That '
+          + 'is why it is not simply the two minimums.</div>';
     host.innerHTML =
-        '<strong>Sizes this run will use:</strong> '
+        '<strong>Single-leg scenarios:</strong> '
         + 'Leg A ' + leg(s.leg_a_min_lots, s.leg_a_min_notional_usd)
         + ' &nbsp;·&nbsp; Leg B ' + leg(s.leg_b_min_lots, s.leg_b_min_notional_usd)
-        + '. Single-leg scenarios use that leg’s own minimum; spread '
-        + 'scenarios size the smaller leg UP so both clear their minimum '
-        + 'at the hedge ratio (equal lots on unequal minimums is not a '
-        + 'hedge, it is a naked position in the difference).'
+        + ' — each leg’s own broker minimum.'
+        + pairLine
         + (stale.length
             ? '<div class="text-danger mt-1"><strong>Restart pending.</strong> '
               + stale.join('; ') + '. These sizes are for the pair that '

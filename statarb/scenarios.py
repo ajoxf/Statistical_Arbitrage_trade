@@ -157,12 +157,16 @@ class ScenarioRunner:
     def __init__(self, spot, futures, spread_stats=None,
                  clock=time.time, sleep=time.sleep,
                  fill_timeout=LIMIT_FILL_TIMEOUT_SEC, hedge_ratio=1.0,
-                 hold_sec=DEFAULT_HOLD_SEC):
+                 hold_sec=DEFAULT_HOLD_SEC, hedge_mode='units'):
         self.spot = spot
         self.futures = futures
-        # Spread scenarios size Leg B against Leg A with this, so a
-        # test pair carries the same exposure a real one would.
+        # Spread scenarios size Leg B against Leg A with these, so a
+        # test pair carries the same exposure a real one would — same
+        # beta AND the same hedge construction the engine is configured
+        # for, since unit-neutral and dollar-neutral are different
+        # trades whenever beta is not the live price ratio.
         self.hedge_ratio = float(hedge_ratio or 1.0)
+        self.hedge_mode = str(hedge_mode or 'units').lower()
         self.spread_stats = spread_stats or (lambda: None)
         self.clock = clock
         self.sleep = sleep
@@ -245,18 +249,35 @@ class ScenarioRunner:
         spot minimum is 0.01 (1 oz) and the futures minimum is 0.1
         (10 oz), so a "LONG_SPR" built that way is 9 oz net short, and
         its reported cost is ~94% one leg. Size up the smaller leg until
-        both clear their minimum at the configured hedge ratio.
+        both clear their minimum at the configured hedge ratio AND both
+        contract sizes — the ratio between the legs is
+        `L_B = L_A * C_A / (beta * C_B)`, and leaving the contract sizes
+        out of it (live 2026-08-10, XAGUSD 5,000/lot against XAUUSD
+        100/lot) offered 0.01 against 0.67 lots: $3,250 of silver
+        against $292,000 of gold, on buttons that place real orders.
 
         The arithmetic lives in sizing.matched_minimum_lots, shared with
         the sizing plan the Full Order Test Suite DISPLAYS. Two copies
         would drift, and the copy on screen before a live run is the
         one that must not be wrong.
         """
+        price_a = price_b = None
+        if self.hedge_mode == 'notional':
+            for leg, holder in ((self.spot, 'a'), (self.futures, 'b')):
+                tick = leg.leg.tick(leg.symbol)
+                if tick:
+                    mid = (tick['bid'] + tick['ask']) / 2
+                    if holder == 'a':
+                        price_a = mid
+                    else:
+                        price_b = mid
         return sizing.matched_minimum_lots(
             self._volume(self.spot), self._volume(self.futures),
             self.spot.specs().get('volume_step'),
             self.futures.specs().get('volume_step'),
-            self.hedge_ratio)
+            self.hedge_ratio,
+            self.spot.contract_size, self.futures.contract_size,
+            mode=self.hedge_mode, price_a=price_a, price_b=price_b)
 
     def open_market(self, side_leg, side, comment='SCENARIO MKT',
                     volume=None):

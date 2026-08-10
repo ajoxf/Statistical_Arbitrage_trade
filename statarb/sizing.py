@@ -54,6 +54,14 @@ beta 1 with equal contracts, different otherwise.
 
 import math
 
+# How closely a MATCHED minimum pair has to hedge, and how far the
+# search may walk leg A up to get there. 2% is well inside the
+# imbalance the dashboard already flags at 2%; twenty steps bounds
+# what a test order can grow to when the steps simply cannot express
+# the ratio.
+MATCH_TOLERANCE = 0.02
+MATCH_MAX_STEPS = 20
+
 
 def round_step(volume, step, minimum=0.0, down=False):
     """Snap to a tradable volume.
@@ -174,28 +182,90 @@ def margin(notional_usd, leverage):
     return notional_usd / float(leverage)
 
 
-def matched_minimum_lots(min_a, min_b, step_a, step_b, beta=1.0):
+def matched_minimum_lots(min_a, min_b, step_a, step_b, beta=1.0,
+                         contract_a=1.0, contract_b=1.0,
+                         mode='units', price_a=None, price_b=None):
     """The smallest MATCHED pair both legs can actually trade.
 
     Each leg's own minimum is right for a single-leg test, but using
     both on a pair is not a hedge: on CFI the spot minimum is 0.01
     (1 oz) and the futures minimum is 0.1 (10 oz), so a "LONG_SPR"
-    built that way is 9 oz net short. Size the smaller leg UP until
-    both clear their minimum at the hedge ratio.
+    built that way is 9 oz net short.
+
+    The ratio between the legs is the HEDGE ratio derived at the top of
+    this module — `L_B = L_A * C_A / (beta * C_B)` — and CONTRACT SIZES
+    are half of it. This function used `L_B = L_A * beta`, the old rule
+    the rest of the engine was corrected away from on 2026-08-07, so it
+    was wrong in both documented ways at once: it ignored the contract
+    sizes, and beta INVERTED it.
+
+    Live 2026-08-10 on XAGUSD (5,000/lot) vs XAUUSD (100/lot) at beta
+    66.93 the suite offered 0.01 against 0.67 lots — $3,250 of silver
+    against $292,000 of gold, ninety times unbalanced, on a page whose
+    buttons place real orders.
+
+    "Smallest" alone is not enough either, because the steps are
+    coarse. At that pair the floor is 0.02 lots on leg A, whose exact
+    hedge is 0.0149 on leg B — and 0.01 is 33% under while 0.02 is 33%
+    over. The smallest pair that is genuinely MATCHED is 0.04 / 0.03,
+    0.4% out. So the floor is where the search starts, not where it
+    stops: step leg A up until the hedge lands within
+    `MATCH_TOLERANCE`, and give up after `MATCH_MAX_STEPS` rather than
+    inflate a test order chasing a ratio the steps cannot express.
 
     Shared by ScenarioRunner.pair_volumes (which trades it) and the
     published sizing plan (which displays it), so the number shown on
     the Full Order Test Suite before a run is the number that run
-    sends. Two implementations of this would eventually disagree, and
-    the one on screen would be the wrong one.
+    sends. Two implementations would eventually disagree, and the one
+    on screen would be the wrong one.
+
+    `mode` follows HEDGE_MODE for the same reason: a dollar-neutral
+    book sized unit-neutral at its minimum is not the smallest version
+    of the trade the engine places, it is a different trade.
     """
-    ratio = float(beta or 1.0)
+    beta = float(beta or 1.0)
     step_a = step_a or 0.01
     step_b = step_b or 0.01
-    lots_a = max(min_a or 0.0, (min_b or 0.0) / ratio if ratio else 0.0)
-    # Round UP, always: the minimum must never be undercut.
-    lots_a = math.ceil(lots_a / step_a - 1e-9) * step_a
-    lots_b = math.ceil(lots_a * ratio / step_b - 1e-9) * step_b
+    contract_a = float(contract_a or 1.0)
+    contract_b = float(contract_b or 1.0)
+    min_a, min_b = min_a or 0.0, min_b or 0.0
+
+    # Lots on B per lot on A — the same two constructions hedge_lots
+    # uses, so the smallest matched pair is the smallest version of the
+    # hedge the engine would actually place.
+    if str(mode).lower() == 'notional':
+        per_a = (contract_a * price_a / (contract_b * price_b)
+                 if (price_a and price_b and contract_b) else 0.0)
+    else:
+        per_a = (contract_a / (beta * contract_b)
+                 if (beta and contract_b) else 0.0)
+    if per_a <= 0:
+        return round(min_a, 8), round(min_b, 8)
+
+    # The floor: leg A must clear its own minimum AND carry a leg B
+    # that clears leg B's. Round UP, always — a minimum must never be
+    # undercut.
+    floor_a = max(min_a, min_b / per_a)
+    floor_a = math.ceil(floor_a / step_a - 1e-9) * step_a
+
+    def hedge_for(lots_a):
+        """Leg B snapped to its step, never under its own minimum."""
+        want = lots_a * per_a
+        lots_b = math.floor(want / step_b + 0.5 + 1e-9) * step_b
+        if lots_b < min_b - 1e-9:
+            lots_b = math.ceil(min_b / step_b - 1e-9) * step_b
+        return lots_b, want
+
+    best = None
+    for k in range(MATCH_MAX_STEPS):
+        lots_a = floor_a + k * step_a
+        lots_b, want = hedge_for(lots_a)
+        error = abs(lots_b - want) / want if want else 1.0
+        if best is None or error < best[2]:
+            best = (lots_a, lots_b, error)
+        if error <= MATCH_TOLERANCE:
+            break
+    lots_a, lots_b, _ = best
     return round(lots_a, 8), round(lots_b, 8)
 
 
@@ -247,8 +317,10 @@ def plan(config, contract_a, contract_b, price_a, price_b,
     step_b = meta_b.get('volume_step') or 0.0
     min_a = meta_a.get('volume_min') or 0.0
     min_b = meta_b.get('volume_min') or 0.0
+    hedge_mode = str(trading.get('HEDGE_MODE', 'units') or 'units').lower()
     pair_min_a, pair_min_b = matched_minimum_lots(
-        min_a, min_b, step_a, step_b, beta)
+        min_a, min_b, step_a, step_b, beta, contract_a, contract_b,
+        mode=hedge_mode, price_a=price_a, price_b=price_b)
 
     target_notional = float(trading.get('NOTIONAL_PER_LEG_USD', 0.0) or 0.0)
     reason = None
@@ -267,7 +339,6 @@ def plan(config, contract_a, contract_b, price_a, price_b,
     else:
         lots_a = float(trading.get('CLIP_LOTS', 1.0) or 0.0)
 
-    hedge_mode = str(trading.get('HEDGE_MODE', 'units') or 'units').lower()
     lots_a = round_step(lots_a * float(size_multiplier or 1.0), step_a, min_a)
     lots_b = hedge_lots(lots_a, contract_a, contract_b, beta, step_b, min_b,
                         mode=hedge_mode, price_a=price_a, price_b=price_b)

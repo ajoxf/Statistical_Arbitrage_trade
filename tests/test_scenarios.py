@@ -606,10 +606,70 @@ def test_a_spread_scenario_carries_matched_notional():
 
 
 def test_the_hedge_ratio_scales_leg_b():
+    """beta DIVIDES leg B, it does not multiply it.
+
+    `L_B = L_A * C_A / (beta * C_B)`. At beta 2 with equal contract
+    sizes the hedge is HALF the leg A lots. This test used to assert
+    `fut == spot * 2`, which is the pre-2026-08-07 rule the rest of
+    the engine was corrected away from — inverted, and it was the
+    assertion keeping the old rule alive in here.
+    """
     runner, spot_leg, fut_leg = make_runner()
     runner.hedge_ratio = 2.0
     spot_lots, fut_lots = runner.pair_volumes()
-    assert fut_lots == pytest.approx(spot_lots * 2.0)
+    assert fut_lots == pytest.approx(spot_lots / 2.0)
+
+
+def test_contract_sizes_set_the_ratio_between_the_legs():
+    """Live 2026-08-10, XAGUSD (5,000/lot) against XAUUSD (100/lot) at
+    beta 66.93: the suite offered 0.01 silver against 0.67 gold —
+    $3,250 against $292,000, ninety times unbalanced, on buttons that
+    place real orders. The smallest genuinely matched pair is
+    0.04 / 0.03 (the 0.02 floor's exact hedge is 0.0149, which no
+    0.01 step can express)."""
+    runner, spot_leg, fut_leg = make_runner()
+    runner.spot.contract_size = 5000.0        # XAGUSD
+    runner.futures.contract_size = 100.0      # XAUUSD
+    runner.hedge_ratio = 66.93
+    spot_leg.volume_min = fut_leg.volume_min = 0.01
+    runner.spot.meta = runner.futures.meta = None
+    spot_lots, fut_lots = runner.pair_volumes()
+    assert (spot_lots, fut_lots) == (pytest.approx(0.04),
+                                     pytest.approx(0.03))
+    # And it is a hedge: leg A's units against beta x leg B's.
+    assert spot_lots * 5000 == pytest.approx(
+        66.93 * fut_lots * 100, rel=0.02)
+
+
+def test_the_matched_pair_is_balanced_in_units():
+    """The point of the matched pair: L_A*C_A == beta * L_B*C_B, to
+    within one tradable step. A ratio that ignores the contract sizes
+    passes every minimum and is still not a hedge."""
+    runner, spot_leg, fut_leg = make_runner()
+    runner.spot.contract_size, runner.futures.contract_size = 1000.0, 100.0
+    runner.hedge_ratio = 2.5
+    spot_leg.volume_min, fut_leg.volume_min = 0.01, 0.1
+    runner.spot.meta = runner.futures.meta = None
+    lots_a, lots_b = runner.pair_volumes()
+    units_a = lots_a * runner.spot.contract_size
+    units_b = lots_b * runner.futures.contract_size * runner.hedge_ratio
+    assert units_a == pytest.approx(units_b, rel=0.05)
+
+
+def test_dollar_neutral_mode_matches_the_minimum_in_money():
+    """HEDGE_MODE=notional sizes leg B from the prices, not beta — the
+    scenario must place the same construction the engine would, or the
+    smallest version of the trade is a different trade."""
+    runner, spot_leg, fut_leg = make_runner()
+    runner.hedge_mode = 'notional'
+    runner.hedge_ratio = 999.0                 # ignored in this mode
+    runner.spot.contract_size = runner.futures.contract_size = 100.0
+    spot_leg.volume_min = fut_leg.volume_min = 0.01
+    runner.spot.meta = runner.futures.meta = None
+    lots_a, lots_b = runner.pair_volumes()
+    # Fakes quote 3300 on leg A and 3320 on leg B, so the pair is very
+    # nearly one-for-one and beta plays no part.
+    assert lots_b == pytest.approx(lots_a, rel=0.05)
 
 
 def test_neither_leg_is_sized_below_its_minimum():
