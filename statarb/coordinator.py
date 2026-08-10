@@ -198,6 +198,7 @@ class Coordinator:
         self._last_status_write = 0.0  # for the measured write interval
         self.shadow = ShadowTracker(self.data_logger)
         self._last_z = {}          # asset -> z (for SD-touch detection)
+        self._last_beta_block = None   # so the refusal logs once, not 3/sec
 
         self.active_assets = {}
         self.last_signals = {}
@@ -799,8 +800,60 @@ class Coordinator:
             return "SIGNAL_EXIT"
         return None
 
+    def _implausible_spread(self, md):
+        """Is the configured spread a difference between these two
+        prices at all? Returns the reason it is not, or None.
+
+        A pair spread is a small DIFFERENCE between two comparable
+        prices. When it dwarfs the prices themselves, HEDGE_RATIO is
+        wrong and every number downstream — mu, sigma, z, the exit
+        levels — describes a series that does not exist.
+
+        Live 2026-08-10, three times in one day and always the same
+        way: the contract-size check advised "or correct HEDGE_RATIO
+        for the difference", the operator set beta to 10, and
+        USOIL/UKOIL at 81.76/85.07 became a spread of -732.53. Then
+        beta 0.0149. Then, on switching the pair back to USOIL/UKOIL,
+        the 66.94 left over from XAGUSD/XAUUSD, giving -5443.86 on legs
+        priced 82.61 and 86.05. Beta is the PRICE coefficient; contract
+        sizes are handled by the hedge formula.
+
+        A HEDGE_RATIO carried across an instrument change is the common
+        thread, and nothing stops an operator changing the symbols
+        without it. So this is a BLOCK on entries, not a warning: the
+        engine will not open a position on a series it can show is not
+        the difference between the two prices it is quoting. Exits are
+        evaluated before this and are unaffected — a wrong beta must
+        never trap a live position.
+        """
+        spot_px = md.get('spot_price') or 0
+        fut_px = md.get('futures_price') or 0
+        smaller = min(abs(spot_px), abs(fut_px))
+        if not smaller or abs(md.get('spread') or 0) <= 0.5 * smaller:
+            return None
+        beta = self.config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0
+        ratio = (fut_px / spot_px) if spot_px else 0
+        return (f'spread {md["spread"]:+.2f} dwarfs the leg prices '
+                f'({spot_px:.2f} / {fut_px:.2f}) — HEDGE_RATIO '
+                f'{beta:g} is wrong, so mu, sigma, z and every exit '
+                f'level describe a series that does not exist. Entries '
+                f'are blocked until it is fixed; exits still run. The '
+                f'price ratio is {ratio:.4f} — use 1 for the same '
+                f'underlying (spot vs its own future), or near the '
+                f'price ratio for two different instruments. Beta is '
+                f'the spread\'s price coefficient, NOT a contract-size '
+                f'or lot ratio; differing contract sizes are already '
+                f'handled when sizing the hedge.')
+
     def _entry_signal(self, asset_key, stats, market_data, active,
                       contract_size):
+        broken = self._implausible_spread(market_data)
+        if broken:
+            if self._last_beta_block != broken:
+                self._last_beta_block = broken
+                logging.error("Entries blocked: %s", broken)
+            return None
+        self._last_beta_block = None
         clip = self._clip_lots(asset_key, market_data)
         if self.use_z:
             if stats is None:
@@ -2448,31 +2501,9 @@ class Coordinator:
                          else 'ticking'))
 
         # -- beta sanity --
-        # A pair spread is a small DIFFERENCE between two comparable
-        # prices. When it dwarfs the prices themselves, HEDGE_RATIO is
-        # wrong and every number downstream — mu, sigma, z, the exit
-        # levels — describes a series that does not exist.
-        #
-        # Live 2026-08-10: the contract-size check advised "or correct
-        # HEDGE_RATIO for the difference" on a 10x contract mismatch,
-        # the operator set beta to 10, and USOIL/UKOIL at 81.76/85.07
-        # became a spread of -732.53. Beta is the PRICE coefficient;
-        # contract sizes are handled by the hedge formula. That advice
-        # is gone, but nothing was checking the result.
-        spot_px = md.get('spot_price') or 0
-        fut_px = md.get('futures_price') or 0
-        beta = self.config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0
-        smaller = min(abs(spot_px), abs(fut_px))
-        if smaller and abs(md.get('spread') or 0) > 0.5 * smaller:
-            ratio = (fut_px / spot_px) if spot_px else 0
-            rows.append(('beta', self.WARN,
-                         f'spread {md["spread"]:+.2f} dwarfs the leg prices '
-                         f'({spot_px:.2f} / {fut_px:.2f}) — HEDGE_RATIO '
-                         f'{beta:g} looks wrong. The price ratio is '
-                         f'{ratio:.4f}. Beta is the spread\'s price '
-                         f'coefficient, NOT a contract-size or lot ratio; '
-                         f'differing contract sizes are already handled '
-                         f'when sizing the hedge.'))
+        beta_problem = self._implausible_spread(md)
+        if beta_problem:
+            rows.append(('beta', self.BLOCKED, beta_problem))
 
         # -- pair definition --
         # Reference only, so it never blocks; but a basis label that

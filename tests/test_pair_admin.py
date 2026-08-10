@@ -225,9 +225,43 @@ def test_a_beta_that_wrecks_the_spread_is_called_out(config, tmp_path,
     assert 'beta' in rows
     state, detail = rows['beta']
     from statarb.coordinator import Coordinator
-    assert state == Coordinator.WARN            # reports, does not block
+    assert state == Coordinator.BLOCKED
     assert '-732' in detail and 'HEDGE_RATIO 10' in detail
     assert 'NOT a contract-size or lot ratio' in detail
+
+
+def test_an_impossible_spread_blocks_entries(config, tmp_path, monkeypatch):
+    """It happened three times in one day, twice on advice this repo
+    gave, and the third time simply by leaving XAGUSD/XAUUSD's 66.94
+    behind when the pair was switched back to oil. Reporting it was not
+    enough: the engine must not OPEN a position on a series it can show
+    is not the difference between the two prices it is quoting."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    config.TRADING['HEDGE_RATIO'] = 66.94
+    coord = Coordinator(config, trading_mode='PAPER')
+    md = {'spot_price': 82.61, 'futures_price': 86.05,
+          'spread': 86.05 - 66.94 * 82.61, 'tick_age_ms': 100}
+
+    called = []
+    coord.z_gen.entry_signal = lambda *a, **k: called.append(a) or 'SIGNAL'
+    coord._clip_lots = lambda *a, **k: 1.0
+    assert coord._entry_signal('GOLD', object(), md, {}, 1000.0) is None
+    assert not called                    # never even asked for a signal
+
+
+def test_a_sane_spread_still_reaches_the_signal_generator(config, tmp_path,
+                                                          monkeypatch):
+    """The block must not stand in front of a working pair."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    config.TRADING['HEDGE_RATIO'] = 1.0
+    coord = Coordinator(config, trading_mode='PAPER')
+    md = {'spot_price': 82.61, 'futures_price': 86.05,
+          'spread': 3.44, 'tick_age_ms': 100}
+    coord.z_gen.entry_signal = lambda *a, **k: 'SIGNAL'
+    coord._clip_lots = lambda *a, **k: 1.0
+    assert coord._entry_signal('GOLD', object(), md, {}, 1000.0) == 'SIGNAL'
 
 
 def test_a_sane_beta_is_silent(config, tmp_path, monkeypatch):
