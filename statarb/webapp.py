@@ -814,18 +814,26 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             asset.setdefault('enabled', True)
             asset.setdefault('risk_free_rate', 0.0425)
             asset.setdefault('multiplier', 1.0)
-            if symbol and role in ('SPOT', 'FUTURES'):
-                # Single-leg row: `symbol` belongs to whichever leg the
-                # row holds.
+            # Which leg does the plain `symbol` field belong to? On a
+            # single-leg row, whichever leg the row holds. On a BOTH
+            # row the form labels it "Leg A — Spot symbol" and puts the
+            # other leg in `futures_symbol`, so it is the SPOT one.
+            #
+            # BOTH used to match neither branch, so `symbol` was
+            # silently DROPPED: live 2026-08-10 the operator saved
+            # USOIL as Leg A on a one-account setup and it kept
+            # reverting to the old BRENTCash, while the futures symbol
+            # beside it saved every time.
+            if symbol:
                 if role == 'FUTURES':
                     fut_symbol = fut_symbol or symbol
-                else:
+                elif role in ('SPOT', 'BOTH'):
                     spot_symbol = spot_symbol or symbol
-            elif symbol and role != 'BOTH':
-                return jsonify({
-                    'success': False,
-                    'error': 'Choose a role (Spot or Futures) so the '
-                             'symbol can be assigned to a leg'}), 400
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Choose a leg (Spot, Futures or Both) so '
+                                 'the symbol can be assigned'}), 400
             if spot_symbol and 'SPOT' in claimed:
                 asset['spot_symbols'] = [spot_symbol]
             if fut_symbol and 'FUTURES' in claimed:

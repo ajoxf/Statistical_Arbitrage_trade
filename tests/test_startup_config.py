@@ -268,7 +268,7 @@ def test_a_symbol_without_a_leg_is_refused(client):
     response = client.post('/api/exchanges', json={
         'name': 'mystery', 'symbol': 'XAUUSD'})
     assert response.status_code == 400
-    assert 'role' in response.get_json()['error'].lower()
+    assert 'leg' in response.get_json()['error'].lower()
 
 
 def test_the_broker_row_reports_the_symbol_it_trades(client):
@@ -757,3 +757,50 @@ def test_the_exchanges_page_warns_before_it_becomes_a_crash_loop(client):
     page = client.get('/setup').get_data(as_text=True)
     assert 'leg-mapping-warning' in page
     assert 'cannot start' in page
+
+
+def test_both_legs_on_one_account_saves_the_spot_symbol(client):
+    """Live 2026-08-10: on a one-account setup the operator saved USOIL
+    as Leg A and it kept reverting to the old symbol, while the futures
+    symbol beside it saved every time.
+
+    The BOTH row labels its first box "Leg A — Spot symbol" and posts it
+    as `symbol`; the save matched that field only for SPOT and FUTURES,
+    so on BOTH it was silently dropped.
+    """
+    def saved():
+        with open(client.tmp_path / 'config.json') as f:
+            return json.load(f)
+
+    response = client.post('/api/exchanges', json={
+        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'symbol': 'USOIL', 'futures_symbol': 'UKOIL'})
+    assert response.status_code == 200, response.get_json()
+
+    raw = saved()
+    asset = next(iter(raw['assets'].values()))
+    assert asset['spot_symbols'] == ['USOIL']
+    assert asset['futures_symbols'] == ['UKOIL']
+    assert raw['leg_accounts'] == {'spot': 'Mento Markets',
+                                   'futures': 'Mento Markets'}
+
+    # ...and it survives a re-save, which is what "it goes back" meant
+    client.post('/api/exchanges', json={
+        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'symbol': 'USOIL', 'futures_symbol': 'UKOIL'})
+    asset = next(iter(saved()['assets'].values()))
+    assert asset['spot_symbols'] == ['USOIL']
+
+    # The row reads back with BOTH roles and BOTH symbols, so the form
+    # repopulates with what was actually saved.
+    row = {b['id']: b for b in client.get('/api/exchanges').get_json()}
+    assert row['Mento Markets']['roles'] == ['SPOT', 'FUTURES']
+    assert row['Mento Markets']['spot_symbol'] == 'USOIL'
+    assert row['Mento Markets']['futures_symbol'] == 'UKOIL'
+
+
+def test_a_symbol_with_no_leg_chosen_is_still_refused(client):
+    response = client.post('/api/exchanges', json={
+        'name': 'nowhere', 'endpoint': '127.0.0.1:9109', 'symbol': 'USOIL'})
+    assert response.status_code == 400
+    assert 'leg' in response.get_json()['error'].lower()
