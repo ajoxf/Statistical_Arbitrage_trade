@@ -1797,9 +1797,22 @@ class Coordinator:
         except Exception:
             return block
 
-        commissions = ((self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0)
-                        + self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0))
-                       * lots)
+        # Per leg, in ITS OWN lots — the same split round_trip_cost
+        # uses. A combined "x lots" figure is meaningless once the two
+        # legs trade different lot counts.
+        lots_b = size.get('leg_b_lots') or lots
+        contract_b = size.get('leg_b_contract') or contract
+        factor = self.config.COSTS.get('SPREAD_COST_FACTOR', 1.0)
+        spot_spread = (md.get('spot_ask') or 0) - (md.get('spot_bid') or 0)
+        fut_spread = ((md.get('futures_ask') or 0)
+                      - (md.get('futures_bid') or 0))
+        leg_a_cost = spot_spread * lots * contract * factor
+        leg_b_cost = fut_spread * lots_b * contract_b * factor
+        commission_a = (self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0)
+                        * lots)
+        commission_b = (self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0)
+                        * lots_b)
+        commissions = commission_a + commission_b
         # Quoted against ONE leg's notional, the convention a pair trade
         # is normally costed in — and the same basis as "combined
         # bid-ask in bps".
@@ -1853,6 +1866,17 @@ class Coordinator:
             'rt_fut_symbol': (self.active_assets.get(asset_key) or {})
             .get('futures_symbol'),
             'rt_units': lots * contract,
+            # Each leg's OWN figures, computed HERE with the same
+            # arithmetic as the cost model. The card used to multiply
+            # both legs by one contract size and one lot count of its
+            # own, which is how it printed "XAUUSD 0.2200 x 5000" for a
+            # 100-unit contract. It now renders these rather than
+            # deriving anything, so display and model cannot diverge.
+            'rt_contract_a': contract, 'rt_contract_b': contract_b,
+            'rt_lots_a': lots, 'rt_lots_b': lots_b,
+            'rt_leg_a_cost': leg_a_cost, 'rt_leg_b_cost': leg_b_cost,
+            'rt_commission_a': commission_a,
+            'rt_commission_b': commission_b,
             # Per ONE lot, and the lot count separately. The operator
             # reasons about a single lot ("one round trip costs me
             # $120") and then scales it; a combined figure at 6.41 lots

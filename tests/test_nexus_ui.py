@@ -1820,3 +1820,58 @@ def test_the_edge_verdict_is_none_until_there_is_a_usable_z(config, tmp_path,
     class Thin(Stats):
         z = 0.24
     assert coord._sizing_and_cost('GOLD', md, Thin())['edge_ok'] is False
+
+
+def test_the_published_leg_costs_add_up_to_the_model(config, tmp_path,
+                                                     monkeypatch):
+    """The card renders these instead of deriving anything, so they
+    have to BE the cost model's own arithmetic. It previously applied
+    one contract size and one lot count to both legs and printed
+    "XAUUSD 0.2200 x 5000" for a 100-unit contract."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator, PaperExecutor
+
+    class Leg:
+        name = 'acct'
+
+        def ensure_symbol(self, symbol):
+            return {'ok': True, 'volume_min': 0.01, 'volume_step': 0.01,
+                    'volume_max': 10000.0}
+
+    # Silver on Leg A (5,000/lot), gold on Leg B (100/lot)
+    config.ASSETS = {'GOLD': dict(config.ASSETS['GOLD'], lot_size=5000.0,
+                                  fut_lot_size=100.0)}
+    config.TRADING.update({'SIZING_MODE': 'lots', 'CLIP_LOTS': 1.55,
+                           'HEDGE_RATIO': 67.28})
+    config.COSTS.update({'COMMISSION_PER_LOT_SPOT': 0.0,
+                         'COMMISSION_PER_LOT_FUT': 0.0,
+                         'SPREAD_COST_FACTOR': 1.0})
+    coord = Coordinator(config, trading_mode='PAPER')
+    coord.spot_leg = coord.futures_leg = Leg()
+    coord.executor = PaperExecutor(coord.spot_leg, coord.futures_leg, config)
+    coord.active_assets['GOLD'] = {'config': config.ASSETS['GOLD'],
+                                   'spot_symbol': 'XAGUSD',
+                                   'futures_symbol': 'XAUUSD',
+                                   'last_data': None}
+    md = {'spot_price': 64.686, 'futures_price': 4352.26,
+          'spot_bid': 64.663, 'spot_ask': 64.709,
+          'futures_bid': 4352.15, 'futures_ask': 4352.37,
+          'spread': 4351.30, 'basis_pct': 0.0}
+    block = coord._sizing_and_cost('GOLD', md, None)
+
+    # Each leg in ITS OWN units
+    assert block['rt_contract_a'] == 5000.0
+    assert block['rt_contract_b'] == 100.0
+    assert block['rt_lots_b'] != block['rt_lots_a']
+    assert block['rt_leg_a_cost'] == pytest.approx(
+        0.046 * block['rt_lots_a'] * 5000.0, rel=1e-6)
+    assert block['rt_leg_b_cost'] == pytest.approx(
+        0.22 * block['rt_lots_b'] * 100.0, rel=1e-6)
+
+    # ...and the parts are exactly the whole the model computed
+    assert (block['rt_leg_a_cost'] + block['rt_leg_b_cost']
+            + block['rt_commission_a'] + block['rt_commission_b']) == \
+        pytest.approx(block['rt_cost_usd'], rel=1e-9)
+
+    # Gold's leg must not be charged silver's contract size
+    assert block['rt_leg_b_cost'] < 100.0

@@ -707,7 +707,7 @@
                          a broker's own schedule without arithmetic. -->
                     <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
                         <div class="text-secondary mb-1" style="font-size: 0.7rem;">
-                            Round-trip cost, per lot
+                            Round-trip cost &mdash; each leg in its own units
                         </div>
                         <table class="w-100" style="font-size: 0.7rem;"
                                id="round-trip-breakdown">
@@ -722,7 +722,7 @@
                                     <td class="text-end text-secondary" id="rt-comm-calc">-</td>
                                     <td class="text-end font-monospace" id="rt-comm-usd">-</td></tr>
                                 <tr style="border-top: 1px solid var(--border-color);">
-                                    <td class="fw-bold pt-1">Per lot</td>
+                                    <td class="fw-bold pt-1">Total</td>
                                     <td class="text-end text-secondary pt-1" id="rt-perlot-unit">-</td>
                                     <td class="text-end fw-bold font-monospace pt-1"
                                         id="round-trip-per-lot">-</td></tr>
@@ -3014,18 +3014,33 @@
                 };
                 const money = (x) => (x == null ? '-' : '$' + x.toFixed(2));
 
+                // Each leg's own contract size, own lot count, own
+                // cost — all computed by the engine with the SAME
+                // arithmetic as the cost model. The card used to apply
+                // one contract size and one lot count to both legs,
+                // which printed "XAUUSD 0.2200 x 5000" for a 100-unit
+                // contract: a 43x overstatement on that leg.
+                const cA = data.rt_contract_a, cB = data.rt_contract_b;
+                const lA = data.rt_lots_a, lB = data.rt_lots_b;
+                const legCalc = (spread, csz, lts) =>
+                    (spread == null || csz == null || lts == null) ? ''
+                    : spread.toFixed(4) + (f !== 1 ? '×' + f : '')
+                      + ' × ' + Math.round(csz) + ' × ' + (+lts.toFixed(2))
+                      + ' lots';
+
                 set('rt-legA-label', (data.rt_spot_symbol || 'Leg A') + ' spread');
                 set('rt-legB-label', (data.rt_fut_symbol || 'Leg B') + ' spread');
-                set('rt-legA-calc', ss != null
-                    ? ss.toFixed(4) + (f !== 1 ? '×' + f : '') + ' × ' + csize : '');
-                set('rt-legB-calc', fs != null
-                    ? fs.toFixed(4) + (f !== 1 ? '×' + f : '') + ' × ' + csize : '');
-                set('rt-legA-usd', money(ss == null ? null : ss * f * csize));
-                set('rt-legB-usd', money(fs == null ? null : fs * f * csize));
+                set('rt-legA-calc', legCalc(ss, cA, lA));
+                set('rt-legB-calc', legCalc(fs, cB, lB));
+                set('rt-legA-usd', money(data.rt_leg_a_cost));
+                set('rt-legB-usd', money(data.rt_leg_b_cost));
 
-                const commTotal = (cSpot || 0) + (cFut || 0);
-                set('rt-comm-calc', commTotal
-                    ? money(cSpot) + ' + ' + money(cFut)
+                const commTotal = (data.rt_commission_a || 0)
+                                + (data.rt_commission_b || 0);
+                const commSet = (cSpot || 0) + (cFut || 0);
+                set('rt-comm-calc', commSet
+                    ? money(data.rt_commission_a) + ' + '
+                      + money(data.rt_commission_b)
                     : 'not set');
                 const commEl = document.getElementById('rt-comm-usd');
                 if (commEl) {
@@ -3033,16 +3048,21 @@
                     // Zero commission is almost never true and it makes
                     // every trade look cheaper than it is.
                     commEl.className = 'text-end font-monospace'
-                        + (commTotal ? '' : ' text-danger');
+                        + (commSet ? '' : ' text-danger');
                 }
 
-                set('rt-perlot-unit', (perLot != null && csize)
-                    ? '$' + (perLot / csize).toFixed(4) + '/unit' : '');
-                set('round-trip-per-lot', money(perLot));
-                set('round-trip-scale-label', lots != null
-                    ? '× ' + (+lots.toFixed(2)) + ' lots' : '× lots');
+                // The two legs above are already totals for the whole
+                // position, so the bottom rows are the sum and a
+                // per-Leg-A-lot figure. "Per lot" alone stopped meaning
+                // anything once the legs trade different lot counts.
+                set('rt-perlot-unit', '');
+                set('round-trip-per-lot', money(usd));
+                set('round-trip-scale-label', lA != null
+                    ? 'per Leg A lot (÷ ' + (+lA.toFixed(2)) + ')'
+                    : 'per lot');
                 set('rt-total-bps', bps != null
-                    ? bps.toFixed(1) + ' bps' : '');
+                    ? bps.toFixed(1) + ' bps of Leg A notional' : '');
+                set('round-trip-cost', money(perLot));
 
                 if (ss != null && fs != null) {
                     const n = (x, d) => (x == null ? '?' : x.toFixed(d));
