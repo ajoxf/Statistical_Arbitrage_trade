@@ -944,3 +944,37 @@ def test_a_real_leg_b_mismatch_is_still_caught(cfg):
                    asset=asset)
     check = find(report(cfg, futures=futures), 'Contract size', 'FUTURES')
     assert check['status'] == 'WARN' and '250' in check['message']
+
+
+# --- equity, not balance -------------------------------------------------
+# Live 2026-08-11: "100006 on MentoMarkets-Server — 0.00 USD" beside
+# "equity: 5000". equity = balance + credit + floating P&L, and this
+# broker funds its demos with CREDIT, so the balance is ~0 and the row
+# read as an empty account. Equity is also what the risk manager and
+# the margin breaker measure, so it is the number that decides trading.
+
+def credit_funded(**overrides):
+    """The operator's demo: the 5,000 is CREDIT, so balance is ~0."""
+    base = dict(balance=0.0, credit=5000.0, equity=5000.0,
+                margin_free=5000.0)
+    base.update(overrides)
+    return side(term=terminal(**base))
+
+
+def test_the_login_row_reports_equity_not_balance(cfg):
+    row = find(report(cfg, spot=credit_funded()), 'Account login', 'SPOT')
+    assert '5,000.00' in row['message'] and 'equity' in row['message']
+    # The old form led with the balance: "111 on FxPro-Demo - 0.00 USD".
+    assert '\u2014 0.00 USD' not in row['message']
+
+
+def test_broker_credit_is_named_when_it_explains_the_gap(cfg):
+    row = find(report(cfg, spot=credit_funded()), 'Account login', 'SPOT')
+    assert 'credit' in row['message']
+    assert row['details']['balance'] == 0.0     # still on the record
+
+
+def test_an_ordinary_funded_account_says_nothing_about_credit(cfg):
+    row = find(report(cfg, spot=side(term=terminal(
+        balance=5000.0, credit=0.0, equity=5000.0))), 'Account login', 'SPOT')
+    assert 'credit' not in row['message']

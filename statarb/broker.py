@@ -317,6 +317,12 @@ class BrokerSession:
             'currency': getattr(info, 'currency', ''),
             'leverage': getattr(info, 'leverage', None),
             'balance': getattr(info, 'balance', 0.0),
+            # equity = balance + credit + floating P&L. Brokers often
+            # fund a demo with CREDIT rather than balance, which makes
+            # balance alone read as an empty account: live 2026-08-11,
+            # balance 0.00 against equity 5,000, and on the account
+            # before it balance -13.70 against equity 4,986.30.
+            'credit': getattr(info, 'credit', 0.0),
             'equity': getattr(info, 'equity', 0.0),
             'margin_free': getattr(info, 'margin_free', 0.0),
             'trade_allowed': bool(getattr(info, 'trade_allowed', False)),

@@ -97,11 +97,22 @@ def check_leg(checklist, role, leg_name, terminal, symbol_report, config,
                            'Enter this account\'s login, password, server',
                            'Passwords are stored in .env from Settings'])
         return
+    # EQUITY, not balance. equity = balance + credit + floating P&L,
+    # and brokers routinely fund a demo with credit, so balance alone
+    # reads as an empty account: live 2026-08-11, balance 0.00 beside
+    # equity 5,000 (and -13.70 beside 4,986.30 on the account before
+    # it). Equity is also what the risk manager and the margin breaker
+    # actually measure, so it is the number that decides trading.
+    credit = terminal.get('credit') or 0.0
     checklist.add(scope, 'Account login', PASS,
                   f"{terminal['login']} on {terminal['server']} — "
-                  f"{terminal.get('balance', 0):,.2f} "
-                  f"{terminal.get('currency', '')}",
+                  f"{terminal.get('equity', 0):,.2f} "
+                  f"{terminal.get('currency', '')} equity"
+                  + (f" (of which {credit:,.2f} is broker credit)"
+                     if credit else ''),
                   details={'name': terminal.get('name'),
+                           'balance': terminal.get('balance'),
+                           'credit': terminal.get('credit'),
                            'equity': terminal.get('equity'),
                            'free margin': terminal.get('margin_free')})
 
