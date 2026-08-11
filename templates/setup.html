@@ -118,7 +118,7 @@
                         <input type="text" class="form-control" name="symbol"
                                id="broker-symbol" list="symbol-options"
                                placeholder="e.g. XAUUSD" autocomplete="off"
-                               oninput="suggestSymbols()">
+                               oninput="_rememberVisibleSymbols(); suggestSymbols()">
                         <datalist id="symbol-options"></datalist>
                         <small class="text-secondary">Exactly as this broker spells it.
                         Contract size, expiry and swap are read from the terminal.</small>
@@ -128,7 +128,7 @@
                         <input type="text" class="form-control" name="futures_symbol"
                                id="broker-fut-symbol" list="fut-symbol-options"
                                placeholder="e.g. GC1226" autocomplete="off"
-                               oninput="suggestSymbols('futures')">
+                               oninput="_rememberVisibleSymbols(); suggestSymbols('futures')">
                         <datalist id="fut-symbol-options"></datalist>
                         <small class="text-secondary">The other side of the pair,
                         on this same account.</small>
@@ -490,10 +490,15 @@ function editBroker(name) {
     const roles = broker.roles || (broker.role !== 'NONE' ? [broker.role] : []);
     form.role.value = roles.length === 2 ? 'BOTH'
                     : roles[0] === 'FUTURES' ? 'FUTURES' : 'SPOT';
+    // Seed the per-leg store from the row, then let updateLegFields
+    // render whichever leg the selector is showing.
+    _LEG_SYMBOLS = {
+        spot: broker.spot_symbol
+              || (roles[0] === 'SPOT' ? broker.symbol : '') || '',
+        futures: broker.futures_symbol
+                 || (roles[0] === 'FUTURES' ? broker.symbol : '') || '',
+    };
     updateLegFields();
-    form.symbol.value = (roles.length === 2 ? broker.spot_symbol
-                                            : broker.symbol) || '';
-    form.futures_symbol.value = broker.futures_symbol || '';
     form.terminal_path.value = broker.terminal_path || '';
     form.endpoint.value = broker.endpoint || '';
     form.login.value = broker.login || '';
@@ -543,6 +548,33 @@ async function deleteBroker(name) {
 
 // A dual-leg account needs a symbol box per leg; a single-leg row has
 // one, labelled for the leg it holds.
+// A symbol belongs to a LEG, not to the box it happens to be typed
+// in. The single Symbol box means Leg A on a SPOT row and Leg B on a
+// FUTURES row, so its contents have to be swapped when the selector
+// moves — otherwise changing the leg carries the old leg's symbol
+// across and the save writes it to the new one.
+//
+// Live 2026-08-11: a row holding UKOIL as Leg B was switched to Leg A
+// and saved, which set spot_symbols to UKOIL and released the futures
+// leg. The page then read "MT5 · SPOT · UKOIL" with the FUTURES leg
+// unmapped — both legs one keystroke away from trading Brent against
+// Brent.
+let _LEG_SYMBOLS = {spot: '', futures: ''};
+
+function _rememberVisibleSymbols() {
+    const role = document.getElementById('broker-role').value;
+    const main = document.getElementById('broker-symbol').value.trim();
+    if (role === 'FUTURES') {
+        _LEG_SYMBOLS.futures = main;
+    } else {
+        _LEG_SYMBOLS.spot = main;
+        if (role === 'BOTH') {
+            _LEG_SYMBOLS.futures =
+                document.getElementById('broker-fut-symbol').value.trim();
+        }
+    }
+}
+
 function updateLegFields() {
     const role = document.getElementById('broker-role').value;
     const both = role === 'BOTH';
@@ -550,6 +582,13 @@ function updateLegFields() {
         .classList.toggle('d-none', !both);
     document.getElementById('broker-symbol-label').textContent =
         both ? 'Leg A — Spot symbol' : 'Symbol';
+    // Show whichever leg this role now means, from what the operator
+    // has entered for THAT leg — their typing on the other leg is kept
+    // rather than overwritten or leaked across.
+    document.getElementById('broker-symbol').value =
+        role === 'FUTURES' ? _LEG_SYMBOLS.futures : _LEG_SYMBOLS.spot;
+    document.getElementById('broker-fut-symbol').value =
+        _LEG_SYMBOLS.futures;
 }
 
 // Typing in Symbol offers the names that actually exist on that

@@ -1085,6 +1085,23 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 asset['spot_symbols'] = [spot_symbol]
             if fut_symbol and 'FUTURES' in claimed:
                 asset['futures_symbols'] = [fut_symbol]
+            # One account, one symbol, both legs is not a spread — it is
+            # an instrument against itself, and it nets to zero minus
+            # four commissions. Only refused when the SAME account holds
+            # both legs: two different accounts quoting the same symbol
+            # name is the cross-broker case and is the point.
+            legs_now = raw.get('leg_accounts') or {}
+            both_here = (legs_now.get('spot') == legs_now.get('futures')
+                         == name)
+            a = (asset.get('spot_symbols') or [''])[0]
+            b = (asset.get('futures_symbols') or [''])[0]
+            if both_here and a and a == b:
+                return jsonify({
+                    'success': False,
+                    'error': f"Both legs would trade {a} on '{name}'. A "
+                             f"spread needs two different instruments — "
+                             f"set Leg A and Leg B to the two symbols of "
+                             f"the pair."}), 400
             for field, key in (('contract_size', 'lot_size'),
                                ('swap_charge', 'swap_charge')):
                 if field in specs:

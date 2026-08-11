@@ -1075,3 +1075,45 @@ def test_an_unreachable_leg_is_logged_once_not_every_poll(caplog):
     warnings = [r for r in caplog.records if r.levelname == 'WARNING']
     assert len(warnings) == 1
     assert 'dead' in warnings[0].getMessage()
+
+
+# --- a symbol belongs to a LEG, not to the box it was typed in -----------
+# Live 2026-08-11: a row holding UKOIL as Leg B was switched to Leg A and
+# saved. The single Symbol box still carried UKOIL, so spot_symbols became
+# UKOIL and the futures leg was released — the page read "MT5 · SPOT ·
+# UKOIL" with FUTURES unmapped, one keystroke from Brent against Brent.
+
+def test_the_symbol_box_follows_the_leg_selector():
+    """The store is keyed by LEG, so changing the selector re-renders
+    rather than carrying the previous leg's symbol across."""
+    from tests.test_nexus_ui import template_source
+    page = template_source('setup.html')
+    block = page[page.index('function updateLegFields'):]
+    block = block[:block.index('\n}')]
+    assert "_LEG_SYMBOLS.futures : _LEG_SYMBOLS.spot" in block
+    # and the store is kept current as the operator types, so the
+    # selector never has to guess which leg the box meant
+    assert '_rememberVisibleSymbols(); suggestSymbols()' in page
+
+
+def test_one_account_cannot_put_the_same_symbol_on_both_legs(client):
+    client.post('/api/exchanges', json={
+        'name': 'account_a', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'symbol': 'UKOIL', 'futures_symbol': 'UKOIL'})
+    response = client.post('/api/exchanges', json={
+        'name': 'account_a', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'symbol': 'UKOIL', 'futures_symbol': 'UKOIL'})
+    assert response.status_code == 400
+    assert 'two different instruments' in response.get_json()['error']
+
+
+def test_two_accounts_may_share_a_symbol_name(client):
+    """The cross-broker case: USOIL at one broker against USOIL at
+    another is a real spread, not a mistake."""
+    client.post('/api/exchanges', json={
+        'name': 'account_a', 'role': 'SPOT', 'endpoint': '127.0.0.1:9101',
+        'symbol': 'USOIL'})
+    response = client.post('/api/exchanges', json={
+        'name': 'broker_b', 'role': 'FUTURES', 'endpoint': '127.0.0.1:9102',
+        'symbol': 'USOIL'})
+    assert response.status_code == 200

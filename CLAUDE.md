@@ -677,6 +677,31 @@ Also: `build_plan` sets `last_refusal` and the coordinator puts it in
 for the broker/engine reason" — which sent the operator to a file to
 find a decision the engine had already made.
 
+## Changing a row's LEG rewrote the symbol (2026-08-11)
+
+The Exchanges page read `MT5 · SPOT · UKOIL` with the FUTURES leg
+unmapped. UKOIL is Leg B's instrument, sitting on Leg A.
+
+The single Symbol box means Leg A on a SPOT row and Leg B on a FUTURES
+row, but `updateLegFields()` only toggled the second box's visibility
+and relabelled the first. Its CONTENTS were left alone, so switching
+the selector carried the old leg's symbol across and the save wrote it
+to the new leg — `spot_symbols = ['UKOIL']`, with the futures mapping
+correctly released (the row no longer claimed it). One more save and
+both legs would have been Brent against Brent.
+
+Fixed by keying the symbols to the LEG rather than to the box:
+`_LEG_SYMBOLS = {spot, futures}` is kept current on every `input`
+(under the role in force at typing time), and the selector only
+RE-RENDERS from it. Typing on one leg is preserved rather than
+overwritten or leaked. Verified in Chromium across every transition.
+
+Backstop in `/api/exchanges`: a save that would leave ONE account
+holding both legs on the SAME symbol is refused. Scoped to one
+account on purpose — two different accounts quoting the same symbol
+name is the cross-broker case and is the entire point of the
+architecture.
+
 ## Two accounts, one port (2026-08-11, operator: "Facing some issue")
 
 Adding a second account. The log showed both names against the SAME
