@@ -1117,3 +1117,45 @@ def test_two_accounts_may_share_a_symbol_name(client):
         'name': 'broker_b', 'role': 'FUTURES', 'endpoint': '127.0.0.1:9102',
         'symbol': 'USOIL'})
     assert response.status_code == 200
+
+
+# --- the launcher waits for PORTS, not the clock -------------------------
+# Live 2026-08-11: leg runner 'MM - MT5 - 2' stayed alive with its port
+# shut (mt5.initialize was waiting for a terminal to log in), the
+# launcher slept 3s and started the coordinator anyway, and the console
+# became a coordinator restart loop with the real cause scrolled away.
+
+def _leg_config(port=9109):
+    return {'accounts': {'A': {'endpoint': f'127.0.0.1:{port}',
+                               'login': 1, 'terminal_path': 'x'}},
+            'leg_accounts': {'spot': 'A', 'futures': 'A'}}
+
+
+def test_the_launcher_reports_a_leg_runner_that_never_listens(capsys):
+    import start
+    assert start.wait_for_leg_runners(_leg_config(), timeout=0.5) is False
+    out = capsys.readouterr().out
+    assert 'has NOT opened 127.0.0.1:9109' in out
+    assert 'leg_A.log' in out          # where to look next
+
+
+def test_the_launcher_proceeds_once_the_port_is_open(capsys):
+    import socket as _socket
+    import start
+    listener = _socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        assert start.wait_for_leg_runners(_leg_config(port),
+                                          timeout=5.0) is True
+    finally:
+        listener.close()
+    assert 'is listening' in capsys.readouterr().out
+
+
+def test_no_leg_runners_means_nothing_to_wait_for():
+    import start
+    assert start.wait_for_leg_runners(
+        {'accounts': {'A': {'endpoint': ''}},
+         'leg_accounts': {'spot': 'A', 'futures': 'A'}}) is True

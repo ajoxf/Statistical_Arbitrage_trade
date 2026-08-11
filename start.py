@@ -21,11 +21,14 @@ What it does:
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
 import webbrowser
+
+from statarb.ipc import parse_endpoint
 
 DASHBOARD_PORT = 8080
 
@@ -76,6 +79,64 @@ def plan_leg_runners(raw_config):
     needed = {legs.get('spot'), legs.get('futures')} - {None}
     return sorted(name for name in needed
                   if (accounts.get(name) or {}).get('endpoint'))
+
+
+def leg_endpoints(raw_config):
+    """{account: (host, port)} for every leg runner we are starting."""
+    accounts = raw_config.get('accounts', {})
+    out = {}
+    for name in plan_leg_runners(raw_config):
+        endpoint = (accounts.get(name) or {}).get('endpoint')
+        try:
+            out[name] = parse_endpoint(endpoint)
+        except ValueError:
+            pass            # run_leg.py reports the bad endpoint itself
+    return out
+
+
+def wait_for_leg_runners(raw_config, timeout=45.0):
+    """Block until every leg runner is LISTENING, or say which is not.
+
+    The launcher used to sleep three seconds and start the coordinator
+    regardless. A leg runner does not fail fast: `mt5.initialize(path=)`
+    launches a terminal and waits for it to log in, which can hang for
+    a long time or forever. So the process is alive, its port is
+    closed, and the coordinator starts, cannot reach the leg, exits 1
+    and gets restarted — every two seconds, with the actual cause
+    thirty lines up and never repeated.
+
+    Live 2026-08-11: 'MM - MT5 - 2' never reached "listening", and the
+    console showed nothing but a coordinator restart loop.
+    """
+    pending = leg_endpoints(raw_config)
+    if not pending:
+        return True
+    deadline = time.time() + timeout
+    ready = set()
+    while pending and time.time() < deadline:
+        for name, (host, port) in list(pending.items()):
+            try:
+                with socket.create_connection((host, port), 1.0):
+                    pass
+            except OSError:
+                continue
+            print(f"[launcher] leg runner [{name}] is listening on "
+                  f"{host}:{port}")
+            ready.add(name)
+            pending.pop(name)
+        if pending:
+            time.sleep(1.0)
+    for name, (host, port) in pending.items():
+        print(f"[launcher] leg runner [{name}] has NOT opened {host}:{port} "
+              f"after {timeout:.0f}s. It is probably still waiting for its "
+              f"MT5 terminal to start and log in — open that terminal and "
+              f"log into this account by hand, then restart the launcher. "
+              f"Its own log is leg_{name}.log.")
+    if pending:
+        print(f"[launcher] the coordinator needs every leg, so it will keep "
+              f"failing until {', '.join(sorted(pending))} "
+              f"{'is' if len(pending) == 1 else 'are'} up.")
+    return not pending
 
 
 class Child:
@@ -170,7 +231,11 @@ def main():
         for child in children[:-1]:
             child.spawn()
         if children[:-1]:
-            time.sleep(3)          # give terminals a moment to log in
+            # Wait for the PORTS, not the clock. A leg runner whose
+            # terminal never logs in stays alive with its port shut,
+            # and starting the coordinator into that produces a restart
+            # loop whose cause scrolls away.
+            wait_for_leg_runners(raw)
         children[-1].spawn()       # coordinator last
 
         threading.Thread(target=monitor, args=(children, stop_event),

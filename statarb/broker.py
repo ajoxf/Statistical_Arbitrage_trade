@@ -80,6 +80,17 @@ class BrokerSession:
         attempts.append(("running terminal (already logged in)", {}))
 
         for label, kwargs in attempts:
+            # Announce BEFORE the call, at INFO. mt5.initialize(path=)
+            # launches a terminal and waits for it to log in, so it can
+            # block for a long time or forever — and until it returns
+            # there is nothing on screen at all. Live 2026-08-11 the
+            # second leg runner logged "Configuration loaded" and then
+            # went silent, while the console showed only a coordinator
+            # restart loop with no hint of which leg was stuck or why.
+            logging.info("[%s] connecting to MT5 via %s%s", self.account.name,
+                         label,
+                         (f" ({self.account.terminal_path})"
+                          if kwargs.get('path') else ''))
             try:
                 ok = mt5.initialize(**kwargs)
             except Exception as e:                      # bad path types etc
