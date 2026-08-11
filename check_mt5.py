@@ -285,9 +285,22 @@ def check_account(name, account, symbols, place_order=False):
         meaning, fixes = explain_init_error(code)
         line('warn', f"initialize({label}) failed: {code} {text} — "
                      f"{meaning}")
+        # Release before the next form. A failed initialize can leave
+        # the library half-attached, so the following attempt reports a
+        # fault belonging to the previous one — in a tool whose whole
+        # job is to say which attempt worked, that is worse than no
+        # answer.
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
     if not connected:
         line('fail', "Could not connect to MT5 for this account at all",
              explain_init_error(mt5.last_error()[0])[1])
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
         return
 
     terminal = mt5.terminal_info()

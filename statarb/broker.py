@@ -97,6 +97,17 @@ class BrokerSession:
             except Exception as e:                      # bad path types etc
                 logging.debug("MT5 initialize(%s) raised: %s", label, e)
                 ok = False
+            if not ok:
+                # Release before trying the next form. A failed
+                # initialize can still leave the library half-attached
+                # to a terminal, and the next attempt then reports a
+                # fault belonging to the previous one — which makes the
+                # attempt list actively misleading rather than
+                # progressively more forgiving.
+                try:
+                    mt5.shutdown()
+                except Exception:
+                    pass
             if ok:
                 self.connected = True
                 info = mt5.account_info()
