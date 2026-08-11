@@ -12,6 +12,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 
+from . import mt5_errors
 from .models import OrderSide
 
 try:
@@ -116,12 +117,23 @@ class BrokerSession:
             logging.debug("MT5 initialize failed (%s) for '%s': %s",
                           label, self.account.name, mt5.last_error())
 
-        logging.error(
-            "MT5 connection failed for account '%s': %s. Fix ONE of: "
-            "open the MT5 terminal for this account and log in (then a "
-            "blank terminal path is fine), or set the correct path to "
-            "terminal64.exe in Settings, or check login/server/password.",
-            self.account.name, mt5.last_error())
+        # Decode it rather than printing the raw tuple. -6 in
+        # particular is not always a typo: live 2026-08-11 the terminal
+        # journal read "authorization ... failed (Invalid account)" for
+        # a login that simply did not exist on that server, and the
+        # generic "check login/server/password" sent the operator round
+        # the settings for an hour.
+        error = mt5.last_error()
+        summary, fixes = mt5_errors.explain(error)
+        logging.error("MT5 connection failed for account '%s': %s%s",
+                      self.account.name, error,
+                      f' — {summary}' if summary else '')
+        for fix in (fixes or [
+                'Open the MT5 terminal for this account and log in '
+                '(then a blank terminal path is fine)',
+                'Or set the correct path to terminal64.exe in Settings',
+                'Or check login / server / password']):
+            logging.error("    fix: %s", fix)
         return False
 
     def shutdown(self):

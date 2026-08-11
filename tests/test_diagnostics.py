@@ -1040,3 +1040,45 @@ def test_an_account_with_no_endpoint_is_told_to_set_one(legs_client):
     error = legs_client.post('/api/brokers/no_port/test').get_json()['error']
     assert 'no leg-runner endpoint' in error
     assert '127.0.0.1:9103' in error        # the next FREE port
+
+
+# --- "Invalid account" is not a typo -------------------------------------
+# Live 2026-08-11, the second terminal's own Journal:
+#   account 'MentoMarkets-Server' - '100006' has been deleted
+#   MentoMarkets-Server: no demo/preliminary groups on server side
+#   '100006': authorization on MentoMarkets-Server failed (Invalid account)
+# The credentials were right. The login did not exist on that server —
+# and the generic "check login/server/password" cannot lead anyone there.
+
+def test_an_auth_failure_says_the_account_may_not_be_on_that_server():
+    from statarb import mt5_errors
+    summary, fixes = mt5_errors.explain((-6, 'Terminal: Authorization failed'))
+    assert 'Authorization failed' in summary
+    joined = ' '.join(fixes)
+    assert 'exists on THAT server' in joined
+    assert 'demo vs live' in joined
+    assert 'Journal' in joined          # where the real reason is printed
+
+
+def test_the_broker_logs_the_decoded_reason_and_its_fixes(caplog):
+    """The raw tuple alone sent the operator round the settings page."""
+    import types
+    from statarb import broker as broker_mod
+
+    fake = types.SimpleNamespace(
+        initialize=lambda **kw: False,
+        last_error=lambda: (-6, 'Terminal: Authorization failed'),
+        account_info=lambda: None)
+    account = types.SimpleNamespace(
+        name='MM - MT5 - 2', login=100006, password='x',
+        server='MentoMarkets-Server', terminal_path=None, magic=1)
+    session = broker_mod.BrokerSession(account)
+    original, broker_mod.mt5 = broker_mod.mt5, fake
+    try:
+        with caplog.at_level('ERROR'):
+            assert session.initialize() is False
+    finally:
+        broker_mod.mt5 = original
+    text = caplog.text
+    assert 'Authorization failed' in text
+    assert 'exists on THAT server' in text

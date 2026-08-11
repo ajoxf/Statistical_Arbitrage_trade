@@ -73,6 +73,20 @@ INIT_ERRORS = {
         'Check the password in .env — the Settings page writes it there',
         'An investor password connects but cannot trade; use the master '
         'password',
+        # Live 2026-08-11: the terminal journal read "'100006':
+        # authorization on MentoMarkets-Server failed (Invalid
+        # account)" and "account ... has been deleted". The credentials
+        # were typed correctly — the account was not on that server at
+        # all. Two accounts at one broker do not have to share a
+        # server: a demo usually lives on the broker's DEMO server, and
+        # the live one answers "no demo/preliminary groups on server
+        # side" when asked for one.
+        'Confirm the account exists on THAT server — two accounts at '
+        'one broker can be on different servers (demo vs live)',
+        "Read the terminal's own Journal tab (View > Toolbox > "
+        'Journal). "Invalid account" or "account has been deleted" '
+        'there means the login does not exist on that server, which '
+        'nothing on this side can fix — ask the broker',
     ]),
     -5: ('Unsupported terminal version', [
         'Update the MT5 terminal, or pin an older MetaTrader5 package',
