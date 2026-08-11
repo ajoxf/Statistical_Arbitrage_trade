@@ -677,6 +677,45 @@ Also: `build_plan` sets `last_refusal` and the coordinator puts it in
 for the broker/engine reason" — which sent the operator to a file to
 find a decision the engine had already made.
 
+## Two accounts, one port (2026-08-11, operator: "Facing some issue")
+
+Adding a second account. The log showed both names against the SAME
+endpoint:
+
+```
+Leg 'Utsav Khanchandani' not reachable at 127.0.0.1:9101 ...
+Leg 'MT5'                not reachable at 127.0.0.1:9101 ...
+```
+
+`normalise_endpoint` checked the FORM of an endpoint and nothing
+checked that two accounts did not claim the same one. That is the
+shared-terminal fault (already refused) one layer down, and it is worse
+because it can half-work: only one process can bind a port, so the
+second runner either fails to start or — if the first won the race —
+BOTH legs connect to it, trade the SAME MT5 account, and every screen
+goes on reporting two. Now refused at save (`_endpoint_clash`, naming
+the account that holds it and the next free port), in the bulk save,
+and at startup in `_resolve_legs`.
+
+Two more things the same session exposed:
+
+- **`[DIAGNOSE] PASS: 29 pass, 0 warn, 0 fail` while the config was
+  broken.** The checklist runs inside the coordinator against the
+  RUNNING config, and accounts/leg_accounts are structural, so it was
+  faithfully describing the single-account setup still in memory. An
+  operator reads that as "my new setup is good". The coordinator now
+  publishes `running_legs` / `running_endpoints`, and the Exchanges
+  page shows a restart-pending banner saying in terms that Test,
+  Diagnose and the order suite describe what is RUNNING, not what is
+  saved.
+- **Hundreds of identical "not reachable" WARNINGs.** The webapp opens
+  a short-lived RemoteLeg every time the Exchanges page polls (15s, two
+  legs), so one down runner buried the coordinator's own output.
+  `RemoteLeg._reported` dedups per (account, host, port) at CLASS level
+  — the clients are short-lived, so instance state would never match
+  twice — and a leg that reconnects clears its entry, because coming
+  back is news too.
+
 ## Commission had no control and four dead ones (2026-08-10, operator)
 
 Operator: "for every lot traded - the broker charges a commission or

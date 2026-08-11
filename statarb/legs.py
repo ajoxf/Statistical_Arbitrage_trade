@@ -152,9 +152,23 @@ class LocalLeg:
 
 
 class RemoteLeg:
+    # One line per (account, endpoint, error) instead of one per
+    # attempt. The webapp opens a short-lived RemoteLeg every time the
+    # Exchanges page polls — every 15s, two legs at a time — so an
+    # account whose runner is not up wrote hundreds of identical
+    # WARNING lines and buried the coordinator's own output. Live
+    # 2026-08-11 while a second account was being added.
+    #
+    # Class-level, because the offending clients are short-lived
+    # objects: dedup on the instance would never match twice.
+    _reported = set()
+
     def __init__(self, name, endpoint, timeout=10.0):
         self.name = name
         self.host, self.port = ipc.parse_endpoint(endpoint)
+        # Normalised, so "what is this process actually talking to" can
+        # be published and compared against the saved config.
+        self.endpoint_label = f'{self.host}:{self.port}'
         self.timeout = timeout
         self.conn = None
 
@@ -166,12 +180,24 @@ class RemoteLeg:
                 if reply and reply.get('ok'):
                     logging.info("Connected to leg runner '%s' at %s:%s",
                                  self.name, self.host, self.port)
+                    # A leg that comes back is news, and so is it going
+                    # away again later.
+                    RemoteLeg._reported.discard(
+                        (self.name, self.host, self.port))
                     return True
             except OSError as e:
-                logging.warning(
-                    "Leg '%s' not reachable at %s:%s (attempt %d/%d): %s "
-                    "— is its leg runner started?",
-                    self.name, self.host, self.port, attempt, retries, e)
+                key = (self.name, self.host, self.port)
+                if key not in RemoteLeg._reported:
+                    RemoteLeg._reported.add(key)
+                    logging.warning(
+                        "Leg '%s' not reachable at %s:%s: %s — is its leg "
+                        "runner started? (further attempts logged at debug)",
+                        self.name, self.host, self.port, e)
+                else:
+                    logging.debug(
+                        "Leg '%s' still not reachable at %s:%s (attempt "
+                        "%d/%d): %s", self.name, self.host, self.port,
+                        attempt, retries, e)
                 time.sleep(delay)
         return False
 

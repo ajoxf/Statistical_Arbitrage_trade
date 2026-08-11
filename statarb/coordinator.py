@@ -257,6 +257,30 @@ class Coordinator:
             else:
                 legs[acct.name] = LocalLeg(BrokerSession(acct))
 
+        # Two accounts cannot share one leg-runner ENDPOINT. This is the
+        # same fault as sharing a terminal, one layer down, and it is
+        # worse because it can half-work: only one runner can bind the
+        # port, so the second either fails to start or — if the first
+        # won the race — BOTH legs connect to it, trade the SAME MT5
+        # account, and every screen goes on reporting two.
+        #
+        # Live 2026-08-11, adding a second account: 'Utsav Khanchandani'
+        # and 'MT5' were both saved at 127.0.0.1:9101, and the
+        # connectivity checklist still reported 29 pass / 0 fail because
+        # it was describing the single-account config still running.
+        if spot_name != fut_name:
+            spot_ep = (getattr(spot_acct, 'endpoint', '') or '').strip()
+            fut_ep = (getattr(fut_acct, 'endpoint', '') or '').strip()
+            if spot_ep and spot_ep == fut_ep:
+                raise ValueError(
+                    f"Accounts '{spot_name}' and '{fut_name}' are both set "
+                    f"to leg-runner endpoint {spot_ep}. Only one process "
+                    f"can listen on a port, so the legs would either fail "
+                    f"to start or BOTH end up trading whichever account "
+                    f"got there first. Give each account its own port on "
+                    f"the Exchanges page (e.g. 127.0.0.1:9101 and "
+                    f"127.0.0.1:9102) and restart the launcher.")
+
         # Two accounts at the SAME broker still need two separate
         # terminal INSTALLATIONS — one terminal holds one login, and a
         # second instance of the same install shares its data folder.
@@ -2183,6 +2207,19 @@ class Coordinator:
             'halt_reason': why,
             'daily_pnl': self.risk_manager.daily_realized_pnl,
             'accounts': accounts,
+            # The topology this PROCESS is running, as opposed to the
+            # one sitting in config.json. Accounts and leg mapping are
+            # structural, so the two diverge the moment the operator
+            # saves — and the connectivity checklist runs against THIS
+            # one. Live 2026-08-11: a second account had been added and
+            # the checklist still reported "29 pass, 0 fail", because it
+            # was faithfully describing the single-account setup that
+            # was still running.
+            'running_legs': {'spot': self.spot_leg.name,
+                             'futures': self.futures_leg.name},
+            'running_endpoints': {
+                leg.name: getattr(leg, 'endpoint_label', None)
+                for leg in self._each_leg()},
             'equity': equity,
             'tick_age_ms': min((a['tick_age_ms'] for a in assets),
                                default=None),

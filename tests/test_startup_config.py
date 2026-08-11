@@ -257,7 +257,7 @@ def test_saving_a_broker_sets_its_leg_and_symbol_together(client):
 def test_the_spot_row_writes_the_spot_symbol(client):
     client.post('/api/exchanges', json={
         'name': 'spot_fxpro', 'role': 'SPOT', 'symbol': 'GOLD.r',
-        'endpoint': '127.0.0.1:9101'})
+        'endpoint': '127.0.0.1:9102'})
     with open(client.tmp_path / "config.json") as f:
         raw = json.load(f)
     assert raw['assets']['GOLD']['spot_symbols'] == ['GOLD.r']
@@ -274,10 +274,10 @@ def test_a_symbol_without_a_leg_is_refused(client):
 def test_the_broker_row_reports_the_symbol_it_trades(client):
     client.post('/api/exchanges', json={
         'name': 'account_a', 'role': 'SPOT', 'symbol': 'XAUUSD',
-        'endpoint': '127.0.0.1:9101'})
+        'endpoint': '127.0.0.1:9102'})
     client.post('/api/exchanges', json={
         'name': 'fut', 'role': 'FUTURES', 'symbol': 'GC1225',
-        'endpoint': '127.0.0.1:9102'})
+        'endpoint': '127.0.0.1:9103'})
     rows = {b['id']: b for b in client.get('/api/exchanges').get_json()}
     assert rows['account_a']['symbol'] == 'XAUUSD'
     assert rows['account_a']['role'] == 'SPOT'
@@ -288,13 +288,13 @@ def test_the_broker_row_reports_the_symbol_it_trades(client):
 def test_editing_a_broker_keeps_the_other_legs_symbol(client):
     client.post('/api/exchanges', json={'name': 'a', 'role': 'SPOT',
                                         'symbol': 'XAUUSD',
-                                        'endpoint': '127.0.0.1:9101'})
+                                        'endpoint': '127.0.0.1:9102'})
     client.post('/api/exchanges', json={'name': 'b', 'role': 'FUTURES',
                                         'symbol': 'GC1225',
-                                        'endpoint': '127.0.0.1:9102'})
+                                        'endpoint': '127.0.0.1:9103'})
     client.post('/api/exchanges', json={'name': 'a', 'role': 'SPOT',
                                         'symbol': 'GOLD',
-                                        'endpoint': '127.0.0.1:9101'})
+                                        'endpoint': '127.0.0.1:9102'})
     with open(client.tmp_path / "config.json") as f:
         asset = json.load(f)['assets']['GOLD']
     assert asset['spot_symbols'] == ['GOLD']
@@ -773,7 +773,7 @@ def test_both_legs_on_one_account_saves_the_spot_symbol(client):
             return json.load(f)
 
     response = client.post('/api/exchanges', json={
-        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9102',
         'symbol': 'USOIL', 'futures_symbol': 'UKOIL'})
     assert response.status_code == 200, response.get_json()
 
@@ -786,7 +786,7 @@ def test_both_legs_on_one_account_saves_the_spot_symbol(client):
 
     # ...and it survives a re-save, which is what "it goes back" meant
     client.post('/api/exchanges', json={
-        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9102',
         'symbol': 'USOIL', 'futures_symbol': 'UKOIL'})
     asset = next(iter(saved()['assets'].values()))
     assert asset['spot_symbols'] == ['USOIL']
@@ -954,7 +954,7 @@ def test_a_hand_set_ratio_is_stamped_so_a_restart_keeps_it(client):
     without stamping the operator's own save the engine would see a
     stamp naming the OLD pair and overwrite the number just typed."""
     client.post('/api/exchanges', json={
-        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'name': 'Mento Markets', 'role': 'BOTH', 'endpoint': '127.0.0.1:9102',
         'symbol': 'USOIL', 'futures_symbol': 'UKOIL'})
     response = client.post('/api/config', json={'hedge_ratio': 1.0416})
     assert response.status_code == 200
@@ -987,3 +987,91 @@ def test_a_same_scale_pair_keeps_the_level_that_names_the_trade(
     coord._setup_symbols()
     beta = config.TRADING['HEDGE_RATIO']
     assert 86.05 - beta * 82.61 == pytest.approx(3.44, abs=0.01)
+
+
+# --- one port, one leg runner --------------------------------------------
+# Live 2026-08-11, adding a second account: 'Utsav Khanchandani' and
+# 'MT5' were both saved at 127.0.0.1:9101. Only one process can bind a
+# port, so the second runner cannot start — or, if the first won the
+# race, BOTH legs connect to it and trade the SAME MT5 account while
+# every screen reports two.
+
+def test_a_second_account_cannot_take_a_used_endpoint(client):
+    response = client.post('/api/exchanges', json={
+        'name': 'MT5', 'login': 100002, 'endpoint': '127.0.0.1:9101'})
+    assert response.status_code == 400
+    error = response.get_json()['error']
+    assert 'account_a' in error and '127.0.0.1:9101' in error
+    assert 'MT5' not in saved_accounts(client)
+
+
+def test_the_refusal_offers_a_port_that_is_free(client):
+    response = client.post('/api/exchanges', json={
+        'name': 'MT5', 'endpoint': '127.0.0.1:9101'})
+    assert '127.0.0.1:9102' in response.get_json()['error']
+
+
+def test_an_account_may_keep_its_own_endpoint(client):
+    """Re-saving a row must not collide with itself."""
+    assert client.post('/api/exchanges', json={
+        'name': 'account_a', 'login': 111,
+        'endpoint': '127.0.0.1:9101'}).status_code == 200
+
+
+def test_blank_endpoints_never_collide(client):
+    """Blank means "no leg runner" — any number of accounts may have
+    one, and the one-account topology depends on it."""
+    client.post('/api/exchanges', json={'name': 'x', 'endpoint': ''})
+    assert client.post('/api/exchanges',
+                       json={'name': 'y', 'endpoint': ''}).status_code == 200
+
+
+def test_the_bulk_save_rejects_a_shared_endpoint(client):
+    response = client.post('/api/config', json={'accounts': {
+        'a': {'login': 1, 'endpoint': '127.0.0.1:9101'},
+        'b': {'login': 2, 'endpoint': '127.0.0.1:9101'}}})
+    assert response.status_code == 400
+    assert '9101' in response.get_json()['error']
+
+
+def test_the_coordinator_refuses_two_legs_on_one_port(config, tmp_path,
+                                                      monkeypatch):
+    """It must never half-work: both legs silently on one account is
+    worse than not starting."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    config.accounts = {'a': account_ns('a', '127.0.0.1:9101'),
+                       'b': account_ns('b', '127.0.0.1:9101')}
+    config.leg_accounts = {'spot': 'a', 'futures': 'b'}
+    with pytest.raises(ValueError) as excinfo:
+        Coordinator(config, trading_mode='PAPER')
+    message = str(excinfo.value)
+    assert '127.0.0.1:9101' in message
+    assert 'same terminal' in message or 'got there first' in message
+
+
+def test_one_account_on_both_legs_is_still_fine(config, tmp_path,
+                                                monkeypatch):
+    """The same account on both legs is ONE runner and one port — the
+    supported single-account topology, not a collision."""
+    monkeypatch.chdir(tmp_path)
+    from statarb.coordinator import Coordinator
+    config.accounts = {'solo': account_ns('solo', '127.0.0.1:9101')}
+    config.leg_accounts = {'spot': 'solo', 'futures': 'solo'}
+    coord = Coordinator(config, trading_mode='PAPER')
+    assert coord.spot_leg is coord.futures_leg
+
+
+def test_an_unreachable_leg_is_logged_once_not_every_poll(caplog):
+    """The webapp opens a short-lived RemoteLeg every 15s for each leg,
+    so a runner that is down wrote hundreds of identical WARNING lines
+    and buried the coordinator's own output."""
+    from statarb.legs import RemoteLeg
+    RemoteLeg._reported.clear()
+    with caplog.at_level('WARNING'):
+        for _ in range(3):
+            RemoteLeg('dead', '127.0.0.1:9  ' .strip() or '127.0.0.1:9')\
+                .connect(retries=1, delay=0)
+    warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+    assert len(warnings) == 1
+    assert 'dead' in warnings[0].getMessage()

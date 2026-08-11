@@ -171,6 +171,53 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return False, str(e)
         return True, f'{host}:{port}'
 
+    def _endpoint_clash(raw, name, endpoint):
+        """Is another account already on this endpoint? Message or None.
+
+        Only one process can listen on a port. Two accounts sharing one
+        means the second leg runner cannot start — or, if the first won
+        the race, BOTH legs connect to it and trade the SAME MT5
+        account while every screen reports two. Live 2026-08-11:
+        'Utsav Khanchandani' and 'MT5' both saved at 127.0.0.1:9101.
+
+        Caught here rather than only at startup, because the operator
+        is on this page with the field in front of them; a restart
+        later, the traceback is a long way from the cause.
+        """
+        if not endpoint:
+            return None            # blank = no runner; any number may
+        for other, acct in (raw.get('accounts') or {}).items():
+            if other == name:
+                continue
+            if ((acct or {}).get('endpoint') or '').strip() == endpoint:
+                return (f"Endpoint {endpoint} already belongs to account "
+                        f"'{other}'. One port serves ONE leg runner — give "
+                        f"this account its own (e.g. {_next_free_port(raw)}), "
+                        f"or both legs would end up on the same terminal.")
+        return None
+
+    def _running_legs():
+        """{account: 'SPOT'/'FUTURES'/'SPOT+FUTURES'} for the topology
+        the coordinator PROCESS is running, which is not necessarily
+        the one in config.json — accounts and leg mapping are
+        structural and only take effect on a restart."""
+        running = runtime_status().get('running_legs') or {}
+        out = {}
+        for role in ('spot', 'futures'):
+            name = running.get(role)
+            if name:
+                out[name] = ('SPOT+FUTURES' if out.get(name)
+                             else role.upper())
+        return out
+
+    def _next_free_port(raw, host='127.0.0.1', first=9101):
+        used = {(acct or {}).get('endpoint', '') for acct
+                in (raw.get('accounts') or {}).values()}
+        port = first
+        while f'{host}:{port}' in used:
+            port += 1
+        return f'{host}:{port}'
+
     # ---------------- pages ----------------
 
     # The vendored navbar links to both / and /dashboard — serve both.
@@ -335,6 +382,19 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                                              f"{endpoint_or_error}"}), 400
                 if acct is not None:
                     acct['endpoint'] = endpoint_or_error
+            # Same rule as the single-row save: one port, one runner.
+            seen = {}
+            for name, acct in payload['accounts'].items():
+                endpoint = ((acct or {}).get('endpoint') or '').strip()
+                if endpoint and endpoint in seen:
+                    return jsonify({
+                        'success': False,
+                        'error': f"'{name}' and '{seen[endpoint]}' are both "
+                                 f"on {endpoint}. One port serves ONE leg "
+                                 f"runner, so both legs would end up on the "
+                                 f"same terminal."}), 400
+                if endpoint:
+                    seen[endpoint] = name
             raw['accounts'] = payload['accounts']
             note = ('Saved. Account changes need a launcher restart.')
         if env_updates:
@@ -927,6 +987,11 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 'swap_charge': asset.get('swap_charge'),
                 'futures_expiry': (expiry[:10] if isinstance(expiry, str)
                                    else None),
+                # Two accounts on one port is not a configuration, it
+                # is two legs on one terminal wearing two names.
+                'endpoint_clash': _endpoint_clash(
+                    raw, name, (acct.get('endpoint') or '').strip()),
+                'running_leg': _running_legs().get(name),
             } for name, acct in accounts.items()])
 
         payload = request.get_json(silent=True) or {}
@@ -945,6 +1010,9 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return jsonify({'success': False,
                             'error': endpoint_or_error}), 400
         acct['endpoint'] = endpoint_or_error
+        clash = _endpoint_clash(raw, name, endpoint_or_error)
+        if clash:
+            return jsonify({'success': False, 'error': clash}), 400
         if payload.get('login'):
             acct['login'] = int(payload['login'])
         password = payload.get('password')

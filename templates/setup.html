@@ -295,14 +295,50 @@ async function loadBrokers() {
     const mapped = new Set();
     brokers.forEach(b => (b.roles || []).forEach(r => mapped.add(r)));
     const missing = ['SPOT', 'FUTURES'].filter(r => !mapped.has(r));
-    document.getElementById('leg-mapping-warning').innerHTML =
-        (brokers.length && missing.length) ? `
+    let banners = (brokers.length && missing.length) ? `
         <div class="alert alert-danger py-2 small">
             <i class="bi bi-exclamation-octagon me-2"></i>
             No account is mapped to the <strong>${missing.join(' or ')}</strong>
             leg — the coordinator cannot start. Edit an account below and set
             its <strong>Leg</strong>, then restart the launcher.
         </div>` : '';
+
+    // Two accounts on one port is two legs on one terminal wearing two
+    // names — the coordinator refuses to start on it, and until it is
+    // restarted every check on this page still describes the OLD setup.
+    const clashes = brokers.filter(b => b.endpoint_clash);
+    if (clashes.length) {
+        banners += `
+        <div class="alert alert-danger py-2 small">
+            <i class="bi bi-exclamation-octagon me-2"></i>
+            <strong>Two accounts share one leg-runner endpoint.</strong>
+            ${clashes[0].endpoint_clash}
+        </div>`;
+    }
+
+    // The engine is still running the topology it STARTED with. Saying
+    // so is the difference between "the checks pass" and "the checks
+    // pass for the setup you just replaced" (live 2026-08-11: a second
+    // account added, and Diagnose still reported 29 pass / 0 fail).
+    const stale = brokers.filter(b => {
+        const roles = (b.roles || []).join('+');
+        return (roles || b.running_leg) && roles !== (b.running_leg || '');
+    });
+    if (stale.length) {
+        banners += `
+        <div class="alert alert-warning py-2 small">
+            <i class="bi bi-arrow-repeat me-2"></i>
+            <strong>Restart pending.</strong> The engine is still running
+            its previous accounts and leg mapping
+            (${stale.map(b => b.name + ': '
+                 + (b.running_leg || 'not in use') + ' &rarr; '
+                 + ((b.roles || []).join('+') || 'not in use')).join('; ')}).
+            <strong>Test, Diagnose and the order suite describe what is
+            RUNNING, not what is saved</strong> — restart the launcher
+            before trusting them.
+        </div>`;
+    }
+    document.getElementById('leg-mapping-warning').innerHTML = banners;
 
     document.getElementById('brokers-list').innerHTML = brokers.length ? `
         <table class="table table-sm table-dark align-middle mb-0">
