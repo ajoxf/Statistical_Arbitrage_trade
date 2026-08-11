@@ -1503,6 +1503,36 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return None
         return leg
 
+    def no_leg_reason(account_name):
+        """WHY there is no leg client for this account.
+
+        `leg_client` returns None for two completely different
+        situations and the caller used to report only one of them:
+        "Give the account an endpoint (e.g. 127.0.0.1:9101)". Live
+        2026-08-11 the account HAD an endpoint (9102) and its runner
+        was hung — so the advice was wrong, and worse, the port it
+        suggested belonged to the OTHER account. The operator typed
+        9101 into the field, which would have put both accounts on one
+        port had the save not started refusing that.
+        """
+        raw = load_config_raw()
+        account = (raw.get('accounts') or {}).get(account_name)
+        if not account:
+            return (f"'{account_name}' is not in the config. Add it "
+                    f"above, then restart the launcher.")
+        endpoint = (account.get('endpoint') or '').strip()
+        if not endpoint:
+            return (f"'{account_name}' has no leg-runner endpoint, so "
+                    f"nothing is serving it. Give it one "
+                    f"({_next_free_port(raw)}) and restart the launcher.")
+        return (f"Nothing is listening on {endpoint} for "
+                f"'{account_name}'. Its leg runner is not running — "
+                f"either the launcher was not started, or that runner "
+                f"is still waiting for its MT5 terminal to log in "
+                f"(check leg_{account_name}.log, and that the terminal "
+                f"at its configured path is open and logged into "
+                f"{account.get('login') or 'this account'}).")
+
     def leg_for_role(role):
         """(account_name, connected leg or None) for 'spot'/'futures'."""
         legs = load_config_raw().get('leg_accounts') or {}
@@ -1519,6 +1549,15 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         """Post a read-only request into control.json and wait for the
         coordinator to answer in runtime_status. Same file bridge the
         scenarios use — the web app never touches MT5 itself."""
+        # Is the coordinator even running? It rewrites runtime_status
+        # on EVERY poll (0.3s by default), so a file that has not been
+        # touched in a quarter of a minute means nobody is listening on
+        # the other end of this bridge. Without the check, every button
+        # that falls back to the coordinator sits for the full 45s
+        # before reporting what could be known immediately — and the
+        # answer it eventually gives is the same one.
+        if not _coordinator_is_writing():
+            return None
         ts = time.time()
         write_control({'diagnose': dict(payload, ts=ts)})
         deadline = time.time() + (timeout or diagnose_timeout)
@@ -1528,6 +1567,12 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 return answer
             time.sleep(0.3)
         return None
+
+    def _coordinator_is_writing(stale_after=15.0):
+        try:
+            return (time.time() - os.path.getmtime(status_path)) < stale_after
+        except OSError:
+            return False
 
     def diagnose_via_leg_runners(asset_key=None):
         """Build the checklist by asking the leg runners directly.
@@ -1562,12 +1607,13 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 checks.append({
                     'scope': f'{role.upper()} · {name}', 'name': 'Leg runner',
                     'status': 'FAIL',
-                    'message': f"No leg runner answering for '{name}'",
-                    'fix': [
-                        'Give this account an endpoint (127.0.0.1:9101 for '
-                        'the first account, 9102 for the second) and '
-                        'restart the launcher',
-                        'Check its window / leg_<account>.log if it exited']})
+                    'message': no_leg_reason(name),
+                    'fix': [f'Read leg_{name}.log — a runner that is still '
+                            f'connecting logs the attempt it is on',
+                            'The terminal at this account\'s path must be '
+                            'open and logged in; a runner will wait '
+                            'indefinitely for one that never is',
+                            'Restart the launcher once the terminal is up']})
                 continue
             try:
                 terminal = leg.terminal_report()
@@ -1683,14 +1729,20 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 client.close()
             leg = {'terminal': terminal, 'symbol': symbol}
         else:
-            report = ask_coordinator({}, 'diagnostics')
+            # Only ask the coordinator about an account it could
+            # actually be holding. An account WITH an endpoint is
+            # served by its own leg runner, and the coordinator reaches
+            # it over that same port — so if the port is dead, the
+            # coordinator cannot answer either and waiting out the
+            # file-bridge timeout just makes the button hang before
+            # giving the same answer.
+            raw = load_config_raw()
+            acct = (raw.get('accounts') or {}).get(account) or {}
+            report = (None if (acct.get('endpoint') or '').strip()
+                      else ask_coordinator({}, 'diagnostics'))
             if report is None:
-                return jsonify({
-                    'success': False,
-                    'error': f"No leg runner for '{account}' and no "
-                             f"coordinator. Give the account an endpoint "
-                             f"(e.g. 127.0.0.1:9101) and restart the "
-                             f"launcher."})
+                return jsonify({'success': False,
+                                'error': no_leg_reason(account)})
             leg = (report.get('legs') or {}).get(account)
             if not leg:
                 return jsonify({'success': False,

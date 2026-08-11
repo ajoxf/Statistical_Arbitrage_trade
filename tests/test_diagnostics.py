@@ -632,9 +632,13 @@ def test_nothing_running_at_all_reports_the_leg_runners(client):
     data = client.post('/api/brokers/diagnose').get_json()
     assert data['overall'] == 'FAIL'
     messages = ' '.join(c['message'] for c in data['checks'])
-    assert 'No leg runner answering' in messages
+    # The message now distinguishes "no endpoint configured" from
+    # "endpoint configured but nothing listening" — they need
+    # different fixes, and conflating them sent the operator to change
+    # a port that was already correct.
+    assert 'no leg-runner endpoint' in messages
     fixes = ' '.join(step for c in data['checks'] for step in c.get('fix', []))
-    assert 'restart the launcher' in fixes
+    assert 'restart the launcher' in fixes.lower()
 
 
 def test_symbol_search_passes_the_pattern_and_leg_through(client):
@@ -978,3 +982,61 @@ def test_an_ordinary_funded_account_says_nothing_about_credit(cfg):
     row = find(report(cfg, spot=side(term=terminal(
         balance=5000.0, credit=0.0, equity=5000.0))), 'Account login', 'SPOT')
     assert 'credit' not in row['message']
+
+
+# --- "no leg" has two causes and they need different fixes ---------------
+# Live 2026-08-11: the account HAD an endpoint (9102) and its runner was
+# hung, but Test reported "Give the account an endpoint (e.g.
+# 127.0.0.1:9101)" — wrong, and the port it named belonged to the OTHER
+# account. The operator typed 9101 into the field.
+
+@pytest.fixture
+def legs_client(tmp_path, monkeypatch):
+    import json
+    from statarb.webapp import create_app
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'config.json').write_text(json.dumps({
+        'accounts': {
+            'MT5': {'login': 100002, 'endpoint': '127.0.0.1:9101'},
+            'MM - MT5 - 2': {'login': 100006, 'endpoint': '127.0.0.1:9102'},
+            'no_port': {'login': 3, 'endpoint': ''}},
+        'leg_accounts': {'spot': 'MT5', 'futures': 'MM - MT5 - 2'},
+        'assets': {'OIL': {'enabled': True, 'spot_symbols': ['USOIL'],
+                           'futures_symbols': ['UKOIL']}}}))
+    status = tmp_path / 'runtime_status.json'
+    status.write_text('{}')
+    # A coordinator that is NOT running leaves a stale status file — it
+    # rewrites it on every poll while alive. Age it so the bridge can
+    # tell the difference instead of waiting out its timeout.
+    import os as _os
+    old = time.time() - 600
+    _os.utime(status, (old, old))
+    app = create_app(db_path=str(tmp_path / 'a.db'),
+                     status_path=str(status),
+                     config_path=str(tmp_path / 'config.json'),
+                     control_path=str(tmp_path / 'control.json'),
+                     env_path=str(tmp_path / '.env'))
+    app.config['TESTING'] = True
+    return app.test_client()
+
+
+def test_a_hung_runner_is_not_reported_as_a_missing_endpoint(legs_client):
+    error = legs_client.post(
+        '/api/brokers/MM - MT5 - 2/test').get_json()['error']
+    assert 'Nothing is listening on 127.0.0.1:9102' in error
+    assert 'not running' in error
+    assert 'leg_MM - MT5 - 2.log' in error
+
+
+def test_it_never_suggests_a_port_another_account_holds(legs_client):
+    """The old message named 9101 — MT5's port — to an account that
+    already had 9102."""
+    error = legs_client.post(
+        '/api/brokers/MM - MT5 - 2/test').get_json()['error']
+    assert '9101' not in error
+
+
+def test_an_account_with_no_endpoint_is_told_to_set_one(legs_client):
+    error = legs_client.post('/api/brokers/no_port/test').get_json()['error']
+    assert 'no leg-runner endpoint' in error
+    assert '127.0.0.1:9103' in error        # the next FREE port
