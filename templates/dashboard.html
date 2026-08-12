@@ -228,11 +228,23 @@
                     <div class="card-body py-2 text-center">
                         <div class="price-large price-neutral" id="spot-last">-</div>
                         <div class="row">
-                            <div class="col-6">
+                            <div class="col-4">
                                 <small class="text-secondary" style="font-size: 0.7rem;">Bid</small>
                                 <div class="text-success" style="font-size: 0.85rem;" id="spot-bid">-</div>
                             </div>
-                            <div class="col-6">
+                            <!-- The bid-ask sits between the two numbers it is
+                                 the difference of. It is also this pair's
+                                 dominant cost and it MOVES: on GER40 it went
+                                 from 7.30 to 1.90 within a session, which is
+                                 the difference between a viable trade and a
+                                 hopeless one. -->
+                            <div class="col-4">
+                                <small class="text-secondary" style="font-size: 0.7rem;"
+                                       title="Ask minus bid on this leg. You cross it once per round trip, so it is charged in full by the cost model and the edge filter.">Spread</small>
+                                <div style="font-size: 0.85rem;" id="spot-spread">-</div>
+                                <div class="text-secondary" style="font-size: 0.65rem;" id="spot-spread-bps"></div>
+                            </div>
+                            <div class="col-4">
                                 <small class="text-secondary" style="font-size: 0.7rem;">Ask</small>
                                 <div class="text-danger" style="font-size: 0.85rem;" id="spot-ask">-</div>
                             </div>
@@ -250,11 +262,23 @@
                     <div class="card-body py-2 text-center">
                         <div class="price-large price-neutral" id="futures-last">-</div>
                         <div class="row">
-                            <div class="col-6">
+                            <div class="col-4">
                                 <small class="text-secondary" style="font-size: 0.7rem;">Bid</small>
                                 <div class="text-success" style="font-size: 0.85rem;" id="futures-bid">-</div>
                             </div>
-                            <div class="col-6">
+                            <!-- The bid-ask sits between the two numbers it is
+                                 the difference of. It is also this pair's
+                                 dominant cost and it MOVES: on GER40 it went
+                                 from 7.30 to 1.90 within a session, which is
+                                 the difference between a viable trade and a
+                                 hopeless one. -->
+                            <div class="col-4">
+                                <small class="text-secondary" style="font-size: 0.7rem;"
+                                       title="Ask minus bid on this leg. You cross it once per round trip, so it is charged in full by the cost model and the edge filter.">Spread</small>
+                                <div style="font-size: 0.85rem;" id="futures-spread">-</div>
+                                <div class="text-secondary" style="font-size: 0.65rem;" id="futures-spread-bps"></div>
+                            </div>
+                            <div class="col-4">
                                 <small class="text-secondary" style="font-size: 0.7rem;">Ask</small>
                                 <div class="text-danger" style="font-size: 0.85rem;" id="futures-ask">-</div>
                             </div>
@@ -2480,12 +2504,49 @@
         return t ? t.last : 0;
     }
 
+    // Each leg's own bid-ask, shown beside the two prices it comes from.
+    // This is the pair's dominant cost — 6.6 bps of the 6.6 bps round
+    // trip on the index pair, with commission at zero — and it is not
+    // a constant: GER40 quoted 7.30 wide at one point in a session and
+    // 1.90 at another. The absolute figure is what the cost model
+    // multiplies by lots x contract size; the bps figure underneath is
+    // the one that can be compared against sigma, the other leg, and
+    // another broker.
+    function updateLegSpread(prefix, tick) {
+        const el = document.getElementById(prefix + '-spread');
+        const bpsEl = document.getElementById(prefix + '-spread-bps');
+        if (!el) return;
+        if (!tick || !(tick.bid > 0) || !(tick.ask > 0)) {
+            el.textContent = '-';
+            if (bpsEl) bpsEl.textContent = '';
+            return;
+        }
+        const width = tick.ask - tick.bid;
+        const mid = (tick.bid + tick.ask) / 2;
+        const bps = mid > 0 ? (width / mid) * 10000 : null;
+        // Decimals from the PRICE, not from the difference — the same
+        // rule the bid and ask above it are rendered with, so the
+        // column reads as the subtraction it is. Sized off the width
+        // alone, 26471.90 - 26470.00 printed "1.9" under two prices
+        // showing two decimals.
+        el.textContent = width.toFixed(getDecimals(mid));
+        if (bpsEl) bpsEl.textContent = bps === null ? ''
+                                     : bps.toFixed(bps < 10 ? 2 : 1) + ' bps';
+        // Amber past 5 bps, red past 15: at 15 bps a round trip needs
+        // 30 bps of travel before a cent of profit, which is the wall
+        // the oil pair spent a week in front of.
+        el.className = bps === null ? '' : (bps >= 15 ? 'text-danger'
+                                          : bps >= 5 ? 'text-warning' : '');
+        el.style.fontSize = '0.85rem';
+    }
+
     function updatePrices(spot, futures) {
         if (spot) {
             const spotMid = _headlinePrice(spot);
             updatePriceWithColor('spot-bid', spot.bid, 'neutral');
             updatePriceWithColor('spot-last', spotMid, prevSpotPrice === null ? 'neutral' : spotMid > prevSpotPrice ? 'up' : spotMid < prevSpotPrice ? 'down' : 'neutral');
             updatePriceWithColor('spot-ask', spot.ask, 'neutral');
+            updateLegSpread('spot', spot);
             prevSpotPrice = spotMid;
         }
         if (futures) {
@@ -2493,6 +2554,7 @@
             updatePriceWithColor('futures-bid', futures.bid, 'neutral');
             updatePriceWithColor('futures-last', futMid, prevFuturesPrice === null ? 'neutral' : futMid > prevFuturesPrice ? 'up' : futMid < prevFuturesPrice ? 'down' : 'neutral');
             updatePriceWithColor('futures-ask', futures.ask, 'neutral');
+            updateLegSpread('futures', futures);
             prevFuturesPrice = futMid;
         }
 

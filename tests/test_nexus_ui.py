@@ -1973,3 +1973,26 @@ def test_the_icon_only_buttons_say_what_they_do():
     for action in ('Edit account', 'Remove account'):
         assert f'aria-label="{action}"' in page
         assert f'title="{action}"' in page
+
+
+def test_each_leg_card_shows_its_own_bid_ask_spread(client):
+    """Operator, 2026-08-11: "Include the spread in the Dashboard". Each
+    leg's bid-ask IS the dominant cost of this strategy — 6.6 of the
+    6.6 bps round trip on the index pair — and it moves through the
+    session, so it belongs beside the two prices it comes from."""
+    page = client.get('/').get_data(as_text=True)
+    for leg in ('spot', 'futures'):
+        assert f'id="{leg}-spread"' in page
+        assert f'id="{leg}-spread-bps"' in page
+    assert "updateLegSpread('spot', spot)" in page
+    assert "updateLegSpread('futures', futures)" in page
+
+
+def test_the_leg_spread_is_rendered_at_the_price_decimals():
+    """Sized off the difference alone, 26471.90 - 26470.00 printed
+    "1.9" under two prices showing two decimals."""
+    block = js_block('dashboard.html', 'function updateLegSpread')
+    body = block[block.index('function updateLegSpread'):]
+    body = body[:body.index('\n    }')]
+    assert 'getDecimals(mid)' in body
+    assert '10000' in body          # and the comparable bps figure
