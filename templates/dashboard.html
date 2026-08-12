@@ -2161,6 +2161,9 @@
     // live-β card has something to compare against on first paint; updated on
     // every signal event so it stays in sync after the user saves a new β.
     let _configuredBeta = {{ config.hedge_ratio if config.hedge_ratio else 1.0 }};
+    // What the ENGINE is multiplying leg A by, published per tick. The
+    // one above is config.json's, and the two differ until a restart.
+    let _runningBeta = null;
     // Cache the most recent spot/futures ticks so signal events (which carry the
     // new configured β) can re-render the drift without waiting for the next tick.
     let _lastSpotTick = null;
@@ -2188,9 +2191,22 @@
         return '$' + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
     }
 
-    function _fmtBeta(b) {
+    // Beta is MULTIPLIED BY LEG A'S PRICE, so how many decimals it
+    // needs depends on how big that price is. Four was fine on gold and
+    // oil at beta ~1; on GER40/EU50 beta is 0.2483 against a 26,377
+    // index, where the 4th decimal is worth 2.6 points of spread —
+    // enough that the displayed beta could not reproduce the displayed
+    // spread, and the operator had no way to check the arithmetic
+    // (live 2026-08-11: "Why is the Spread this?" — 0.2480 x 26,377.45
+    // gives 8.04, while the card read 0.26).
+    function _fmtBeta(b, priceA) {
         if (b === null || b === undefined || !isFinite(b)) return '—';
-        return Math.abs(b) >= 100 ? b.toFixed(2) : b.toFixed(4);
+        if (Math.abs(b) >= 100) return b.toFixed(2);
+        // Enough decimals that beta x price is good to ~0.01 of spread.
+        const scale = (priceA && priceA > 0) ? priceA : 1;
+        const needed = Math.min(8, Math.max(4,
+            Math.ceil(Math.log10(scale)) + 2));
+        return b.toFixed(needed);
     }
     function updateLiveBeta() {
         const valueEl = document.getElementById('live-beta-value');
@@ -2200,22 +2216,33 @@
         const s = _lastSpotTick, f = _lastFuturesTick;
         const spotMid = (s && s.bid > 0 && s.ask > 0) ? (s.bid + s.ask) / 2 : null;
         const futMid  = (f && f.bid > 0 && f.ask > 0) ? (f.bid + f.ask) / 2 : null;
+        // The beta the SPREAD was computed with, which is the engine's
+        // and not necessarily the file's: HEDGE_RATIO is structural, so
+        // a save does not reach a running coordinator until a restart.
+        // Showing the saved one beside a spread built from the running
+        // one leaves an operator unable to reproduce their own card.
+        const running = (_runningBeta && _runningBeta > 0)
+                        ? _runningBeta : _configuredBeta;
         if (!spotMid || !futMid) {
             valueEl.textContent = '—';
-            cfgEl.textContent   = _fmtBeta(_configuredBeta);
+            cfgEl.textContent   = _fmtBeta(running);
             driftEl.textContent = '—';
             driftEl.className   = 'badge bg-secondary';
             return;
         }
         const liveBeta = futMid / spotMid;
-        valueEl.textContent = _fmtBeta(liveBeta);
-        cfgEl.textContent   = _fmtBeta(_configuredBeta);
-        if (!_configuredBeta || _configuredBeta <= 0) {
+        valueEl.textContent = _fmtBeta(liveBeta, spotMid);
+        cfgEl.textContent   = _fmtBeta(running, spotMid)
+            + ((_runningBeta && _configuredBeta
+                && Math.abs(_runningBeta - _configuredBeta) > 1e-9)
+               ? ' (saved ' + _fmtBeta(_configuredBeta, spotMid)
+                 + ' — restart to apply)' : '');
+        if (!running || running <= 0) {
             driftEl.textContent = '—';
             driftEl.className   = 'badge bg-secondary';
             return;
         }
-        const driftPct = ((liveBeta - _configuredBeta) / _configuredBeta) * 100;
+        const driftPct = ((liveBeta - running) / running) * 100;
         const sign = driftPct >= 0 ? '+' : '';
         // As a percentage OF the configured beta, a badly wrong beta
         // saturates: 66.94 against a live 1.04 reads "-98.44%", and so
@@ -2224,7 +2251,7 @@
         // multiple instead. Live 2026-08-10: 66.94 left over from
         // XAGUSD/XAUUSD on USOIL/UKOIL was 64x out and the badge said
         // 98%, which reads like a drift rather than a wrong series.
-        const factor = _configuredBeta / liveBeta;
+        const factor = running / liveBeta;
         driftEl.textContent = (factor > 2 || factor < 0.5)
             ? (factor > 1 ? factor.toFixed(factor >= 100 ? 0 : 1) + '× too high'
                           : (1 / factor).toFixed(1) + '× too low')
@@ -2712,6 +2739,11 @@
         // without waiting for the next tick.
         let needsRefresh = false;
         if (beta && beta > 0) { _configuredBeta = beta; needsRefresh = true; }
+        if (data.spread_hedge_ratio && data.spread_hedge_ratio > 0
+                && data.spread_hedge_ratio !== _runningBeta) {
+            _runningBeta = data.spread_hedge_ratio;
+            needsRefresh = true;
+        }
         if (data.position_size_usd !== undefined) { _positionSizeUsd = data.position_size_usd; needsRefresh = true; }
         if (data.leg_a_leverage !== undefined) { _legALeverage = data.leg_a_leverage; needsRefresh = true; }
         if (data.leg_b_leverage !== undefined) { _legBLeverage = data.leg_b_leverage; needsRefresh = true; }
