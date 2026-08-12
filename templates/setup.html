@@ -582,6 +582,12 @@ function updateLegFields() {
         .classList.toggle('d-none', !both);
     document.getElementById('broker-symbol-label').textContent =
         both ? 'Leg A — Spot symbol' : 'Symbol';
+    // A hidden input still SUBMITS. On a single-leg row the second box
+    // is not the operator's input any more, so posting it sends a
+    // symbol they cannot see next to the one they can — and the server
+    // had no way to tell which was meant. Disabling it keeps it out of
+    // the request entirely.
+    document.getElementById('broker-fut-symbol').disabled = !both;
     // Show whichever leg this role now means, from what the operator
     // has entered for THAT leg — their typing on the other leg is kept
     // rather than overwritten or leaked across.

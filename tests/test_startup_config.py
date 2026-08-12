@@ -1159,3 +1159,52 @@ def test_no_leg_runners_means_nothing_to_wait_for():
     assert start.wait_for_leg_runners(
         {'accounts': {'A': {'endpoint': ''}},
          'leg_accounts': {'spot': 'A', 'futures': 'A'}}) is True
+
+
+# --- the ROLE decides which leg a symbol lands on ------------------------
+# Live 2026-08-11, twice: "After saving EU50 on Leg B and restarting it
+# still saves UKOIL on Leg B". The second symbol box is hidden on a
+# single-leg row but a hidden input still SUBMITS, so the save posted
+# symbol=EU50 alongside a stale futures_symbol=UKOIL — and the server's
+# `fut_symbol or symbol` preferred the one the operator could not see.
+
+def test_a_futures_row_takes_the_symbol_that_was_typed(client):
+    client.post('/api/exchanges', json={
+        'name': 'legb', 'role': 'FUTURES', 'endpoint': '127.0.0.1:9102',
+        'symbol': 'UKOIL'})
+    response = client.post('/api/exchanges', json={
+        'name': 'legb', 'role': 'FUTURES', 'endpoint': '127.0.0.1:9102',
+        'symbol': 'EU50', 'futures_symbol': 'UKOIL'})   # stale hidden box
+    assert response.status_code == 200
+    with open(client.tmp_path / 'config.json') as f:
+        asset = next(iter(json.load(f)['assets'].values()))
+    assert asset['futures_symbols'] == ['EU50']
+
+
+def test_a_spot_row_ignores_a_stray_futures_symbol(client):
+    client.post('/api/exchanges', json={
+        'name': 'account_a', 'role': 'SPOT', 'endpoint': '127.0.0.1:9101',
+        'symbol': 'GER40', 'futures_symbol': 'UKOIL'})
+    with open(client.tmp_path / 'config.json') as f:
+        asset = next(iter(json.load(f)['assets'].values()))
+    assert asset['spot_symbols'] == ['GER40']
+    assert 'futures_symbols' not in asset      # never claimed that leg
+
+
+def test_a_both_row_still_takes_two_symbols(client):
+    client.post('/api/exchanges', json={
+        'name': 'account_a', 'role': 'BOTH', 'endpoint': '127.0.0.1:9101',
+        'symbol': 'GER40', 'futures_symbol': 'EU50'})
+    with open(client.tmp_path / 'config.json') as f:
+        asset = next(iter(json.load(f)['assets'].values()))
+    assert asset['spot_symbols'] == ['GER40']
+    assert asset['futures_symbols'] == ['EU50']
+
+
+def test_the_hidden_futures_box_is_not_submitted_on_a_single_leg_row():
+    """The client half of the same fault: a hidden input still posts."""
+    from tests.test_nexus_ui import template_source
+    block = template_source('setup.html')
+    block = block[block.index('function updateLegFields'):]
+    block = block[:block.index('\n}')]
+    assert "getElementById('broker-fut-symbol').disabled = !both" in block

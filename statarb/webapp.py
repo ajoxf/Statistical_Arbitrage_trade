@@ -1071,16 +1071,24 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             # USOIL as Leg A on a one-account setup and it kept
             # reverting to the old BRENTCash, while the futures symbol
             # beside it saved every time.
-            if symbol:
-                if role == 'FUTURES':
-                    fut_symbol = fut_symbol or symbol
-                elif role in ('SPOT', 'BOTH'):
-                    spot_symbol = spot_symbol or symbol
-                else:
-                    return jsonify({
-                        'success': False,
-                        'error': 'Choose a leg (Spot, Futures or Both) so '
-                                 'the symbol can be assigned'}), 400
+            # The ROLE decides, with no fallbacks. `fut_symbol or symbol`
+            # let a stale `futures_symbol` win over the box the operator
+            # had just typed in: the second box is hidden on a
+            # single-leg row but still submits, so saving EU50 on a
+            # FUTURES row posted symbol=EU50 alongside
+            # futures_symbol=UKOIL and quietly kept UKOIL (live
+            # 2026-08-11, twice, "it still saves UKOIL").
+            if role == 'FUTURES':
+                fut_symbol, spot_symbol = symbol or fut_symbol, ''
+            elif role == 'SPOT':
+                spot_symbol, fut_symbol = symbol or spot_symbol, ''
+            elif role == 'BOTH':
+                spot_symbol = spot_symbol or symbol
+            elif symbol:
+                return jsonify({
+                    'success': False,
+                    'error': 'Choose a leg (Spot, Futures or Both) so '
+                             'the symbol can be assigned'}), 400
             if spot_symbol and 'SPOT' in claimed:
                 asset['spot_symbols'] = [spot_symbol]
             if fut_symbol and 'FUTURES' in claimed:

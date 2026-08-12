@@ -702,6 +702,18 @@ account on purpose — two different accounts quoting the same symbol
 name is the cross-broker case and is the entire point of the
 architecture.
 
+**A hidden input still SUBMITS** (same day, operator: "After saving
+EU50 on Leg B and restarting it still saves UKOIL on Leg B"). The
+second symbol box is hidden on a single-leg row but was still posted,
+so the save carried `symbol=EU50` next to a stale
+`futures_symbol=UKOIL` — and the server's `fut_symbol or symbol`
+preferred the field the operator could not see. Two fixes, because
+either alone leaves the other half live: the box is now `disabled`
+whenever the row is not BOTH (a disabled control is left out of the
+request entirely), and the ROLE decides the assignment with no
+fallbacks — FUTURES takes `symbol`, SPOT takes `symbol`, only BOTH
+reads the second box.
+
 ## Two accounts, one port (2026-08-11, operator: "Facing some issue")
 
 Adding a second account. The log showed both names against the SAME
