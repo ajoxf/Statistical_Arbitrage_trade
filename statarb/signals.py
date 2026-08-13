@@ -94,7 +94,7 @@ class ZSignalGenerator:
     # -- entry evaluation ----------------------------------------------
 
     def entry_signal(self, asset, stats, market_data, active_positions,
-                     lots, contract_size):
+                     lots, contract_size, lots_b=None, contract_b=None):
         cfg = self.config.SIGNALS
         if active_positions or not stats.warm:
             return None
@@ -142,7 +142,7 @@ class ZSignalGenerator:
 
         passes, capture, cost = costs_mod.edge_ok(
             z, stats.sigma, lots, contract_size, market_data,
-            self.config.COSTS)
+            self.config.COSTS, lots_b, contract_b)
         if not passes:
             return self._blocked(
                 asset, 'edge', "%s: edge filter — capture $%.0f < %.1fx "

@@ -973,6 +973,11 @@ class Coordinator:
 
     def _entry_signal(self, asset_key, stats, market_data, active,
                       contract_size):
+        """The signal, with the edge filter measured on BOTH legs.
+
+        sigma is measured on the spread, so the capture it implies is
+        worth leg B's units — the filter needs the whole plan, not just
+        leg A's clip."""
         broken = self._implausible_spread(market_data)
         if broken:
             if self._last_beta_block != broken:
@@ -980,12 +985,15 @@ class Coordinator:
                 logging.error("Entries blocked: %s", broken)
             return None
         self._last_beta_block = None
-        clip = self._clip_lots(asset_key, market_data)
+        plan = self._sizing_plan(asset_key, market_data)
+        clip = plan['leg_a_lots']
         if self.use_z:
             if stats is None:
                 return None
-            return self.z_gen.entry_signal(asset_key, stats, market_data,
-                                           active, clip, contract_size)
+            return self.z_gen.entry_signal(
+                asset_key, stats, market_data, active, clip, contract_size,
+                lots_b=plan.get('leg_b_lots'),
+                contract_b=plan.get('leg_b_contract'))
         signal = self.legacy_gen.generate_signal(asset_key, market_data,
                                                  active)
         return signal if signal in (SignalType.SELL_BASIS,
@@ -1973,7 +1981,9 @@ class Coordinator:
             capture = costs_mod.expected_capture(
                 stats.z if stats else None,
                 stats.sigma if stats else None, lots, contract,
-                self.config.COSTS)
+                self.config.COSTS,
+                lots_b=size.get('leg_b_lots'),
+                contract_b=size.get('leg_b_contract'))
         except Exception:
             return block
 

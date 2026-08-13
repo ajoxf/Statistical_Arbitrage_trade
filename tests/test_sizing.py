@@ -861,3 +861,59 @@ def test_the_hedge_construction_is_still_the_owners_choice(config):
     # the legs differ by the basis, ~1.4%, and that is allowed
     gap = abs(result['leg_b_notional_usd'] - result['leg_a_notional_usd'])
     assert gap / result['leg_a_notional_usd'] < 0.05
+
+
+# --- capture is worth LEG B's units --------------------------------------
+# sigma is measured on the spread P_B - beta*P_A, so the multiplier that
+# turns it into money is k = L_B * C_B. Live 2026-08-11 on GER40/EU50 at
+# beta 0.2483 the card read "0.5 x z 1.84 x sigma 0.6897 x 1 = $0.63" —
+# leg A's 1 lot of a 1-unit contract, where leg B traded 4. Understated
+# by exactly 1/beta, on the number that decides whether a pair is worth
+# trading at all.
+
+def test_capture_uses_leg_b_units_not_leg_a():
+    from statarb import costs
+    cfg = {'TARGET_FRACTION': 0.5}
+    capture = costs.expected_capture(1.84, 0.6897, 1.0, 1.0, cfg,
+                                     lots_b=4.0, contract_b=1.0)
+    assert capture == pytest.approx(0.5 * 1.84 * 0.6897 * 4.0)
+    assert capture == pytest.approx(2.538, abs=0.01)
+
+
+def test_capture_is_unchanged_when_the_legs_match():
+    """Gold and oil: beta 1, equal contracts. The old call must give
+    exactly what it always gave."""
+    from statarb import costs
+    cfg = {'TARGET_FRACTION': 0.5}
+    assert costs.expected_capture(3.0, 0.2, 1.15, 100.0, cfg) == \
+        pytest.approx(costs.expected_capture(3.0, 0.2, 1.15, 100.0, cfg,
+                                             lots_b=1.15, contract_b=100.0))
+
+
+def test_a_sigma_move_on_the_pair_really_pays_the_capture():
+    """The invariant behind it: hold the planned lots, move the spread
+    by one sigma, and the P&L is what expected_capture promised (at
+    TARGET_FRACTION 1.0, z 1.0)."""
+    from statarb import costs, sizing
+    lots_a, c_a, c_b, beta = 1.0, 1.0, 1.0, 0.2483
+    lots_b = sizing.hedge_lots(lots_a, c_a, c_b, beta, step=1.0, minimum=1.0)
+    sigma = 0.6897
+    # A one-sigma move in the spread, taken on leg B alone.
+    pnl = sigma * lots_b * c_b
+    assert costs.expected_capture(1.0, sigma, lots_a, c_a,
+                                  {'TARGET_FRACTION': 1.0},
+                                  lots_b=lots_b, contract_b=c_b) == \
+        pytest.approx(pnl)
+
+
+def test_the_edge_filter_measures_capture_on_the_same_legs_as_cost():
+    """Cost was already split per leg; capture was not, so the filter
+    was comparing leg B's dollars of cost against leg A's of capture."""
+    from statarb import costs
+    md = {'spot_bid': 26495.20, 'spot_ask': 26497.00,
+          'futures_bid': 6562.30, 'futures_ask': 6564.70}
+    cfg = {'TARGET_FRACTION': 0.5, 'MIN_EDGE_MULTIPLE': 1.5}
+    _, capture, cost = costs.edge_ok(1.84, 0.6897, 1.0, 1.0, md, cfg,
+                                     lots_b=4.0, contract_b=1.0)
+    assert cost == pytest.approx(1.80 * 1.0 + 2.40 * 4.0)
+    assert capture == pytest.approx(0.5 * 1.84 * 0.6897 * 4.0)

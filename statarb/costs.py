@@ -42,19 +42,37 @@ def round_trip_cost(market_data, lots, contract_size, costs_cfg,
     return spread_cost + commissions
 
 
-def expected_capture(z, sigma, lots, contract_size, costs_cfg):
+def expected_capture(z, sigma, lots, contract_size, costs_cfg,
+                     lots_b=None, contract_b=None):
     """Dollars we target from this entry: the same number the exit's
-    sigma-fraction take-profit aims for."""
+    sigma-fraction take-profit aims for.
+
+    sigma is measured on the SPREAD, `P_B - beta * P_A`, so the
+    multiplier that turns it into money is LEG B's units — the `k` from
+    the derivation in sizing.py, not leg A's. The two are equal only at
+    beta 1 with equal contract sizes, which is every pair this engine
+    had been run on until now.
+
+    Live 2026-08-11 on GER40/EU50 at beta 0.2483: leg A traded 1 lot of
+    a 1-unit contract and leg B traded 4, so capture was reported as
+    $0.63 when the same move is worth $2.54. Understated by exactly
+    1/beta, on the one number the operator reads to decide whether a
+    pair is worth trading.
+
+    `lots_b` / `contract_b` default to leg A's, so a caller with one
+    size gets the old behaviour."""
     if z is None or sigma is None:
         return 0.0
-    oz = lots * contract_size
-    return costs_cfg.get('TARGET_FRACTION', 0.5) * abs(z) * sigma * oz
+    units_b = ((lots if lots_b is None else lots_b)
+               * (contract_size if contract_b is None else contract_b))
+    return costs_cfg.get('TARGET_FRACTION', 0.5) * abs(z) * sigma * units_b
 
 
 def edge_ok(z, sigma, lots, contract_size, market_data, costs_cfg,
             lots_b=None, contract_b=None):
     """(passes, capture, cost) — capture must be >= MIN_EDGE_MULTIPLE x cost."""
-    capture = expected_capture(z, sigma, lots, contract_size, costs_cfg)
+    capture = expected_capture(z, sigma, lots, contract_size, costs_cfg,
+                               lots_b, contract_b)
     cost = round_trip_cost(market_data, lots, contract_size, costs_cfg,
                            lots_b, contract_b)
     multiple = costs_cfg.get('MIN_EDGE_MULTIPLE', 1.5)

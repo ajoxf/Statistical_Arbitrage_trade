@@ -910,9 +910,25 @@ parameterised over four contract pairs x four betas — it fails under
 the old rule for every case except the gold one.
 
 The same `k = L_B * C_B` is what turns a spread move into dollars.
-ExitLadder and slippage.py still use leg A's units (`spot_lots x
-contract`); equal at beta 1 with equal contracts, off by beta otherwise
-— NOT yet corrected, flagged here.
+`costs.expected_capture` was CORRECTED 2026-08-11 (below); ExitLadder
+and slippage.py still use leg A's units (`spot_lots x contract`) —
+equal at beta 1 with equal contracts, off by 1/beta otherwise, and
+still outstanding.
+
+**The edge filter measured capture on the wrong leg** (2026-08-11,
+operator: "Why is the Edge so low?"). On GER40/EU50 at beta 0.2483 the
+Filters card read `0.5 x z 1.84 x sigma 0.6897 x 1 = $0.63` against a
+$17.40 round trip. Every line of that was internally consistent, and
+the `x 1` was the fault: leg A traded 1 lot of a 1-unit contract while
+leg B traded 4, so the same move was worth $2.54. Cost was already
+split per leg (`round_trip_cost` takes `lots_b`/`contract_b`); capture
+was not, so the filter compared leg B's dollars of cost against leg
+A's of capture and understated the edge by exactly 1/beta. Invisible
+on gold and oil at beta 1, four-fold here. `expected_capture` and
+`edge_ok` now take leg B's size, and both call sites pass the sizing
+plan. The verdict on that pair did not change — corrected, it is still
+10x short — but the number the operator reads to judge a pair was
+wrong.
 
 The dashboard's Position Sizing card states the lots per leg and the
 residual imbalance (green within 2%, red beyond — rounding to a
