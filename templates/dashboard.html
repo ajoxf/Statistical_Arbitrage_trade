@@ -289,6 +289,36 @@
             </div>
         </div>
 
+        <!-- Traded VOLUME — turnover, not position size. Operator
+             2026-08-11: "keep track of Volume per day, per week and
+             per month". Read from the trades table so it survives a
+             restart; the risk manager's lots-today is in memory and
+             resets with the process. -->
+        <div class="card mb-3">
+            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                <small><i class="bi bi-stack me-1"></i>Traded Volume</small>
+                <small class="text-secondary" style="font-size: 0.7rem;"
+                       title="Filled orders. One round trip is four of them — two legs in, two legs out — so this is turnover, not the size of any position.">fills, not positions</small>
+            </div>
+            <div class="card-body py-2">
+                <table class="table table-sm mb-0" style="font-size: 0.8rem;">
+                    <thead><tr>
+                        <th></th>
+                        <th class="text-end" title="Sum of filled lot sizes across both legs. The broker counts in lots and DAILY_LOT_TARGET is set in them — but a lot is a different amount of money on every instrument, so this only adds up within one symbol.">Lots</th>
+                        <th class="text-end" title="Lots x contract size x fill price. The comparable figure: it can be added across instruments, which lots cannot.">Notional</th>
+                        <th class="text-end" title="Filled orders sent to the broker.">Fills</th>
+                        <th class="text-end" title="Positions closed in the period. Four fills each, normally.">Round trips</th>
+                    </tr></thead>
+                    <tbody id="volume-rows">
+                        <tr><td colspan="5" class="text-secondary">Loading…</td></tr>
+                    </tbody>
+                </table>
+                <div id="volume-target" class="mt-2"></div>
+                <div id="volume-note" class="text-secondary mt-1"
+                     style="font-size: 0.7rem;"></div>
+            </div>
+        </div>
+
         <!-- Position Sizing — per-leg notional, leverage, margin, β-converted price.
              Same element IDs as before so updateLegSizing() / converted-price JS works unchanged. -->
         <div class="card mb-3">
@@ -2540,6 +2570,75 @@
         el.style.fontSize = '0.85rem';
     }
 
+    // ---- Traded volume (day / week / month) ----
+    // Straight from the trades table, so a restart does not zero it.
+    async function loadVolume() {
+        const body = document.getElementById('volume-rows');
+        if (!body) return;
+        let d;
+        try {
+            d = await (await fetch('/api/volume')).json();
+        } catch (e) {
+            body.innerHTML = '<tr><td colspan="5" class="text-danger">'
+                           + 'Could not read the trade log</td></tr>';
+            return;
+        }
+        const money = (x) => '$' + Math.round(x || 0).toLocaleString();
+        const rows = [['day', 'Today'], ['week', 'This week'],
+                      ['month', 'This month']];
+        body.innerHTML = rows.map(([key, label]) => {
+            const v = d[key] || {};
+            // A period with nothing in it says so rather than showing
+            // four zeros that look like a broken feed.
+            const quiet = !v.fills;
+            return '<tr' + (quiet ? ' class="text-secondary"' : '') + '>'
+                 + '<td>' + label + '</td>'
+                 // Fixed 2dp, not a trimmed number: "10" beside
+                 // "11.23" in a right-aligned monospace column reads
+                 // as a different kind of quantity.
+                 + '<td class="text-end font-monospace">'
+                   + (v.lots || 0).toFixed(2) + '</td>'
+                 + '<td class="text-end font-monospace">'
+                   + money(v.notional_usd) + '</td>'
+                 + '<td class="text-end font-monospace">' + (v.fills || 0)
+                   + '</td>'
+                 + '<td class="text-end font-monospace">'
+                   + (v.round_trips || 0) + '</td>'
+                 + '</tr>';
+        }).join('');
+
+        // Today against DAILY_LOT_TARGET. It is a throughput TARGET and
+        // never a cap — the engine does not reject on it — so the bar
+        // is progress, not a limit being approached.
+        const target = d.daily_lot_target || 0;
+        const today = (d.day || {}).lots || 0;
+        const bar = document.getElementById('volume-target');
+        if (bar) {
+            bar.innerHTML = target > 0
+                ? '<div class="d-flex justify-content-between"'
+                  + ' style="font-size:0.7rem;">'
+                  + '<span class="text-secondary">Today vs daily target</span>'
+                  + '<span class="font-monospace">' + (+today.toFixed(2))
+                  + ' / ' + target + ' lots</span></div>'
+                  + '<div class="progress" style="height:5px;">'
+                  + '<div class="progress-bar bg-info" style="width:'
+                  + Math.min(100, target ? (today / target) * 100 : 0)
+                  + '%"></div></div>'
+                : '';
+        }
+        // Fills the money column could not value. Silence here would
+        // read as "no volume" when it means "not priced".
+        const stale = (d.month || {}).unpriced_fills || 0;
+        const note = document.getElementById('volume-note');
+        if (note) {
+            note.textContent = stale
+                ? stale + ' older fill(s) this month have no contract size '
+                  + 'recorded, so they count in Lots and Fills but not in '
+                  + 'Notional.'
+                : '';
+        }
+    }
+
     function updatePrices(spot, futures) {
         if (spot) {
             const spotMid = _headlinePrice(spot);
@@ -4522,6 +4621,11 @@ function updateFilterStatus(elementId, passed, value) {
 
     updateAccountInfo();
     setInterval(updateAccountInfo, 5000);
+
+    // Volume only changes when an order FILLS, so a 30s refresh is
+    // plenty — polling it at tick rate would be pure database churn.
+    loadVolume();
+    setInterval(loadVolume, 30000);
 
     // Check for orphaned spots every 5 seconds (live trading needs rapid detection)
     checkOrphanedSpots();

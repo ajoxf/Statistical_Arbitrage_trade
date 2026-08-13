@@ -1996,3 +1996,108 @@ def test_the_leg_spread_is_rendered_at_the_price_decimals():
     body = body[:body.index('\n    }')]
     assert 'getDecimals(mid)' in body
     assert '10000' in body          # and the comparable bps figure
+
+
+# --- traded volume -------------------------------------------------------
+# Operator, 2026-08-11: "keep track of Volume per day, per week and per
+# month". Read from the trades table, so it survives a restart — the
+# risk manager's lots-today is in memory and resets with the process.
+
+def _volume_db(tmp_path, rows):
+    import sqlite3
+    from statarb.database import DataLogger
+    db = tmp_path / 'algo.db'
+    DataLogger(db_path=str(db))
+    conn = sqlite3.connect(db)
+    for i, (when, symbol, lots, price, contract) in enumerate(rows):
+        conn.execute(
+            'INSERT INTO trades (trade_id, symbol, order_type, lot_size, '
+            'executed_price, status, timestamp, contract_size) '
+            'VALUES (?,?,?,?,?,?,?,?)',
+            (f'T{i}', symbol, 'BUY', lots, price, 'EXECUTED',
+             when.isoformat(), contract))
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_volume_adds_lots_and_values_them_in_money(tmp_path):
+    from datetime import datetime, timedelta
+    from statarb.database import DataLogger
+    now = datetime.now().replace(hour=12)
+    db = _volume_db(tmp_path, [
+        (now, 'GER40', 1.0, 26400.0, 1.0),
+        (now, 'EU50', 4.0, 6560.0, 1.0)])
+    day = DataLogger(db_path=str(db)).volume_summary(now)['day']
+    assert day['lots'] == pytest.approx(5.0)
+    assert day['notional_usd'] == pytest.approx(26400.0 + 4 * 6560.0)
+    assert day['fills'] == 2
+    # Lots are not comparable across instruments, so they are also kept
+    # per symbol — 1 lot of GER40 is not 1 lot of EU50.
+    assert day['by_symbol']['GER40']['lots'] == pytest.approx(1.0)
+
+
+def test_the_periods_widen_and_never_shrink(tmp_path):
+    from datetime import datetime, timedelta
+    from statarb.database import DataLogger
+    now = datetime(2026, 8, 13, 12, 0)          # a Thursday
+    db = _volume_db(tmp_path, [
+        (now, 'GER40', 1.0, 26400.0, 1.0),                 # today
+        (now - timedelta(days=2), 'GER40', 2.0, 26000.0, 1.0),   # this week
+        (now - timedelta(days=9), 'GER40', 4.0, 26000.0, 1.0)])  # this month
+    v = DataLogger(db_path=str(db)).volume_summary(now)
+    assert v['day']['lots'] == pytest.approx(1.0)
+    assert v['week']['lots'] == pytest.approx(3.0)
+    assert v['month']['lots'] == pytest.approx(7.0)
+
+
+def test_a_fill_with_no_contract_size_is_unpriced_not_zero(tmp_path):
+    """Rows written before the column existed cannot be valued. Counting
+    them as $0 would understate turnover and look like real data."""
+    import sqlite3
+    from datetime import datetime
+    from statarb.database import DataLogger
+    now = datetime.now().replace(hour=12)
+    db = _volume_db(tmp_path, [(now, 'GER40', 1.0, 26400.0, 1.0)])
+    conn = sqlite3.connect(db)
+    conn.execute(
+        'INSERT INTO trades (trade_id, symbol, order_type, lot_size, '
+        'executed_price, status, timestamp) VALUES (?,?,?,?,?,?,?)',
+        ('OLD', 'GER40', 'BUY', 5.0, 26000.0, 'EXECUTED', now.isoformat()))
+    conn.commit()
+    conn.close()
+    day = DataLogger(db_path=str(db)).volume_summary(now)['day']
+    assert day['lots'] == pytest.approx(6.0)          # counted in lots
+    assert day['notional_usd'] == pytest.approx(26400.0)   # not in money
+    assert day['unpriced_fills'] == 1
+
+
+def test_rejected_orders_are_not_volume(tmp_path):
+    import sqlite3
+    from datetime import datetime
+    from statarb.database import DataLogger
+    now = datetime.now().replace(hour=12)
+    db = _volume_db(tmp_path, [(now, 'GER40', 1.0, 26400.0, 1.0)])
+    conn = sqlite3.connect(db)
+    conn.execute(
+        'INSERT INTO trades (trade_id, symbol, order_type, lot_size, '
+        'executed_price, status, timestamp, contract_size) '
+        'VALUES (?,?,?,?,?,?,?,?)',
+        ('BAD', 'GER40', 'BUY', 99.0, 26000.0, 'ERROR', now.isoformat(), 1.0))
+    conn.commit()
+    conn.close()
+    assert DataLogger(db_path=str(db)).volume_summary(
+        now)['day']['lots'] == pytest.approx(1.0)
+
+
+def test_the_dashboard_has_a_volume_card(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'Traded Volume' in page
+    assert 'id="volume-rows"' in page
+    assert 'loadVolume()' in page
+
+
+def test_the_volume_endpoint_carries_the_daily_target(client):
+    body = client.get('/api/volume').get_json()
+    assert set(body) >= {'day', 'week', 'month', 'daily_lot_target'}
+    assert body['day']['lots'] == 0

@@ -36,6 +36,7 @@ except ImportError:
     SocketIO = None            # UI falls back to polling
 
 from . import diagnostics, hedgeratio, ipc, scenarios, sizing, webapi
+from .database import DataLogger
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
@@ -873,6 +874,19 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                            'leg_a_contract': contract_a,
                            'leg_b_contract': contract_b}
         return jsonify(out)
+
+    @app.route('/api/volume')
+    def api_volume():
+        """Traded volume for today, this week and this month.
+
+        Read straight from the trades table, so it survives restarts
+        and does not depend on the coordinator being up — unlike the
+        risk manager's lots-today, which is in-memory and resets."""
+        summary = DataLogger(db_path=db_path).volume_summary()
+        raw = load_config_raw()
+        summary['daily_lot_target'] = (raw.get('trading') or {}).get(
+            'DAILY_LOT_TARGET')
+        return jsonify(summary)
 
     @app.route('/api/telegram/config', methods=['GET', 'POST'])
     def api_telegram_config():

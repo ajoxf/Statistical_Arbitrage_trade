@@ -3,7 +3,7 @@ position state, the untracked-close ledger, and per-trade reviews."""
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class DataLogger:
@@ -72,6 +72,16 @@ class DataLogger:
                     f'ALTER TABLE market_data ADD COLUMN {ddl}')
             except sqlite3.OperationalError:
                 pass
+        # Units per lot for the leg this trade was on. Volume in LOTS
+        # cannot be added across two instruments — one lot is 1 index
+        # unit on GER40 and 1,000 barrels on USOIL — so the money
+        # figure needs the contract size stored beside the fill. Rows
+        # written before this column are NULL and are reported as
+        # unpriced rather than counted as zero.
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN contract_size REAL')
+        except sqlite3.OperationalError:
+            pass
         # Crash-safe live-position snapshots for restart recovery
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS position_state (
@@ -401,18 +411,96 @@ class DataLogger:
         conn.close()
 
     def log_trade(self, trade, position_id=None):
+        # Columns are NAMED. This table gains `contract_size` by ALTER
+        # on upgrade, which appends it after the last column, so a bare
+        # VALUES(...) would write every field one slot off — the exact
+        # fault trade_review and broker_orders were fixed for.
+        values = {
+            'trade_id': trade.trade_id,
+            'position_id': position_id,
+            'symbol': trade.symbol,
+            'order_type': trade.side.value,
+            'lot_size': trade.lot_size,
+            'requested_price': trade.requested_price,
+            'executed_price': trade.executed_price,
+            'order_ticket': trade.order_ticket,
+            'status': trade.status,
+            'timestamp': trade.timestamp.isoformat(),
+            'execution_time': (trade.execution_time.isoformat()
+                               if trade.execution_time else None),
+            'error_message': trade.error_message,
+            'contract_size': getattr(trade, 'contract_size', None),
+        }
         conn = sqlite3.connect(self.db_path)
-        conn.execute('''
-            INSERT OR REPLACE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            trade.trade_id, position_id, trade.symbol, trade.side.value,
-            trade.lot_size, trade.requested_price, trade.executed_price,
-            trade.order_ticket, trade.status, trade.timestamp.isoformat(),
-            trade.execution_time.isoformat() if trade.execution_time else None,
-            trade.error_message,
-        ))
+        conn.execute(
+            'INSERT OR REPLACE INTO trades ({}) VALUES ({})'.format(
+                ', '.join(values), ', '.join('?' * len(values))),
+            tuple(values.values()))
         conn.commit()
         conn.close()
+
+    def volume_summary(self, now=None):
+        """Traded volume for today, this week and this month.
+
+        Volume is FILLED orders — a round trip is four of them, two
+        legs in and two out — so this is turnover, not position size.
+
+        Both a lot count and a money figure, because neither is enough
+        on its own: lots are what the broker and DAILY_LOT_TARGET count
+        but cannot be added across instruments (one lot is 1 index unit
+        on GER40 and 1,000 barrels on USOIL), while notional is
+        comparable but hides how many tickets went out. Rows written
+        before `contract_size` existed cannot be priced; they are
+        counted in `unpriced` rather than valued at zero.
+        """
+        now = now or datetime.now()
+        day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week = day - timedelta(days=day.weekday())      # Monday
+        month = day.replace(day=1)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        out = {}
+        for key, since in (('day', day), ('week', week), ('month', month)):
+            rows = conn.execute(
+                """SELECT symbol, lot_size, executed_price, contract_size
+                   FROM trades
+                   WHERE status = 'EXECUTED' AND timestamp >= ?""",
+                (since.isoformat(),)).fetchall()
+            lots, notional, unpriced = 0.0, 0.0, 0
+            per_symbol = {}
+            for row in rows:
+                size = row['lot_size'] or 0.0
+                lots += size
+                leg = per_symbol.setdefault(
+                    row['symbol'], {'lots': 0.0, 'notional_usd': 0.0,
+                                    'fills': 0})
+                leg['lots'] += size
+                leg['fills'] += 1
+                if row['contract_size'] and row['executed_price']:
+                    value = size * row['contract_size'] * row['executed_price']
+                    notional += value
+                    leg['notional_usd'] += value
+                else:
+                    unpriced += 1
+            out[key] = {
+                'since': since.isoformat(),
+                'fills': len(rows),
+                'lots': round(lots, 4),
+                'notional_usd': round(notional, 2),
+                'unpriced_fills': unpriced,
+                'by_symbol': {s: {'lots': round(v['lots'], 4),
+                                  'notional_usd': round(v['notional_usd'], 2),
+                                  'fills': v['fills']}
+                              for s, v in sorted(per_symbol.items())},
+            }
+            # Round trips: a closed position is one, however many child
+            # orders it took to get in and out.
+            out[key]['round_trips'] = conn.execute(
+                """SELECT COUNT(*) FROM positions
+                   WHERE close_time IS NOT NULL AND close_time >= ?""",
+                (since.isoformat(),)).fetchone()[0]
+        conn.close()
+        return out
 
     def log_position(self, position):
         conn = sqlite3.connect(self.db_path)

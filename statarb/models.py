@@ -62,6 +62,12 @@ class Trade:
         # accounts REQUIRE closes to target these tickets.
         self.position_tickets = []
         self.status = "PENDING"
+        # Units per lot for THIS leg's symbol. Carried on the trade so a
+        # filled order can be valued in money later: lots alone are not
+        # comparable across instruments, and the position manager only
+        # ever knew leg A's. None means unknown, which is reported as
+        # unknown rather than counted as zero.
+        self.contract_size = None
         self.timestamp = datetime.now()
         self.execution_time = None
         self.error_message = None

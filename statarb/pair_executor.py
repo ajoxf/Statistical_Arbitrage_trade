@@ -376,6 +376,12 @@ class PairExecutor:
         comment = f"{tag}_{uuid.uuid4().hex[:8]}"
         spot_trade = Trade(spot_symbol, spot_side, 0.0)
         futures_trade = Trade(futures_symbol, futures_side, 0.0)
+        # Units per lot, from the broker, recorded on the trade. Volume
+        # in lots cannot be added across two instruments; volume in
+        # money can, and this is the only place both figures are known.
+        spot_trade.contract_size = self._contract_size(asset, 'spot')
+        futures_trade.contract_size = self._contract_size(asset,
+                                                          'futures')
 
         self.sweep_stale_orders([(self.spot_leg, spot_symbol),
                                  (self.futures_leg, futures_symbol)])
@@ -600,6 +606,9 @@ class PairExecutor:
         close_futures = Trade(position.futures_trade.symbol,
                               position.futures_trade.side.opposite,
                               position.futures_trade.lot_size)
+        # The closing leg trades the same instrument as the opening one.
+        close_spot.contract_size = position.spot_trade.contract_size
+        close_futures.contract_size = position.futures_trade.contract_size
 
         spot_filled, spot_vwap = self._close_leg(
             self.spot_leg, position.spot_trade, comment, urgent)
