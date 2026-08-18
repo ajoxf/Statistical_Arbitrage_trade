@@ -1399,3 +1399,37 @@ def test_a_blank_terminal_path_never_clashes(client):
     assert client.post('/api/exchanges', json={
         'name': 'b', 'terminal_path': '',
         'endpoint': '127.0.0.1:9103'}).status_code == 200
+
+
+def test_an_existing_clash_can_still_be_repaired_one_row_at_a_time(client):
+    """The guards must refuse a value being newly CLAIMED, not one a row
+    already holds. Refusing the latter makes an existing clash
+    unfixable: every save of either row — even one changing only the
+    symbol — trips over the other row still holding it."""
+    path = r'C:\MT5 - 1\terminal64.exe'
+    # Two rows on one terminal, as a live config already was.
+    import json
+    config = json.loads((client.tmp_path / 'config.json').read_text())
+    config['accounts'] = {
+        'Account_Spot': {'login': 100006, 'endpoint': '127.0.0.1:9101',
+                         'terminal_path': path},
+        'Account_Future': {'login': 100002, 'endpoint': '127.0.0.1:9102',
+                           'terminal_path': path}}
+    config['leg_accounts'] = {'spot': 'Account_Spot',
+                              'futures': 'Account_Future'}
+    (client.tmp_path / 'config.json').write_text(json.dumps(config))
+
+    # Editing the SYMBOL of a clashing row must still work.
+    assert client.post('/api/exchanges', json={
+        'name': 'Account_Spot', 'role': 'SPOT', 'symbol': 'GER40',
+        'terminal_path': path, 'endpoint': '127.0.0.1:9101'
+    }).status_code == 200
+
+    # And moving one row off the shared terminal resolves it.
+    assert client.post('/api/exchanges', json={
+        'name': 'Account_Future', 'role': 'FUTURES', 'symbol': 'EU50',
+        'terminal_path': r'C:\MT5 - 2\terminal64.exe',
+        'endpoint': '127.0.0.1:9102'}).status_code == 200
+    saved = saved_accounts(client)
+    assert saved['Account_Future']['terminal_path'] != \
+        saved['Account_Spot']['terminal_path']

@@ -1146,12 +1146,23 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return jsonify({'success': False, 'error': 'name required'}), 400
         raw.setdefault('accounts', {})
         acct = raw['accounts'].setdefault(name, {})
+        # What this row held BEFORE the edit. The clash guards must only
+        # refuse a value being newly CLAIMED — refusing one that is
+        # already there makes an existing clash unfixable, because every
+        # save of either row (even one changing only the symbol) trips
+        # over the other row still holding it. That is the state the
+        # operator was in when this was written.
+        was = {'terminal_path': (acct.get('terminal_path') or '').strip(),
+               'endpoint': (acct.get('endpoint') or '').strip(),
+               'login': str(acct.get('login') or '')}
         for field in ('terminal_path', 'server', 'endpoint'):
             if payload.get(field) is not None:
                 acct[field] = payload[field]
-        clash = _terminal_clash(raw, name, acct.get('terminal_path'))
-        if clash:
-            return jsonify({'success': False, 'error': clash}), 400
+        path_now = (acct.get('terminal_path') or '').strip()
+        if path_now.lower() != was['terminal_path'].lower():
+            clash = _terminal_clash(raw, name, path_now)
+            if clash:
+                return jsonify({'success': False, 'error': clash}), 400
         # A malformed endpoint takes the coordinator AND the leg runner
         # down at startup, so it is rejected here rather than saved.
         ok, endpoint_or_error = normalise_endpoint(acct.get('endpoint'))
@@ -1159,13 +1170,15 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return jsonify({'success': False,
                             'error': endpoint_or_error}), 400
         acct['endpoint'] = endpoint_or_error
-        clash = _endpoint_clash(raw, name, endpoint_or_error)
-        if clash:
-            return jsonify({'success': False, 'error': clash}), 400
-        if payload.get('login'):
-            clash = _login_clash(raw, name, int(payload['login']))
+        if (endpoint_or_error or '') != was['endpoint']:
+            clash = _endpoint_clash(raw, name, endpoint_or_error)
             if clash:
                 return jsonify({'success': False, 'error': clash}), 400
+        if payload.get('login'):
+            if str(int(payload['login'])) != was['login']:
+                clash = _login_clash(raw, name, int(payload['login']))
+                if clash:
+                    return jsonify({'success': False, 'error': clash}), 400
             acct['login'] = int(payload['login'])
         password = payload.get('password')
         if password:
