@@ -340,16 +340,27 @@ async function loadBrokers() {
     // is the most reassuring possible wording for the one state that
     // cannot survive a restart.
     const savedNames = new Set(brokers.map(b => b.name));
-    const orphaned = Object.entries(RUNNING.legs || {})
+    let orphaned = Object.entries(RUNNING.legs || {})
         .filter(([, name]) => name && !savedNames.has(name));
+    // `running_legs` is only written by a coordinator that STARTED. The
+    // case this warning exists for is a config with no accounts, which
+    // is precisely a coordinator that cannot start — so fall back to
+    // the accounts the last live engine reported, which is what the
+    // dashboard is still showing and what makes the two pages look
+    // like they disagree.
+    if (!orphaned.length) {
+        orphaned = (RUNNING.accounts || [])
+            .filter(name => name && !savedNames.has(name))
+            .map(name => ['a', name]);
+    }
     if (orphaned.length) {
         banners += `
         <div class="alert alert-danger py-2 small">
             <i class="bi bi-exclamation-octagon me-2"></i>
             <strong>The engine is trading accounts this page cannot
             see.</strong> It is running
-            ${orphaned.map(([leg, name]) =>
-                '<code>' + name + '</code> as ' + leg.toUpperCase())
+            ${orphaned.map(([leg, name]) => '<code>' + name + '</code>'
+                + (leg === 'a' ? '' : ' as ' + leg.toUpperCase()))
               .join(' and ')},
             from the config it loaded at startup — but the saved
             configuration no longer lists ${orphaned.length > 1

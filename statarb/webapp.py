@@ -1344,8 +1344,11 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         return jsonify({
             'legs': status.get('running_legs') or {},
             'endpoints': status.get('running_endpoints') or {},
-            'accounts': [a.get('account') for a in
-                         (status.get('accounts') or []) if a.get('account')],
+            # runtime_status keys accounts by NAME. Iterating it as a
+            # list of dicts raised, the page swallowed the failure, and
+            # the warning that exists for exactly this state never
+            # appeared.
+            'accounts': sorted(status.get('accounts') or {}),
         })
 
     @app.route('/api/exchanges/<account_id>/test', methods=['POST'])

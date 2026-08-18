@@ -1082,3 +1082,33 @@ def test_the_broker_logs_the_decoded_reason_and_its_fixes(caplog):
     text = caplog.text
     assert 'Authorization failed' in text
     assert 'exists on THAT server' in text
+
+
+# --- the two pages read different things ---------------------------------
+# Operator, 2026-08-11: "Still see the account on the dashboard" while
+# the Exchanges page said none were configured. Both were right: the
+# dashboard lists what the ENGINE reported, the Exchanges page lists
+# what the FILE holds, and a lost config separates them completely.
+
+def test_running_accounts_are_reported_even_with_no_running_legs(tmp_path,
+                                                                 monkeypatch):
+    """running_legs is only written by a coordinator that STARTED, and
+    the state this warning exists for is one that cannot start."""
+    import json
+    from statarb.webapp import create_app
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'config.json').write_text(json.dumps({'trading': {}}))
+    (tmp_path / 'runtime_status.json').write_text(json.dumps({
+        'accounts': {'MT5': {'login': 100004},
+                     'MM - MT5 - 2': {'login': 100006}}}))
+    app = create_app(db_path=str(tmp_path / 'a.db'),
+                     status_path=str(tmp_path / 'runtime_status.json'),
+                     config_path=str(tmp_path / 'config.json'),
+                     control_path=str(tmp_path / 'control.json'),
+                     env_path=str(tmp_path / '.env'))
+    app.config['TESTING'] = True
+    body = app.test_client().get('/api/exchanges/running').get_json()
+    # A dict keyed by name, not a list of dicts — reading it the wrong
+    # way raised, the page swallowed it, and no warning appeared.
+    assert body['accounts'] == ['MM - MT5 - 2', 'MT5']
+    assert body['legs'] == {}
