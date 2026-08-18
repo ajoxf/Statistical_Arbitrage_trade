@@ -677,6 +677,45 @@ Also: `build_plan` sets `last_refusal` and the coordinator puts it in
 for the broker/engine reason" — which sent the operator to a file to
 find a decision the engine had already made.
 
+## A half-written config became a saved one (2026-08-11)
+
+Operator: "No accounts are configured. Still it is connected to
+accounts 100004 and 100006." The Exchanges page read "No accounts
+configured yet" while the engine traded two of them from its in-memory
+copy.
+
+Nothing deleted them. The chain:
+
+1. `Coordinator._persist_specs` / `_persist_trading` wrote config.json
+   with a plain `open(path, 'w')`, which TRUNCATES the file and then
+   streams JSON into it. Any reader in that window sees half a config.
+2. `webapp.load_config_raw` caught the resulting `ValueError` and
+   returned `{}`.
+3. Every save on that page is a read-modify-write, so the next one
+   wrote the `{}` back — taking the accounts, the leg mapping, the
+   symbols and every setting with it.
+
+Each step is individually reasonable, which is why it survived: a
+tolerant reader is normally a virtue, and it is precisely wrong in
+front of a read-modify-write.
+
+Fixed at all three points:
+
+- both coordinator writes go through a tmp file and `os.replace`, so
+  the file is never half-there;
+- `load_config_raw` distinguishes MISSING (legitimately empty, first
+  run) from PRESENT-BUT-BROKEN, which falls back to `config.json.bak`
+  and RAISES if there is none — refusing the save is the only safe
+  answer;
+- `save_config_raw` keeps that `.bak` and refuses to write a config
+  that drops a non-empty `accounts`, `leg_accounts` or `assets`
+  unless the caller passes `allow_shrink=True` (the two delete
+  endpoints, which mean it).
+
+A raised RuntimeError becomes a 503 with the reason rather than a
+blank 500 page, because a dead button that says nothing is how this
+went unnoticed.
+
 ## Changing a row's LEG rewrote the symbol (2026-08-11)
 
 The Exchanges page read `MT5 · SPOT · UKOIL` with the FUTURES leg

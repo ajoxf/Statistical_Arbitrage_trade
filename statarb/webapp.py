@@ -133,13 +133,75 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return {}
 
     def load_config_raw():
+        """The config, or the last good copy of it — never a silent {}.
+
+        Every save on this page is a read-modify-write. Returning {} for
+        a file that EXISTS but could not be parsed therefore does not
+        degrade gracefully: the next save writes that {} back and takes
+        the accounts, the leg mapping, the symbols and every setting
+        with it.
+
+        Live 2026-08-11: the coordinator rewrote config.json
+        non-atomically while adopting broker specs, a page load read
+        the half-written file, and the Exchanges page went from two
+        accounts to "No accounts configured yet" while the engine
+        carried on trading from its in-memory copy.
+
+        Missing is legitimately empty (first run). Present-but-broken
+        falls back to the backup, and failing that raises — refusing
+        the save is the only safe answer.
+        """
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except (OSError, ValueError):
+        except FileNotFoundError:
             return {}
+        except (OSError, ValueError) as e:
+            try:
+                with open(config_path + '.bak', 'r', encoding='utf-8') as f:
+                    backup = json.load(f)
+            except (OSError, ValueError):
+                raise RuntimeError(
+                    f'config.json could not be read ({e}) and there is no '
+                    f'usable backup beside it. Refusing to continue, '
+                    f'because saving now would overwrite it with nothing.'
+                ) from None
+            logging.error('config.json unreadable (%s) — using config.json'
+                          '.bak. The next save will rewrite the good copy.',
+                          e)
+            return backup
 
-    def save_config_raw(raw):
+    # Top-level keys whose disappearance is a catastrophe rather than an
+    # edit: they are what lets the engine start at all.
+    _CONFIG_CRITICAL = ('accounts', 'leg_accounts', 'assets')
+
+    def save_config_raw(raw, allow_shrink=False):
+        """Write the config, keeping a backup and refusing to gut it.
+
+        `allow_shrink` is for the endpoints that legitimately remove
+        things (deleting an account or a pair). Everything else is a
+        partial edit and must not be able to drop a section it never
+        meant to touch.
+        """
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                current = json.load(f)
+        except (OSError, ValueError):
+            current = None
+        if current and not allow_shrink:
+            lost = [key for key in _CONFIG_CRITICAL
+                    if current.get(key) and not raw.get(key)]
+            if lost:
+                raise RuntimeError(
+                    'refusing to save a config that would drop '
+                    + ', '.join(lost)
+                    + ' — this looks like a partial read, not an edit')
+        if current is not None:
+            # Last known-good, written before the new one goes down.
+            tmp_bak = config_path + '.bak.tmp'
+            with open(tmp_bak, 'w', encoding='utf-8') as f:
+                json.dump(current, f, indent=2)
+            os.replace(tmp_bak, config_path + '.bak')
         tmp = config_path + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(raw, f, indent=2)
@@ -218,6 +280,17 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         while f'{host}:{port}' in used:
             port += 1
         return f'{host}:{port}'
+
+    @app.errorhandler(RuntimeError)
+    def _config_guard(error):
+        """A refused or impossible config write, said out loud.
+
+        These are raised by load_config_raw / save_config_raw when the
+        file on disk cannot be trusted. A 500 page would leave the
+        operator with a dead button and no idea the config was the
+        problem."""
+        logging.error('Config refused: %s', error)
+        return jsonify({'success': False, 'error': str(error)}), 503
 
     # ---------------- pages ----------------
 
@@ -1192,7 +1265,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
         if request.method == 'DELETE':
             assets.pop(key)
-            save_config_raw(raw)
+            save_config_raw(raw, allow_shrink=True)
             return jsonify({'success': True,
                             'note': f'Pair {key} removed. Restart the '
                                     f'launcher to apply. Its recorded '
@@ -1254,7 +1327,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         for role, name in list(legs.items()):
             if name == account_id:
                 legs.pop(role)
-        save_config_raw(raw)
+        save_config_raw(raw, allow_shrink=True)
         return jsonify({'success': True})
 
     @app.route('/api/exchanges/<account_id>/test', methods=['POST'])

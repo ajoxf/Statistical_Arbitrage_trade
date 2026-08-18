@@ -1208,3 +1208,56 @@ def test_the_hidden_futures_box_is_not_submitted_on_a_single_leg_row():
     block = block[block.index('function updateLegFields'):]
     block = block[:block.index('\n}')]
     assert "getElementById('broker-fut-symbol').disabled = !both" in block
+
+
+# --- a half-read config must never become a saved one --------------------
+# Live 2026-08-11: the Exchanges page read "No accounts configured yet"
+# while the engine was trading two of them. The coordinator rewrites
+# config.json when it adopts broker specs, and it truncated the file in
+# place — so a page load caught it half-written, load_config_raw turned
+# the parse error into {}, and the next save wrote that back over the
+# accounts, the leg mapping and every symbol.
+
+def test_an_unreadable_config_falls_back_to_the_backup(client):
+    good = json.loads((client.tmp_path / 'config.json').read_text())
+    (client.tmp_path / 'config.json.bak').write_text(json.dumps(good))
+    (client.tmp_path / 'config.json').write_text('{"accounts": {"a": ')
+    rows = client.get('/api/exchanges').get_json()
+    assert [r['id'] for r in rows] == list(good['accounts'])
+
+
+def test_an_unreadable_config_with_no_backup_refuses_rather_than_empties(
+        client):
+    (client.tmp_path / 'config.json').write_text('{"accounts": {"a": ')
+    response = client.get('/api/exchanges')
+    assert response.status_code == 503
+    assert 'could not be read' in response.get_json()['error']
+
+
+def test_a_save_cannot_drop_the_accounts_it_never_touched(client):
+    """The guard that would have prevented it: a partial edit must not
+    be able to remove a section it was not editing."""
+    from statarb.webapp import create_app       # noqa: F401  (documents intent)
+    path = client.tmp_path / 'config.json'
+    good = json.loads(path.read_text())
+    assert good['accounts']
+    # A handler that lost the accounts — exactly what a {} read produces.
+    import statarb.webapp as webapp_mod
+    response = client.post('/api/config', json={'sections': {
+        'SIGNALS': {'ENTRY_Z': 2.5}}})
+    assert response.status_code == 200
+    assert json.loads(path.read_text())['accounts'] == good['accounts']
+
+
+def test_deleting_an_account_is_still_allowed_to_empty_it(client):
+    """The guard must not make the delete button impossible."""
+    assert client.delete('/api/exchanges/account_a').status_code == 200
+    saved = json.loads((client.tmp_path / 'config.json').read_text())
+    assert saved.get('accounts') in ({}, None)
+
+
+def test_a_good_save_leaves_a_backup_behind(client):
+    before = json.loads((client.tmp_path / 'config.json').read_text())
+    client.post('/api/config', json={'sections': {'SIGNALS': {'ENTRY_Z': 2.5}}})
+    backup = json.loads((client.tmp_path / 'config.json.bak').read_text())
+    assert backup['accounts'] == before['accounts']

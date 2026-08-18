@@ -598,8 +598,16 @@ class Coordinator:
             if all(trading.get(k) == v for k, v in updates.items()):
                 return
             trading.update(updates)
-            with open(self.config_path, 'w', encoding='utf-8') as f:
+            # Atomic: truncating the real file and streaming JSON into
+            # it leaves a window where a reader sees half a config. The
+            # webapp reads on every page load and turns a parse failure
+            # into {}, then saves that back — which is how a live box
+            # ended up with no accounts while the engine kept running
+            # on its in-memory copy (2026-08-11).
+            tmp = self.config_path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(raw, f, indent=2)
+            os.replace(tmp, self.config_path)
             # Adopt our own write, or hot_apply reads the mtime change
             # as an operator edit on the next pass.
             self._config_mtime = os.path.getmtime(self.config_path)
@@ -653,8 +661,16 @@ class Coordinator:
             if all(asset.get(k) == v for k, v in updates.items()):
                 return                       # already agrees; don't churn
             asset.update(updates)
-            with open(self.config_path, 'w', encoding='utf-8') as f:
+            # Atomic: truncating the real file and streaming JSON into
+            # it leaves a window where a reader sees half a config. The
+            # webapp reads on every page load and turns a parse failure
+            # into {}, then saves that back — which is how a live box
+            # ended up with no accounts while the engine kept running
+            # on its in-memory copy (2026-08-11).
+            tmp = self.config_path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(raw, f, indent=2)
+            os.replace(tmp, self.config_path)
             # Adopt our own write, or the mtime change looks like an
             # operator edit and hot_apply logs "assets change requires a
             # restart" on every startup.
