@@ -2132,3 +2132,37 @@ def test_a_live_account_missing_from_the_config_is_badged(tmp_path,
 def test_a_configured_account_is_not_badged(client):
     rows = client.get('/api/account-info').get_json()['accounts']
     assert rows and all(r.get('in_config') is True for r in rows)
+
+
+def test_a_leg_pointing_at_a_missing_account_is_named(tmp_path, monkeypatch):
+    """The state a live box was actually in: accounts emptied while
+    leg_accounts, assets and every setting survived. Re-adding under the
+    SAME name restores the lot; a different name leaves the leg pointing
+    at nothing."""
+    import json
+    from statarb.webapp import create_app
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'config.json').write_text(json.dumps({
+        'accounts': {},
+        'leg_accounts': {'spot': 'MT5', 'futures': 'MM - MT5 - 2'},
+        'assets': {'IDX': {'enabled': True, 'spot_symbols': ['GER40'],
+                           'futures_symbols': ['EU50']}}}))
+    (tmp_path / 'runtime_status.json').write_text('{}')
+    app = create_app(db_path=str(tmp_path / 'a.db'),
+                     status_path=str(tmp_path / 'runtime_status.json'),
+                     config_path=str(tmp_path / 'config.json'),
+                     control_path=str(tmp_path / 'control.json'),
+                     env_path=str(tmp_path / '.env'))
+    app.config['TESTING'] = True
+    body = app.test_client().get('/api/exchanges/running').get_json()
+    assert body['mapped_but_missing'] == {'spot': 'MT5',
+                                          'futures': 'MM - MT5 - 2'}
+
+
+def test_the_dangling_leg_warning_runs_after_banners_exists():
+    """It appends to `banners`; placed above the declaration it is a
+    temporal dead zone ReferenceError that kills the whole script — the
+    fault settings.html already has a section about."""
+    page = template_source('setup.html')
+    body = page[page.index('async function loadBrokers'):]
+    assert body.index('let banners =') < body.index('mapped_but_missing')

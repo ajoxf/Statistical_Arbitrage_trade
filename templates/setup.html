@@ -313,6 +313,7 @@ async function loadBrokers() {
     const mapped = new Set();
     brokers.forEach(b => (b.roles || []).forEach(r => mapped.add(r)));
     const missing = ['SPOT', 'FUTURES'].filter(r => !mapped.has(r));
+
     let banners = (brokers.length && missing.length) ? `
         <div class="alert alert-danger py-2 small">
             <i class="bi bi-exclamation-octagon me-2"></i>
@@ -320,6 +321,31 @@ async function loadBrokers() {
             leg — the coordinator cannot start. Edit an account below and set
             its <strong>Leg</strong>, then restart the launcher.
         </div>` : '';
+
+    // A THIRD state, between "mapped" and "unmapped": leg_accounts
+    // still names an account that `accounts` no longer contains. The
+    // mapping and the symbols are intact and only the credentials are
+    // gone, so re-adding a row under the SAME NAME restores everything
+    // — and naming a new one differently silently leaves the leg
+    // pointing at nothing (2026-08-11, accounts emptied while every
+    // other section survived).
+    const dangling = Object.entries(RUNNING.mapped_but_missing || {});
+    if (dangling.length) {
+        banners += `
+        <div class="alert alert-warning py-2 small">
+            <i class="bi bi-link-45deg me-2"></i>
+            <strong>The leg mapping still points at accounts that are no
+            longer configured.</strong>
+            ${dangling.map(([leg, name]) => leg.toUpperCase()
+                + ' &rarr; <code>' + name + '</code>').join(', ')}.
+            Add ${dangling.length > 1 ? 'them' : 'it'} back under
+            <strong>exactly ${dangling.length > 1 ? 'those names' :
+            'that name'}</strong> and the leg mapping, the symbols and
+            every setting come back with ${dangling.length > 1 ? 'them'
+            : 'it'} — a different name leaves the leg pointing at
+            nothing.
+        </div>`;
+    }
 
     // Two accounts on one port is two legs on one terminal wearing two
     // names — the coordinator refuses to start on it, and until it is

@@ -1351,7 +1351,15 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         accounts configured yet" — the most reassuring possible wording
         for a config that could no longer start the system."""
         status = runtime_status()
+        raw = load_config_raw()
+        accounts = raw.get('accounts') or {}
+        legs = raw.get('leg_accounts') or {}
         return jsonify({
+            # Legs whose account has gone missing from the config. The
+            # symbols and the mapping survive; only the credentials are
+            # lost, so the name is the key to getting it all back.
+            'mapped_but_missing': {role: name for role, name in legs.items()
+                                   if name and name not in accounts},
             'legs': status.get('running_legs') or {},
             'endpoints': status.get('running_endpoints') or {},
             # runtime_status keys accounts by NAME. Iterating it as a
