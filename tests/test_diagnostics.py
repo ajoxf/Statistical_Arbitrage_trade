@@ -336,7 +336,8 @@ def test_a_beta_that_wrecks_the_spread_fails_and_says_why(cfg):
 def test_both_legs_on_one_symbol_and_one_account_is_no_spread(cfg):
     futures = side('futures', 'account_a', sym=symbol(symbol='XAUUSD'))
     check = find(report(cfg, futures=futures), 'Symbols')
-    assert check['status'] == 'FAIL' and 'no spread' in check['message']
+    assert check['status'] == 'FAIL'
+    assert 'instrument against itself' in check['message']
 
 
 def test_live_basis_is_shown_from_both_feeds(cfg):
@@ -1112,3 +1113,33 @@ def test_running_accounts_are_reported_even_with_no_running_legs(tmp_path,
     # way raised, the page swallowed it, and no warning appeared.
     assert body['accounts'] == ['MM - MT5 - 2', 'MT5']
     assert body['legs'] == {}
+
+
+def test_one_symbol_on_two_names_for_one_login_is_a_failure(cfg):
+    """Live 2026-08-11: rows called Account_Spot and Account_Future both
+    pointed at the same terminal installation, so they were one account
+    under two names — both on USOIL.b, spread exactly 0.0000, and the
+    symbols line reported a plain pass."""
+    same = terminal(login=100006)
+    result = report(
+        cfg,
+        spot=side(account='Account_Spot', term=same,
+                  sym=symbol(symbol='USOIL.b', contract_size=1000.0)),
+        futures=side('futures', 'Account_Future', term=same,
+                     sym=symbol(symbol='USOIL.b', contract_size=1000.0)))
+    row = find(result, 'Symbols', 'PAIR')
+    assert row['status'] == 'FAIL'
+    assert 'instrument against itself' in row['message']
+    assert '100006' in row['message']
+
+
+def test_two_real_accounts_on_the_same_symbol_name_still_pass(cfg):
+    """Cross-broker: USOIL at one broker against USOIL at another is a
+    real spread, and the logins are what tell them apart."""
+    result = report(
+        cfg,
+        spot=side(account='broker_a', term=terminal(login=1),
+                  sym=symbol(symbol='USOIL')),
+        futures=side('futures', 'broker_b', term=terminal(login=2),
+                     sym=symbol(symbol='USOIL')))
+    assert find(result, 'Symbols', 'PAIR')['status'] == 'PASS'

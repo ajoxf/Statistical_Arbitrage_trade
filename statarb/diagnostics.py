@@ -445,12 +445,31 @@ def check_pair(checklist, spot, futures, config):
     if not (spot_sym.get('found') and fut_sym.get('found')):
         return          # per-leg checks already reported the failure
 
+    # Same symbol on the same ACCOUNT is an instrument against itself.
+    # The account had to be identified by LOGIN as well as by name:
+    # live 2026-08-11 two rows called Account_Spot and Account_Future
+    # both pointed at the same terminal installation, so they were one
+    # account under two names, both on USOIL.b — and the checklist
+    # reported the symbols as a plain pass beside a spread of exactly
+    # 0.0000.
+    same_login = (spot_term.get('login')
+                  and spot_term.get('login') == fut_term.get('login'))
     if spot_sym['symbol'] == fut_sym['symbol'] \
-            and spot['account'] == futures['account']:
-        checklist.add('PAIR', 'Symbols', FAIL,
-                      'Both legs point at the same symbol on the same '
-                      'account — there is no spread to trade',
-                      fix=['Set the futures symbol to the futures contract'])
+            and (spot['account'] == futures['account'] or same_login):
+        checklist.add(
+            'PAIR', 'Symbols', FAIL,
+            f"Both legs are on {spot_sym['symbol']}"
+            + (f", and both accounts are login {spot_term['login']}"
+               if same_login and spot['account'] != futures['account']
+               else ' on the same account')
+            + ' — an instrument against itself. The spread is zero by '
+              'construction and a round trip is four commissions for '
+              'nothing.',
+            fix=['Set Leg A and Leg B to the two DIFFERENT symbols of '
+                 'the pair on the Exchanges page',
+                 'If the two accounts are meant to be different, give '
+                 'each its own terminal installation and login first — '
+                 'they are one account until then'])
     else:
         checklist.add('PAIR', 'Symbols', PASS,
                       f"{spot_sym['symbol']} (spot) vs "
