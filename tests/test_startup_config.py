@@ -1433,3 +1433,33 @@ def test_an_existing_clash_can_still_be_repaired_one_row_at_a_time(client):
     saved = saved_accounts(client)
     assert saved['Account_Future']['terminal_path'] != \
         saved['Account_Spot']['terminal_path']
+
+
+def test_a_shared_terminal_is_visible_on_the_row_itself(client):
+    """It was only discoverable by running the connectivity check, so
+    an operator could look straight at two rows holding one terminal
+    and see nothing wrong with either."""
+    path = r'C:\MT5 - 1\terminal64.exe'
+    import json
+    config = json.loads((client.tmp_path / 'config.json').read_text())
+    config['accounts'] = {
+        'a': {'login': 1, 'endpoint': '127.0.0.1:9101',
+              'terminal_path': path},
+        'b': {'login': 2, 'endpoint': '127.0.0.1:9102',
+              'terminal_path': path}}
+    (client.tmp_path / 'config.json').write_text(json.dumps(config))
+    rows = {r['id']: r for r in client.get('/api/exchanges').get_json()}
+    assert 'already uses this MT5 installation' in rows['a']['terminal_clash']
+    assert 'b' in rows['a']['terminal_clash']
+
+
+def test_separate_terminals_carry_no_warning(client):
+    client.post('/api/exchanges', json={
+        'name': 'a', 'endpoint': '127.0.0.1:9102',
+        'terminal_path': r'C:\MT5 - 1\terminal64.exe'})
+    client.post('/api/exchanges', json={
+        'name': 'b', 'endpoint': '127.0.0.1:9103',
+        'terminal_path': r'C:\MT5 - 2\terminal64.exe'})
+    rows = {r['id']: r for r in client.get('/api/exchanges').get_json()}
+    assert rows['a']['terminal_clash'] is None
+    assert rows['b']['terminal_clash'] is None

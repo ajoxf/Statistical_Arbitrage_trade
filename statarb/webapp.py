@@ -1137,6 +1137,12 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                 # is two legs on one terminal wearing two names.
                 'endpoint_clash': _endpoint_clash(
                     raw, name, (acct.get('endpoint') or '').strip()),
+                # Shown ON the row. A clash was only discoverable by
+                # running the connectivity check, so the operator could
+                # look straight at two rows holding one terminal and
+                # see nothing wrong with either.
+                'terminal_clash': _terminal_clash(
+                    raw, name, acct.get('terminal_path')),
                 'running_leg': _running_legs().get(name),
             } for name, acct in accounts.items()])
 

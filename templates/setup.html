@@ -470,7 +470,16 @@ async function loadBrokers() {
                         .map(s => `<code>${s}</code>`).join(' + ') || '—'}</td>
                     <td>${b.login || '—'}</td>
                     <td>${b.server || '—'}</td>
-                    <td class="small text-secondary">${b.terminal_path || 'attach to open terminal'}</td>
+                    <td class="small ${b.terminal_clash ? 'text-danger'
+                                                          : 'text-secondary'}">
+                        ${b.terminal_path || 'attach to open terminal'}
+                        ${b.terminal_clash
+                          ? '<div class="fw-semibold mt-1">'
+                            + '<i class="bi bi-exclamation-triangle me-1"></i>'
+                            + 'Shared with another account — one terminal '
+                            + 'holds one login, so both legs would trade '
+                            + 'the same account.</div>'
+                          : ''}</td>
                     <td class="small"><code>${b.endpoint || 'in-process'}</code></td>
                     <td>${live.leverage ? live.leverage + 'x' : '—'}</td>
                     <td id="broker-status-${b.name}">${live.connected
