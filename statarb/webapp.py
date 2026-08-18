@@ -273,6 +273,26 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                              else role.upper())
         return out
 
+    def _login_clash(raw, name, login):
+        """Is another account already using this login? Message or None.
+
+        Two rows with one login is the shared-terminal fault a layer up:
+        both legs would trade the SAME MT5 account, hedging against
+        themselves, while every screen reports two accounts. One
+        terminal holds one login, so two legs on one login is not a
+        topology — it is the same account twice."""
+        if not login:
+            return None
+        for other, acct in (raw.get('accounts') or {}).items():
+            if other == name:
+                continue
+            if str((acct or {}).get('login') or '') == str(login):
+                return (f"Login {login} already belongs to account "
+                        f"'{other}'. Two accounts on one login is the same "
+                        f"MT5 account twice — both legs would trade it and "
+                        f"hedge against themselves.")
+        return None
+
     def _next_free_port(raw, host='127.0.0.1', first=9101):
         used = {(acct or {}).get('endpoint', '') for acct
                 in (raw.get('accounts') or {}).values()}
@@ -1111,6 +1131,9 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         if clash:
             return jsonify({'success': False, 'error': clash}), 400
         if payload.get('login'):
+            clash = _login_clash(raw, name, int(payload['login']))
+            if clash:
+                return jsonify({'success': False, 'error': clash}), 400
             acct['login'] = int(payload['login'])
         password = payload.get('password')
         if password:

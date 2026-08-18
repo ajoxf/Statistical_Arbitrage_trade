@@ -1308,3 +1308,27 @@ def test_removing_an_unused_account_leaves_the_mapped_ones(client):
     assert 'leftover' not in remaining and 'account_a' in remaining
     with open(client.tmp_path / 'config.json') as f:
         assert json.load(f)['leg_accounts']['spot'] == 'account_a'
+
+
+def test_two_accounts_cannot_share_one_login(client):
+    """One terminal holds one login, so two accounts on one login is
+    the same MT5 account twice — both legs would trade it and hedge
+    against themselves while the UI reports two."""
+    client.post('/api/exchanges', json={
+        'name': 'Account_Spot', 'login': 100006, 'role': 'SPOT',
+        'endpoint': '127.0.0.1:9102'})
+    response = client.post('/api/exchanges', json={
+        'name': 'Account_Future', 'login': 100006, 'role': 'FUTURES',
+        'endpoint': '127.0.0.1:9103'})
+    assert response.status_code == 400
+    error = response.get_json()['error']
+    assert 'Account_Spot' in error and '100006' in error
+
+
+def test_re_saving_an_account_keeps_its_own_login(client):
+    client.post('/api/exchanges', json={
+        'name': 'Account_Spot', 'login': 100006,
+        'endpoint': '127.0.0.1:9102'})
+    assert client.post('/api/exchanges', json={
+        'name': 'Account_Spot', 'login': 100006,
+        'endpoint': '127.0.0.1:9102'}).status_code == 200
