@@ -280,8 +280,26 @@ let LIVE_ACCOUNTS = {};
 let BROKERS = [];
 
 async function loadBrokers() {
-    const brokers = await (await fetch('/api/exchanges')).json();
+    const response = await fetch('/api/exchanges');
+    const brokers = await response.json();
+    // A refused or unreadable config comes back as an error object, not
+    // a list. Rendering it as "no accounts" is how a lost config looked
+    // like a tidy one (2026-08-11).
+    if (!Array.isArray(brokers)) {
+        document.getElementById('leg-mapping-warning').innerHTML =
+            '<div class="alert alert-danger py-2 small">'
+            + '<i class="bi bi-exclamation-octagon me-2"></i>'
+            + '<strong>The saved configuration could not be read.</strong> '
+            + (brokers.error || 'Unknown error')
+            + '</div>';
+        document.getElementById('brokers-list').innerHTML = '';
+        return;
+    }
     BROKERS = brokers;
+    let RUNNING = {legs: {}, endpoints: {}};
+    try {
+        RUNNING = await (await fetch('/api/exchanges/running')).json();
+    } catch (e) { /* the engine may simply be down */ }
     try {
         const info = await (await fetch('/api/account-info')).json();
         LIVE_ACCOUNTS = {};
@@ -313,6 +331,31 @@ async function loadBrokers() {
             <i class="bi bi-exclamation-octagon me-2"></i>
             <strong>Two accounts share one leg-runner endpoint.</strong>
             ${clashes[0].endpoint_clash}
+        </div>`;
+    }
+
+    // The engine can be running accounts that are not in the saved
+    // config AT ALL — not a pending edit, a config that has lost them.
+    // Saying "No accounts configured yet" over a live two-account book
+    // is the most reassuring possible wording for the one state that
+    // cannot survive a restart.
+    const savedNames = new Set(brokers.map(b => b.name));
+    const orphaned = Object.entries(RUNNING.legs || {})
+        .filter(([, name]) => name && !savedNames.has(name));
+    if (orphaned.length) {
+        banners += `
+        <div class="alert alert-danger py-2 small">
+            <i class="bi bi-exclamation-octagon me-2"></i>
+            <strong>The engine is trading accounts this page cannot
+            see.</strong> It is running
+            ${orphaned.map(([leg, name]) =>
+                '<code>' + name + '</code> as ' + leg.toUpperCase())
+              .join(' and ')},
+            from the config it loaded at startup — but the saved
+            configuration no longer lists ${orphaned.length > 1
+                ? 'them' : 'it'}.
+            <strong>Do not restart until the accounts below are correct</strong>,
+            or the engine will not come back up.
         </div>`;
     }
 

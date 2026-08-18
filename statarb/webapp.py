@@ -1330,6 +1330,24 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         save_config_raw(raw, allow_shrink=True)
         return jsonify({'success': True})
 
+    @app.route('/api/exchanges/running')
+    def api_exchanges_running():
+        """What the coordinator is ACTUALLY trading, whatever the file
+        says.
+
+        The two can diverge completely, not just differ in detail: on
+        2026-08-11 config.json lost its accounts while the engine went
+        on trading 100004 and 100006, and the page could only say "No
+        accounts configured yet" — the most reassuring possible wording
+        for a config that could no longer start the system."""
+        status = runtime_status()
+        return jsonify({
+            'legs': status.get('running_legs') or {},
+            'endpoints': status.get('running_endpoints') or {},
+            'accounts': [a.get('account') for a in
+                         (status.get('accounts') or []) if a.get('account')],
+        })
+
     @app.route('/api/exchanges/<account_id>/test', methods=['POST'])
     def api_exchange_test(account_id):
         write_control({'test': {'kind': 'connectivity', 'ts': time.time()}})
