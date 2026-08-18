@@ -166,7 +166,7 @@ class Child:
 MAX_RESTARTS = 5
 
 
-def monitor(children, stop_event):
+def monitor(children, stop_event, config_path='config.json'):
     """Relaunch dead children with backoff — the coordinator recovers
     its positions from the DB and reconciles before trading again.
 
@@ -176,7 +176,30 @@ def monitor(children, stop_event):
     the web UI stays up so the operator can fix the settings."""
     for child in children:
         child.restarts = 0
+    try:
+        config_stamp = os.path.getmtime(config_path)
+    except OSError:
+        config_stamp = None
+    announced = False
     while not stop_event.is_set():
+        # The operator is fixing the config in the web UI while this
+        # loop runs, and the console has gone quiet after giving up.
+        # Nothing here can pick the change up: the LEG RUNNERS were
+        # planned from the account list as it stood at startup, so a
+        # new account needs a whole relaunch, not another coordinator
+        # attempt. Say so at the moment they save, which is the moment
+        # they are looking (2026-08-18: accounts added after the
+        # watchdog had already given up, and the console never
+        # mentioned it again).
+        try:
+            now_stamp = os.path.getmtime(config_path)
+        except OSError:
+            now_stamp = config_stamp
+        if config_stamp and now_stamp != config_stamp and not announced:
+            announced = True
+            print("[launcher] config.json changed. Accounts and leg "
+                  "runners are read at STARTUP — stop this launcher "
+                  "(Ctrl+C) and start it again to pick the change up.")
         for child in children:
             if child.proc is None or child.alive():
                 continue
@@ -238,7 +261,8 @@ def main():
             wait_for_leg_runners(raw)
         children[-1].spawn()       # coordinator last
 
-        threading.Thread(target=monitor, args=(children, stop_event),
+        threading.Thread(target=monitor,
+                         args=(children, stop_event, 'config.json'),
                          daemon=True).start()
 
         url = f"http://127.0.0.1:{DASHBOARD_PORT}"

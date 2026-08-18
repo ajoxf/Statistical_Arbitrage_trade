@@ -1332,3 +1332,31 @@ def test_re_saving_an_account_keeps_its_own_login(client):
     assert client.post('/api/exchanges', json={
         'name': 'Account_Spot', 'login': 100006,
         'endpoint': '127.0.0.1:9102'}).status_code == 200
+
+
+def test_the_launcher_says_a_config_change_needs_a_relaunch(tmp_path,
+                                                            monkeypatch,
+                                                            capsys):
+    """Live 2026-08-18: the watchdog gave up, the operator added the
+    accounts in the web UI, and the console never mentioned it again.
+    Leg runners are planned from the account list at STARTUP, so no
+    amount of coordinator retrying picks a new account up."""
+    import threading
+    import time as _time
+    import start
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / 'config.json'
+    cfg.write_text('{}')
+    stop = threading.Event()
+    thread = threading.Thread(target=start.monitor,
+                              args=([], stop, str(cfg)), daemon=True)
+    thread.start()
+    _time.sleep(0.2)
+    _time.sleep(1.1)                       # past the mtime resolution
+    cfg.write_text('{"accounts": {"a": {}}}')
+    _time.sleep(3.0)
+    stop.set()
+    thread.join(timeout=5)
+    out = capsys.readouterr().out
+    assert 'config.json changed' in out
+    assert 'start it again' in out
