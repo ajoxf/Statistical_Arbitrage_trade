@@ -381,6 +381,33 @@ async function loadBrokers() {
             before trusting them.
         </div>`;
     }
+    // Only two accounts are ever CONNECTED — one leg runner per mapped
+    // account — so anything unmapped is inert. It is still worth
+    // clearing: leftover rows are what produced the port clash and the
+    // wrong-leg symbol earlier today. Offered as one button rather than
+    // done automatically, because a row carries a login, a server, a
+    // terminal path and the link to its password in .env, and "add"
+    // must never silently mean "replace".
+    const unused = brokers.filter(b => !(b.roles || []).length);
+    if (unused.length) {
+        banners += `
+        <div class="alert alert-secondary py-2 small d-flex
+                    justify-content-between align-items-center">
+            <span>
+                <i class="bi bi-archive me-2"></i>
+                ${unused.length} account${unused.length > 1 ? 's are' : ' is'}
+                not mapped to a leg
+                (${unused.map(b => '<code>' + b.name + '</code>').join(', ')}),
+                so ${unused.length > 1 ? 'they are' : 'it is'} never
+                connected — the launcher starts a runner only for the two
+                legs. Safe to keep, tidier to remove.
+            </span>
+            <button class="btn btn-sm btn-outline-secondary ms-3
+                           text-nowrap" onclick="removeUnusedAccounts()">
+                <i class="bi bi-trash me-1"></i>Remove unused
+            </button>
+        </div>`;
+    }
     document.getElementById('leg-mapping-warning').innerHTML = banners;
 
     document.getElementById('brokers-list').innerHTML = brokers.length ? `
@@ -397,7 +424,11 @@ async function loadBrokers() {
                     <td>${(b.roles || []).length
                         ? b.roles.map(r =>
                             `<span class="badge bg-primary me-1">${r}</span>`).join('')
-                        : '<span class="badge bg-secondary">unused</span>'}</td>
+                        : '<span class="badge bg-secondary"'
+                          + ' title="Not mapped to a leg, so the launcher'
+                          + ' starts no runner for it and it never connects'
+                          + ' to MT5. It is a few lines in config.json and'
+                          + ' nothing else.">unused — not connected</span>'}</td>
                     <td>${[b.spot_symbol, b.futures_symbol].filter(Boolean)
                         .map(s => `<code>${s}</code>`).join(' + ') || '—'}</td>
                     <td>${b.login || '—'}</td>
@@ -579,6 +610,38 @@ async function saveBroker(event) {
         await showResult(false, 'The account was not saved.',
                          'The dashboard could not reach the server: ' + e);
     }
+}
+
+// Clear every account that holds no leg. Named individually in the
+// confirmation, because "remove unused" is only obvious to whoever
+// just read which ones those are.
+async function removeUnusedAccounts() {
+    const unused = (BROKERS || []).filter(b => !(b.roles || []).length);
+    if (!unused.length) return;
+    const names = unused.map(b => b.name);
+    const ok = await showConfirm(
+        names.join(', ') + ' — none of these is mapped to a leg, so '
+        + 'nothing that is running will change. Their passwords stay in '
+        + '.env; re-adding an account with the same name picks them up '
+        + 'again.',
+        {title: 'Remove ' + names.length + ' unused account'
+                + (names.length > 1 ? 's' : '') + '?',
+         variant: 'danger', confirmText: 'Remove'});
+    if (!ok) return;
+    const failed = [];
+    for (const name of names) {
+        try {
+            const response = await fetch(
+                '/api/exchanges/' + encodeURIComponent(name),
+                {method: 'DELETE'});
+            if (!response.ok) failed.push(name);
+        } catch (e) { failed.push(name); }
+    }
+    loadBrokers();
+    await showResult(!failed.length,
+                     failed.length ? 'Some accounts were not removed.'
+                                   : 'Unused accounts removed.',
+                     failed.length ? failed.join(', ') : null);
 }
 
 async function deleteBroker(name) {

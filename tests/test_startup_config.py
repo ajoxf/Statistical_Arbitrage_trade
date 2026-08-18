@@ -1261,3 +1261,50 @@ def test_a_good_save_leaves_a_backup_behind(client):
     client.post('/api/config', json={'sections': {'SIGNALS': {'ENTRY_Z': 2.5}}})
     backup = json.loads((client.tmp_path / 'config.json.bak').read_text())
     assert backup['accounts'] == before['accounts']
+
+
+# --- unused accounts are inert, and easy to clear ------------------------
+# Operator, 2026-08-11: "At any point we should only have 2 accounts
+# connected, right? So, when new accounts are added the old ones should
+# get deleted." Two is right for CONNECTED — the launcher starts a runner
+# only for a leg's account — but an unmapped row connects to nothing, and
+# deleting it automatically would make "add" silently mean "replace" on a
+# row carrying a login, a server and a link to its password.
+
+def test_an_account_with_no_leg_starts_no_runner():
+    import start
+    raw = {'accounts': {'live': {'endpoint': '127.0.0.1:9101'},
+                        'leftover': {'endpoint': '127.0.0.1:9103'}},
+           'leg_accounts': {'spot': 'live', 'futures': 'live'}}
+    assert start.plan_leg_runners(raw) == ['live']
+
+
+def test_at_most_two_runners_however_many_accounts_exist():
+    import start
+    raw = {'accounts': {n: {'endpoint': f'127.0.0.1:910{i}'}
+                        for i, n in enumerate('abcde')},
+           'leg_accounts': {'spot': 'a', 'futures': 'b'}}
+    assert start.plan_leg_runners(raw) == ['a', 'b']
+
+
+def test_the_page_offers_to_clear_unused_accounts_rather_than_doing_it():
+    from tests.test_nexus_ui import template_source
+    page = template_source('setup.html')
+    assert 'removeUnusedAccounts()' in page
+    assert 'unused — not connected' in page
+    # Explicitly confirmed, and named, before anything is removed.
+    body = page[page.index('async function removeUnusedAccounts'):]
+    body = body[:body.index('\nasync function deleteBroker')]
+    assert 'showConfirm' in body and 'names.join' in body
+    assert 'passwords stay in' in body
+
+
+def test_removing_an_unused_account_leaves_the_mapped_ones(client):
+    client.post('/api/exchanges', json={
+        'name': 'leftover', 'endpoint': '127.0.0.1:9109'})
+    assert 'leftover' in saved_accounts(client)
+    assert client.delete('/api/exchanges/leftover').status_code == 200
+    remaining = saved_accounts(client)
+    assert 'leftover' not in remaining and 'account_a' in remaining
+    with open(client.tmp_path / 'config.json') as f:
+        assert json.load(f)['leg_accounts']['spot'] == 'account_a'
