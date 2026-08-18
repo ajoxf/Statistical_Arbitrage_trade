@@ -293,6 +293,35 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                         f"hedge against themselves.")
         return None
 
+    def _terminal_clash(raw, name, path):
+        """Is another account already using this MT5 installation?
+
+        Completes the set with the port and the login guards: one
+        account needs one PORT, one LOGIN and one TERMINAL. A terminal
+        holds a single login, so two accounts sharing an installation
+        are one account — both leg runners attach to it, both trade
+        whatever it happens to be signed into, and the pair hedges
+        against itself.
+
+        The coordinator already refuses this at startup. Catching it at
+        save is the difference between a corrected field and five
+        restart attempts (live 2026-08-18, twice)."""
+        path = (path or '').strip()
+        if not path:
+            return None          # blank = attach to whatever is open
+        for other, acct in (raw.get('accounts') or {}).items():
+            if other == name:
+                continue
+            if ((acct or {}).get('terminal_path')
+                    or '').strip().lower() == path.lower():
+                return (f"Account '{other}' already uses this MT5 "
+                        f"installation. One terminal serves ONE login, so "
+                        f"both legs would end up on the same account. "
+                        f"Install a second copy of MetaTrader 5 in its own "
+                        f"folder (or use a portable copy) and point this "
+                        f"account at that one.")
+        return None
+
     def _next_free_port(raw, host='127.0.0.1', first=9101):
         used = {(acct or {}).get('endpoint', '') for acct
                 in (raw.get('accounts') or {}).values()}
@@ -1120,6 +1149,9 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         for field in ('terminal_path', 'server', 'endpoint'):
             if payload.get(field) is not None:
                 acct[field] = payload[field]
+        clash = _terminal_clash(raw, name, acct.get('terminal_path'))
+        if clash:
+            return jsonify({'success': False, 'error': clash}), 400
         # A malformed endpoint takes the coordinator AND the leg runner
         # down at startup, so it is rejected here rather than saved.
         ok, endpoint_or_error = normalise_endpoint(acct.get('endpoint'))

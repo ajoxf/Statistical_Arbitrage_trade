@@ -753,6 +753,30 @@ request entirely), and the ROLE decides the assignment with no
 fallbacks — FUTURES takes `symbol`, SPOT takes `symbol`, only BOTH
 reads the second box.
 
+## One account needs one PORT, one LOGIN and one TERMINAL (2026-08-18)
+
+Three ways to write down "these are two accounts" while describing
+one, and each was found the hard way:
+
+- **one port** — only one process binds it, so the second runner dies
+  or both legs talk to the first (2026-08-11);
+- **one login** — the same MT5 account under two names, hedging
+  against itself;
+- **one terminal installation** — a terminal holds a single login, so
+  two accounts pointing at one folder are one account whatever the
+  rows say (2026-08-18, twice: `Account_Spot` and `Account_Future`
+  both on `...MetaTrader 5 - 1`, the dashboard showing login 100006
+  against both).
+
+`_endpoint_clash`, `_login_clash` and `_terminal_clash` refuse all
+three at SAVE. The coordinator refuses the port and terminal cases at
+startup too — belt and braces, and startup is where the earlier ones
+were caught — but a refusal at save is a corrected field, while a
+refusal at startup is five restart attempts with the reason scrolling
+past. The terminal comparison lowercases both sides, matching what
+`_resolve_legs` does, so the save cannot pass something startup then
+rejects.
+
 ## Two accounts, one port (2026-08-11, operator: "Facing some issue")
 
 Adding a second account. The log showed both names against the SAME

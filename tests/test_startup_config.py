@@ -1360,3 +1360,42 @@ def test_the_launcher_says_a_config_change_needs_a_relaunch(tmp_path,
     out = capsys.readouterr().out
     assert 'config.json changed' in out
     assert 'start it again' in out
+
+
+def test_two_accounts_cannot_share_one_terminal_installation(client):
+    """The coordinator refuses this at startup. Catching it at save is
+    the difference between a corrected field and five restart attempts
+    (live 2026-08-18, twice)."""
+    path = r'C:\Program Files\MentoMarkets - MetaTrader 5 - 1\terminal64.exe'
+    client.post('/api/exchanges', json={
+        'name': 'Account_Spot', 'role': 'SPOT', 'login': 100006,
+        'endpoint': '127.0.0.1:9102', 'terminal_path': path})
+    response = client.post('/api/exchanges', json={
+        'name': 'Account_Future', 'role': 'FUTURES', 'login': 100002,
+        'endpoint': '127.0.0.1:9103', 'terminal_path': path})
+    assert response.status_code == 400
+    error = response.get_json()['error']
+    assert 'Account_Spot' in error and 'second copy' in error
+    assert 'Account_Future' not in saved_accounts(client)
+
+
+def test_the_terminal_check_ignores_case_and_spacing(client):
+    """Windows paths are case-insensitive, and the coordinator's own
+    check lowercases before comparing — the two must agree or the save
+    passes something startup then refuses."""
+    client.post('/api/exchanges', json={
+        'name': 'a', 'endpoint': '127.0.0.1:9102',
+        'terminal_path': r'C:\MT5\terminal64.exe'})
+    assert client.post('/api/exchanges', json={
+        'name': 'b', 'endpoint': '127.0.0.1:9103',
+        'terminal_path': r'  c:\mt5\TERMINAL64.EXE '}).status_code == 400
+
+
+def test_a_blank_terminal_path_never_clashes(client):
+    """Blank means "attach to whatever is open" — the single-terminal
+    topology depends on more than one account being allowed to say it."""
+    client.post('/api/exchanges', json={'name': 'a', 'terminal_path': '',
+                                        'endpoint': '127.0.0.1:9102'})
+    assert client.post('/api/exchanges', json={
+        'name': 'b', 'terminal_path': '',
+        'endpoint': '127.0.0.1:9103'}).status_code == 200
