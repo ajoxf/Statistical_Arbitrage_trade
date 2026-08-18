@@ -1492,7 +1492,17 @@
                         return `<tr>
                             <td><strong>${a.account || '—'}</strong>${roles}
                                 ${a.connected === false
-                                  ? '<span class="badge bg-secondary ms-1" style="font-size:0.55rem;">NOT CONNECTED</span>' : ''}</td>
+                                  ? '<span class="badge bg-secondary ms-1" style="font-size:0.55rem;">NOT CONNECTED</span>' : ''}
+                                ${a.in_config === false
+                                  ? '<span class="badge bg-danger ms-1"'
+                                    + ' style="font-size:0.55rem;"'
+                                    + ' title="The engine is trading this'
+                                    + ' account from the config it loaded at'
+                                    + ' startup, but the SAVED config no'
+                                    + ' longer lists it. Restarting now would'
+                                    + ' not bring it back. Fix the accounts on'
+                                    + ' the Brokers page first.">NOT IN CONFIG</span>'
+                                  : ''}</td>
                             <td class="font-monospace">${a.login || '—'}</td>
                             <td>${a.server || '—'}</td>
                             <td class="text-end">${fmtMoney(a.balance, a.currency)}</td>

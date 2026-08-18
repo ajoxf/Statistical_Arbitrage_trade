@@ -2101,3 +2101,34 @@ def test_the_volume_endpoint_carries_the_daily_target(client):
     body = client.get('/api/volume').get_json()
     assert set(body) >= {'day', 'week', 'month', 'daily_lot_target'}
     assert body['day']['lots'] == 0
+
+
+def test_a_live_account_missing_from_the_config_is_badged(tmp_path,
+                                                          monkeypatch):
+    """Operator, 2026-08-11: "Still showing up". The dashboard lists what
+    the ENGINE reported, so after a config lost its accounts the panel
+    went on showing them, identical to configured ones — two screens
+    flatly contradicting each other with nothing to tell them apart."""
+    import json
+    from statarb.webapp import create_app
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'config.json').write_text(json.dumps({'trading': {}}))
+    (tmp_path / 'runtime_status.json').write_text(json.dumps({
+        'accounts': {'MT5': {'account': 'MT5', 'login': 100004,
+                             'equity': 4848.79}}}))
+    app = create_app(db_path=str(tmp_path / 'a.db'),
+                     status_path=str(tmp_path / 'runtime_status.json'),
+                     config_path=str(tmp_path / 'config.json'),
+                     control_path=str(tmp_path / 'control.json'),
+                     env_path=str(tmp_path / '.env'))
+    app.config['TESTING'] = True
+    client = app.test_client()
+    row = client.get('/api/account-info').get_json()['accounts'][0]
+    assert row['account'] == 'MT5'
+    assert row['in_config'] is False
+    assert 'NOT IN CONFIG' in client.get('/').get_data(as_text=True)
+
+
+def test_a_configured_account_is_not_badged(client):
+    rows = client.get('/api/account-info').get_json()['accounts']
+    assert rows and all(r.get('in_config') is True for r in rows)

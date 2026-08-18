@@ -715,12 +715,22 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             entry.setdefault('server', cfg.get('server'))
             entry['roles'] = [role for role, n in legs.items() if n == name]
             entry['connected'] = name in live
+            entry['in_config'] = True
             accounts.append(entry)
-        for name, info in live.items():        # anything live but unlisted
+        # Live but NOT in the saved config. Worth listing — it is real
+        # money on a real account — but it must not look like the rows
+        # above it. The engine keeps reporting whatever it loaded at
+        # startup, so after a config is lost or edited this panel goes
+        # on showing accounts the file no longer has, and the operator
+        # reads two screens that flatly contradict each other
+        # (2026-08-11: "No accounts are configured. Still it is
+        # connected to accounts 100004 and 100006").
+        for name, info in live.items():
             if name not in configured:
                 entry = dict(info)
                 entry['connected'] = True
                 entry['roles'] = [r for r, n in legs.items() if n == name]
+                entry['in_config'] = False
                 accounts.append(entry)
         totals = {'equity': 0.0, 'balance': 0.0, 'margin': 0.0,
                   'margin_free': 0.0, 'profit': 0.0}
