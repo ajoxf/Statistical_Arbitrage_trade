@@ -2122,8 +2122,46 @@ class Coordinator:
             'edge_gap_usd': (
                 capture - cost * self.config.COSTS.get(
                     'MIN_EDGE_MULTIPLE', 1.5)),
+            # The one number that says whether this pair can EVER
+            # trade. capture = f x z x sigma x k, so the z that clears
+            # the filter is required / (f x sigma x k) — and when that
+            # exceeds the entry ceiling, no reachable z passes and the
+            # engine will sit at NO_SIGNAL forever. Live 2026-08-19 on
+            # a Brent/WTI pair it was 11.1 against a ceiling of 4.5,
+            # which took an investigation to establish from a log that
+            # otherwise read "all systems go".
+            **self._edge_reachability(stats, cost,
+                                      lots_b, contract_b),
         })
         return block
+
+    def _edge_reachability(self, stats, cost, lots_b, contract_b):
+        """z needed to clear the edge filter, and whether it is
+        reachable at all.
+
+        Also the size-free form of the same fact: a round trip costs so
+        many SIGMAS of the spread. That ratio is what decides a pair —
+        it does not move with lots, leverage or notional, and at
+        TARGET_FRACTION 0.5 with a 1.5x filter and an entry at z=3 it
+        has to be about 1.0 or better."""
+        sigma = stats.sigma if stats else None
+        fraction = self.config.COSTS.get('TARGET_FRACTION', 0.5)
+        multiple = self.config.COSTS.get('MIN_EDGE_MULTIPLE', 1.5)
+        # k from the derivation: LEG B's units are what turn a
+        # spread move into dollars.
+        units = sizing.spread_units(lots_b, contract_b)
+        per_sigma = (sigma or 0.0) * units
+        if not per_sigma or not fraction:
+            return {'edge_z_needed': None, 'edge_cost_in_sigmas': None,
+                    'edge_reachable': None}
+        needed = multiple * cost / (fraction * per_sigma)
+        ceiling = self.config.SIGNALS.get('MAX_ENTRY_Z') or 0.0
+        return {
+            'edge_z_needed': needed,
+            'edge_cost_in_sigmas': cost / per_sigma,
+            'edge_reachable': (None if not ceiling else needed <= ceiling),
+            'edge_entry_ceiling': ceiling or None,
+        }
 
     def _account_snapshot(self):
         """(accounts, equity), refreshed at most every few seconds."""

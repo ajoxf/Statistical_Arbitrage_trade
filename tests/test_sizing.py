@@ -917,3 +917,46 @@ def test_the_edge_filter_measures_capture_on_the_same_legs_as_cost():
                                      lots_b=4.0, contract_b=1.0)
     assert cost == pytest.approx(1.80 * 1.0 + 2.40 * 4.0)
     assert capture == pytest.approx(0.5 * 1.84 * 0.6897 * 4.0)
+
+
+# --- can this pair EVER pass the edge filter? ----------------------------
+# Operator, 2026-08-19, after hours of "all systems go" and no trades:
+# "identify why no trades have been taken". Every line of the log was
+# healthy; the answer was arithmetic nobody had done. capture =
+# f x z x sigma x k, so the z that clears the filter is fixed — and on
+# that pair it was 11.1 against an entry ceiling of 4.5.
+
+def test_the_z_needed_to_pass_is_published(coord):
+    from types import SimpleNamespace
+    stats = SimpleNamespace(sigma=0.0957, z=-2.46)
+    out = coord._edge_reachability(stats, cost=39.0, lots_b=0.11,
+                                   contract_b=1000.0)
+    # 1.5 x 39 / (0.5 x 0.0957 x 110)
+    assert out['edge_z_needed'] == pytest.approx(11.13, abs=0.05)
+    assert out['edge_cost_in_sigmas'] == pytest.approx(3.70, abs=0.02)
+
+
+def test_an_unreachable_edge_is_reported_as_unreachable(coord):
+    from types import SimpleNamespace
+    coord.config.SIGNALS['MAX_ENTRY_Z'] = 4.5
+    out = coord._edge_reachability(SimpleNamespace(sigma=0.0957, z=-2.4),
+                                   cost=39.0, lots_b=0.11, contract_b=1000.0)
+    assert out['edge_reachable'] is False
+
+
+def test_a_viable_pair_reports_a_reachable_z(coord):
+    """The same arithmetic with a round trip inside one sigma."""
+    from types import SimpleNamespace
+    coord.config.SIGNALS['MAX_ENTRY_Z'] = 4.5
+    out = coord._edge_reachability(SimpleNamespace(sigma=0.0957, z=-2.4),
+                                   cost=8.0, lots_b=0.11, contract_b=1000.0)
+    assert out['edge_reachable'] is True
+    assert out['edge_z_needed'] < 4.5
+
+
+def test_no_sigma_means_no_verdict(coord):
+    """Warm-up must not read as "this pair cannot trade"."""
+    from types import SimpleNamespace
+    out = coord._edge_reachability(SimpleNamespace(sigma=None, z=None),
+                                   cost=39.0, lots_b=0.11, contract_b=1000.0)
+    assert out['edge_z_needed'] is None and out['edge_reachable'] is None

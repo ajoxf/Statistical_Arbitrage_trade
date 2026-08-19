@@ -787,6 +787,11 @@
                             </tbody>
                         </table>
                     </div>
+                    <!-- Whether a passing z exists at all. Every other
+                         line here describes THIS tick; this one says
+                         whether any tick could ever qualify. -->
+                    <div id="edge-reachability" class="mt-1"
+                         style="font-size: 0.68rem;"></div>
                     <div id="std-explanation" class="text-secondary mt-1" style="font-size: 0.65rem;">
                         Spread must cover trading costs
                     </div>
@@ -3199,6 +3204,34 @@
             eSet('edge-gap-usd', cash(gap),
                  'text-end fw-bold font-monospace pt-1 '
                  + (gap == null ? '' : (short ? 'price-down' : 'price-up')));
+
+        // Can this pair EVER trade? capture = f x z x sigma x k, so the
+        // z that clears the filter is fixed arithmetic — and when it is
+        // above the entry ceiling the engine will sit at NO_SIGNAL for
+        // ever while every line on the card reads "all systems go".
+        // Live 2026-08-19 it was 11.1 against a ceiling of 4.5.
+        const reach = document.getElementById('edge-reachability');
+        if (reach) {
+            const need = data.edge_z_needed, ceiling = data.edge_entry_ceiling;
+            const sig = data.edge_cost_in_sigmas;
+            if (need == null || !isFinite(need)) {
+                reach.innerHTML = '';
+            } else {
+                const impossible = ceiling && need > ceiling;
+                reach.innerHTML =
+                    '<div class="' + (impossible ? 'text-danger fw-semibold'
+                                                 : 'text-secondary') + '">'
+                    + 'Needs |z| &ge; ' + need.toFixed(1)
+                    + (ceiling ? ' to pass; entries are capped at '
+                                 + (+ceiling).toFixed(1) : '')
+                    + (impossible ? ' — no reachable z clears this filter, '
+                                    + 'so this pair cannot trade as priced.'
+                                  : '.')
+                    + (sig ? ' A round trip costs ' + sig.toFixed(1)
+                             + '&sigma; of the spread.' : '')
+                    + '</div>';
+            }
+        }
 
             // Round-trip cost, with the whole derivation in the
             // tooltip. The old text described W3's model ("Entry +
