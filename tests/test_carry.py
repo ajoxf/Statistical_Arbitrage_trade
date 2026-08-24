@@ -533,3 +533,43 @@ def test_a_pre_split_value_shows_in_both_boxes():
                              'swap_spot_per_lot': -1.25}}})
     assert ui['swap_spot_long_per_lot'] == -1.25
     assert ui['swap_spot_short_per_lot'] == -1.25
+
+
+@pytest.fixture
+def client_dash(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from statarb.webapp import create_app
+    app = create_app(db_path=str(tmp_path / 'a.db'),
+                     status_path=str(tmp_path / 'runtime_status.json'),
+                     config_path=str(tmp_path / 'config.json'),
+                     control_path=str(tmp_path / 'control.json'),
+                     env_path=str(tmp_path / '.env'))
+    with app.test_client() as c:
+        return c.get('/').get_data(as_text=True)
+
+
+# --- the card asks ONE question -----------------------------------------
+# Operator, 2026-08-24: "You only want to know if The Spread is more
+# expensive now or not. Make all language simple and less words."
+
+def test_the_card_is_down_to_two_numbers_and_a_verdict(client_dash):
+    page = client_dash
+    # The two numbers being compared, and the answer.
+    assert 'id="carry-spread-now"' in page
+    assert 'id="carry-breakeven-spread"' in page
+    assert 'id="carry-verdict"' in page
+    assert 'Spread now' in page and 'Needs to beat' in page
+    # The jargon rows are gone. Matched on their ELEMENT IDS, not on
+    # their labels: "Round trip" is also a legitimate column heading on
+    # the Volume card and a heading on Filters.
+    for gone in ('Spread at convergence', 'Net if held to expiry',
+                 'Carry says the spread should be',
+                 'id="carry-schedule"', 'id="carry-gross-usd"',
+                 'id="carry-carry-usd"', 'id="carry-cost-usd"',
+                 'id="carry-net-usd"', 'id="carry-implied-spread"'):
+        assert gone not in page, gone
+
+
+def test_the_arithmetic_survives_as_one_plain_sentence(client_dash):
+    """Plain words were asked for; the working disappearing was not."""
+    assert 'id="carry-plain"' in client_dash

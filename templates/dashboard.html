@@ -443,9 +443,9 @@
                 </span>
             </div>
             <div class="card-body py-2">
-                <div class="row align-items-center">
+                <div class="row align-items-start">
                     <div class="col-4 text-center">
-                        <div class="metric-value" style="font-size: 2rem;" id="current-zscore">0.00</div>
+                        <div class="metric-value" style="font-size: 2rem; line-height: 1.1;" id="current-zscore">0.00</div>
                         <div class="metric-label">Z-Score</div>
                     </div>
                     <div class="col-4 text-center">
@@ -517,8 +517,8 @@
                         <div class="metric-label mt-1">Position</div>
                     </div>
                 </div>
-                <div id="position-details" class="mt-2 pt-2" style="display: none; border-top: 1px solid var(--border-color); font-size: 0.78rem;">
-                    <div class="row mb-1">
+                <div id="position-details" class="mt-1 pt-1" style="display: none; border-top: 1px solid var(--border-color); font-size: 0.78rem; line-height: 1.45;">
+                    <div class="row g-0">
                         <div class="col-6">
                             <span class="text-secondary">Entry Z:</span>
                             <span id="position-entry-z">-</span>
@@ -528,7 +528,7 @@
                             <span id="position-pnl">-</span>
                         </div>
                     </div>
-                    <div class="row mb-1">
+                    <div class="row g-0">
                         <div class="col-6">
                             <span class="text-secondary">Leg A Entry:</span>
                             <span id="position-entry-spot">-</span>
@@ -542,7 +542,7 @@
                                   title="Leg B price change since entry — green when the move helps this leg's side"></span>
                         </div>
                     </div>
-                    <div class="row mb-1">
+                    <div class="row g-0">
                         <div class="col-6">
                             <span class="text-secondary"
                                   title="Spread at entry (futures − β × spot, from actual fills). The exit target is when this drifts toward zero.">
@@ -558,28 +558,28 @@
                             <span id="position-spread-delta">-</span>
                         </div>
                     </div>
-                    <div class="row mb-1" id="position-levels-row" style="display:none;">
+                    <div class="row g-0" id="position-levels-row" style="display:none;">
                         <div class="col-12" style="font-size: 0.75rem;"
                              title="Absolute spread values where this trade breaks even (covers all fees), releases a reversion exit (EX = BE + profit gate, shown when a gate is set), takes profit, and stops out — same math the exit overrides fire on. These levels do NOT drift with the rolling mean, unlike the in-trade z-score. Watch the live spread against them.">
                             <span class="text-secondary">Levels:</span>
                             <span id="position-levels" class="font-monospace">-</span>
                         </div>
                     </div>
-                    <div class="row mb-1" id="position-levels-usd-row" style="display:none;">
+                    <div class="row g-0" id="position-levels-usd-row" style="display:none;">
                         <div class="col-12" style="font-size: 0.75rem;"
                              title="Net P&L at each level: BE = $0.00 (all fees paid), EX = the profit-gate floor, TP = the profit target. SL is quoted as the GROSS spread move that trips the stop — net there ≈ −(stop + fees).">
                             <span class="text-secondary">Level P&L:</span>
                             <span id="position-levels-usd" class="font-monospace">-</span>
                         </div>
                     </div>
-                    <div class="row mb-1" id="position-ev-row" style="display:none;">
+                    <div class="row g-0" id="position-ev-row" style="display:none;">
                         <div class="col-12" style="font-size: 0.75rem;"
                              title="What this trade was worth GOING IN, from the levels frozen at entry: EV = p x TP − (1−p) x (STOP + fees). A win banks the target NET; a loss books the stop GROSS, so the round trip is paid on the way out of a loser too and sits on the loss side. p is the chance of reaching the target before the stop for a mean-reverting (Ornstein-Uhlenbeck) spread, computed from the z-distance to each level — the reversion SPEED cancels out, so this does not depend on the AR(1) half-life. The baseline beside it is the same trade on a spread that does NOT revert, which is always worth exactly minus the round trip: every dollar of edge here comes from reversion. It does not model the clock — MAX_HOLD, the time stop and the reversion gate can all close a trade that reached neither level.">
                             <span class="text-secondary">Expected value:</span>
                             <span id="position-ev" class="font-monospace">-</span>
                         </div>
                     </div>
-                    <div class="row mb-1" id="position-slippage-row" style="display:none;">
+                    <div class="row g-0" id="position-slippage-row" style="display:none;">
                         <div class="col-12" style="font-size: 0.75rem;"
                              title="What the signal saw versus what MT5 gave us, split into two costs that behave differently. CROSSING is mid-to-touch: quoted on the screen before you trade and already in the cost model — paying it is normal. SLIPPAGE is touch-to-fill: the market moving between the decision and the fill, or the broker filling away from its own quote. A negative slippage is price improvement, which limit orders do produce.">
                             <span class="text-secondary">Entry cost:</span>
@@ -615,7 +615,7 @@
                             <span id="position-halflife-ratio" class="font-monospace"></span>
                         </div>
                     </div>
-                    <div class="row mt-1 mb-1" id="position-targets-row" style="display:none;">
+                    <div class="row g-0" id="position-targets-row" style="display:none;">
                         <div class="col-6">
                             <span class="text-secondary"
                                   title="Profit target: exit when net P&L reaches this level">Target:</span>
@@ -1256,55 +1256,45 @@
                 <div id="carry-unavailable" class="text-secondary"
                      style="font-size: 0.7rem; display:none;"></div>
                 <div id="carry-detail" style="display:none;">
-                    <table class="w-100" style="font-size: 0.7rem;">
-                        <tbody>
-                            <tr><td class="text-secondary">Spread at convergence</td>
-                                <td class="text-end text-secondary" id="carry-gross-calc">-</td>
-                                <td class="text-end font-monospace" id="carry-gross-usd">-</td></tr>
-                            <tr><td class="text-secondary">Carry to expiry</td>
-                                <td class="text-end text-secondary" id="carry-nights">-</td>
-                                <td class="text-end font-monospace" id="carry-carry-usd">-</td></tr>
-                            <tr><td class="text-secondary">Round trip</td>
-                                <td class="text-end text-secondary"></td>
-                                <td class="text-end font-monospace" id="carry-cost-usd">-</td></tr>
-                            <tr style="border-top: 1px solid var(--border-color);">
-                                <td class="fw-bold pt-1">Net if held to expiry</td>
-                                <td class="text-end text-secondary pt-1" id="carry-verdict">-</td>
-                                <td class="text-end fw-bold font-monospace pt-1"
-                                    id="carry-net-usd">-</td></tr>
-                        </tbody>
-                    </table>
-                    <!-- The same arithmetic in SPREAD, which is the unit
-                         on the screen. Dollars move with lots and
-                         leverage; the spread the pair has to beat does
-                         not, so this is the row to read. -->
-                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
-                        <table class="w-100" style="font-size: 0.7rem;">
-                            <tbody>
-                                <tr><td class="text-secondary">Carry says the spread should be</td>
-                                    <td class="text-end font-monospace" id="carry-implied-spread">-</td></tr>
-                                <tr><td class="text-secondary">Worth trading above</td>
-                                    <td class="text-end font-monospace" id="carry-breakeven-spread">-</td></tr>
-                                <tr><td class="fw-bold">Spread now</td>
-                                    <td class="text-end fw-bold font-monospace"
-                                        id="carry-spread-now">-</td></tr>
-                            </tbody>
-                        </table>
-                        <div id="carry-gap-note" class="mt-1" style="font-size: 0.65rem;"></div>
-                    </div>
-                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
-                        <div class="text-secondary mb-1" style="font-size: 0.68rem;">
-                            Swap per leg &mdash; signed, negative is charged
+                    <!-- ONE question: is the spread wide enough right now?
+                         (Operator, 2026-08-24: "You only want to know if
+                         The Spread is more expensive now or not. Make all
+                         language simple and less words.") Everything else
+                         on this card used to be the arithmetic behind the
+                         answer, in four rows of jargon. The arithmetic is
+                         unchanged; it is now one sentence underneath. -->
+                    <div class="text-center">
+                        <div class="d-flex justify-content-around">
+                            <div>
+                                <div class="fw-bold font-monospace"
+                                     id="carry-spread-now"
+                                     style="font-size: 1.35rem;">-</div>
+                                <div class="metric-label">Spread now</div>
+                            </div>
+                            <div>
+                                <div class="fw-bold font-monospace text-secondary"
+                                     id="carry-breakeven-spread"
+                                     style="font-size: 1.35rem;">-</div>
+                                <div class="metric-label">Needs to beat</div>
+                            </div>
                         </div>
-                        <div id="carry-legs" style="font-size: 0.65rem;"></div>
+                        <div class="fw-bold mt-2" id="carry-verdict"
+                             style="font-size: 0.85rem;">-</div>
                     </div>
+                    <div id="carry-gap-note" class="mt-2"
+                         style="font-size: 0.7rem;"></div>
+                    <div class="text-secondary mt-2 pt-2"
+                         id="carry-plain"
+                         style="font-size: 0.68rem; border-top: 1px solid var(--border-color);"></div>
+                    <div id="carry-legs" class="text-secondary mt-2"
+                         style="font-size: 0.65rem;"></div>
                     <div class="text-secondary mt-2" style="font-size: 0.62rem;">
-                        Reference for a <strong>manual</strong> trade. Assumes the
-                        position is held to expiry and the future converges fully;
-                        it does not model the spread widening against you in the
-                        meantime, margin calls, or a contract roll.
+                        Only true if you hold to the expiry date.
+                        The algo ignores this &mdash; it is here for a trade
+                        you place by hand.
                         <a href="/settings#pair-selection" class="text-secondary">edit swap</a>
                     </div>
+                </div>
                 </div>
             </div>
         </div>
@@ -1774,18 +1764,11 @@
         const how = f.entry == null
             ? 'open a pair NOW at market'
             : `arm a pair to open when the spread reaches ${f.entry}`;
-        const rows = [
-            `Direction: ${f.direction === 'SELL_BASIS' ? 'Short' : 'Long'} spread`,
-            `Take profit: ${f.takeProfit != null ? f.takeProfit : 'engine ladder'}`,
-            `Stop loss: ${f.stop != null ? f.stop : 'engine dollar stop only'}`,
-            `Lots: ${f.lots != null ? f.lots : 'configured clip'}`,
-        ].join(' · ');
-        if (!await showConfirm(
-                `Manual trade on ${asset}: ${how}.\n\n${rows}\n\n`
-                + `This bypasses the signal gates and fires even while `
-                + `the algo is stopped.`,
-                {title: 'Manual spread trade', confirmText: 'Place trade'}))
-            return;
+        // No confirmation step (operator, 2026-08-24). Every level is
+        // typed on the panel immediately above the button, so the
+        // dialog only restated what they had just entered — and the
+        // warning it carried is printed under the button permanently.
+        // The engine's own refusals still surface as dialogs.
         const response = await fetch('/api/manual-trade', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
@@ -2728,81 +2711,54 @@
 
         const money = v => (v == null ? '-'
             : (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2));
-        document.getElementById('carry-gross-usd').textContent =
-            money(carry.gross_usd);
-        // "x 2" with no unit reads as a factor of two. It is 2 UNITS
-        // of the underlying — 0.02 lots x 100 per lot — and naming the
-        // pieces is the difference between a checkable figure and one
-        // that looks like the swap being counted twice.
-        const kNote = (carry.leg_b_lots && carry.leg_b_contract)
-            ? ' (' + carry.leg_b_lots + ' lots × '
-              + carry.leg_b_contract.toLocaleString() + ')'
-            : '';
-        document.getElementById('carry-gross-calc').textContent =
-            (carry.spread == null || !carry.spread_units)
-                ? 'full convergence'
-                : Math.abs(carry.spread).toFixed(4) + ' × '
-                  + carry.spread_units.toLocaleString() + ' units' + kNote;
-        document.getElementById('carry-carry-usd').textContent =
-            money(carry.carry_usd);
-        // Per LOT per night, so the derivation is lots x nights — a
-        // different base from the gross above, which is in units. Both
-        // are stated so neither looks like the other doubled.
-        const legLots = (carry.per_leg || []).find(l => l.lots);
-        document.getElementById('carry-nights').textContent =
-            (legLots ? legLots.lots + ' lots × ' : '')
-            + Math.round(days) + ' nights';
-        // Always a subtraction, so it is shown as one whatever sign the
-        // cost model hands over.
-        document.getElementById('carry-cost-usd').textContent =
-            money(-Math.abs(carry.cost_usd || 0));
+        const sp = v => (v == null ? '-' : v.toFixed(2));
 
-        const net = carry.net_usd;
-        const netEl = document.getElementById('carry-net-usd');
-        netEl.textContent = money(net);
-        netEl.className = 'text-end fw-bold font-monospace pt-1 '
-            + (net > 0 ? 'price-up' : 'price-down');
-        document.getElementById('carry-verdict').textContent = net > 0
-            ? 'spread is wider than the carry'
-            : 'the carry eats the spread';
-
-        // In SPREAD. The dollars above answer "what is this worth at my
-        // size"; these answer "what does the spread have to be", which
-        // is the number that decides the pair and does not move when
-        // the sizing does.
-        const sp = v => (v == null ? '-' : v.toFixed(4));
-        document.getElementById('carry-implied-spread').textContent =
-            sp(carry.carry_spread);
-        document.getElementById('carry-breakeven-spread').textContent =
-            sp(carry.breakeven_spread);
-        const nowEl = document.getElementById('carry-spread-now');
-        nowEl.textContent = sp(carry.spread == null
-                               ? null : Math.abs(carry.spread));
+        // The two numbers the whole card exists to compare.
+        const need = carry.breakeven_spread;
+        const now = carry.spread == null ? null : Math.abs(carry.spread);
         const gap = carry.spread_gap;
-        nowEl.className = 'text-end fw-bold font-monospace '
-            + (gap > 0 ? 'price-up' : 'price-down');
+        document.getElementById('carry-spread-now').textContent = sp(now);
+        document.getElementById('carry-breakeven-spread').textContent =
+            need != null && need <= 0 ? 'any' : sp(need);
+
+        const verdict = document.getElementById('carry-verdict');
+        if (gap == null) {
+            verdict.textContent = '';
+        } else if (gap > 0) {
+            verdict.className = 'fw-bold mt-2 price-up';
+            verdict.textContent = 'Wide enough — ' + gap.toFixed(2)
+                                  + ' to spare';
+        } else {
+            verdict.className = 'fw-bold mt-2 price-down';
+            verdict.textContent = 'Too narrow — needs '
+                                  + Math.abs(gap).toFixed(2) + ' more';
+        }
+
+        // The arithmetic, as one sentence. Same numbers as the four
+        // rows it replaced; the operator asked for plain words, not for
+        // the working to disappear.
+        const legLots = (carry.per_leg || []).find(l => l.lots);
+        const size = legLots ? legLots.lots + ' lots' : 'this size';
+        const swapWord = (carry.carry_usd || 0) >= 0 ? 'earns' : 'costs';
+        document.getElementById('carry-plain').textContent =
+            'At ' + size + ', waiting ' + Math.round(days)
+            + ' nights ' + swapWord + ' '
+            + money(Math.abs(carry.carry_usd || 0)) + ' in swap and '
+            + money(Math.abs(carry.cost_usd || 0)) + ' in fees. '
+            + 'If the spread closes to zero it pays '
+            + money(carry.gross_usd) + '. You keep '
+            + money(carry.net_usd) + '.';
+
         const gapNote = document.getElementById('carry-gap-note');
         if (carry.warning) {
-            // The swap and the carry rate price the same basis from
-            // different inputs. When they disagree one input is wrong,
-            // and no conclusion below is worth reading until it is
-            // fixed — least of all "you are paid to hold this".
-            gapNote.className = 'mt-1 text-warning fw-semibold';
+            // One input can be proved wrong, so no verdict above it is
+            // worth reading. Say that instead of the conclusion.
+            gapNote.className = 'mt-2 text-warning fw-semibold';
             gapNote.textContent = '⚠ ' + carry.warning;
-        } else if (gap == null) {
-            gapNote.textContent = '';
-        } else if (carry.breakeven_spread <= 0) {
-            gapNote.className = 'mt-1 price-up';
-            gapNote.textContent = 'The carry is a CREDIT larger than the '
-                + 'round trip — you are paid to hold this to expiry at any '
-                + 'spread.';
+            verdict.textContent = 'Check the swap first';
+            verdict.className = 'fw-bold mt-2 text-warning';
         } else {
-            gapNote.className = 'mt-1 ' + (gap > 0 ? 'price-up' : 'text-secondary');
-            gapNote.textContent = gap > 0
-                ? 'Wider than it needs to be by ' + gap.toFixed(4)
-                  + ' of spread.'
-                : 'Short by ' + Math.abs(gap).toFixed(4) + ' of spread — '
-                  + 'convergence does not cover the carry and the round trip.';
+            gapNote.textContent = '';
         }
 
         const legs = document.getElementById('carry-legs');
@@ -5067,11 +5023,11 @@ function updateFilterStatus(elementId, passed, value) {
         //   'limit'  — maker order, saves the fee, may take longer / falls back
         //              to market if it can't fill (use when not urgent)
         mode = (mode === 'limit') ? 'limit' : 'market';
-        const prompt = (mode === 'limit')
-            ? 'Close as a LIMIT (maker) order? Saves the taker fee but may take longer to fill.'
-            : 'Close NOW at MARKET? Instant fill, but pays the taker fee.';
-        if (!await showConfirm(prompt, {title: 'Close position',
-                variant: 'danger', confirmText: 'Close position'})) return;
+        // No confirmation step (operator, 2026-08-24). Market and Limit
+        // are two separate buttons that each say what they do, and the
+        // dialog asked the same question the button had already asked.
+        // Both are disabled while the close is in flight, which is what
+        // actually prevents a double-fire.
         const mktBtn = document.getElementById('close-market-btn');
         const limBtn = document.getElementById('close-limit-btn');
         const clicked = (mode === 'limit') ? limBtn : mktBtn;

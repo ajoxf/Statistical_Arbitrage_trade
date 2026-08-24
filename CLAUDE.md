@@ -734,6 +734,48 @@ was outranking the prices the operator fills at.
   side by side and are read against each other, so "58.7" next to
   "59.17" invites a misread of the gap between them.
 
+## The carry card, in words (2026-08-24, operator)
+
+"Explain all this in simpler terms ... Easy for someone non technical to
+understand. You only want to know if The Spread is more expensive now or
+not. Make all language simple and less words."
+
+The card had grown four rows of dollars (convergence / carry / round
+trip / net) plus three of spread, and the operator only ever asked it
+ONE question. It is now two numbers and an answer:
+
+    Spread now   56.55        Needs to beat   52.43
+              Wide enough — 4.12 to spare
+
+with the arithmetic kept as a single sentence underneath: "At 0.02 lots,
+waiting 89 nights costs $103.63 in swap and $1.22 in fees. If the spread
+closes to zero it pays $113.09. You keep $8.24." Plain words were asked
+for; the working disappearing was not.
+
+`carry.sanity`'s warning REPLACES the verdict ("Check the swap first")
+rather than printing beneath it, for the same reason as before: a
+conclusion drawn from an input the engine can prove wrong should not
+render.
+
+Two dialogs removed the same day, both restating a question their own
+control had already asked: the manual-trade confirmation (every level is
+typed in a field directly above the button, and the bypass warning is
+printed permanently underneath) and the close-position confirmation
+(Market and Limit are separate buttons, each named for what it does;
+both are disabled while a close is in flight, which is what actually
+prevents a double-fire). The destructive RESETS still confirm — they
+cannot be undone and have no second button naming the mode, and a test
+pins that distinction.
+
+Also: `webapi` published `futures_bid` / `futures_ask` while the
+coordinator's asset block names them `fut_bid` / `fut_ask`, so the new
+provenance lines under each executable spread read "fut bid —" beside a
+live spot price. And the Signal & Position row was `align-items-center`,
+which floated the Z-score half-way down the card once the spread column
+grew two headline numbers; it is top-aligned now, and the in-position
+detail rows dropped their per-row gutters for a line-height, which was
+most of that card's height.
+
 ## "Why x 2? Why is the swap charged twice?" (2026-08-24, operator)
 
 It is not. `56.5400 x 2` was `|spread| x k`, and `k` is

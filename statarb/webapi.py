@@ -640,8 +640,11 @@ def status_to_ui(status, config_raw):
             # card can show its provenance rather than a bare number.
             'spot_bid': first.get('spot_bid'),
             'spot_ask': first.get('spot_ask'),
-            'futures_bid': first.get('futures_bid'),
-            'futures_ask': first.get('futures_ask'),
+            # The coordinator names these fut_bid/fut_ask in the asset
+            # block; reading futures_bid here published None and the
+            # card rendered "fut bid —" beside a live spot price.
+            'futures_bid': first.get('fut_bid'),
+            'futures_ask': first.get('fut_ask'),
             'short_spread': first.get('short_spread'),
             'long_spread': first.get('long_spread'),
             'spread_cost': first.get('spread_cost'),

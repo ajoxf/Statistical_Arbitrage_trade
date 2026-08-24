@@ -2191,3 +2191,31 @@ def test_the_dangling_leg_warning_runs_after_banners_exists():
     page = template_source('setup.html')
     body = page[page.index('async function loadBrokers'):]
     assert body.index('let banners =') < body.index('mapped_but_missing')
+
+
+# ---------------------------------------------------------------------------
+# Confirmation dialogs the operator asked to remove (2026-08-24)
+# ---------------------------------------------------------------------------
+# Both restated a question the control itself had already asked. The
+# manual panel carries every level in a field directly above the button
+# and prints its warning permanently underneath; Close has two separate
+# buttons, one per mode, each labelled with what it does.
+
+def test_placing_a_manual_trade_does_not_ask_twice(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'Manual spread trade' not in page
+    assert "confirmText: 'Place trade'" not in page
+
+
+def test_closing_a_position_does_not_ask_twice(client):
+    page = client.get('/').get_data(as_text=True)
+    assert 'Close NOW at MARKET?' not in page
+    assert 'Close as a LIMIT (maker) order?' not in page
+
+
+def test_the_destructive_resets_still_confirm(client):
+    """Removing two confirmations is not removing all of them — a reset
+    cannot be undone and has no second button naming the mode."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'Reset spread data?' in page
+    assert 'Reset EVERYTHING' in page
