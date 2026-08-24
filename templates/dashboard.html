@@ -799,6 +799,58 @@
             </div>
         </div>
 
+        <!-- Carry to expiry — the convergence trade, for a MANUAL
+             decision. This asks a different question from every other
+             card on the page: not "is the spread unusual against its own
+             history" (the z-score) but "at expiry the future must become
+             the spot, so is today's spread wider than what it costs to
+             hold the pair until then". The answer does not depend on
+             mean reversion happening — only on the contract expiring.
+             Nothing in the signal, sizing or exit path reads it. -->
+        <div id="carry-card" class="card mb-3" style="display:none;">
+            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                <small><i class="bi bi-calendar-event me-2"></i>Carry to Expiry</small>
+                <span class="text-secondary" id="carry-days" style="font-size: 0.65rem;">&mdash;</span>
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <div id="carry-unavailable" class="text-secondary"
+                     style="font-size: 0.7rem; display:none;"></div>
+                <div id="carry-detail" style="display:none;">
+                    <table class="w-100" style="font-size: 0.7rem;">
+                        <tbody>
+                            <tr><td class="text-secondary">Spread at convergence</td>
+                                <td class="text-end text-secondary" id="carry-gross-calc">-</td>
+                                <td class="text-end font-monospace" id="carry-gross-usd">-</td></tr>
+                            <tr><td class="text-secondary">Carry to expiry</td>
+                                <td class="text-end text-secondary" id="carry-nights">-</td>
+                                <td class="text-end font-monospace" id="carry-carry-usd">-</td></tr>
+                            <tr><td class="text-secondary">Round trip</td>
+                                <td class="text-end text-secondary"></td>
+                                <td class="text-end font-monospace" id="carry-cost-usd">-</td></tr>
+                            <tr style="border-top: 1px solid var(--border-color);">
+                                <td class="fw-bold pt-1">Net if held to expiry</td>
+                                <td class="text-end text-secondary pt-1" id="carry-verdict">-</td>
+                                <td class="text-end fw-bold font-monospace pt-1"
+                                    id="carry-net-usd">-</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
+                        <div class="text-secondary mb-1" style="font-size: 0.68rem;">
+                            Swap per leg &mdash; signed, negative is charged
+                        </div>
+                        <div id="carry-legs" style="font-size: 0.65rem;"></div>
+                    </div>
+                    <div class="text-secondary mt-2" style="font-size: 0.62rem;">
+                        Reference for a <strong>manual</strong> trade. Assumes the
+                        position is held to expiry and the future converges fully;
+                        it does not model the spread widening against you in the
+                        meantime, margin calls, or a contract roll.
+                        <a href="/settings#pair-selection" class="text-secondary">edit swap</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Last Signal Blocked — always visible so layout stays stable; populated
              with idle hints when there's nothing to block (waiting / in position). -->
         <div id="blocked-signal-card" class="card mb-3">
@@ -2549,6 +2601,87 @@
         return t ? t.last : 0;
     }
 
+    // The convergence trade, rendered whole from the engine's block.
+    //
+    // Two things this must never do. It must not show a NUMBER when a
+    // leg's swap could not be converted — an unconvertible swap is not
+    // a zero swap, and a net that quietly dropped one leg's financing
+    // reads as an edge that is not there. And it must not present the
+    // net as a signal: the engine does not act on this, the operator
+    // does, so the card states its assumptions rather than a verdict
+    // alone.
+    function updateCarryCard(carry) {
+        const card = document.getElementById('carry-card');
+        if (!card) return;
+        // Hidden entirely for a pair with no expiry — a rolling
+        // contract has no convergence date, so there is no trade here
+        // to describe and an empty card would only invite the question.
+        if (!carry || carry.days == null) { card.style.display = 'none'; return; }
+        card.style.display = '';
+
+        const days = carry.days;
+        document.getElementById('carry-days').textContent =
+            days.toFixed(days < 10 ? 1 : 0) + ' days'
+            + (carry.expiry ? ' — ' + carry.expiry : '');
+
+        const detail = document.getElementById('carry-detail');
+        const bad = document.getElementById('carry-unavailable');
+        if (carry.net_usd == null) {
+            detail.style.display = 'none';
+            bad.style.display = '';
+            bad.textContent = 'Cannot price the carry: '
+                + (carry.reason || 'the broker did not report a usable swap.');
+            return;
+        }
+        bad.style.display = 'none';
+        detail.style.display = '';
+
+        const money = v => (v == null ? '-'
+            : (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2));
+        document.getElementById('carry-gross-usd').textContent =
+            money(carry.gross_usd);
+        document.getElementById('carry-gross-calc').textContent =
+            (carry.spread == null || !carry.spread_units)
+                ? 'full convergence'
+                : Math.abs(carry.spread).toFixed(4) + ' × '
+                  + carry.spread_units.toLocaleString();
+        document.getElementById('carry-carry-usd').textContent =
+            money(carry.carry_usd);
+        document.getElementById('carry-nights').textContent =
+            '~' + Math.round(days) + ' nights';
+        // Always a subtraction, so it is shown as one whatever sign the
+        // cost model hands over.
+        document.getElementById('carry-cost-usd').textContent =
+            money(-Math.abs(carry.cost_usd || 0));
+
+        const net = carry.net_usd;
+        const netEl = document.getElementById('carry-net-usd');
+        netEl.textContent = money(net);
+        netEl.className = 'text-end fw-bold font-monospace pt-1 '
+            + (net > 0 ? 'price-up' : 'price-down');
+        document.getElementById('carry-verdict').textContent = net > 0
+            ? 'spread is wider than the carry'
+            : 'the carry eats the spread';
+
+        const legs = document.getElementById('carry-legs');
+        legs.innerHTML = '';
+        (carry.per_leg || []).forEach(leg => {
+            const row = document.createElement('div');
+            row.className = 'd-flex justify-content-between';
+            const left = document.createElement('span');
+            left.className = 'text-secondary';
+            // textContent, not innerHTML: the note carries the broker's
+            // own symbol name and its wording.
+            left.textContent = leg.note || '';
+            const right = document.createElement('span');
+            right.className = 'font-monospace ms-2 text-nowrap';
+            right.textContent = leg.carry_usd == null
+                ? 'unpriced' : money(leg.carry_usd);
+            row.appendChild(left); row.appendChild(right);
+            legs.appendChild(row);
+        });
+    }
+
     // Each leg's own bid-ask, shown beside the two prices it comes from.
     // This is the pair's dominant cost — 6.6 bps of the 6.6 bps round
     // trip on the index pair, with commission at zero — and it is not
@@ -3232,6 +3365,8 @@
                     + '</div>';
             }
         }
+
+        updateCarryCard(data.carry);
 
             // Round-trip cost, with the whole derivation in the
             // tooltip. The old text described W3's model ("Entry +

@@ -24,6 +24,7 @@ from .config import AlgoTradingConfig
 from .database import DataLogger
 from .exits import ExitLadder, outcome_tag, overnight_exit
 from .legs import LocalLeg, RemoteLeg
+from . import carry
 from . import costs as costs_mod
 from . import fairvalue
 from . import hedgeratio
@@ -200,6 +201,7 @@ class Coordinator:
         self.shadow = ShadowTracker(self.data_logger)
         self._last_z = {}          # asset -> z (for SD-touch detection)
         self._last_beta_block = None   # so the refusal logs once, not 3/sec
+        self._swap_specs = {}          # (asset, leg) -> swap + its units
 
         self.active_assets = {}
         self.last_signals = {}
@@ -444,6 +446,17 @@ class Coordinator:
                 continue
             if report.get('found'):
                 reports[role] = report
+                # Swap and its UNITS, kept for the carry calculation.
+                # Read once at startup like the contract size: a swap
+                # rate is a broker setting, not a tick.
+                self._swap_specs[(asset_key, role)] = {
+                    'swap_long': report.get('swap_long'),
+                    'swap_short': report.get('swap_short'),
+                    'swap_mode': report.get('swap_mode'),
+                    'tick_size': report.get('tick_size'),
+                    'tick_value': report.get('tick_value'),
+                    'symbol': symbol,
+                }
 
         spot_report = reports.get('spot')
         if spot_report and spot_report.get('contract_size'):
@@ -2135,6 +2148,63 @@ class Coordinator:
         })
         return block
 
+    def _carry_block(self, asset_key, md, cost_usd):
+        """Is the spread wider than the cost of holding it to expiry?
+
+        Operator, 2026-08-19. A basis pair has a date on which the
+        trade is decided — the future must become the spot — so this is
+        a subtraction rather than a statistic, and it is worth reading
+        beside the z-score precisely because it does not depend on mean
+        reversion happening.
+
+        REFERENCE for a MANUAL decision. Nothing in the signal path
+        reads it, exactly as with fairvalue: the operator looks at it
+        and arms a trade, or does not.
+        """
+        asset = self.config.ASSETS.get(asset_key) or {}
+        plan = self._sizing_plan(asset_key, md)
+        days = carry.days_to_expiry(asset.get('futures_expiry'))
+        units = sizing.spread_units(plan.get('leg_b_lots'),
+                                    plan.get('leg_b_contract'))
+
+        # A SHORT spread is long leg A and short leg B, and the two legs
+        # are charged different sides of the swap. The spread's sign
+        # says which way round it would be entered.
+        short_spread = (md.get('spread') or 0.0) > 0
+        legs = []
+        for role, lots, price in (
+                ('spot', plan.get('leg_a_lots'), md.get('spot_price')),
+                ('futures', plan.get('leg_b_lots'),
+                 md.get('futures_price'))):
+            spec = dict(self._swap_specs.get((asset_key, role)) or {})
+            # A hand-entered rate wins: the operator can see MT5's
+            # units and this cannot always convert them.
+            override = asset.get(f'swap_{role}_per_lot')
+            long_side = (role == 'spot') if short_spread else (role != 'spot')
+            if override not in (None, ''):
+                per_night, note = float(override), (
+                    f'{float(override):+.2f} per lot per night, entered by '
+                    f'hand')
+            else:
+                per_night, note = carry.swap_per_lot_night(
+                    spec.get('swap_long' if long_side else 'swap_short'),
+                    spec.get('swap_mode'),
+                    contract_size=(plan.get('leg_a_contract') if role == 'spot'
+                                   else plan.get('leg_b_contract')),
+                    price=price, tick_size=spec.get('tick_size'),
+                    tick_value=spec.get('tick_value'))
+            legs.append((per_night, lots,
+                         f"{spec.get('symbol') or role} "
+                         f"{'long' if long_side else 'short'}: {note}"))
+
+        block = carry.convergence_plan(
+            md.get('spread'), days, units, legs,
+            cost_usd=cost_usd)
+        block['pair_type'] = md.get('pair_type')
+        block['expiry'] = (asset['futures_expiry'].date().isoformat()
+                           if asset.get('futures_expiry') else None)
+        return block
+
     def _edge_reachability(self, stats, cost, lots_b, contract_b):
         """z needed to clear the edge filter, and whether it is
         reachable at all.
@@ -2239,6 +2309,8 @@ class Coordinator:
                 'fair_detail': md.get('fair_detail'),
             })
             assets[-1].update(self._sizing_and_cost(asset_key, md, stats))
+            assets[-1]['carry'] = self._carry_block(
+                asset_key, md, assets[-1].get('rt_cost_usd') or 0.0)
             assets[-1].update({
                 'spot_price': md['spot_price'],
                 'spot_bid': md['spot_bid'], 'spot_ask': md['spot_ask'],

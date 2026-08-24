@@ -434,6 +434,64 @@ z = 3 that leaves 1.1 sigma of reachable target — any target above
 ~$27 already needs an overshoot. That is the same conclusion as the
 edge filter's, arrived at independently and readable at a glance.
 
+## Carry to expiry — the convergence trade (2026-08-24, operator)
+
+Operator: "Did we include a provision - where swap can be entered
+manually and the number of days can be calculated to identify if the
+Spread is higher or not. We can place a manual trade according to it."
+No, and nothing in the repo did: `swap_charge` was an inert config key
+nothing read, and `fairvalue.py` prices carry from an annual risk-free
+rate, not from what the broker actually charges, and is barred from
+every trading path.
+
+`statarb/carry.py` answers a DIFFERENT question from the z-score. z
+asks whether the spread is unusual against its own recent history.
+This asks whether today's spread beats what it costs to hold the pair
+until the contract expires — a date on which the trade is decided
+whether or not anything reverts:
+
+    net = |spread| x k  -  carry to expiry  -  round trip
+
+`k` is leg B's units (`sizing.spread_units`), the same multiplier that
+turns any spread move into dollars. This matters on a pair whose edge
+filter can never pass: the Brent/WTI investigation the day before found
+a z of 11.1 needed against a ceiling of 4.5, so no mean-reversion trade
+existed — but convergence does not need reversion, only expiry.
+
+- **Swap units are the whole difficulty.** MT5 reports `swap_long` /
+  `swap_short` in whatever `swap_mode` says, and the same "-4.5" is
+  4.5 points on one symbol, 4.5 units of account currency on another
+  and 4.5 percent a year on a third. Each mode is converted
+  EXPLICITLY, and a mode this cannot convert returns None with the
+  reason. **An unconvertible swap is not a zero swap** — reading it as
+  money regardless is exactly how the old carry-detrended spread
+  produced a basis nobody could reconcile against the two prices
+  beside it.
+- **One unpriced leg makes the whole estimate None.** Half a carry
+  estimate is not a smaller estimate; a net that quietly dropped one
+  leg's financing reads as an edge that is not there.
+- **The sign is kept.** A pair is long one leg and short the other, so
+  the two frequently pull opposite ways, and being PAID to wait is the
+  case worth finding. Which side each leg is charged on follows the
+  spread's sign — reading `swap_long` on both would price a trade
+  nobody places.
+- **Hand-entered overrides win** (`swap_spot_per_lot` /
+  `swap_futures_per_lot`, per asset, Settings → Pair Selection). MT5's
+  units cannot always be converted and the operator can see what the
+  broker actually charges. They are CLEARABLE — blank means "use MT5's"
+  — so they cannot ride webapi's skip-if-blank field loop, which can
+  only ever set a value. An override that cannot be deleted outlives
+  the pair it was typed for. `?? ''` and not `|| ''` on the reload
+  path: a swap of 0 is a real statement.
+- **No expiry hides the card entirely.** A rolling contract never
+  converges, so there is no date for this trade to be decided on.
+- **REFERENCE for a MANUAL decision**, like fairvalue: signals.py,
+  exits.py, spread.py, costs.py and pair_executor.py never read it.
+  The dashboard card states its assumptions — held to expiry, full
+  convergence, no model of the spread widening in the meantime, margin
+  calls or a roll — and shows the gross as `|spread| x k` rather than
+  only its answer, because a bare total gets believed for months.
+
 ## A pair could be created but never removed (2026-08-07)
 
 Assets were only ever created — implicitly, by saving a symbol on a

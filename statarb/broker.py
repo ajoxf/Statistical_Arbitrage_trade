@@ -246,6 +246,16 @@ class BrokerSession:
             'expiry': int(getattr(info, 'expiration_time', 0) or 0),
             'swap_long': getattr(info, 'swap_long', None),
             'swap_short': getattr(info, 'swap_short', None),
+            # WHAT swap_long/short are denominated in. Without it the
+            # numbers are unusable: the same "-4.5" is 4.5 points on one
+            # symbol, 4.5 account-currency units on another and 4.5
+            # percent a year on a third. Reading it as money regardless
+            # is how the old carry term produced a basis nobody could
+            # reconcile.
+            'swap_mode': getattr(info, 'swap_mode', None),
+            # Which weekday is charged triple for the weekend, so a
+            # holding period can count nights rather than days.
+            'swap_rollover3days': getattr(info, 'swap_rollover3days', None),
         }
 
     def verify_ticket(self, ticket, attempts=3, delay=0.4):

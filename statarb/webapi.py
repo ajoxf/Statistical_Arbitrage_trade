@@ -147,6 +147,11 @@ def to_ui_config(raw, defaults=None):
     out['futures_symbol'] = (asset.get('futures_symbols') or [''])[0]
     out['contract_size'] = asset.get('lot_size')
     out['swap_charge'] = asset.get('swap_charge')
+    # Hand-entered swap, per lot per night, per leg. MT5 reports its own
+    # in swap_mode units this cannot always convert, so the operator
+    # needs to be able to say what the broker actually charges.
+    out['swap_spot_per_lot'] = asset.get('swap_spot_per_lot')
+    out['swap_futures_per_lot'] = asset.get('swap_futures_per_lot')
     out['pair_type'] = (asset.get('pair_type') or 'SPOT_FUTURE').upper()
     out['carry_rate_pct'] = round(
         (asset.get('risk_free_rate') or 0.0) * 100, 4)
@@ -207,6 +212,22 @@ def apply_ui_config(raw, payload):
                            ('spot_expiry', 'spot_expiry')):
             if payload.get(field) not in (None, ''):
                 asset[key] = payload[field]
+        # Hand-entered swap overrides, per lot per night, per leg. These
+        # must be CLEARABLE — blank means "use whatever MT5 reports" —
+        # so they cannot ride the skip-if-blank loop above, which can
+        # only ever set a value and never take one away. An override the
+        # operator cannot remove is worse than no override: it would
+        # outlive the pair it was typed for.
+        for field in ('swap_spot_per_lot', 'swap_futures_per_lot'):
+            if field not in payload:
+                continue
+            if payload[field] in (None, ''):
+                asset.pop(field, None)
+                continue
+            try:
+                asset[field] = float(payload[field])
+            except (TypeError, ValueError):
+                notes.append(f"{field} was not a number and was ignored.")
         if payload.get('pair_type'):
             asset['pair_type'] = str(payload['pair_type']).upper()
         # Carry rate arrives as a percentage from the UI and is stored
@@ -550,6 +571,7 @@ def status_to_ui(status, config_raw):
             'edge_cost_in_sigmas': first.get('edge_cost_in_sigmas'),
             'edge_reachable': first.get('edge_reachable'),
             'edge_entry_ceiling': first.get('edge_entry_ceiling'),
+            'carry': first.get('carry'),
             'round_trip_cost_bps': first.get('rt_cost_bps'),
             'rt_cost_per_lot': first.get('rt_cost_per_lot'),
             'rt_lots': first.get('rt_lots'),

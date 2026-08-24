@@ -65,6 +65,41 @@
                                 reads it. Ignored for two-instrument pairs.
                             </small>
                         </div>
+                        <div class="col-12 mt-3">
+                            <div class="p-2 rounded" style="background: rgba(0,0,0,0.03);">
+                                <div class="fw-semibold mb-1">Overnight swap &mdash; per lot, per night</div>
+                                <div class="row g-2">
+                                    <div class="col-md-4">
+                                        <label class="form-label mb-1" for="swap_spot_per_lot">
+                                            Leg A <small class="text-secondary">({{ config.spot_symbol or 'spot' }})</small>
+                                        </label>
+                                        <input type="number" class="form-control" id="swap_spot_per_lot"
+                                               name="swap_spot_per_lot" value="{{ config.swap_spot_per_lot
+                                               if config.swap_spot_per_lot is not none else '' }}"
+                                               step="0.01" placeholder="from MT5">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label mb-1" for="swap_futures_per_lot">
+                                            Leg B <small class="text-secondary">({{ config.futures_symbol or 'futures' }})</small>
+                                        </label>
+                                        <input type="number" class="form-control" id="swap_futures_per_lot"
+                                               name="swap_futures_per_lot" value="{{ config.swap_futures_per_lot
+                                               if config.swap_futures_per_lot is not none else '' }}"
+                                               step="0.01" placeholder="from MT5">
+                                    </div>
+                                </div>
+                                <small class="text-secondary d-block mt-1">
+                                    In <strong>account currency</strong>, <strong>signed</strong>: negative is
+                                    charged to you, positive is credited. Leave blank to use whatever the
+                                    broker reports &mdash; MT5 quotes swap in points, currency or annual
+                                    percent depending on the symbol, and the engine converts it when it
+                                    can and says so when it cannot. Feeds the
+                                    <strong>Carry to expiry</strong> card on the dashboard: spread value
+                                    &minus; carry &minus; round trip, which is the convergence trade you
+                                    can place by hand. Nothing in the signal, sizing or exit path reads it.
+                                </small>
+                            </div>
+                        </div>
                         <div class="col-md-4 mt-3">
                             <label class="form-label d-flex justify-content-between align-items-center">
                                 <span>Hedge Ratio (&beta;)</span>
@@ -1977,6 +2012,13 @@
             poll_interval_sec: parseFloat(document.getElementById('poll_interval_sec').value),
             pair_type: document.getElementById('pair_type').value,
             carry_rate_pct: parseFloat(document.getElementById('carry_rate_pct').value),
+            // Sent as the raw trimmed string, never parseFloat: an empty
+            // box means "use MT5's figure" and must reach the server as
+            // '' so it CLEARS the override. NaN would serialise to null,
+            // which happens to work, and would silently stop working the
+            // day the server distinguishes the two.
+            swap_spot_per_lot: document.getElementById('swap_spot_per_lot').value.trim(),
+            swap_futures_per_lot: document.getElementById('swap_futures_per_lot').value.trim(),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
             hurst_enabled: document.getElementById('hurst_enabled').checked,
             hurst_threshold: parseFloat(document.getElementById('hurst_threshold').value),
@@ -2280,6 +2322,13 @@
                 document.getElementById('poll_interval_sec').value = config.poll_interval_sec;
                 document.getElementById('pair_type').value = config.pair_type || 'SPOT_FUTURE';
                 document.getElementById('carry_rate_pct').value = config.carry_rate_pct;
+                // `?? ''` and not `|| ''`: a swap of 0 is a real override
+                // meaning "this symbol is not charged", and `||` would
+                // wipe it back to "read MT5" on every page load.
+                document.getElementById('swap_spot_per_lot').value =
+                    config.swap_spot_per_lot ?? '';
+                document.getElementById('swap_futures_per_lot').value =
+                    config.swap_futures_per_lot ?? '';
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;
                 document.getElementById('hurst_enabled').checked = config.hurst_enabled;
                 document.getElementById('hurst_threshold').value = config.hurst_threshold;
