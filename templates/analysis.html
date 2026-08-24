@@ -4,11 +4,17 @@
 
 {% block content %}
 <style>
-    /* Compact explanatory note under each metric value. */
-    .metric-note { font-size: 0.66rem; line-height: 1.2; color: var(--text-secondary, #6c757d);
-                   margin-top: 4px; }
-    .metric-card .metric-value { line-height: 1.1; }
-    .analysis-legend { font-size: 0.75rem; }
+    /* Tiles are a scannable grid, not a set of panels: the value is the
+       content and everything else is a caption. base.html's 1rem card
+       padding and 1.5rem value were sized for the dashboard's handful
+       of cards, and eighteen of them in three rows is mostly air
+       (operator, 2026-08-24: "Make text smaller. Reduce white space"). */
+    .metric-card { padding: 0.5rem 0.4rem; }
+    .metric-card .metric-value { font-size: 1.15rem; line-height: 1.15; }
+    .metric-card .metric-label { font-size: 0.62rem; letter-spacing: 0.3px; }
+    .metric-note { font-size: 0.6rem; line-height: 1.15;
+                   color: var(--text-secondary, #6c757d); margin-top: 2px; }
+    .analysis-legend { font-size: 0.72rem; }
 </style>
 
 <div class="alert alert-secondary py-2 px-3 mb-3 analysis-legend" role="alert">
@@ -22,7 +28,7 @@
 </div>
 
 <!-- Row 1 — Outcomes -->
-<div class="row g-3 mb-3">
+<div class="row g-2 mb-2">
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="Number of real (non-paper) trades that have been closed. Open and paper trades are excluded from every figure on this page.">
@@ -50,11 +56,11 @@
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="Winning ÷ Total. On its own this says nothing about profit — it must be read against the Break-even WR tile. Green here = above break-even.">
-            <div class="metric-value {% if stats.breakeven_win_rate is not none and stats.win_rate >= stats.breakeven_win_rate %}price-up{% else %}price-down{% endif %}">{{ stats.win_rate }}%</div>
+            <div class="metric-value {% if stats.breakeven_win_rate is not none and stats.win_rate >= stats.breakeven_win_rate %}price-up{% else %}price-down{% endif %}">{{ '%.1f' % stats.win_rate }}%</div>
             <div class="metric-label">Win Rate</div>
             <div class="metric-note">
                 {% if stats.breakeven_win_rate is not none %}
-                    Need &gt; {{ stats.breakeven_win_rate }}% to be +EV.
+                    Need &gt; {{ '%.1f' % stats.breakeven_win_rate }}% to be +EV.
                 {% else %}Wins ÷ total.{% endif %}
             </div>
         </div></div>
@@ -62,7 +68,7 @@
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="Sum of net P&L across all closed real trades. Equals Avg P&L × Total Trades.">
-            <div class="metric-value {% if stats.total_pnl >= 0 %}price-up{% else %}price-down{% endif %}">${{ stats.total_pnl }}</div>
+            <div class="metric-value {% if stats.total_pnl >= 0 %}price-up{% else %}price-down{% endif %}">${{ '%.2f' % stats.total_pnl }}</div>
             <div class="metric-label">Total P&L</div>
             <div class="metric-note">Sum of all closed net P&amp;L.</div>
         </div></div>
@@ -70,7 +76,7 @@
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="Mean net P&L per trade = your expectancy. This is the single number that says, on average, what each trade is worth. Positive = the system pays you to trade.">
-            <div class="metric-value {% if stats.avg_pnl >= 0 %}price-up{% else %}price-down{% endif %}">${{ stats.avg_pnl }}</div>
+            <div class="metric-value {% if stats.avg_pnl >= 0 %}price-up{% else %}price-down{% endif %}">${{ '%.2f' % stats.avg_pnl }}</div>
             <div class="metric-label">Avg P&L / Expectancy</div>
             <div class="metric-note">Per-trade EV in $. ×trades = total.</div>
         </div></div>
@@ -78,11 +84,11 @@
 </div>
 
 <!-- Row 2 — Edge quality -->
-<div class="row g-3 mb-4">
+<div class="row g-2 mb-3">
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="Average net P&L of winning trades. The numerator of Reward:Risk. Capped by how far the spread actually reverts before you exit.">
-            <div class="metric-value price-up">${{ stats.avg_win }}</div>
+            <div class="metric-value price-up">${{ '%.2f' % stats.avg_win }}</div>
             <div class="metric-label">Avg Win</div>
             <div class="metric-note">Mean winning trade.</div>
         </div></div>
@@ -90,7 +96,7 @@
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="Average net loss of losing trades (shown positive). This is '1R' — one unit of risk. Every other figure is measured in multiples of this.">
-            <div class="metric-value price-down">${{ stats.avg_loss }}</div>
+            <div class="metric-value price-down">${{ '%.2f' % stats.avg_loss }}</div>
             <div class="metric-label">Avg Loss (1R)</div>
             <div class="metric-note">Mean losing trade = your risk unit.</div>
         </div></div>
@@ -98,7 +104,7 @@
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="Avg Win ÷ Avg Loss. Below 1 = winners are smaller than losers (you must win more often than you lose). Raise it with a bigger/further target or by not cutting winners short.">
-            <div class="metric-value">{{ stats.reward_risk if stats.reward_risk is not none else '—' }}</div>
+            <div class="metric-value">{{ '%.2f' % stats.reward_risk if stats.reward_risk is not none else '—' }}</div>
             <div class="metric-label">Reward : Risk</div>
             <div class="metric-note">Avg win ÷ avg loss.</div>
         </div></div>
@@ -106,7 +112,7 @@
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="Gross profit ÷ gross loss across all trades. >1 = profitable, <1 = bleeding, 1 = break-even. The most direct 'is this working' number.">
-            <div class="metric-value {% if stats.profit_factor is not none and stats.profit_factor >= 1 %}price-up{% elif stats.profit_factor is not none %}price-down{% endif %}">{{ stats.profit_factor if stats.profit_factor is not none else '—' }}</div>
+            <div class="metric-value {% if stats.profit_factor is not none and stats.profit_factor >= 1 %}price-up{% elif stats.profit_factor is not none %}price-down{% endif %}">{{ '%.2f' % stats.profit_factor if stats.profit_factor is not none else '—' }}</div>
             <div class="metric-label">Profit Factor</div>
             <div class="metric-note">Gross win ÷ gross loss. &gt;1 = green.</div>
         </div></div>
@@ -114,11 +120,11 @@
     <div class="col-md-2 col-6">
         <div class="card h-100"><div class="card-body metric-card"
              title="1 / (1 + Reward:Risk). The win rate this Reward:Risk needs just to break even. If your actual Win Rate is below this, you are −EV no matter how it feels.">
-            <div class="metric-value">{{ stats.breakeven_win_rate ~ '%' if stats.breakeven_win_rate is not none else '—' }}</div>
+            <div class="metric-value">{{ ('%.1f' % stats.breakeven_win_rate) ~ '%' if stats.breakeven_win_rate is not none else '—' }}</div>
             <div class="metric-label">Break-even WR</div>
             <div class="metric-note">
                 {% if stats.breakeven_win_rate is not none %}
-                    You: {{ stats.win_rate }}%
+                    You: {{ '%.1f' % stats.win_rate }}%
                     {% if stats.win_rate >= stats.breakeven_win_rate %}<span class="price-up">(above ✓)</span>{% else %}<span class="price-down">(below ✗)</span>{% endif %}
                 {% else %}Needs some losses to compute.{% endif %}
             </div>
@@ -158,7 +164,7 @@
      The two costs are deliberately NOT summed into one figure —
      crossing is quoted before you trade and already in the cost model,
      slippage is the surprise, and the fix for each is a different fix. -->
-<div class="row g-3 mb-4">
+<div class="row g-2 mb-3">
     <div class="col-12">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -239,7 +245,7 @@
 </div>
 
 <!-- Shadow "what-if-held" summary -->
-<div class="row g-3 mb-4">
+<div class="row g-2 mb-3">
     <div class="col-12">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -254,7 +260,7 @@
 </div>
 
 <!-- Per-trade Max Drawdown (adverse excursion) -->
-<div class="row g-3 mb-4">
+<div class="row g-2 mb-3">
     <div class="col-12">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">

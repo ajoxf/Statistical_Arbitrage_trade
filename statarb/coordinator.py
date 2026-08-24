@@ -2229,7 +2229,7 @@ class Coordinator:
         # are charged different sides of the swap. The spread's sign
         # says which way round it would be entered.
         short_spread = (md.get('spread') or 0.0) > 0
-        legs = []
+        legs, leg_labels = [], []
         for role, lots, price in (
                 ('spot', plan.get('leg_a_lots'), md.get('spot_price')),
                 ('futures', plan.get('leg_b_lots'),
@@ -2263,6 +2263,11 @@ class Coordinator:
                                    else plan.get('leg_b_contract')),
                     price=price, tick_size=spec.get('tick_size'),
                     tick_value=spec.get('tick_value'))
+            # symbol and side kept SEPARATE from the prose note so the
+            # card can render a terminal-style row and keep the full
+            # derivation in the tooltip.
+            leg_labels.append({'symbol': spec.get('symbol') or role,
+                               'side': 'L' if long_side else 'S'})
             legs.append((per_night, lots,
                          f"{spec.get('symbol') or role} "
                          f"{'long' if long_side else 'short'}: {note}"))
@@ -2278,6 +2283,8 @@ class Coordinator:
         # factor of two — operator, 2026-08-24: "Why is '56.5400 x 2'?
         # Why swap being charged 2 times". It is 0.02 lots x 100 per lot
         # = 2 UNITS of the underlying, and the swap is charged once.
+        for entry, label in zip(block.get('per_leg') or [], leg_labels):
+            entry.update(label)
         block['leg_b_lots'] = plan.get('leg_b_lots')
         block['leg_b_contract'] = plan.get('leg_b_contract')
         block['pair_type'] = md.get('pair_type')

@@ -734,6 +734,41 @@ was outranking the prices the operator fills at.
   side by side and are read against each other, so "58.7" next to
   "59.17" invites a misread of the gap between them.
 
+## Crisp like a trading platform (2026-08-24, operator)
+
+Four passes over the same two cards, each one the same fault: the
+LAYOUT was carrying a meaning the numbers do not have.
+
+- **"This doesn't work. It should be crisp like a trading platform."**
+  The carry card had just been rewritten into a plain-English sentence,
+  which was the wrong register for a price screen. It is now a ladder:
+  small uppercase labels, monospace figures right-aligned in one column,
+  `SPREAD / BREAKEVEN / EDGE` over `CONVERGENCE / SWAP / FEES / NET`.
+  Same numbers, no sentences. The per-leg swap rows read
+  `XAUUSD L −58.00/N   −$103.63` with the prose derivation in the
+  tooltip.
+- **"All numbers in the card should be around the same size."** The
+  Signal & Position card had the z-score at 2rem, the two tradable
+  spreads at 1.5rem on a second tier, and the mid at 1.5rem on a third.
+  Nothing lined up, and the sizes implied a ranking that is not there —
+  the z-score, the two executable spreads and the mid answer four
+  different questions, none of them a footnote to another. All four now
+  sit on ONE baseline at ONE size, with the touches under each spread.
+- **"Current spread needs to be better represented with the Short and
+  Long spread with Bid and Ask."** The Manual Spread Trade panel showed
+  the MID while `_check_manual_arm` fires on the executable side, so the
+  operator was arming against a level the engine never compares against.
+  It now shows the spread for the SELECTED direction, labelled "Short
+  spread (fill here)", with its two touches underneath, and it
+  re-renders when the Direction selector changes.
+- **"Round off to 2 decimal places."** `$-4.46000000000946` on the
+  Analysis tiles. Sums and quotients of floats, so the binary
+  representation leaks through. Rounded in `statistics_from_rows` —
+  at the SOURCE, so every consumer is fixed at once rather than leaving
+  the next caller to remember a format string. The tiles also dropped
+  from base.html's 1rem padding and 1.5rem value to 0.5rem and 1.15rem:
+  eighteen tiles in three rows is a scannable grid, not a set of panels.
+
 ## The carry card, in words (2026-08-24, operator)
 
 "Explain all this in simpler terms ... Easy for someone non technical to

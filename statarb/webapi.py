@@ -391,7 +391,13 @@ def statistics_from_rows(rows):
                        if r.get('peak_min') is not None
                        and (r.get('realized_pnl') or 0) > 0)
     total = sum(pnls)
-    return {
+    # ROUNDED HERE, not in the template. These are sums and quotients of
+    # floats, so binary representation leaks through: four trades summed
+    # to -4.46000000000946 and the tile rendered every digit (operator,
+    # 2026-08-24). Rounding at the source fixes every consumer at once —
+    # the tiles, the API and anything added later — instead of leaving
+    # the next caller to remember a format string.
+    stats = {
         'total_trades': len(pnls), 'winning_trades': len(wins),
         'losing_trades': len(losses),
         'win_rate': 100 * len(wins) / len(pnls),
@@ -409,6 +415,8 @@ def statistics_from_rows(rows):
         'median_peak_minutes': (peak_mins[len(peak_mins) // 2]
                                 if peak_mins else 0.0),
     }
+    return {k: (round(v, 2) if isinstance(v, float) else v)
+            for k, v in stats.items()}
 
 
 def slippage_block(rows):

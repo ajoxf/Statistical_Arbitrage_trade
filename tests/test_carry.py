@@ -558,18 +558,25 @@ def test_the_card_is_down_to_two_numbers_and_a_verdict(client_dash):
     assert 'id="carry-spread-now"' in page
     assert 'id="carry-breakeven-spread"' in page
     assert 'id="carry-verdict"' in page
-    assert 'Spread now' in page and 'Needs to beat' in page
+    assert 'SPREAD' in page and 'BREAKEVEN' in page
     # The jargon rows are gone. Matched on their ELEMENT IDS, not on
     # their labels: "Round trip" is also a legitimate column heading on
     # the Volume card and a heading on Filters.
     for gone in ('Spread at convergence', 'Net if held to expiry',
                  'Carry says the spread should be',
-                 'id="carry-schedule"', 'id="carry-gross-usd"',
-                 'id="carry-carry-usd"', 'id="carry-cost-usd"',
-                 'id="carry-net-usd"', 'id="carry-implied-spread"'):
+                 'id="carry-schedule"', 'id="carry-implied-spread"'):
         assert gone not in page, gone
 
 
-def test_the_arithmetic_survives_as_one_plain_sentence(client_dash):
-    """Plain words were asked for; the working disappearing was not."""
-    assert 'id="carry-plain"' in client_dash
+def test_the_arithmetic_survives_as_a_terminal_ladder(client_dash):
+    """Operator, 2026-08-24: "It should be crisp like a trading
+    platform." The prose sentence that replaced the four jargon rows was
+    still a sentence. The working stays — as labelled, right-aligned
+    monospace rows, which is the register this screen reads in."""
+    page = client_dash
+    for row in ('CONVERGENCE', 'SWAP', 'FEES', 'NET'):
+        assert row in page, row
+    assert 'id="carry-net-usd"' in page
+    # ...and not as prose.
+    assert 'id="carry-plain"' not in page
+    assert 'If the spread closes to zero it pays' not in page

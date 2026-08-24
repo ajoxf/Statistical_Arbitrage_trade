@@ -2219,3 +2219,47 @@ def test_the_destructive_resets_still_confirm(client):
     page = client.get('/').get_data(as_text=True)
     assert 'Reset spread data?' in page
     assert 'Reset EVERYTHING' in page
+
+
+# ---------------------------------------------------------------------------
+# Analysis tiles: rounded at the source (2026-08-24, operator)
+# ---------------------------------------------------------------------------
+# "$-4.46000000000946". These are sums and quotients of floats, so the
+# binary representation leaks through. Rounding in statistics_from_rows
+# fixes every consumer at once instead of leaving the next caller to
+# remember a format string.
+
+def test_the_stats_block_is_rounded_at_the_source():
+    from statarb import webapi
+    rows = [{'realized_pnl': -1.115000000002365} for _ in range(4)]
+    stats = webapi.statistics_from_rows(rows)
+    assert stats['total_pnl'] == -4.46
+    assert stats['avg_pnl'] == -1.12
+    for key, value in stats.items():
+        if isinstance(value, float):
+            assert round(value, 2) == value, key
+
+
+def test_an_empty_book_still_returns_every_key():
+    """The zero block and the computed block must agree on shape, or a
+    tile renders 'Undefined' on a fresh install."""
+    from statarb import webapi
+    empty = webapi.statistics_from_rows([])
+    full = webapi.statistics_from_rows([{'realized_pnl': 1.0}])
+    assert set(empty) <= set(full)
+
+
+# ---------------------------------------------------------------------------
+# The manual panel arms on the price it will actually fill at
+# ---------------------------------------------------------------------------
+
+def test_the_manual_panel_shows_the_executable_spread(client):
+    """The armed trigger fires on the executable side, so showing the
+    mid here meant arming against a level the engine never compares
+    against."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'function renderManualSpread' in page
+    assert 'id="manual-spread-legs"' in page
+    assert 'Short spread (fill here):' in page
+    # ...and it follows the Direction selector.
+    assert 'renderManualSpread();' in page

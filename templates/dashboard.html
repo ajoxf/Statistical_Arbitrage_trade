@@ -443,62 +443,60 @@
                 </span>
             </div>
             <div class="card-body py-2">
-                <div class="row align-items-start">
-                    <div class="col-4 text-center">
-                        <div class="metric-value" style="font-size: 2rem; line-height: 1.1;" id="current-zscore">0.00</div>
-                        <div class="metric-label">Z-Score</div>
-                    </div>
-                    <div class="col-4 text-center">
-                        <!-- The two spreads you can actually trade lead
-                             here, because they are the only two prices
-                             anyone fills at. The mid below is a midpoint
-                             of two midpoints: it is the series the
-                             z-score is measured on and nothing else. -->
-                        <div id="exec-spread-row" style="display:none;">
-                            <div class="d-flex justify-content-center gap-4">
-                                <div title="SHORT the spread: sell futures at the BID, buy spot at the ASK.">
-                                    <div class="price-down fw-bold font-monospace"
-                                         id="short-spread"
-                                         style="font-size: 1.5rem; line-height: 1.1;">&mdash;</div>
-                                    <div class="metric-label">Short</div>
-                                    <!-- The two touches it is BUILT from, so the
-                                         number can be checked against the book. -->
-                                    <div class="text-secondary font-monospace"
-                                         id="short-spread-legs"
-                                         style="font-size: 0.58rem; line-height: 1.3;"></div>
-                                </div>
-                                <div title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
-                                    <div class="price-up fw-bold font-monospace"
-                                         id="long-spread"
-                                         style="font-size: 1.5rem; line-height: 1.1;">&mdash;</div>
-                                    <div class="metric-label">Long</div>
-                                    <div class="text-secondary font-monospace"
-                                         id="long-spread-legs"
-                                         style="font-size: 0.58rem; line-height: 1.3;"></div>
-                                </div>
+                <!-- Four readings on ONE baseline at ONE size
+                     (operator, 2026-08-24: "This should be well aligned.
+                     All numbers in the card should be around the same
+                     size"). They were 2rem / 1.5rem / 1.5rem stacked in
+                     two tiers, so nothing lined up with anything and the
+                     size differences implied a ranking that is not
+                     there: the z-score, the two tradable spreads and the
+                     mid are four different questions, not one headline
+                     and three footnotes. -->
+                <div class="row align-items-start g-0">
+                    <div class="col-9">
+                        <div class="d-flex justify-content-around text-center">
+                            <div>
+                                <div class="metric-value" id="current-zscore"
+                                     style="font-size: 1.5rem; line-height: 1.15;">0.00</div>
+                                <div class="metric-label">Z-Score</div>
                             </div>
-                            <div class="text-secondary mt-1" id="exec-spread-note"
-                                 style="font-size: 0.6rem;"></div>
+                            <div id="short-spread-cell" style="display:none;"
+                                 title="SHORT the spread: sell futures at the BID, buy spot at the ASK.">
+                                <div class="price-down fw-bold font-monospace"
+                                     id="short-spread"
+                                     style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
+                                <div class="metric-label">Short</div>
+                                <!-- The two touches it is BUILT from, so the
+                                     number can be checked against the book. -->
+                                <div class="text-secondary font-monospace mt-1"
+                                     id="short-spread-legs"
+                                     style="font-size: 0.6rem; line-height: 1.35;"></div>
+                            </div>
+                            <div id="long-spread-cell" style="display:none;"
+                                 title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
+                                <div class="price-up fw-bold font-monospace"
+                                     id="long-spread"
+                                     style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
+                                <div class="metric-label">Long</div>
+                                <div class="text-secondary font-monospace mt-1"
+                                     id="long-spread-legs"
+                                     style="font-size: 0.6rem; line-height: 1.35;"></div>
+                            </div>
+                            <div title="The midpoint of two midpoints — the series the z-score is measured on. Nobody fills here.">
+                                <div class="price-large font-monospace" id="spread-value"
+                                     style="font-size: 1.5rem; line-height: 1.15;">0.00</div>
+                                <div class="metric-label">Spread</div>
+                            </div>
                         </div>
-                        <div id="mid-spread-row">
-                            <div class="price-large" id="spread-value" style="font-size: 1.5rem;">0.00</div>
-                            <div class="metric-label">Spread</div>
-                        </div>
-                        <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
+                        <div class="text-secondary text-center mt-1" id="exec-spread-note"
+                             style="font-size: 0.6rem;"></div>
+                        <div class="text-secondary text-center" style="font-size: 0.6rem; display:none;"
                              id="spread-breakdown"
                              title="What the engine z-scores: Leg B (futures) minus the hedge ratio times Leg A (spot)."></div>
-                        <!-- The fair-value row was REMOVED here
-                             (operator, 2026-08-24: "The above is
-                             incorrect and not needed"). It is still
-                             computed: carry.sanity reads it to catch a
-                             swap entered with the wrong sign, which is
-                             the check that caught the +58 credit. It
-                             just no longer occupies the card above the
-                             two prices that can actually be traded. -->
                     </div>
-                    <div class="col-4 text-center">
+                    <div class="col-3 text-center">
                         <div class="d-flex align-items-center justify-content-center gap-2">
-                            <div id="position-badge" class="badge bg-secondary" style="font-size: 1.2rem; padding: 0.4rem 0.8rem;">
+                            <div id="position-badge" class="badge bg-secondary" style="font-size: 1rem; padding: 0.3rem 0.7rem;">
                                 FLAT
                             </div>
                             <div class="dropdown">
@@ -1168,10 +1166,18 @@
                 <span class="badge bg-secondary" id="manual-trade-status-badge" style="font-size:0.6rem;">IDLE</span>
             </div>
             <div class="card-body py-2" style="font-size: 0.8rem;">
-                <div class="d-flex justify-content-between mb-2">
-                    <span class="text-secondary">Current Spread:</span>
-                    <span class="fw-bold" id="manual-current-spread">&mdash;</span>
+                <!-- The spread THIS direction can be filled at, not the
+                     mid. The armed trigger fires on the executable side,
+                     so showing the mid here meant arming against a level
+                     the engine would never compare against. -->
+                <div class="d-flex justify-content-between align-items-baseline">
+                    <span class="text-secondary" id="manual-spread-label">Current Spread:</span>
+                    <span class="fw-bold font-monospace" id="manual-current-spread"
+                          style="font-size: 1rem;">&mdash;</span>
                 </div>
+                <div class="text-secondary font-monospace text-end mb-2"
+                     id="manual-spread-legs"
+                     style="font-size: 0.6rem; line-height: 1.35;"></div>
                 <div class="row g-1 mb-2">
                     <div class="col-7">
                         <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>
@@ -1256,38 +1262,52 @@
                 <div id="carry-unavailable" class="text-secondary"
                      style="font-size: 0.7rem; display:none;"></div>
                 <div id="carry-detail" style="display:none;">
-                    <!-- ONE question: is the spread wide enough right now?
-                         (Operator, 2026-08-24: "You only want to know if
-                         The Spread is more expensive now or not. Make all
-                         language simple and less words.") Everything else
-                         on this card used to be the arithmetic behind the
-                         answer, in four rows of jargon. The arithmetic is
-                         unchanged; it is now one sentence underneath. -->
-                    <div class="text-center">
-                        <div class="d-flex justify-content-around">
-                            <div>
-                                <div class="fw-bold font-monospace"
-                                     id="carry-spread-now"
-                                     style="font-size: 1.35rem;">-</div>
-                                <div class="metric-label">Spread now</div>
-                            </div>
-                            <div>
-                                <div class="fw-bold font-monospace text-secondary"
-                                     id="carry-breakeven-spread"
-                                     style="font-size: 1.35rem;">-</div>
-                                <div class="metric-label">Needs to beat</div>
-                            </div>
-                        </div>
-                        <div class="fw-bold mt-2" id="carry-verdict"
-                             style="font-size: 0.85rem;">-</div>
-                    </div>
-                    <div id="carry-gap-note" class="mt-2"
-                         style="font-size: 0.7rem;"></div>
-                    <div class="text-secondary mt-2 pt-2"
-                         id="carry-plain"
-                         style="font-size: 0.68rem; border-top: 1px solid var(--border-color);"></div>
-                    <div id="carry-legs" class="text-secondary mt-2"
-                         style="font-size: 0.65rem;"></div>
+                    <!-- Read like a terminal, not a paragraph (operator,
+                         2026-08-24: "It should be crisp like a trading
+                         platform"). Small uppercase labels, monospace
+                         figures right-aligned in one column so the eye
+                         runs down them, and the one number that answers
+                         the question set apart. No sentences. -->
+                    <table class="w-100 font-monospace" id="carry-lines"
+                           style="font-size: 0.74rem; line-height: 1.5;">
+                        <tbody>
+                            <tr><td class="text-secondary">SPREAD</td>
+                                <td class="text-end" id="carry-spread-now">-</td></tr>
+                            <tr><td class="text-secondary">BREAKEVEN</td>
+                                <td class="text-end" id="carry-breakeven-spread">-</td></tr>
+                            <tr style="border-top: 1px solid var(--border-color);">
+                                <td class="fw-bold pt-1" id="carry-edge-label">EDGE</td>
+                                <td class="text-end fw-bold pt-1" id="carry-verdict"
+                                    style="font-size: 1rem;">-</td></tr>
+                        </tbody>
+                    </table>
+                    <div id="carry-gap-note" class="mt-1"
+                         style="font-size: 0.66rem;"></div>
+                    <table class="w-100 font-monospace mt-2 pt-1"
+                           style="font-size: 0.7rem; line-height: 1.5;
+                                  border-top: 1px solid var(--border-color);">
+                        <tbody>
+                            <tr><td class="text-secondary">CONVERGENCE</td>
+                                <td class="text-end text-secondary"
+                                    id="carry-gross-note"></td>
+                                <td class="text-end" id="carry-gross-usd">-</td></tr>
+                            <tr><td class="text-secondary">SWAP</td>
+                                <td class="text-end text-secondary"
+                                    id="carry-swap-note"></td>
+                                <td class="text-end" id="carry-carry-usd">-</td></tr>
+                            <tr><td class="text-secondary">FEES</td>
+                                <td></td>
+                                <td class="text-end" id="carry-cost-usd">-</td></tr>
+                            <tr style="border-top: 1px solid var(--border-color);">
+                                <td class="fw-bold pt-1">NET</td>
+                                <td></td>
+                                <td class="text-end fw-bold pt-1"
+                                    id="carry-net-usd">-</td></tr>
+                        </tbody>
+                    </table>
+                    <div id="carry-legs" class="text-secondary font-monospace mt-2 pt-1"
+                         style="font-size: 0.63rem; line-height: 1.45;
+                                border-top: 1px solid var(--border-color);"></div>
                     <div class="text-secondary mt-2" style="font-size: 0.62rem;">
                         Only true if you hold to the expiry date.
                         The algo ignores this &mdash; it is here for a trade
@@ -1724,7 +1744,42 @@
 
     // Live guidance under the three level fields: which way round they
     // go, and what the current spread would do to a fire-now order.
+    // The spread the SELECTED direction would actually be filled at,
+    // with the two touches it is built from. Falls back to the mid when
+    // the touches have not arrived yet.
+    function renderManualSpread() {
+        const sel = document.getElementById('manual-trade-direction');
+        const dir = sel ? sel.value : 'SELL_BASIS';
+        const x = window.__execSpreads || {};
+        const short = dir === 'SELL_BASIS';
+        const value = (short ? x.short : x.long);
+        window.__manualSpread = value != null ? value : window.__manualMid;
+
+        const el = document.getElementById('manual-current-spread');
+        if (el) {
+            el.textContent = window.__manualSpread == null ? '—'
+                : Number(window.__manualSpread).toFixed(4);
+            el.className = 'fw-bold font-monospace '
+                + (value == null ? '' : (short ? 'price-down' : 'price-up'));
+        }
+        const label = document.getElementById('manual-spread-label');
+        if (label) {
+            label.textContent = value == null ? 'Current Spread:'
+                : (short ? 'Short spread (fill here):'
+                         : 'Long spread (fill here):');
+        }
+        const legs = document.getElementById('manual-spread-legs');
+        if (legs) {
+            const px = v => v == null ? '—' : Number(v).toFixed(2);
+            legs.textContent = value == null ? ''
+                : (short
+                    ? 'fut bid ' + px(x.futBid) + ' − spot ask ' + px(x.spotAsk)
+                    : 'fut ask ' + px(x.futAsk) + ' − spot bid ' + px(x.spotBid));
+        }
+    }
+
     function updateManualHints() {
+        renderManualSpread();
         const hint = document.getElementById('manual-level-hint');
         if (!hint) return;
         const f = manualFields();
@@ -1799,12 +1854,8 @@
         try {
             const data = await (await fetch('/api/manual-trade')).json();
             if (data.asset) window.__manualAsset = data.asset;
-            window.__manualSpread = data.current_spread;
-            const spreadEl = document.getElementById('manual-current-spread');
-            if (spreadEl) {
-                spreadEl.textContent = data.current_spread == null ? '—'
-                    : Number(data.current_spread).toFixed(4);
-            }
+            window.__manualMid = data.current_spread;
+            renderManualSpread();
             const badge = document.getElementById('manual-trade-status-badge');
             const activate = document.getElementById('manual-trade-activate');
             const cancel = document.getElementById('manual-trade-cancel');
@@ -2709,54 +2760,56 @@
         bad.style.display = 'none';
         detail.style.display = '';
 
-        const money = v => (v == null ? '-'
-            : (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2));
-        const sp = v => (v == null ? '-' : v.toFixed(2));
+        // Signed and fixed-width, so the column reads down cleanly.
+        const money = v => (v == null ? '—'
+            : (v < 0 ? '−' : '+') + '$' + Math.abs(v).toFixed(2));
+        const sp = v => (v == null ? '—' : v.toFixed(2));
 
-        // The two numbers the whole card exists to compare.
         const need = carry.breakeven_spread;
         const now = carry.spread == null ? null : Math.abs(carry.spread);
         const gap = carry.spread_gap;
         document.getElementById('carry-spread-now').textContent = sp(now);
         document.getElementById('carry-breakeven-spread').textContent =
-            need != null && need <= 0 ? 'any' : sp(need);
+            need != null && need <= 0 ? 'ANY' : sp(need);
 
+        // The one number that answers the question, set apart from the
+        // two it is derived from.
         const verdict = document.getElementById('carry-verdict');
-        if (gap == null) {
-            verdict.textContent = '';
-        } else if (gap > 0) {
-            verdict.className = 'fw-bold mt-2 price-up';
-            verdict.textContent = 'Wide enough — ' + gap.toFixed(2)
-                                  + ' to spare';
-        } else {
-            verdict.className = 'fw-bold mt-2 price-down';
-            verdict.textContent = 'Too narrow — needs '
-                                  + Math.abs(gap).toFixed(2) + ' more';
-        }
+        verdict.textContent = gap == null ? '—'
+            : (gap > 0 ? '+' : '−') + Math.abs(gap).toFixed(2);
+        verdict.className = 'text-end fw-bold pt-1 '
+            + (gap > 0 ? 'price-up' : 'price-down');
+        document.getElementById('carry-edge-label').textContent =
+            gap == null ? 'EDGE' : (gap > 0 ? 'EDGE' : 'SHORT BY');
 
-        // The arithmetic, as one sentence. Same numbers as the four
-        // rows it replaced; the operator asked for plain words, not for
-        // the working to disappear.
+        document.getElementById('carry-gross-usd').textContent =
+            money(carry.gross_usd);
+        document.getElementById('carry-gross-note').textContent =
+            carry.spread_units ? '×' + carry.spread_units.toLocaleString() : '';
+        // Swap is a COST when negative; the sign carries that, so the
+        // note only has to say over how many nights and at what size.
+        document.getElementById('carry-carry-usd').textContent =
+            money(carry.carry_usd);
         const legLots = (carry.per_leg || []).find(l => l.lots);
-        const size = legLots ? legLots.lots + ' lots' : 'this size';
-        const swapWord = (carry.carry_usd || 0) >= 0 ? 'earns' : 'costs';
-        document.getElementById('carry-plain').textContent =
-            'At ' + size + ', waiting ' + Math.round(days)
-            + ' nights ' + swapWord + ' '
-            + money(Math.abs(carry.carry_usd || 0)) + ' in swap and '
-            + money(Math.abs(carry.cost_usd || 0)) + ' in fees. '
-            + 'If the spread closes to zero it pays '
-            + money(carry.gross_usd) + '. You keep '
-            + money(carry.net_usd) + '.';
+        document.getElementById('carry-swap-note').textContent =
+            Math.round(days) + 'N'
+            + (legLots ? ' × ' + legLots.lots : '');
+        document.getElementById('carry-cost-usd').textContent =
+            money(-Math.abs(carry.cost_usd || 0));
+        const netEl = document.getElementById('carry-net-usd');
+        netEl.textContent = money(carry.net_usd);
+        netEl.className = 'text-end fw-bold pt-1 '
+            + ((carry.net_usd || 0) > 0 ? 'price-up' : 'price-down');
 
         const gapNote = document.getElementById('carry-gap-note');
         if (carry.warning) {
-            // One input can be proved wrong, so no verdict above it is
+            // One input can be proved wrong, so no figure below it is
             // worth reading. Say that instead of the conclusion.
-            gapNote.className = 'mt-2 text-warning fw-semibold';
+            gapNote.className = 'mt-1 text-warning';
             gapNote.textContent = '⚠ ' + carry.warning;
-            verdict.textContent = 'Check the swap first';
-            verdict.className = 'fw-bold mt-2 text-warning';
+            verdict.textContent = 'CHECK SWAP';
+            verdict.className = 'text-end fw-bold pt-1 text-warning';
+            document.getElementById('carry-edge-label').textContent = 'EDGE';
         } else {
             gapNote.textContent = '';
         }
@@ -2766,15 +2819,20 @@
         (carry.per_leg || []).forEach(leg => {
             const row = document.createElement('div');
             row.className = 'd-flex justify-content-between';
+            // The prose derivation moves to the tooltip: it carries the
+            // broker's own wording and is worth keeping, but it is a
+            // sentence and this is a price ladder.
+            row.title = leg.note || '';
             const left = document.createElement('span');
-            left.className = 'text-secondary';
-            // textContent, not innerHTML: the note carries the broker's
-            // own symbol name and its wording.
-            left.textContent = leg.note || '';
+            left.className = 'text-secondary text-nowrap';
+            left.textContent = (leg.symbol || '') + ' ' + (leg.side || '')
+                + (leg.per_lot_night == null ? ''
+                   : '  ' + (leg.per_lot_night >= 0 ? '+' : '−')
+                     + Math.abs(leg.per_lot_night).toFixed(2) + '/N');
             const right = document.createElement('span');
-            right.className = 'font-monospace ms-2 text-nowrap';
+            right.className = 'ms-2 text-nowrap';
             right.textContent = leg.carry_usd == null
-                ? 'unpriced' : money(leg.carry_usd);
+                ? 'UNPRICED' : money(leg.carry_usd);
             row.appendChild(left); row.appendChild(right);
             legs.appendChild(row);
         });
@@ -3188,7 +3246,11 @@
         // way a position happens to be facing — the pair of them IS the
         // cost, and hiding the side you are not trading hides half of
         // that. The mid above sits between them by construction.
-        const execRow = document.getElementById('exec-spread-row');
+        // The two tradable cells hide together — they are one reading
+        // in two halves, and showing either alone would invite reading
+        // it as "the" price.
+        const execRow = document.getElementById('short-spread-cell');
+        const execRow2 = document.getElementById('long-spread-cell');
         if (execRow) {
             const sh = data.short_spread, lg = data.long_spread;
             if (sh != null && lg != null) {
@@ -3204,6 +3266,12 @@
                 // the whole point of showing both is that they come from
                 // different sides of the book.
                 const px = v => v == null ? '—' : Number(v).toFixed(2);
+                // The manual panel arms on these, so it reads them from
+                // here rather than re-deriving from a second source.
+                window.__execSpreads = {
+                    short: sh, long: lg,
+                    futBid: data.futures_bid, futAsk: data.futures_ask,
+                    spotBid: data.spot_bid, spotAsk: data.spot_ask};
                 const shortLegs = document.getElementById('short-spread-legs');
                 const longLegs = document.getElementById('long-spread-legs');
                 if (shortLegs) {
@@ -3224,8 +3292,10 @@
                     : 'sell fut / buy spot vs buy fut / sell spot — '
                       + fmt(cost) + ' apart, one round turn of bid-ask';
                 execRow.style.display = '';
+                if (execRow2) execRow2.style.display = '';
             } else {
                 execRow.style.display = 'none';
+                if (execRow2) execRow2.style.display = 'none';
             }
         }
 
