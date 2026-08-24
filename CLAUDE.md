@@ -483,8 +483,25 @@ existed — but convergence does not need reversion, only expiry.
   only ever set a value. An override that cannot be deleted outlives
   the pair it was typed for. `?? ''` and not `|| ''` on the reload
   path: a swap of 0 is a real statement.
-- **No expiry hides the card entirely.** A rolling contract never
-  converges, so there is no date for this trade to be decided on.
+- **No expiry hides the card only when the pair could not have one.**
+  Originally it hid on ANY missing expiry. Wrong, found by use
+  (operator, 2026-08-24: "cannot see - What the spread should be based
+  on the Swap and Expiry Date Calculation?"): WTI vs Brent with no date
+  is simply what that pair IS, but a BASIS pair with no date is an
+  unset field, and hiding both looked identical from the outside — an
+  operator who had just typed an expiry could not tell whether it had
+  been rejected, ignored, or was waiting on a restart. A basis pair now
+  shows the card with a one-line prompt and a link. `expects_expiry`
+  carries the distinction.
+- **The carry inputs HOT-APPLY** (`config.CARRY_ASSET_KEYS`). The whole
+  `assets` section was blocked from hot-reload, which is right for
+  symbols, contract sizes and beta — they define the series and the
+  orders — and wrong for four reference-only fields whose only consumer
+  is a dashboard card. The same operator report was caused by this: the
+  values were saved and correct, and their own log said "Config reload:
+  assets change requires a restart" ten lines above the trade. The
+  structural comparison now excludes those four keys, so a symbol
+  change still demands a restart (regression-tested).
 - **The answer is given in SPREAD, not only in dollars** (operator,
   2026-08-24: "where can I see what the actual spread should be -
   depending on the number of days left from the expiry"). Dollars move
@@ -664,6 +681,54 @@ Three flood/accuracy warts the same restart exposed, all fixed:
 - The LIVE banner printed "Clip size: 50.0 lots/leg" on a box running
   **notional** sizing at 1.15 lots. It is the last screen before real
   orders; it now states whichever sizing mode is actually in force.
+
+## The unwind OPENED a second position (2026-08-24, LIVE)
+
+A manual gold pair. The futures leg was refused — `10027 AutoTrading
+disabled by client`, the algo button off in THAT terminal — so the
+executor unwound the spot leg. Twenty seconds later:
+
+```
+Futures hedge filled nothing — unwinding 0.05 spot lots
+[Account_Spot] unwound 0.05 lots of XAUUSD
+Reconcile: orphan on [Account_Spot]: ticket 862 BUY  0.05 XAUUSD (1/3)
+Reconcile: orphan on [Account_Spot]: ticket 863 SELL 0.05 XAUUSD (1/3)
+```
+
+862 was the entry and 863 was the "unwind". `PairExecutor._unwind` sent
+`entry_side.opposite` as a plain market order, and **these accounts are
+HEDGING mode**, where that does not close anything — it opens a second,
+offsetting position. The engine logged success while the book held two
+live rows.
+
+The hedging rule was already in CLAUDE.md and the exit path already
+obeyed it (`_market_close_ticket`); the unwind path never did. It only
+surfaced now because the unwind is the rarest branch in the executor —
+it needs one leg to fail outright — and the account it had been
+exercised on was netting.
+
+Contained, but not harmless: economically flat, so no directional
+exposure, yet the two rows sat live for the 60s the reconciler's three
+strikes take, and clearing them cost two more round trips. Had the
+reconciler been down, they would have stayed.
+
+`_unwind` now closes by TICKET, taking the entry's `position_tickets`
+through from `_send_sliced`. Notes:
+
+- **Volumes come from the BROKER**, not from what we sent — a ticket can
+  be partly closed already, and asking to close more than is there
+  fails the whole request. A ticket MT5 no longer lists is already gone
+  and is skipped rather than treated as an error.
+- **The excess-unwind walks tickets newest-first.** Only some of the
+  spot lots come off in the partial-hedge branch, and the last child
+  order is the one that took the position past what the hedge covers.
+- **The opposite market order survives as a FALLBACK** — for a netting
+  account, where it is the correct instrument, and for a ticket the
+  broker refuses. Offsetting is worse than closing and far better than
+  staying naked. It is now the exception and says so in the log.
+- Regression test asserts the strong form: after a failed hedge the
+  spot book is EMPTY, not "flat by offsetting", and no SELL was ever
+  sent on the spot leg.
 
 ## A failed close made the engine believe it was flat (2026-08-07)
 

@@ -354,6 +354,13 @@ class AlgoTradingConfig:
     # notional sizing and the dashboard kept reporting the old clip
     # (2026-08-07). Anything the operator can change on the Settings
     # page and expects to take effect belongs in this tuple.
+    #: Per-asset fields that hot-apply. Reference-only every one: they
+    #: feed the Carry to Expiry card and nothing in the signal, sizing
+    #: or exit path. Anything else under `assets` is structural and
+    #: needs a restart.
+    CARRY_ASSET_KEYS = ('futures_expiry', 'spot_expiry',
+                        'swap_spot_per_lot', 'swap_futures_per_lot')
+
     HOT_TRADING_KEYS = ('CLIP_LOTS', 'SLICE_LOTS', 'DAILY_LOT_TARGET',
                         'POLL_INTERVAL_SEC', 'SIZING_MODE',
                         'NOTIONAL_PER_LEG_USD', 'HEDGE_MODE')
@@ -383,12 +390,39 @@ class AlgoTradingConfig:
             else:
                 blocked.append('HEDGE_RATIO change requires a restart '
                                '(recomputes the spread series)')
+        # The carry inputs hot-apply, and the rest of `assets` does not.
+        # Symbols, contract sizes and beta define the series and the
+        # orders, so changing them under a running engine is genuinely a
+        # restart. The expiry and the two swap overrides are REFERENCE
+        # ONLY — signals, sizing and exits never read them, and the one
+        # thing they do feed is a dashboard card. Blocking the whole
+        # section meant an operator set the expiry, saw nothing change,
+        # and had no way to tell the value had not been rejected
+        # (operator, 2026-08-24: "cannot see - What the spread should be
+        # based on the Swap and Expiry Date Calculation?" — their own log
+        # carried the answer, "assets change requires a restart", ten
+        # lines above the trade).
+        for key, asset in self.ASSETS.items():
+            for field in self.CARRY_ASSET_KEYS:
+                new = (fresh.ASSETS.get(key) or {}).get(field)
+                if asset.get(field) != new:
+                    if new is None:
+                        asset.pop(field, None)
+                    else:
+                        asset[field] = new
+                    applied.append(f'{key}.{field}')
+
+        def _structural(assets):
+            return {k: {f: v for f, v in a.items()
+                        if f not in self.CARRY_ASSET_KEYS}
+                    for k, a in assets.items()}
+
         for name, check in [
                 ('accounts', {k: vars(a) for k, a in fresh.accounts.items()}
                  != {k: vars(a) for k, a in self.accounts.items()}),
                 ('leg_accounts', fresh.leg_accounts != self.leg_accounts),
-                ('assets', {k: dict(a) for k, a in fresh.ASSETS.items()}
-                 != {k: dict(a) for k, a in self.ASSETS.items()})]:
+                ('assets', _structural(fresh.ASSETS)
+                 != _structural(self.ASSETS))]:
             if check:
                 blocked.append(f'{name} change requires a restart')
         if applied:

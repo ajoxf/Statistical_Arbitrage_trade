@@ -2655,11 +2655,28 @@
     function updateCarryCard(carry) {
         const card = document.getElementById('carry-card');
         if (!card) return;
-        // Hidden entirely for a pair with no expiry — a rolling
-        // contract has no convergence date, so there is no trade here
-        // to describe and an empty card would only invite the question.
-        if (!carry || carry.days == null) { card.style.display = 'none'; return; }
+        // Hidden for a pair that cannot have a convergence date at all —
+        // WTI vs Brent never expires into anything, so there is no trade
+        // here to describe. But a BASIS pair with no date is an unset
+        // field, and hiding both looked identical from the outside: an
+        // operator who had just typed an expiry could not tell whether
+        // it had been rejected, ignored, or was waiting on a restart.
+        if (!carry || (carry.days == null && !carry.expects_expiry)) {
+            card.style.display = 'none';
+            return;
+        }
         card.style.display = '';
+        if (carry.days == null) {
+            document.getElementById('carry-days').textContent = 'no expiry set';
+            document.getElementById('carry-detail').style.display = 'none';
+            const need = document.getElementById('carry-unavailable');
+            need.style.display = '';
+            need.innerHTML = 'This pair converges on a date, but none is set. '
+                + 'Add the Leg B contract expiry under '
+                + '<a href="/settings#pair-selection">Settings &rarr; Pair '
+                + 'Selection</a> and the carry is priced from it.';
+            return;
+        }
 
         const days = carry.days;
         document.getElementById('carry-days').textContent =

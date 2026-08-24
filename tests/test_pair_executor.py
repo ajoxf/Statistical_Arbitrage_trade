@@ -196,3 +196,125 @@ def test_no_slicing_when_disabled(clip_config):
         'GOLD', SignalType.SELL_BASIS, 50.0, 'XAUUSD', 'GC1225')
     assert ok
     assert [o[2] for o in spot.orders] == [50.0]   # single parent order
+
+
+# --- unwinding on a HEDGING account -------------------------------------
+# Live 2026-08-24. A manual gold pair, futures refused with 10027 (algo
+# trading off in that terminal), and the spot leg "unwound":
+#
+#   [Account_Spot] unwound 0.05 lots of XAUUSD
+#   Reconcile: orphan ticket 862 BUY  0.05 XAUUSD (strike 1/3)
+#   Reconcile: orphan ticket 863 SELL 0.05 XAUUSD (strike 1/3)
+#
+# 862 was the entry, 863 was the unwind. A plain opposite order on a
+# hedging account does not close a position, it OPENS an offsetting one.
+# CLAUDE.md names this exact failure; the exit path already closed by
+# ticket and the unwind path did not.
+
+class HedgingLeg(FakeLeg):
+    """Records positions the way a hedging account does: one per order,
+    and an opposite order OPENS a second one instead of closing."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.book = {}            # ticket -> {'side', 'volume'}
+        self.closed = []          # tickets closed by ticket
+        self._next = 900
+
+    def order(self, symbol, side, volume, slippage_points=1.0, comment=""):
+        result = super().order(symbol, side, volume,
+                               slippage_points=slippage_points,
+                               comment=comment)
+        if result.get('ok'):
+            self._next += 1
+            self.book[self._next] = {'side': side, 'symbol': symbol,
+                                     'volume': result['filled_volume']}
+            result['position_tickets'] = [self._next]
+        return result
+
+    def positions(self, symbol=None):
+        return [{'ticket': t, 'symbol': p['symbol'], 'side': p['side'],
+                 'volume': p['volume'], 'price_open': self.price}
+                for t, p in self.book.items()
+                if symbol is None or p['symbol'] == symbol]
+
+    def close_ticket(self, symbol, ticket, volume, entry_side,
+                     slippage_points=1.0, comment=""):
+        held = self.book.get(ticket)
+        if not held or held['volume'] < volume - 1e-9:
+            return {'ok': False, 'filled_volume': 0.0, 'price': None,
+                    'error': 'no such position'}
+        held['volume'] -= volume
+        if held['volume'] <= 1e-9:
+            del self.book[ticket]
+        self.closed.append((ticket, volume))
+        return {'ok': True, 'filled_volume': volume, 'price': self.price,
+                'error': None}
+
+
+def test_an_unwind_closes_by_ticket_and_leaves_no_second_position(clip_config):
+    spot = HedgingLeg('Account_Spot')
+    fut = HedgingLeg('Account_Future', fail_symbols={'GC1225'})
+    px = PairExecutor(clip_config, spot, fut)
+
+    ok, _, _ = px.execute_trade_pair(
+        'GOLD', SignalType.SELL_BASIS, 50.0, 'XAUUSD', 'GC1225')
+
+    assert not ok
+    # The book is EMPTY — not "flat by offsetting", actually empty.
+    assert spot.positions() == []
+    assert sum(v for _, v in spot.closed) == pytest.approx(50.0)
+
+
+def test_the_unwind_does_not_send_an_opposite_order(clip_config):
+    """The whole bug in one assertion: no SELL was ever sent on the spot
+    leg, because closing a BUY by ticket is not a sell order."""
+    spot = HedgingLeg('Account_Spot')
+    fut = HedgingLeg('Account_Future', fail_symbols={'GC1225'})
+    PairExecutor(clip_config, spot, fut).execute_trade_pair(
+        'GOLD', SignalType.SELL_BASIS, 50.0, 'XAUUSD', 'GC1225')
+
+    assert all(o[1] == 'BUY' for o in spot.orders), spot.orders
+
+
+def test_a_partial_hedge_unwinds_only_the_excess_by_ticket(clip_config):
+    spot = HedgingLeg('Account_Spot')
+    fut = HedgingLeg('Account_Future', liquidity={'GC1225': 20.0})
+    px = PairExecutor(clip_config, spot, fut)
+
+    ok, spot_trade, fut_trade = px.execute_trade_pair(
+        'GOLD', SignalType.SELL_BASIS, 50.0, 'XAUUSD', 'GC1225')
+
+    assert ok
+    assert sum(v for _, v in spot.closed) == pytest.approx(30.0)
+    # 20 matched lots still held, as real positions
+    assert sum(p['volume'] for p in spot.positions()) == pytest.approx(20.0)
+
+
+def test_an_unclosable_ticket_still_falls_back_to_flattening(clip_config):
+    """Offsetting is worse than closing and far better than staying
+    naked. A netting account lands here too, where it is simply right."""
+    spot = HedgingLeg('Account_Spot')
+    fut = HedgingLeg('Account_Future', fail_symbols={'GC1225'})
+    spot.close_ticket = lambda *a, **k: {'ok': False, 'filled_volume': 0.0,
+                                         'price': None, 'error': 'refused'}
+    px = PairExecutor(clip_config, spot, fut)
+    px.execute_trade_pair('GOLD', SignalType.SELL_BASIS, 50.0,
+                          'XAUUSD', 'GC1225')
+
+    sells = sum(o[3] for o in spot.orders if o[1] == 'SELL')
+    assert sells == pytest.approx(50.0)
+
+
+def test_a_leg_that_cannot_report_positions_still_unwinds(clip_config):
+    def boom(symbol=None):
+        raise RuntimeError('IPC down')
+
+    spot = HedgingLeg('Account_Spot')
+    spot.positions = boom
+    fut = HedgingLeg('Account_Future', fail_symbols={'GC1225'})
+    PairExecutor(clip_config, spot, fut).execute_trade_pair(
+        'GOLD', SignalType.SELL_BASIS, 50.0, 'XAUUSD', 'GC1225')
+
+    sells = sum(o[3] for o in spot.orders if o[1] == 'SELL')
+    assert sells == pytest.approx(50.0)

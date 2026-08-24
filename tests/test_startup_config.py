@@ -1518,3 +1518,57 @@ def test_the_example_cap_is_not_below_the_example_clip():
     example = _example()
     assert example['risk_limits']['MAX_LOT_SIZE'] >= \
         example['trading']['CLIP_LOTS']
+
+
+# --- the carry inputs hot-apply, the rest of `assets` does not ----------
+# Operator, 2026-08-24: "cannot see - What the spread should be based on
+# the Swap and Expiry Date Calculation?" They had saved both. The answer
+# was in their own log ten lines above the trade: "Config reload: assets
+# change requires a restart". Blocking the whole section is right for
+# symbols and contract sizes and wrong for two reference-only fields.
+
+def _live_and_saved(saved_asset):
+    """A running config, and the freshly-loaded one the operator just
+    saved — which is what hot_apply compares against."""
+    from datetime import datetime
+    from statarb.config import AlgoTradingConfig
+    live, fresh = AlgoTradingConfig(), AlgoTradingConfig()
+    for key in ('futures_expiry', 'spot_expiry',
+                'swap_spot_per_lot', 'swap_futures_per_lot'):
+        live.ASSETS['GOLD'].pop(key, None)
+        fresh.ASSETS['GOLD'].pop(key, None)
+    for key, value in saved_asset.items():
+        if key.endswith('_expiry') and isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        fresh.ASSETS['GOLD'][key] = value
+    return live, fresh
+
+
+def test_an_expiry_typed_while_running_applies_without_a_restart():
+    cfg, fresh = _live_and_saved({'futures_expiry': '2026-11-22'})
+    applied, blocked = cfg.hot_apply(fresh)
+    assert any('futures_expiry' in a for a in applied), (applied, blocked)
+    assert not any('assets' in b for b in blocked), blocked
+    assert cfg.ASSETS['GOLD']['futures_expiry'].date().isoformat() == \
+        '2026-11-22'
+
+
+def test_a_swap_override_typed_while_running_applies_too():
+    cfg, fresh = _live_and_saved({'swap_spot_per_lot': -1.25})
+    cfg.hot_apply(fresh)
+    assert cfg.ASSETS['GOLD']['swap_spot_per_lot'] == -1.25
+
+
+def test_clearing_a_carry_field_while_running_removes_it():
+    cfg, fresh = _live_and_saved({})
+    cfg.ASSETS['GOLD']['swap_spot_per_lot'] = -1.25
+    cfg.hot_apply(fresh)
+    assert 'swap_spot_per_lot' not in cfg.ASSETS['GOLD']
+
+
+def test_a_symbol_change_still_demands_a_restart():
+    """Symbols define the series and the orders. Only the carry fields
+    were ever safe to swap under a running engine."""
+    cfg, fresh = _live_and_saved({'spot_symbols': ['SOMETHINGELSE']})
+    _, blocked = cfg.hot_apply(fresh)
+    assert any('assets' in b for b in blocked), blocked

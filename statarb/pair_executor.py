@@ -267,20 +267,93 @@ class PairExecutor:
         vwap = notional / filled if filled > EPS else None
         return filled, vwap, tickets
 
-    def _unwind(self, leg, symbol, entry_side, lots, comment):
-        """Reverse an entry fill AT MARKET; CRITICAL on failure."""
+    def _unwind(self, leg, symbol, entry_side, lots, comment, tickets=None):
+        """Reverse an entry fill AT MARKET; CRITICAL on failure.
+
+        Closes by TICKET, because these accounts are HEDGING mode. A
+        plain opposite order there does not close anything — it OPENS a
+        second, offsetting position, and the book then holds two rows
+        that net to nothing. Live 2026-08-24, a manual gold pair whose
+        futures leg was refused (10027, algo trading off in that
+        terminal):
+
+            Futures hedge filled nothing — unwinding 0.05 spot lots
+            [Account_Spot] unwound 0.05 lots of XAUUSD
+            Reconcile: orphan ticket 862 BUY  0.05 XAUUSD (strike 1/3)
+            Reconcile: orphan ticket 863 SELL 0.05 XAUUSD (strike 1/3)
+
+        862 was the entry and 863 was the "unwind". Economically flat,
+        so the exposure was contained, but the engine believed it had
+        reversed a position it had in fact doubled into, and the two
+        rows sat live for the 60s the reconciler's three strikes take
+        before it closed them — at the cost of two more round trips.
+        This is the exact failure CLAUDE.md's hedging-mode rule names.
+
+        The opposite-market order survives as a FALLBACK for whatever
+        the ticket route cannot reach: a netting account (where it is
+        the correct instrument), or a ticket the broker will not close.
+        Offsetting is worse than closing, and far better than staying
+        naked — but it is now the exception and it says so in the log.
+        """
         if lots <= EPS:
             return True
-        filled, _, _ = self._send_sliced(
-            leg, symbol, entry_side.opposite, lots, comment, style='market')
-        if filled < lots - EPS:
+        remaining = lots
+
+        for ticket, volume in self._closable(leg, symbol, tickets):
+            if remaining <= EPS:
+                break
+            volume = min(volume, remaining)
+            result = leg.close_ticket(
+                symbol, ticket, volume, entry_side.value,
+                slippage_points=self.config.EXECUTION['SLIPPAGE_TOLERANCE'],
+                comment=comment)
+            if result.get('ok'):
+                remaining -= float(result.get('filled_volume') or volume)
+            else:
+                logging.error("[%s] unwind close of ticket %s failed: %s",
+                              leg.name, ticket, result.get('error'))
+
+        if remaining > EPS:
+            if tickets:
+                logging.warning(
+                    "[%s] %.2f lots of %s could not be unwound by ticket — "
+                    "sending an opposite market order. On a hedging account "
+                    "that OFFSETS rather than closes and leaves a second "
+                    "position for the reconciler.",
+                    leg.name, remaining, symbol)
+            filled, _, _ = self._send_sliced(
+                leg, symbol, entry_side.opposite, remaining, comment,
+                style='market')
+            remaining -= filled
+
+        if remaining > EPS:
             logging.critical(
                 "UNHEDGED EXPOSURE on [%s]: tried to unwind %.2f lots of "
-                "%s, only %.2f reversed — MANUAL INTERVENTION REQUIRED",
-                leg.name, lots, symbol, filled)
+                "%s, %.2f still open — MANUAL INTERVENTION REQUIRED",
+                leg.name, lots, symbol, remaining)
             return False
         logging.info("[%s] unwound %.2f lots of %s", leg.name, lots, symbol)
         return True
+
+    def _closable(self, leg, symbol, tickets):
+        """(ticket, live volume) for the entry tickets still open.
+
+        The BROKER's volume, not the one we sent: a ticket can have been
+        partly closed already, and closing more than is there fails the
+        whole request. A ticket it no longer lists is already gone and
+        is skipped rather than treated as an error."""
+        if not tickets:
+            return []
+        try:
+            live = {p.get('ticket'): float(p.get('volume') or 0.0)
+                    for p in (leg.positions(symbol) or [])}
+        except Exception as exc:                       # broker/IPC down
+            logging.error("[%s] cannot read positions to unwind by ticket "
+                          "(%s) — falling back to an opposite order",
+                          leg.name, exc)
+            return []
+        return [(t, live[t]) for t in tickets
+                if live.get(t, 0.0) > EPS]
 
     # ------------------------------------------------------------------
     # Atomic pre-checks
@@ -429,7 +502,7 @@ class PairExecutor:
             logging.error("Futures hedge filled nothing — unwinding %.2f "
                           "spot lots", spot_filled)
             self._unwind(self.spot_leg, spot_symbol, spot_side,
-                         spot_filled, comment)
+                         spot_filled, comment, tickets=spot_tickets)
             spot_trade.status = futures_trade.status = "ERROR"
             futures_trade.error_message = "Futures hedge filled nothing"
             return False, spot_trade, futures_trade
@@ -453,9 +526,9 @@ class PairExecutor:
                     "Matched size %.2f < %.0f%% of %.2f clip — unwinding "
                     "both legs", matched_spot, min_fraction * 100, lot_size)
                 self._unwind(self.spot_leg, spot_symbol, spot_side,
-                             spot_filled, comment)
+                             spot_filled, comment, tickets=spot_tickets)
                 self._unwind(self.futures_leg, futures_symbol, futures_side,
-                             fut_filled, comment)
+                             fut_filled, comment, tickets=fut_tickets)
                 spot_trade.status = futures_trade.status = "ERROR"
                 futures_trade.error_message = (
                     f"Matched {matched_spot:.2f} below "
@@ -468,7 +541,7 @@ class PairExecutor:
                 "spot lots, keeping matched position",
                 fut_filled, hedge_target, excess)
             self._unwind(self.spot_leg, spot_symbol, spot_side, excess,
-                         comment)
+                         comment, tickets=list(reversed(spot_tickets)))
             spot_filled = matched_spot
 
         spot_trade.lot_size = spot_filled

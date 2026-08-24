@@ -2233,6 +2233,14 @@ class Coordinator:
         block['pair_type'] = md.get('pair_type')
         block['expiry'] = (asset['futures_expiry'].date().isoformat()
                            if asset.get('futures_expiry') else None)
+        # Whether this pair COULD have a convergence date. A basis pair
+        # without one is an unset field; WTI vs Brent without one is
+        # simply what that pair is. Hiding the card on both looked the
+        # same from the outside, so an operator who had just typed an
+        # expiry could not tell whether it had been rejected, ignored,
+        # or was waiting on a restart.
+        block['expects_expiry'] = (md.get('pair_type')
+                                   in ('SPOT_FUTURE', 'FUTURE_FUTURE'))
         return block
 
     def _edge_reachability(self, stats, cost, lots_b, contract_b):
