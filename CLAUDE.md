@@ -867,6 +867,24 @@ Third pass, "still looks shabby. Remove the outer card if not needed":
   number — `4709.1` on one line and `1` on the next. A number split
   across a line break is a different number.
 
+Fourth pass, "can still be better" — and the honest answer was that the
+four cards were not actually alike. Only Short and Long had the leg-card
+rhythm of a VALUE over LABELLED COLUMNS; Z-Score had three words of
+prose that never changed ("on the mid spread") and Position had nothing
+under its badge. One `renderPair` now draws all three footers:
+
+- **Z-Score** shows the BAND it has to land in (`Entry ≥ 3.00` /
+  `Ceiling < 4.50`). A bare 4.10 says nothing about whether it is
+  tradeable; against those two it says everything.
+- **Position** shows the size one trade would be, so "how big is this if
+  it fires" is answerable without leaving the row.
+- **The card the current z points at gets a coloured ring** — red for
+  short, green for long — but ONLY when the z is inside the band AND
+  that direction is allowed. A z past the ceiling lights nothing, which
+  is the entry ceiling's whole point: a momentum spike must not look
+  actionable. Verified in Chromium at z = +4.10 (short rings),
+  z = -4.10 (long rings) and z = 5.0 (neither).
+
 ## A warning nobody can act on is not a fix (2026-08-24, operator)
 
 Third time round on the same card: "The net should be around $8 and not

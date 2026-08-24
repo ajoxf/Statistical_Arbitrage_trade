@@ -2504,3 +2504,39 @@ def test_a_price_never_wraps_mid_number(client):
     a different number."""
     page = client.get('/').get_data(as_text=True)
     assert 'white-space: nowrap;' in page
+
+
+def test_every_card_in_the_row_has_the_same_rhythm(client):
+    """Operator, 2026-08-24: "Can still be better." Only Short and Long
+    had the leg-card shape — a value over labelled columns. Z-Score had
+    three words of prose that never changed, and Position had nothing.
+    All four now share one footer renderer."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'function renderPair' in page
+    assert 'id="zscore-band"' in page
+    assert 'id="position-size-row"' in page
+    # The prose line is gone.
+    assert 'on the mid spread' not in page
+
+
+def test_the_band_is_published_so_the_z_can_be_read_against_it():
+    """A bare 4.10 says nothing about whether it is tradeable."""
+    from statarb import webapi
+    ui = webapi.status_to_ui(
+        {'assets': [{'asset': 'GOLD', 'z': 4.1, 'spread': 58.9,
+                     'samples': 400}]},
+        {'signals': {'ENTRY_Z': 3.0, 'MAX_ENTRY_Z': 4.5,
+                     'ALLOWED_DIRECTIONS': 'short'}})
+    assert ui['signal']['entry_threshold'] == 3.0
+    assert ui['signal']['entry_ceiling'] == 4.5
+    assert ui['signal']['allowed_directions'] == 'short'
+
+
+def test_only_a_z_inside_the_band_marks_a_direction(client):
+    """The ring must not appear for a z past the ceiling — that is a
+    momentum spike, and the entry ceiling exists to refuse it."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'zNow >= zEntry' in page
+    assert '(zCeil == null || zNow < zCeil)' in page
+    # ...nor for a direction the operator has switched off.
+    assert "allow === 'both' || allow === side" in page

@@ -757,8 +757,15 @@ def status_to_ui(status, config_raw):
             'degenerate': bool(first.get('degenerate')),
             'hedge_ratio': (config_raw.get('trading') or {}).get(
                 'HEDGE_RATIO', 1.0),
+            # The band the z-score has to land in. A bare 4.10 says
+            # nothing about whether it is tradeable; against 3.00 and
+            # 4.50 it says everything.
             'entry_threshold': (config_raw.get('signals') or {}).get(
                 'ENTRY_Z'),
+            'entry_ceiling': (config_raw.get('signals') or {}).get(
+                'MAX_ENTRY_Z'),
+            'allowed_directions': (config_raw.get('signals') or {}).get(
+                'ALLOWED_DIRECTIONS', 'both'),
             'current_position': open_position['signal_type']
                                 if open_position else 'NONE',
         }

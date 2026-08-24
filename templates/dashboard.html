@@ -420,8 +420,12 @@
                             <div class="card-body py-2 text-center">
                                 <div class="metric-value" id="current-zscore"
                                      style="font-size: 1.5rem; line-height: 1.15;">0.00</div>
-                                <div class="text-secondary" style="font-size: 0.65rem;"
-                                     id="zscore-note">on the mid spread</div>
+                                <!-- The BAND, in the same two-column shape
+                                     the touches use. A bare 4.10 says
+                                     nothing about whether it is tradeable;
+                                     against an entry of 3.00 and a ceiling
+                                     of 4.50 it says everything. -->
+                                <div class="row g-1 mt-1" id="zscore-band"></div>
                             </div>
                         </div>
                     </div>
@@ -471,6 +475,7 @@
                                 <div id="sl-cooldown-indicator" style="display:none; margin-top:4px;">
                                     <span class="badge bg-warning" style="font-size:0.65rem;">SL COOLDOWN <span id="sl-cooldown-secs">0</span>s</span>
                                 </div>
+                                <div class="row g-1 mt-1" id="position-size-row"></div>
                                 <div id="close-btn-group" class="mt-2" style="display: none;">
                                     <button class="btn btn-sm btn-danger py-0" id="close-market-btn" onclick="closePosition('market')" style="font-size: 0.7rem;"
                                             title="Close NOW at market price — guaranteed instant fill, pays the taker fee. Use when it's urgent.">
@@ -2700,6 +2705,14 @@
         // imbalance. The engine resolves all of it; the browser must
         // not re-derive lots or the two can disagree.
         const sz = _engineSizing;
+        // What one trade would be, on the card that shows whether one
+        // is open. Answers "how big is this if it fires" without
+        // leaving the row.
+        if (typeof renderPair === 'function') {
+            renderPair('position-size-row', [
+                ['Leg A', sz && sz.leg_a_lots ? sz.leg_a_lots.toFixed(2) : '—'],
+                ['Leg B', sz && sz.leg_b_lots ? sz.leg_b_lots.toFixed(2) : '—']]);
+        }
         const lotsEl = document.getElementById('sizing-lots');
         const balEl  = document.getElementById('sizing-balance');
         const basisEl = document.getElementById('sizing-basis');
@@ -3276,6 +3289,31 @@
     // colour depending on which of two tables it happens to be sitting
     // in. Half the size of the spread it builds, so it stays provenance
     // rather than a second headline.
+    // Every card in this row has the same rhythm — a value, then its
+    // parts in two labelled columns — so renderTouches draws all of
+    // them. `tone` is a class for the value, or null for plain.
+    function renderPair(id, rows) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.innerHTML = '';
+        rows.forEach(([label, value, cls]) => {
+            const cell = document.createElement('div');
+            cell.className = 'col-6 text-center';
+            const l = document.createElement('div');
+            l.className = 'text-secondary';
+            l.style.cssText = 'font-size: 0.62rem; line-height: 1.2;'
+                + 'white-space: nowrap;';
+            l.textContent = label;
+            const v = document.createElement('div');
+            v.className = 'font-monospace ' + (cls || 'text-secondary');
+            v.style.cssText = 'font-size: 0.78rem; line-height: 1.25;'
+                + 'white-space: nowrap;';
+            v.textContent = value;
+            cell.appendChild(l); cell.appendChild(v);
+            el.appendChild(cell);
+        });
+    }
+
     function renderTouches(id, rows) {
         const el = document.getElementById(id);
         if (!el) return;
@@ -3422,6 +3460,35 @@
                 futConv.style.display = 'none';
             }
         }
+        // The band the z has to land in, in the same shape as the
+        // touches. Entry is a floor and the ceiling is a wall: a z
+        // above it is a momentum spike, not a better entry.
+        const zEntry = data.entry_threshold, zCeil = data.entry_ceiling;
+        renderPair('zscore-band', [
+            ['Entry', zEntry == null ? '—' : '≥ ' + (+zEntry).toFixed(2)],
+            ['Ceiling', zCeil == null ? '—' : '< ' + (+zCeil).toFixed(2)]]);
+
+        // Which direction this z points at, and whether it is inside
+        // the band — the two facts that decide whether the engine can
+        // act, shown on the cards they concern rather than left to be
+        // worked out from three numbers.
+        const zNow = Math.abs(zscore);
+        const inBand = zEntry != null && zNow >= zEntry
+                       && (zCeil == null || zNow < zCeil);
+        const wants = zscore > 0 ? 'short' : 'long';
+        const allow = (data.allowed_directions || 'both');
+        ['short', 'long'].forEach(side => {
+            const cell = document.getElementById(side + '-spread-cell');
+            if (!cell) return;
+            const card = cell.querySelector('.card');
+            if (!card) return;
+            const live = inBand && side === wants
+                         && (allow === 'both' || allow === side);
+            card.style.boxShadow = live
+                ? '0 0 0 2px ' + (side === 'short' ? '#dc3545' : '#198754')
+                : '';
+        });
+
         // The two executable spreads. Both are always shown, whichever
         // way a position happens to be facing — the pair of them IS the
         // cost, and hiding the side you are not trading hides half of
