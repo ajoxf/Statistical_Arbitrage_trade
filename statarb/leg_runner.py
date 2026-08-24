@@ -113,7 +113,14 @@ class LegServer:
                 conn, addr = self.server.accept()
             except OSError:
                 break  # socket closed by stop()
-            logging.info("Client connected from %s", addr)
+            # DEBUG, not INFO. The webapp opens a short-lived
+            # RemoteLeg every time the Exchanges page polls (15s, per
+            # leg) and closes it again, so at INFO this is four lines a
+            # quarter-minute that say nothing — and it buries the
+            # coordinator's own output, which is the same flood the
+            # RemoteLeg "not reachable" dedup was added for. A
+            # connection that DROPS is still a warning.
+            logging.debug("Client connected from %s", addr)
             threading.Thread(target=self._serve_client, args=(conn, addr),
                              daemon=True).start()
 
@@ -129,7 +136,7 @@ class LegServer:
             logging.warning("Client %s dropped: %s", addr, e)
         finally:
             js.close()
-            logging.info("Client %s disconnected", addr)
+            logging.debug("Client %s disconnected", addr)
 
     def stop(self):
         self._stop = True

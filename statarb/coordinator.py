@@ -160,6 +160,7 @@ class Coordinator:
         self._last_logged_quote = {}   # asset -> last quote_id persisted
         self._last_status_state = {}   # asset -> last LOGGED state
         self._plan_refusal = None      # why the last entry was blocked
+        self._exec_error = None        # ...or what the broker said
         self._meta_cache = {}          # (leg, symbol) -> volume limits
         self._server_clock = {}        # leg -> broker clock offset vs UTC
         self._scenario_result = None   # last round-trip scenario outcome
@@ -1169,8 +1170,17 @@ class Coordinator:
                 # measured from the prices the signal actually saw.
                 reference=market_data)
         if not success:
-            logging.error("Pair entry failed for %s %s", asset_key,
-                          signal_type.value)
+            # Keep the broker's own words. The panel used to say "check
+            # the log for the broker error" — sending the operator to a
+            # file to read something the engine was holding in a
+            # variable. Live 2026-08-24 the answer was "10027
+            # AutoTrading disabled by client", a button in one terminal,
+            # and it took a log read to find out twice.
+            self._exec_error = (getattr(futures_trade, 'error_message', None)
+                                or getattr(spot_trade, 'error_message', None))
+            logging.error("Pair entry failed for %s %s%s", asset_key,
+                          signal_type.value,
+                          f": {self._exec_error}" if self._exec_error else "")
             return None
 
         position = self.position_manager.create_position(
@@ -1978,7 +1988,7 @@ class Coordinator:
             market_data.get('spread') or 0.0,
             f"{exit_spread:g}" if exit_spread is not None else "engine",
             f"{stop_spread:g}" if stop_spread is not None else "engine")
-        self._plan_refusal = None
+        self._plan_refusal = self._exec_error = None
         position = self._open_position(
             asset_key, signal_type, lots, market_data, stats,
             contract_size, manual=True, exit_spread=exit_spread,
@@ -1990,8 +2000,10 @@ class Coordinator:
             self.manual_note = {
                 'ok': False, 'ts': time.time(),
                 'text': self._plan_refusal
-                        or 'the pair did not execute — check the log for '
-                           'the broker error'}
+                        or (f'the pair did not execute — {self._exec_error}'
+                            if self._exec_error else
+                            'the pair did not execute and the broker gave '
+                            'no reason')}
         else:
             self.manual_note = {
                 'ok': True, 'ts': time.time(),
@@ -2345,6 +2357,7 @@ class Coordinator:
                 'fair_value': md.get('fair_value'),
                 'fair_gap': md.get('fair_gap'),
                 'fair_detail': md.get('fair_detail'),
+                'fair_inputs': md.get('fair_inputs'),
             })
             assets[-1].update(self._sizing_and_cost(asset_key, md, stats))
             assets[-1]['carry'] = self._carry_block(

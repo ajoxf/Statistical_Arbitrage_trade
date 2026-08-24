@@ -454,14 +454,26 @@
                         <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
                              id="spread-breakdown"
                              title="What the engine z-scores: Leg B (futures) minus the hedge ratio times Leg A (spot)."></div>
-                        <div class="mt-1" style="font-size: 0.6rem; display:none;" id="fair-value-row"
+                        <div class="mt-1" style="display:none;" id="fair-value-row"
                              title="Theoretical value of the spread from cost of carry. REFERENCE ONLY — the signal is the z-score on the spread and never reads this. A large gap usually means the contract month, multiplier or contract size is wrong, not that the trade is good.">
-                            <span class="text-secondary">fair</span>
-                            <span class="text-info" id="fair-value">&mdash;</span>
-                            <span class="text-secondary" id="fair-gap"></span>
-                            <span class="badge bg-secondary ms-1" style="font-size: 0.5rem;">ref only</span>
-                            <a href="/settings#pair-selection" class="ms-1 text-secondary"
-                               title="Carry rate and pair type — Settings &rarr; Pair Selection">edit</a>
+                            <div>
+                                <span class="text-secondary" style="font-size: 0.7rem;">fair</span>
+                                <span class="text-info fw-bold" id="fair-value"
+                                      style="font-size: 1.15rem;">&mdash;</span>
+                                <span class="text-secondary" id="fair-gap"
+                                      style="font-size: 0.8rem;"></span>
+                                <span class="badge bg-secondary ms-1" style="font-size: 0.5rem;">ref only</span>
+                                <a href="/settings#pair-selection" class="ms-1 text-secondary"
+                                   style="font-size: 0.6rem;"
+                                   title="Carry rate and pair type — Settings &rarr; Pair Selection">edit</a>
+                            </div>
+                            <!-- The arithmetic, not just its answer. Catching a
+                                 wrong contract month or multiplier is the whole
+                                 reason fair value is on the screen, and a bare
+                                 number cannot be checked against anything. -->
+                            <div class="text-secondary font-monospace mt-1"
+                                 id="fair-working"
+                                 style="font-size: 0.62rem; line-height: 1.35;"></div>
                         </div>
                     </div>
                     <div class="col-4 text-center">
@@ -3099,6 +3111,30 @@
                 gapEl.textContent = (gap != null)
                     ? '(' + (gap >= 0 ? '+' : '') + gap.toFixed(2) + ')' : '';
                 fairRow.title = data.fair_detail || fairRow.title;
+                // The derivation in two lines: compound the base price
+                // to expiry, then subtract β times the spot. Rendered
+                // from the engine's OWN inputs — recomputing the carry
+                // here would be a second implementation that drifts.
+                const w = document.getElementById('fair-working');
+                const fi = data.fair_inputs;
+                if (w) {
+                    if (!fi) {
+                        w.textContent = '';
+                    } else {
+                        const n = (v, d) => Number(v).toLocaleString(
+                            undefined, {minimumFractionDigits: d,
+                                        maximumFractionDigits: d});
+                        w.textContent =
+                            n(fi.base_price, 2) + ' × e^(' + n(fi.rate_pct, 2)
+                            + '% × ' + Math.round(fi.days) + '/365) = '
+                            + n(fi.compounded, 2) + '\n'
+                            + '− ' + n(fi.beta, 4).replace(/0+$/, '')
+                                       .replace(/\.$/, '')
+                            + ' × ' + n(fi.base_price, 2) + ' = '
+                            + n(data.fair_value, 2);
+                        w.style.whiteSpace = 'pre';
+                    }
+                }
                 fairRow.style.display = '';
             } else {
                 fairRow.style.display = 'none';

@@ -225,3 +225,47 @@ def test_the_z_score_is_computed_on_the_traded_spread_only(config,
     coord.process_asset('GOLD', md)
     assert fed == [md['spread']]
     assert md['fair_value'] not in fed and md['fair_gap'] not in fed
+
+
+# --- the arithmetic, not just the answer --------------------------------
+# Operator, 2026-08-24: "Make the Fair Spread font Larger. Also, show a
+# brief calculation." Catching a wrong contract month or multiplier is
+# the whole reason fair value is on the screen, and a bare "fair 48.88"
+# cannot be checked against anything.
+
+def test_the_block_publishes_the_numbers_it_was_derived_from():
+    asset = {'pair_type': 'SPOT_FUTURE', 'risk_free_rate': 0.0425,
+             'futures_expiry': datetime(2026, 11, 25)}
+    block = fairvalue.fair_value_block(asset, 4269.73, 4328.80, 59.07,
+                                       1.0, now=NOW)
+    inputs = block['fair_inputs']
+    assert inputs['base_price'] == 4269.73
+    assert inputs['rate_pct'] == pytest.approx(4.25)
+    assert inputs['beta'] == 1.0
+    assert inputs['days'] > 0
+
+
+def test_the_published_inputs_reproduce_the_published_value():
+    """The card renders these; if they did not multiply out to the same
+    number the operator would be checking one figure against another."""
+    import math
+    asset = {'pair_type': 'SPOT_FUTURE', 'risk_free_rate': 0.0425,
+             'futures_expiry': datetime(2026, 11, 25)}
+    block = fairvalue.fair_value_block(asset, 4269.73, 4328.80, 59.07,
+                                       0.98, now=NOW)
+    i = block['fair_inputs']
+    assert i['compounded'] == pytest.approx(
+        i['base_price'] * math.exp(i['rate_pct'] / 100.0
+                                   * i['days'] / 365.25))
+    assert i['compounded'] - i['beta'] * i['base_price'] == \
+        pytest.approx(block['fair_value'])
+
+
+def test_no_fair_value_publishes_no_inputs():
+    """A RELATED pair has no derivation to show, and half a derivation
+    would render as arithmetic that does not reach the answer."""
+    asset = {'pair_type': 'RELATED', 'risk_free_rate': 0.0425,
+             'futures_expiry': datetime(2026, 11, 25)}
+    block = fairvalue.fair_value_block(asset, 70.0, 74.0, 4.0, 1.0, now=NOW)
+    assert block['fair_value'] is None
+    assert block['fair_inputs'] is None

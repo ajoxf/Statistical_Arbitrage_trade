@@ -580,6 +580,7 @@ def status_to_ui(status, config_raw):
             'fair_value': first.get('fair_value'),
             'fair_gap': first.get('fair_gap'),
             'fair_detail': first.get('fair_detail'),
+            'fair_inputs': first.get('fair_inputs'),
             # Cost / edge, in the W3 field names the Filters card reads.
             # These were never published, which is why that card showed
             # "-" against every row.

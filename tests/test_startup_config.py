@@ -1352,14 +1352,64 @@ def test_the_launcher_says_a_config_change_needs_a_relaunch(tmp_path,
                               args=([], stop, str(cfg)), daemon=True)
     thread.start()
     _time.sleep(0.2)
-    _time.sleep(1.1)                       # past the mtime resolution
     cfg.write_text('{"accounts": {"a": {}}}')
     _time.sleep(3.0)
     stop.set()
     thread.join(timeout=5)
     out = capsys.readouterr().out
-    assert 'config.json changed' in out
+    assert 'Accounts or leg mapping changed' in out
     assert 'start it again' in out
+
+
+def test_the_launcher_stays_quiet_for_a_change_it_does_not_own(tmp_path,
+                                                               monkeypatch,
+                                                               capsys):
+    """It watched the file's MTIME, so every save of any setting shouted
+    "restart" — including ones the coordinator hot-applies. Live
+    2026-08-24: saving a contract expiry, which hot-applies, printed the
+    notice anyway. Crying restart at every save trains the operator to
+    ignore the line that matters."""
+    import threading
+    import time as _time
+    import start
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / 'config.json'
+    cfg.write_text('{"accounts": {"a": {}}, "assets": {"GOLD": {}}}')
+    stop = threading.Event()
+    thread = threading.Thread(target=start.monitor,
+                              args=([], stop, str(cfg)), daemon=True)
+    thread.start()
+    _time.sleep(0.2)
+    cfg.write_text('{"accounts": {"a": {}}, "assets": '
+                   '{"GOLD": {"futures_expiry": "2026-11-22"}}}')
+    _time.sleep(3.0)
+    stop.set()
+    thread.join(timeout=5)
+    assert 'start it again' not in capsys.readouterr().out
+
+
+def test_a_half_written_config_is_not_announced_as_a_change(tmp_path,
+                                                            monkeypatch,
+                                                            capsys):
+    """The coordinator writes config.json through a tmp file, but the
+    launcher can still read one mid-write from anything else. A parse
+    failure is not a change."""
+    import threading
+    import time as _time
+    import start
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / 'config.json'
+    cfg.write_text('{"accounts": {"a": {}}}')
+    stop = threading.Event()
+    thread = threading.Thread(target=start.monitor,
+                              args=([], stop, str(cfg)), daemon=True)
+    thread.start()
+    _time.sleep(0.2)
+    cfg.write_text('{"accounts": {"a"')          # truncated
+    _time.sleep(3.0)
+    stop.set()
+    thread.join(timeout=5)
+    assert 'start it again' not in capsys.readouterr().out
 
 
 def test_two_accounts_cannot_share_one_terminal_installation(client):

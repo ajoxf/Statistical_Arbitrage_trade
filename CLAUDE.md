@@ -536,6 +536,46 @@ existed — but convergence does not need reversion, only expiry.
   calls or a roll — and shows the gross as `|spread| x k` rather than
   only its answer, because a bare total gets believed for months.
 
+## Three things that hid a broker error (2026-08-24, LIVE)
+
+The futures terminal had its Algo Trading button off, so every manual
+pair died on `10027 - AutoTrading disabled by client`. One toggle, and
+it took two log reads to find, because each layer dropped the reason:
+
+- **The manual panel said "the pair did not execute — check the log for
+  the broker error".** The engine was holding that error in a variable.
+  `PairExecutor._send_sliced` logged the child's failure and discarded
+  it, and the hedge branch overwrote `error_message` with its own
+  summary ("Futures hedge filled nothing"), which describes the
+  SYMPTOM. `_last_child_error` keeps the broker's words, the branch
+  quotes them, and `Coordinator._exec_error` carries them to
+  `manual_note`. This is the second time this exact anti-pattern has
+  been fixed here — see the manual-target refusal (2026-08-07) — and
+  the rule is the same: never send the operator to a log for a decision
+  the engine already made.
+- **The leg runner logged every client connect and disconnect at INFO.**
+  The webapp opens a short-lived RemoteLeg each time the Exchanges page
+  polls (15s, per leg), so that is four lines a quarter-minute saying
+  nothing, burying the coordinator's own output. DEBUG now; a
+  connection that DROPS is still a warning.
+- **The launcher shouted "restart" at every save.** It watched
+  config.json's MTIME, so saving anything printed the notice —
+  including the carry fields that now hot-apply. Crying restart at
+  every save trains the operator to ignore the line that matters.
+  `_launch_signature` compares only what the LAUNCHER itself reads at
+  startup: accounts and leg_accounts. A parse failure returns None and
+  announces nothing, so a half-written file is not a change.
+
+Also from this session: the fair-value row was 0.6rem and showed only
+its answer. It now shows the derivation as two lines of arithmetic
+(`4,292.61 × e^(4.25% × 90/365) = 4,341.49` / `− 1 × 4,292.61 = 48.88`)
+rendered from `fair_inputs`, which `fairvalue._derive` publishes
+alongside the value. Catching a wrong contract month or multiplier is
+the entire reason fair value is on the screen, and a bare number cannot
+be checked against anything. `fair_spread` keeps its two-tuple
+signature — 14 call sites unpack it — so `_derive` is the shared
+implementation rather than a second copy of the carry maths.
+
 ## A pair could be created but never removed (2026-08-07)
 
 Assets were only ever created — implicitly, by saving a symbol on a

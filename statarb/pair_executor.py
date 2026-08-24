@@ -47,6 +47,7 @@ class PairExecutor:
         self.clock = clock
         self.sleep = sleep
         self._meta_cache = {}
+        self._last_child_error = None   # the broker's words, for callers
 
     # ------------------------------------------------------------------
     # Volume helpers
@@ -219,6 +220,7 @@ class PairExecutor:
 
     def _send_sliced(self, leg, symbol, side, total_lots, comment,
                      style='market', timeout=None):
+        self._last_child_error = None
         meta = self._meta(leg, symbol)
         step = meta.get('volume_step') or 0.01
         vmax = meta.get('volume_max') or total_lots
@@ -251,6 +253,11 @@ class PairExecutor:
                 tickets.extend(result['tickets'])
 
             if not result['ok']:
+                # Keep the broker's own words for whoever reports the
+                # failure upstream. Logging it and dropping it is how
+                # the manual panel ended up saying "check the log for
+                # the broker error" while the engine held the answer.
+                self._last_child_error = result.get('error')
                 logging.warning("[%s] %s %s %.2f lots failed: %s",
                                 leg.name, side.value, symbol, volume,
                                 result.get('error'))
@@ -498,13 +505,16 @@ class PairExecutor:
             comment, style=entry_style,
             timeout=execution.get('HEDGE_TIMEOUT_SEC', 4))
 
+        hedge_error = self._last_child_error
         if fut_filled <= EPS:
             logging.error("Futures hedge filled nothing — unwinding %.2f "
                           "spot lots", spot_filled)
             self._unwind(self.spot_leg, spot_symbol, spot_side,
                          spot_filled, comment, tickets=spot_tickets)
             spot_trade.status = futures_trade.status = "ERROR"
-            futures_trade.error_message = "Futures hedge filled nothing"
+            futures_trade.error_message = (
+                f"the futures leg was refused: {hedge_error}" if hedge_error
+                else "the futures hedge filled nothing")
             return False, spot_trade, futures_trade
 
         if fut_filled < hedge_target - EPS:

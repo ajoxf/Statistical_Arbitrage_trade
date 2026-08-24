@@ -166,6 +166,27 @@ class Child:
 MAX_RESTARTS = 5
 
 
+def _launch_signature(config_path):
+    """The parts of config.json the LAUNCHER itself acts on: which
+    accounts exist and which leg each one serves. A leg runner is one
+    process per account, planned once at startup, so these are the only
+    changes a relaunch is required for. Everything else is the
+    coordinator's business — it hot-applies what it can and prints its
+    own restart line for what it cannot.
+
+    None when the file cannot be read, which also covers the moment
+    mid-write: a half-written config is not a change to announce.
+    """
+    try:
+        with open(config_path) as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return json.dumps({'accounts': raw.get('accounts') or {},
+                       'leg_accounts': raw.get('leg_accounts') or {}},
+                      sort_keys=True)
+
+
 def monitor(children, stop_event, config_path='config.json'):
     """Relaunch dead children with backoff — the coordinator recovers
     its positions from the DB and reconciles before trading again.
@@ -176,10 +197,7 @@ def monitor(children, stop_event, config_path='config.json'):
     the web UI stays up so the operator can fix the settings."""
     for child in children:
         child.restarts = 0
-    try:
-        config_stamp = os.path.getmtime(config_path)
-    except OSError:
-        config_stamp = None
+    launch_sig = _launch_signature(config_path)
     announced = False
     while not stop_event.is_set():
         # The operator is fixing the config in the web UI while this
@@ -191,15 +209,20 @@ def monitor(children, stop_event, config_path='config.json'):
         # they are looking (2026-08-18: accounts added after the
         # watchdog had already given up, and the console never
         # mentioned it again).
-        try:
-            now_stamp = os.path.getmtime(config_path)
-        except OSError:
-            now_stamp = config_stamp
-        if config_stamp and now_stamp != config_stamp and not announced:
+        # Only the parts THIS process read at startup. It used to
+        # watch the file's mtime, so every save of any setting shouted
+        # "restart" — including ones the coordinator hot-applies, which
+        # trains the operator to ignore the line that matters (live
+        # 2026-08-24: saving a contract expiry, which now hot-applies,
+        # printed the restart notice anyway).
+        now_sig = _launch_signature(config_path)
+        if launch_sig is not None and now_sig is not None \
+                and now_sig != launch_sig and not announced:
             announced = True
-            print("[launcher] config.json changed. Accounts and leg "
-                  "runners are read at STARTUP — stop this launcher "
-                  "(Ctrl+C) and start it again to pick the change up.")
+            print("[launcher] Accounts or leg mapping changed in "
+                  "config.json. Leg runners are planned at STARTUP — stop "
+                  "this launcher (Ctrl+C) and start it again to pick the "
+                  "change up.")
         for child in children:
             if child.proc is None or child.alive():
                 continue
