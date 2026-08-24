@@ -152,7 +152,8 @@ def convergence_plan(spread, days, spread_units, legs, cost_usd=0.0,
     out = {'days': days, 'spread': spread, 'spread_units': spread_units,
            'gross_usd': None, 'carry_usd': None,
            'cost_usd': cost_usd, 'net_usd': None, 'per_leg': [],
-           'reason': None}
+           'carry_spread': None, 'breakeven_spread': None,
+           'spread_gap': None, 'schedule': [], 'reason': None}
     if spread is None or not spread_units:
         out['reason'] = 'no live spread or no sizing yet'
         return out
@@ -187,4 +188,38 @@ def convergence_plan(spread, days, spread_units, legs, cost_usd=0.0,
     out['carry_usd'] = total
     # carry is SIGNED: positive means the pair is paid to wait.
     out['net_usd'] = out['gross_usd'] + total - (cost_usd or 0.0)
+
+    # The same arithmetic turned back into SPREAD, which is the unit the
+    # operator is actually looking at on the screen. Answering only in
+    # dollars means a figure that moves with lots and leverage; the
+    # spread the pair has to beat does not.
+    #
+    #   carry_spread     what the basis SHOULD be on financing alone —
+    #                    the theoretical spread for these remaining days
+    #   breakeven_spread the same plus the round trip: what it has to be
+    #                    for the trade to be worth placing
+    #
+    # net = 0  =>  |spread| x k + carry - cost = 0  =>
+    #              |spread| = (cost - carry) / k
+    out['carry_spread'] = -total / spread_units
+    out['breakeven_spread'] = ((cost_usd or 0.0) - total) / spread_units
+    out['spread_gap'] = abs(spread) - out['breakeven_spread']
+
+    # How that threshold decays as expiry approaches. Carry shrinks with
+    # the days left; the ROUND TRIP DOES NOT, so the curve flattens onto
+    # cost/k rather than onto zero. Stating that is the point of the
+    # table: waiting reduces the financing you pay and never the
+    # commission, so there is a floor under how good this can get.
+    per_day = total / days if days else 0.0
+    # Today first, then round-number milestones, and ALWAYS expiry last —
+    # the 0-day row is the one that shows the floor, so it survives the
+    # cap rather than being the first thing trimmed off the end.
+    milestones = [d for d in (180, 90, 60, 30, 14, 7, 3, 1) if d < days]
+    for d in [days] + milestones[-5:] + [0.0]:
+        carry_d = per_day * d
+        out['schedule'].append({
+            'days': d,
+            'carry_usd': carry_d,
+            'breakeven_spread': ((cost_usd or 0.0) - carry_d) / spread_units,
+        })
     return out

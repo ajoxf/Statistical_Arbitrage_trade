@@ -67,6 +67,39 @@
                         </div>
                         <div class="col-12 mt-3">
                             <div class="p-2 rounded" style="background: rgba(0,0,0,0.03);">
+                                <div class="fw-semibold mb-1">Contract expiry &mdash; the convergence date</div>
+                                <div class="row g-2">
+                                    <div class="col-md-4">
+                                        <label class="form-label mb-1" for="futures_expiry">
+                                            Leg B <small class="text-secondary">({{ config.futures_symbol or 'futures' }})</small>
+                                        </label>
+                                        <input type="date" class="form-control" id="futures_expiry"
+                                               name="futures_expiry"
+                                               value="{{ config.futures_expiry or '' }}">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label mb-1" for="spot_expiry">
+                                            Leg A <small class="text-secondary">(only for a calendar spread)</small>
+                                        </label>
+                                        <input type="date" class="form-control" id="spot_expiry"
+                                               name="spot_expiry"
+                                               value="{{ config.spot_expiry or '' }}">
+                                    </div>
+                                </div>
+                                <small class="text-secondary d-block mt-1">
+                                    Leave blank to use whatever the terminal reports for the symbol,
+                                    or for a <strong>rolling</strong> contract that never expires.
+                                    Your date wins over MT5's. This is what turns the swap into a
+                                    total &mdash; no expiry means no days to count, so the
+                                    <strong>Carry to Expiry</strong> card stays hidden. It does
+                                    <strong>not</strong> affect the spread, the z-score or any exit;
+                                    the spread stopped depending on expiry when the carry term was
+                                    removed from it.
+                                </small>
+                            </div>
+                        </div>
+                        <div class="col-12 mt-3">
+                            <div class="p-2 rounded" style="background: rgba(0,0,0,0.03);">
                                 <div class="fw-semibold mb-1">Overnight swap &mdash; per lot, per night</div>
                                 <div class="row g-2">
                                     <div class="col-md-4">
@@ -2019,6 +2052,10 @@
             // day the server distinguishes the two.
             swap_spot_per_lot: document.getElementById('swap_spot_per_lot').value.trim(),
             swap_futures_per_lot: document.getElementById('swap_futures_per_lot').value.trim(),
+            // Same rule: blank must reach the server as '' so it CLEARS
+            // the date back to "read MT5 / rolling contract".
+            futures_expiry: document.getElementById('futures_expiry').value.trim(),
+            spot_expiry: document.getElementById('spot_expiry').value.trim(),
             stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
             hurst_enabled: document.getElementById('hurst_enabled').checked,
             hurst_threshold: parseFloat(document.getElementById('hurst_threshold').value),
@@ -2329,6 +2366,10 @@
                     config.swap_spot_per_lot ?? '';
                 document.getElementById('swap_futures_per_lot').value =
                     config.swap_futures_per_lot ?? '';
+                document.getElementById('futures_expiry').value =
+                    config.futures_expiry ?? '';
+                document.getElementById('spot_expiry').value =
+                    config.spot_expiry ?? '';
                 document.getElementById('stats_update_interval').value = config.stats_update_interval;
                 document.getElementById('hurst_enabled').checked = config.hurst_enabled;
                 document.getElementById('hurst_threshold').value = config.hurst_threshold;

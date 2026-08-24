@@ -485,6 +485,33 @@ existed — but convergence does not need reversion, only expiry.
   path: a swap of 0 is a real statement.
 - **No expiry hides the card entirely.** A rolling contract never
   converges, so there is no date for this trade to be decided on.
+- **The answer is given in SPREAD, not only in dollars** (operator,
+  2026-08-24: "where can I see what the actual spread should be -
+  depending on the number of days left from the expiry"). Dollars move
+  with lots and leverage; the spread the pair has to beat does not, so
+  that is the row to read. `carry_spread = -carry / k` is what the
+  basis SHOULD be on financing alone — the theoretical spread for the
+  days remaining, priced from the broker's own swap rather than
+  fairvalue's risk-free rate. `breakeven_spread = (cost - carry) / k`
+  adds the round trip: net = 0 rearranged, so the two readings can
+  never disagree on screen (regression-tested:
+  `spread_gap x k == net_usd`). A break-even BELOW zero is the
+  paid-to-wait case and says so in words.
+- **The decay table flattens onto the round trip, not onto zero.**
+  Carry shrinks with the days left; commission does not. A schedule
+  running to zero would promise a free trade at expiry, so the 0-day
+  row always survives the row cap — it is the one that shows the floor.
+- **The operator can now SET the expiry** (same request: "The user
+  should set Expiry dates for Futures Leg"). There was no field for it
+  in any template — it came from MT5 at startup or not at all, and MT5
+  does not always report one. Both legs' dates are on Settings → Pair
+  Selection beside the swap boxes, since that is the whole carry input
+  set. `_adopt_broker_specs` already only filled a BLANK expiry, so a
+  typed date survives every restart. Clearable, like the swaps: blank
+  means "read MT5, or a rolling contract". A date that will not parse
+  is REPORTED and the old value kept; a date already gone is accepted
+  but flagged, because from the engine's side a passed expiry and a
+  rolling contract are the same thing.
 - **REFERENCE for a MANUAL decision**, like fairvalue: signals.py,
   exits.py, spread.py, costs.py and pair_executor.py never read it.
   The dashboard card states its assumptions — held to expiry, full

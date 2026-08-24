@@ -8,6 +8,35 @@ Everything in this module is that mapping, in both directions, so the
 UI stays byte-identical to W3 while the engine stays MT5-native.
 """
 
+from datetime import datetime
+
+
+def _expiry_or_raise(value):
+    """A contract expiry from the UI -> the ISO string config stores.
+
+    Kept as a STRING rather than a datetime because this dict is written
+    straight to config.json; `AlgoTradingConfig` parses it back on load.
+    A date this cannot read raises, so the save reports it — silently
+    dropping an expiry would leave the operator looking at a carry card
+    that says "rolling contract" for a future they just dated.
+    """
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    text = str(value).strip()
+    try:
+        return datetime.fromisoformat(text).date().isoformat()
+    except ValueError:
+        raise ValueError(f"{text!r} is not a date (use YYYY-MM-DD)")
+
+
+def _expiry_has_passed(value, now=None):
+    try:
+        when = (value if isinstance(value, datetime)
+                else datetime.fromisoformat(str(value)))
+    except (TypeError, ValueError):
+        return False
+    return when <= (now or datetime.now())
+
 # W3 field -> (config section, key). Values pass through unchanged
 # unless listed in the transform tables below.
 FIELD_MAP = {
@@ -155,9 +184,10 @@ def to_ui_config(raw, defaults=None):
     out['pair_type'] = (asset.get('pair_type') or 'SPOT_FUTURE').upper()
     out['carry_rate_pct'] = round(
         (asset.get('risk_free_rate') or 0.0) * 100, 4)
-    expiry = asset.get('futures_expiry')
-    out['futures_expiry'] = (expiry.isoformat()[:10]
-                             if hasattr(expiry, 'isoformat') else expiry)
+    for field in ('futures_expiry', 'spot_expiry'):
+        expiry = asset.get(field)
+        out[field] = (expiry.isoformat()[:10]
+                      if hasattr(expiry, 'isoformat') else expiry)
     out['paper_trading'] = raw.get('trading_mode', 'paper') != 'live'
     out['algo_enabled'] = raw.get('algo_enabled', True)
     out['accounts'] = raw.get('accounts', {})
@@ -207,27 +237,40 @@ def apply_ui_config(raw, payload):
         if payload.get('futures_symbol'):
             asset['futures_symbols'] = [payload['futures_symbol']]
         for field, key in (('contract_size', 'lot_size'),
-                           ('swap_charge', 'swap_charge'),
-                           ('futures_expiry', 'futures_expiry'),
-                           ('spot_expiry', 'spot_expiry')):
+                           ('swap_charge', 'swap_charge')):
             if payload.get(field) not in (None, ''):
                 asset[key] = payload[field]
-        # Hand-entered swap overrides, per lot per night, per leg. These
-        # must be CLEARABLE — blank means "use whatever MT5 reports" —
-        # so they cannot ride the skip-if-blank loop above, which can
-        # only ever set a value and never take one away. An override the
+        # CLEARABLE fields — blank means "use whatever MT5 reports", so
+        # they cannot ride the skip-if-blank loop above, which can only
+        # ever set a value and never take one away. An override the
         # operator cannot remove is worse than no override: it would
-        # outlive the pair it was typed for.
-        for field in ('swap_spot_per_lot', 'swap_futures_per_lot'):
+        # outlive the pair it was typed for, and for an EXPIRY that is
+        # the difference between a convergence date and a rolling
+        # contract that has none.
+        for field, cast in (('swap_spot_per_lot', float),
+                            ('swap_futures_per_lot', float),
+                            ('futures_expiry', _expiry_or_raise),
+                            ('spot_expiry', _expiry_or_raise)):
             if field not in payload:
                 continue
             if payload[field] in (None, ''):
                 asset.pop(field, None)
                 continue
             try:
-                asset[field] = float(payload[field])
-            except (TypeError, ValueError):
-                notes.append(f"{field} was not a number and was ignored.")
+                asset[field] = cast(payload[field])
+            except (TypeError, ValueError) as exc:
+                notes.append(f"{field}: {exc} — left unchanged.")
+        # A date already gone is accepted — the operator may be recording
+        # a contract that has just rolled — but it is SAID, because from
+        # the engine's side a passed expiry and a rolling contract are
+        # the same thing: no days left, so no convergence to price.
+        if str(asset.get('futures_expiry') or '') and \
+                _expiry_has_passed(asset['futures_expiry']):
+            notes.append(
+                f"Futures expiry {asset['futures_expiry']} has already "
+                f"passed, so there are no days left to converge over and "
+                f"the carry card will stay hidden. Set the live "
+                f"contract's date.")
         if payload.get('pair_type'):
             asset['pair_type'] = str(payload['pair_type']).upper()
         # Carry rate arrives as a percentage from the UI and is stored

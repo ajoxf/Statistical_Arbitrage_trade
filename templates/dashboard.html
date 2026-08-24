@@ -834,6 +834,36 @@
                                     id="carry-net-usd">-</td></tr>
                         </tbody>
                     </table>
+                    <!-- The same arithmetic in SPREAD, which is the unit
+                         on the screen. Dollars move with lots and
+                         leverage; the spread the pair has to beat does
+                         not, so this is the row to read. -->
+                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
+                        <table class="w-100" style="font-size: 0.7rem;">
+                            <tbody>
+                                <tr><td class="text-secondary">Carry says the spread should be</td>
+                                    <td class="text-end font-monospace" id="carry-implied-spread">-</td></tr>
+                                <tr><td class="text-secondary">Worth trading above</td>
+                                    <td class="text-end font-monospace" id="carry-breakeven-spread">-</td></tr>
+                                <tr><td class="fw-bold">Spread now</td>
+                                    <td class="text-end fw-bold font-monospace"
+                                        id="carry-spread-now">-</td></tr>
+                            </tbody>
+                        </table>
+                        <div id="carry-gap-note" class="mt-1" style="font-size: 0.65rem;"></div>
+                    </div>
+                    <!-- How the threshold decays toward expiry. Carry
+                         shrinks with the days left; the round trip does
+                         NOT, so this flattens onto the commission rather
+                         than onto zero. -->
+                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
+                        <div class="text-secondary mb-1" style="font-size: 0.68rem;">
+                            Spread needed, by days left
+                        </div>
+                        <table class="w-100" style="font-size: 0.65rem;" id="carry-schedule">
+                            <tbody></tbody>
+                        </table>
+                    </div>
                     <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
                         <div class="text-secondary mb-1" style="font-size: 0.68rem;">
                             Swap per leg &mdash; signed, negative is charged
@@ -2662,6 +2692,61 @@
         document.getElementById('carry-verdict').textContent = net > 0
             ? 'spread is wider than the carry'
             : 'the carry eats the spread';
+
+        // In SPREAD. The dollars above answer "what is this worth at my
+        // size"; these answer "what does the spread have to be", which
+        // is the number that decides the pair and does not move when
+        // the sizing does.
+        const sp = v => (v == null ? '-' : v.toFixed(4));
+        document.getElementById('carry-implied-spread').textContent =
+            sp(carry.carry_spread);
+        document.getElementById('carry-breakeven-spread').textContent =
+            sp(carry.breakeven_spread);
+        const nowEl = document.getElementById('carry-spread-now');
+        nowEl.textContent = sp(carry.spread == null
+                               ? null : Math.abs(carry.spread));
+        const gap = carry.spread_gap;
+        nowEl.className = 'text-end fw-bold font-monospace '
+            + (gap > 0 ? 'price-up' : 'price-down');
+        const gapNote = document.getElementById('carry-gap-note');
+        if (gap == null) {
+            gapNote.textContent = '';
+        } else if (carry.breakeven_spread <= 0) {
+            gapNote.className = 'mt-1 price-up';
+            gapNote.textContent = 'The carry is a CREDIT larger than the '
+                + 'round trip — you are paid to hold this to expiry at any '
+                + 'spread.';
+        } else {
+            gapNote.className = 'mt-1 ' + (gap > 0 ? 'price-up' : 'text-secondary');
+            gapNote.textContent = gap > 0
+                ? 'Wider than it needs to be by ' + gap.toFixed(4)
+                  + ' of spread.'
+                : 'Short by ' + Math.abs(gap).toFixed(4) + ' of spread — '
+                  + 'convergence does not cover the carry and the round trip.';
+        }
+
+        // The decay. Worth showing rather than describing, because the
+        // shape is the point: the curve flattens onto the round trip
+        // instead of reaching zero, so waiting buys less than it looks
+        // like it should.
+        const sched = document.querySelector('#carry-schedule tbody');
+        sched.innerHTML = '';
+        (carry.schedule || []).forEach(pt => {
+            const tr = document.createElement('tr');
+            const d = document.createElement('td');
+            d.className = 'text-secondary';
+            d.textContent = pt.days <= 0 ? 'at expiry'
+                : (pt.days < 10 ? pt.days.toFixed(1) : Math.round(pt.days))
+                  + ' days';
+            const c = document.createElement('td');
+            c.className = 'text-end text-secondary font-monospace';
+            c.textContent = money(pt.carry_usd);
+            const b = document.createElement('td');
+            b.className = 'text-end font-monospace';
+            b.textContent = sp(pt.breakeven_spread);
+            tr.appendChild(d); tr.appendChild(c); tr.appendChild(b);
+            sched.appendChild(tr);
+        });
 
         const legs = document.getElementById('carry-legs');
         legs.innerHTML = '';

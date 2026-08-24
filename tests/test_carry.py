@@ -289,3 +289,124 @@ def test_the_gross_is_shown_as_a_multiplication_not_just_a_total():
     assert plan['spread_units'] == 110.0
     assert plan['gross_usd'] == pytest.approx(abs(plan['spread'])
                                               * plan['spread_units'])
+
+
+# --- the same answer in SPREAD ------------------------------------------
+# Operator, 2026-08-24: "where can I see what the actual spread should be
+# - depending on the number of days left from the expiry". Dollars move
+# with lots and leverage; the spread the pair has to beat does not.
+
+def test_carry_says_what_the_spread_should_be():
+    """On financing alone, the theoretical basis for the days left."""
+    plan = carry.convergence_plan(
+        spread=-7.22, days=90.0, spread_units=110.0,
+        legs=[(-0.40, 0.11, 'a'), (-0.30, 0.11, 'b')], cost_usd=0.0)
+    # -$6.93 of carry over 110 units
+    assert plan['carry_spread'] == pytest.approx(6.93 / 110.0)
+
+
+def test_break_even_spread_is_where_the_net_turns_over():
+    plan = carry.convergence_plan(
+        spread=-7.22, days=90.0, spread_units=110.0,
+        legs=[(-0.40, 0.11, 'a'), (-0.30, 0.11, 'b')], cost_usd=39.0)
+    at_be = carry.convergence_plan(
+        spread=plan['breakeven_spread'], days=90.0, spread_units=110.0,
+        legs=[(-0.40, 0.11, 'a'), (-0.30, 0.11, 'b')], cost_usd=39.0)
+    assert at_be['net_usd'] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_gap_agrees_with_the_net():
+    """Two readings of one fact — they must never disagree on screen."""
+    plan = carry.convergence_plan(
+        spread=-7.22, days=90.0, spread_units=110.0,
+        legs=[(-0.40, 0.11, 'a'), (-0.30, 0.11, 'b')], cost_usd=39.0)
+    assert plan['spread_gap'] * plan['spread_units'] == \
+        pytest.approx(plan['net_usd'])
+    assert (plan['spread_gap'] > 0) == (plan['net_usd'] > 0)
+
+
+def test_a_credit_larger_than_the_round_trip_needs_no_spread_at_all():
+    """Being PAID to wait is the case worth finding, and it shows up as
+    a break-even BELOW zero rather than as a small positive."""
+    plan = carry.convergence_plan(
+        spread=0.10, days=90.0, spread_units=110.0,
+        legs=[(+1.00, 1.0, 'a')], cost_usd=39.0)
+    assert plan['breakeven_spread'] < 0
+
+
+def test_the_schedule_decays_to_the_round_trip_not_to_zero():
+    """Carry shrinks with the days left; the round trip does not. A
+    table that ran to zero would promise a free trade at expiry."""
+    plan = carry.convergence_plan(
+        spread=-7.22, days=90.0, spread_units=110.0,
+        legs=[(-0.40, 0.11, 'a'), (-0.30, 0.11, 'b')], cost_usd=39.0)
+    needed = [pt['breakeven_spread'] for pt in plan['schedule']]
+    assert needed == sorted(needed, reverse=True)   # falls as expiry nears
+    assert plan['schedule'][-1]['days'] == 0
+    assert plan['schedule'][-1]['breakeven_spread'] == \
+        pytest.approx(39.0 / 110.0)
+
+
+def test_the_schedule_never_looks_past_the_expiry():
+    plan = carry.convergence_plan(
+        spread=1.0, days=21.0, spread_units=100.0,
+        legs=[(-0.10, 1.0, 'a')], cost_usd=5.0)
+    assert all(pt['days'] <= 21.0 for pt in plan['schedule'])
+    assert plan['schedule'][0]['days'] == 21.0
+
+
+# --- the operator can set the expiry ------------------------------------
+# There was no field for it anywhere: expiry came from MT5 or not at all,
+# and MT5 does not always report one.
+
+def test_an_expiry_typed_by_hand_is_stored():
+    from statarb import webapi
+    out, _, _ = webapi.apply_ui_config(
+        {'assets': {}}, {'asset': 'GOLD', 'futures_expiry': '2026-11-25'})
+    assert out['assets']['GOLD']['futures_expiry'] == '2026-11-25'
+
+
+def test_a_blank_expiry_clears_it_back_to_rolling():
+    """A rolling contract has no convergence date. If the date could not
+    be removed, the card would price a trade that has no deadline."""
+    from statarb import webapi
+    raw = {'assets': {'GOLD': {'futures_expiry': '2026-11-25'}}}
+    out, _, _ = webapi.apply_ui_config(
+        raw, {'asset': 'GOLD', 'futures_expiry': ''})
+    assert 'futures_expiry' not in out['assets']['GOLD']
+
+
+def test_an_unreadable_date_is_reported_not_swallowed():
+    from statarb import webapi
+    raw = {'assets': {'GOLD': {'futures_expiry': '2026-11-25'}}}
+    out, _, notes = webapi.apply_ui_config(
+        raw, {'asset': 'GOLD', 'futures_expiry': 'Dec 26'})
+    assert out['assets']['GOLD']['futures_expiry'] == '2026-11-25'
+    assert any('not a date' in n for n in notes)
+
+
+def test_a_past_expiry_says_the_card_will_stay_hidden():
+    from statarb import webapi
+    _, _, notes = webapi.apply_ui_config(
+        {'assets': {}}, {'asset': 'GOLD', 'futures_expiry': '2020-01-01'})
+    assert any('already' in n and 'passed' in n for n in notes)
+
+
+def test_the_expiry_survives_a_round_trip_through_the_ui():
+    from statarb import webapi
+    raw, _, _ = webapi.apply_ui_config(
+        {'assets': {}}, {'asset': 'GOLD', 'futures_expiry': '2026-11-25',
+                         'spot_expiry': '2026-09-25'})
+    ui = webapi.to_ui_config(raw)
+    assert ui['futures_expiry'] == '2026-11-25'
+    assert ui['spot_expiry'] == '2026-09-25'
+
+
+def test_a_typed_expiry_beats_what_the_terminal_reports(coord):
+    """_adopt_broker_specs only fills a BLANK expiry, so the operator's
+    date is not overwritten at the next startup."""
+    from datetime import datetime as _dt
+    asset = coord.config.ASSETS['GOLD']
+    asset['futures_expiry'] = _dt(2026, 11, 25)
+    block = coord._carry_block('GOLD', GOLD_MD, 39.0)
+    assert block['expiry'] == '2026-11-25'
