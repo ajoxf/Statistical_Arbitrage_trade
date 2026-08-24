@@ -289,35 +289,6 @@
             </div>
         </div>
 
-        <!-- Traded VOLUME — turnover, not position size. Operator
-             2026-08-11: "keep track of Volume per day, per week and
-             per month". Read from the trades table so it survives a
-             restart; the risk manager's lots-today is in memory and
-             resets with the process. -->
-        <div class="card mb-3">
-            <div class="card-header py-1 d-flex justify-content-between align-items-center">
-                <small><i class="bi bi-stack me-1"></i>Traded Volume</small>
-                <small class="text-secondary" style="font-size: 0.7rem;"
-                       title="Filled orders. One round trip is four of them — two legs in, two legs out — so this is turnover, not the size of any position.">fills, not positions</small>
-            </div>
-            <div class="card-body py-2">
-                <table class="table table-sm mb-0" style="font-size: 0.8rem;">
-                    <thead><tr>
-                        <th></th>
-                        <th class="text-end" title="Sum of filled lot sizes across both legs. The broker counts in lots and DAILY_LOT_TARGET is set in them — but a lot is a different amount of money on every instrument, so this only adds up within one symbol.">Lots</th>
-                        <th class="text-end" title="Lots x contract size x fill price. The comparable figure: it can be added across instruments, which lots cannot.">Notional</th>
-                        <th class="text-end" title="Filled orders sent to the broker.">Fills</th>
-                        <th class="text-end" title="Positions closed in the period. Four fills each, normally.">Round trips</th>
-                    </tr></thead>
-                    <tbody id="volume-rows">
-                        <tr><td colspan="5" class="text-secondary">Loading…</td></tr>
-                    </tbody>
-                </table>
-                <div id="volume-target" class="mt-2"></div>
-                <div id="volume-note" class="text-secondary mt-1"
-                     style="font-size: 0.7rem;"></div>
-            </div>
-        </div>
 
         <!-- Position Sizing — per-leg notional, leverage, margin, β-converted price.
              Same element IDs as before so updateLegSizing() / converted-price JS works unchanged. -->
@@ -666,8 +637,40 @@
             <div class="card-header py-1">
                 <small><i class="bi bi-graph-up me-2"></i>Spread History</small>
             </div>
+
+
             <div class="card-body py-2">
                 <canvas id="spreadChart" height="100"></canvas>
+            </div>
+        </div>
+
+        <!-- Traded VOLUME — turnover, not position size. Operator
+             2026-08-11: "keep track of Volume per day, per week and
+             per month". Read from the trades table so it survives a
+             restart; the risk manager's lots-today is in memory and
+             resets with the process. -->
+        <div class="card mb-3">
+            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                <small><i class="bi bi-stack me-1"></i>Traded Volume</small>
+                <small class="text-secondary" style="font-size: 0.7rem;"
+                       title="Filled orders. One round trip is four of them — two legs in, two legs out — so this is turnover, not the size of any position.">fills, not positions</small>
+            </div>
+            <div class="card-body py-2">
+                <table class="table table-sm mb-0" style="font-size: 0.8rem;">
+                    <thead><tr>
+                        <th></th>
+                        <th class="text-end" title="Sum of filled lot sizes across both legs. The broker counts in lots and DAILY_LOT_TARGET is set in them — but a lot is a different amount of money on every instrument, so this only adds up within one symbol.">Lots</th>
+                        <th class="text-end" title="Lots x contract size x fill price. The comparable figure: it can be added across instruments, which lots cannot.">Notional</th>
+                        <th class="text-end" title="Filled orders sent to the broker.">Fills</th>
+                        <th class="text-end" title="Positions closed in the period. Four fills each, normally.">Round trips</th>
+                    </tr></thead>
+                    <tbody id="volume-rows">
+                        <tr><td colspan="5" class="text-secondary">Loading…</td></tr>
+                    </tbody>
+                </table>
+                <div id="volume-target" class="mt-2"></div>
+                <div id="volume-note" class="text-secondary mt-1"
+                     style="font-size: 0.7rem;"></div>
             </div>
         </div>
     </div>
@@ -1213,7 +1216,17 @@
                                oninput="updateManualHints()" style="font-size:0.75rem;">
                     </div>
                     <div class="col-4">
-                        <label class="form-label mb-0 text-success" style="font-size:0.65rem;">Take Profit</label>
+                        <label class="form-label mb-0 text-success d-flex justify-content-between align-items-baseline"
+                               style="font-size:0.65rem;">
+                            <span>Take Profit</span>
+                            <span class="text-secondary">
+                                <input type="number" class="py-0 px-1"
+                                       id="manual-tp-pct" value="1" step="0.1" min="0"
+                                       oninput="updateManualHints()"
+                                       style="font-size:0.6rem; width:2.6rem;"
+                                       title="Profit target as a % of the margin this pair ties up — the same base as EXITS.TP_CAPITAL_PCT, so the manual and signal paths agree.">%
+                            </span>
+                        </label>
                         <input type="number" class="form-control form-control-sm py-0" id="manual-exit-spread" step="0.0001"
                                oninput="updateManualHints()" style="font-size:0.75rem;">
                     </div>
@@ -1223,6 +1236,12 @@
                                oninput="updateManualHints()" style="font-size:0.75rem;">
                     </div>
                 </div>
+                <!-- Break-even and a suggested target, both in SPREAD,
+                     both for the direction selected. The operator asked
+                     for "a profit percent after the break-even amount";
+                     the base is the margin the pair ties up, which is
+                     what EXITS.TP_CAPITAL_PCT already means. -->
+                <div class="mb-1" id="manual-tp-suggest" style="font-size:0.64rem;"></div>
                 <div class="mb-2" id="manual-level-hint" style="font-size:0.62rem;"></div>
                 <div class="mb-2">
                     <label class="form-label mb-0" style="font-size:0.65rem;">Overnight</label>
@@ -1791,8 +1810,70 @@
         }
     }
 
+    // Break-even and a suggested target, in SPREAD, for the direction
+    // selected. A short spread profits as it FALLS, so both levels sit
+    // below the fill; a long spread is the mirror.
+    //
+    //   break-even  = fill  ∓  cost / k
+    //   target      = fill  ∓  (cost + pct% x margin) / k
+    //
+    // k is leg B's units — the same multiplier that turns any spread
+    // move into dollars — and the margin base is what
+    // EXITS.TP_CAPITAL_PCT already means, so a manual target set this
+    // way and a signal target agree about what "1%" is.
+    function renderManualTpSuggestion() {
+        const el = document.getElementById('manual-tp-suggest');
+        if (!el) return;
+        const sel = document.getElementById('manual-trade-direction');
+        const short = !sel || sel.value === 'SELL_BASIS';
+        const fill = window.__manualSpread;
+        const e = window.__manualEdge || {};
+        const pctEl = document.getElementById('manual-tp-pct');
+        const pct = pctEl ? parseFloat(pctEl.value) : NaN;
+
+        if (fill == null || !e.k || e.cost == null) {
+            el.textContent = '';
+            return;
+        }
+        const d = short ? -1 : 1;
+        const be = fill + d * (e.cost / e.k);
+        el.innerHTML = '';
+        const beSpan = document.createElement('span');
+        beSpan.className = 'text-secondary';
+        beSpan.textContent = 'Break even ' + be.toFixed(4);
+        el.appendChild(beSpan);
+
+        // The suggestion needs a margin figure. Without one, say so
+        // rather than quietly falling back to a different base.
+        if (!isFinite(pct) || pct <= 0) return;
+        if (!e.capital) {
+            const why = document.createElement('span');
+            why.className = 'text-secondary';
+            why.textContent = ' · set leverage to size a % target';
+            el.appendChild(why);
+            return;
+        }
+        const profit = e.capital * pct / 100;
+        const target = fill + d * ((e.cost + profit) / e.k);
+        const link = document.createElement('a');
+        link.href = '#';
+        link.textContent = 'use ' + target.toFixed(4);
+        link.title = pct + '% of $' + e.capital.toFixed(0) + ' margin = $'
+            + profit.toFixed(2) + ' on top of the $' + e.cost.toFixed(2)
+            + ' round trip';
+        link.onclick = function (ev) {
+            ev.preventDefault();
+            const tp = document.getElementById('manual-exit-spread');
+            if (tp) { tp.value = target.toFixed(4); updateManualHints(); }
+        };
+        el.appendChild(document.createTextNode(' · +$' + profit.toFixed(2)
+                                               + ' at ' + pct + '% margin · '));
+        el.appendChild(link);
+    }
+
     function updateManualHints() {
         renderManualSpread();
+        renderManualTpSuggestion();
         const hint = document.getElementById('manual-level-hint');
         if (!hint) return;
         const f = manualFields();
@@ -1943,7 +2024,17 @@
     socket.on('signal', function(data) {
         updateSignal(data);
         updateCharts(data);
-        if (typeof renderManualSpread === 'function') renderManualSpread();
+        if (typeof renderManualSpread === 'function') {
+            // The suggestion is priced off the live fill, the cost and
+            // the margin, so it moves with them.
+            window.__manualEdge = {
+                cost: data.round_trip_cost_usd,
+                capital: data.capital_required,
+                k: (data.rt_lots_b != null && data.rt_contract_b != null)
+                    ? data.rt_lots_b * data.rt_contract_b : null};
+            renderManualSpread();
+            renderManualTpSuggestion();
+        }
         lastUpdateTime = Date.now();
     });
 
@@ -3323,7 +3414,17 @@
         // Unconditional on purpose: if the touches go missing for a tick
         // the price must fall back to the mid straight away rather than
         // freeze on the last executable figure it saw.
-        if (typeof renderManualSpread === 'function') renderManualSpread();
+        if (typeof renderManualSpread === 'function') {
+            // The suggestion is priced off the live fill, the cost and
+            // the margin, so it moves with them.
+            window.__manualEdge = {
+                cost: data.round_trip_cost_usd,
+                capital: data.capital_required,
+                k: (data.rt_lots_b != null && data.rt_contract_b != null)
+                    ? data.rt_lots_b * data.rt_contract_b : null};
+            renderManualSpread();
+            renderManualTpSuggestion();
+        }
 
         const meanEl = document.getElementById('spread-mean');
         if (meanEl) {

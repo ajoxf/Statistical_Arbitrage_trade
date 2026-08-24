@@ -2415,3 +2415,38 @@ def test_the_capture_formula_is_the_one_the_engine_evaluates(client):
     assert "' units'" in page
     # The old per-lot form is gone.
     assert "Math.round(csizeE)" not in page
+
+
+def test_the_manual_panel_suggests_a_target_above_break_even(client):
+    """Operator, 2026-08-24: "can you include a suggested TP - which
+    would be a particular profit percent after Break Even amount?" The
+    base is the MARGIN the pair ties up, which is what
+    EXITS.TP_CAPITAL_PCT already means — so a manual target set this way
+    and a signal target agree about what "1%" is."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'id="manual-tp-pct"' in page
+    assert 'id="manual-tp-suggest"' in page
+    assert 'function renderManualTpSuggestion' in page
+    # Break-even and the target are both in SPREAD, derived with k.
+    assert 'e.cost / e.k' in page
+    assert '(e.cost + profit) / e.k' in page
+    # No margin figure means no suggestion, rather than a silent switch
+    # to some other base.
+    assert 'set leverage to size a % target' in page
+
+
+def test_the_margin_base_reaches_the_browser():
+    """capital_required was only on /api/account-info; the suggestion is
+    computed in the panel, so it has to be in the signal payload."""
+    from statarb import webapi
+    ui = webapi.status_to_ui({'assets': [{
+        'asset': 'GOLD', 'z': 1.0, 'spread': 58.9, 'samples': 400,
+        'capital_required': 1220.0, 'rt_cost_usd': 1.10,
+        'rt_lots_b': 0.02, 'rt_contract_b': 100.0}]}, {})
+    assert ui['signal']['capital_required'] == 1220.0
+    assert ui['signal']['round_trip_cost_usd'] == 1.10
+
+
+def test_the_volume_card_sits_below_the_spread_chart(client):
+    page = client.get('/').get_data(as_text=True)
+    assert page.index('Spread History') < page.index('Traded Volume')

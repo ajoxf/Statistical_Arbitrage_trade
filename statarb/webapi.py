@@ -676,6 +676,10 @@ def status_to_ui(status, config_raw):
             'round_trip_fees_bps': first.get('rt_fees_bps'),
             'round_trip_slippage_bps': None,
             'round_trip_cost_usd': first.get('rt_cost_usd'),
+            # Margin the pair ties up — the base for the manual
+            # panel's suggested take-profit, and the same base
+            # EXITS.TP_CAPITAL_PCT uses, so the two agree.
+            'capital_required': first.get('capital_required'),
             # The cost's own INPUTS, so the Filters card can spell the
             # calculation out with live numbers instead of asking the
             # operator to take a lone figure on trust.

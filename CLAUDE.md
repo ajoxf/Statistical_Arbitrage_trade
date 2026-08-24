@@ -734,6 +734,43 @@ was outranking the prices the operator fills at.
   side by side and are read against each other, so "58.7" next to
   "59.17" invites a misread of the gap between them.
 
+## A suggested target, priced off the margin (2026-08-24, operator)
+
+"Can you include a suggested TP - which would be a particular profit
+percent after Break Even amount?" The base was the open question, and
+the operator chose **% of the margin the pair ties up** — which is what
+`EXITS.TP_CAPITAL_PCT` already means, so a manual target set this way
+and a signal target agree about what "1%" is.
+
+Both levels are in SPREAD, for the direction selected, because that is
+the field they are typed into:
+
+    break-even = fill  ∓  cost / k
+    target     = fill  ∓  (cost + pct% x margin) / k
+
+`k` is leg B's units, the same multiplier used everywhere else. A short
+spread profits as it FALLS, so both levels sit below the fill and a long
+is the mirror — the sign is `d = -1` for SELL_BASIS.
+
+- The fill is the EXECUTABLE spread for that direction, not the mid, so
+  the suggestion is anchored where the trade would actually open.
+- **No margin figure means no suggestion.** Leverage unset -> the line
+  says "set leverage to size a % target" rather than quietly falling
+  back to a different base. A target computed off the wrong base is
+  worse than no target: it looks like a considered number.
+- `capital_required` was only on `/api/account-info`; the suggestion is
+  computed in the panel, so it is published into the `signal` payload
+  too.
+- One click fills the Take Profit box, and the tooltip carries the
+  arithmetic ("1% of $1,220 margin = $12.20 on top of the $1.10 round
+  trip").
+
+Worth reading before using it: at 0.02 lots the margin is ~$1,220 and
+`k` is 2, so **1% of margin is 6.65 of spread** — far outside anything
+this pair moves in a session. The number is honest; whether it is
+reachable is the operator's call, and the break-even line beside it is
+the one that is always attainable.
+
 ## Which spread each decision reads (2026-08-24, operator)
 
 Operator: "will the algo know which Bid and ask to take into
