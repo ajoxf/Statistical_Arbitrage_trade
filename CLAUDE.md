@@ -771,6 +771,50 @@ this pair moves in a session. The number is honest; whether it is
 reachable is the operator's call, and the break-even line beside it is
 the one that is always attainable.
 
+## The broker-clock line flapped again (2026-08-24, LIVE)
+
+```
+21:02:41 INFO    Leg 'Account_Spot': broker clock is UTC-0.1h ...
+21:03:12 WARNING Leg 'Account_Spot': broker clock is UTC+0.0h ...
+```
+
+The 2026-08-07 fix rounded the offset to the MINUTE, on the theory that
+the jitter was a one-second tick stamp against a continuous clock. That
+was only half of it. The offset is
+`newest_tick.time - time.time()`, which conflates the broker's clock
+with **how stale the newest tick is** — and on a quiet feed that is
+minutes, not seconds. UTC-0.1h was a six-minute-old tick, not a clock
+that moved.
+
+Two defences now, because the resolution alone was never going to hold:
+
+- **A running MAXIMUM.** Staleness can only bias the reading DOWN — a
+  tick is never stamped in the future — so the largest reading seen is
+  the best estimate, and it converges the moment one fresh tick lands.
+- **Quantised to the HALF HOUR.** Broker clocks are whole or half hours
+  from UTC (UTC+2, UTC+3, UTC+5:30); nothing between is a real setting.
+  A DST roll is a full hour and still crosses a bucket, so it is still
+  a WARNING.
+
+Given up deliberately: a clock that moves BACKWARD is not re-detected
+until a restart, because the maximum never falls. That is the right
+trade against a spurious warning every thirty seconds.
+
+## The touches are coloured by SIDE, like the leg cards (2026-08-24)
+
+Operator: "does it change colors like green and red?" — they did not,
+the prices were plain dark text — then "Make this very similar to the
+Leg Card".
+
+The first attempt tinted each touch to match the SPREAD it builds (all
+red under short, all green under long). Wrong convention: the leg cards
+above already colour **bid green and ask red**, and a price must not
+change colour depending on which of two tables it happens to sit in.
+Now `Leg B bid` is green wherever it appears and `Leg A ask` is red
+wherever it appears, rendered as the leg cards do it — a small grey
+label with the price beneath — at half the size of the spread they
+build, so they stay provenance rather than a second headline.
+
 ## A warning nobody can act on is not a fix (2026-08-24, operator)
 
 Third time round on the same card: "The net should be around $8 and not

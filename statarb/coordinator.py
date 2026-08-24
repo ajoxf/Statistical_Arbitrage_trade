@@ -163,7 +163,8 @@ class Coordinator:
         self._plan_refusal = None      # why the last entry was blocked
         self._exec_error = None        # ...or what the broker said
         self._meta_cache = {}          # (leg, symbol) -> volume limits
-        self._server_clock = {}        # leg -> broker clock offset vs UTC
+        self._server_clock = {}       # leg -> reported offset, half hours
+        self._server_clock_raw = {}   # leg -> best (largest) raw reading
         self._scenario_result = None   # last round-trip scenario outcome
         self._last_confirmation = None  # last MT5 ticket read-back
         self._diagnostics = None       # last connectivity checklist
@@ -2565,21 +2566,38 @@ class Coordinator:
         is most often this and nothing else, and it is invisible until
         someone states the number.
 
-        Compared to the MINUTE, not the second. The offset is measured
-        as `tick.time - time.time()`, and a tick stamp has one-second
-        resolution against a continuous clock, so the raw number
-        alternates between (say) 10800 and 10799 from one poll to the
-        next. Dedup on the exact value therefore never matched and the
-        line reprinted every 30s at WARNING — the same log flood the
-        operator asked to be rid of, wearing a different hat. A clock
-        offset that genuinely CHANGES (a DST roll) moves by 30 minutes
-        or more, so the minute is the honest resolution and a change at
-        that resolution is worth a WARNING."""
+        Two things make the raw reading jitter, and the minute was not
+        coarse enough for either.
+
+        The offset is measured as `newest_tick.time - time.time()`. A
+        tick stamp has one-second resolution against a continuous clock,
+        which alternates the raw number by a second — but far worse, a
+        tick is only as fresh as the FEED. On a quiet market the newest
+        tick can be minutes old, and every one of those minutes is
+        subtracted from the apparent offset. Live 2026-08-24 the same
+        broker reported UTC-0.1h and then UTC+0.0h within thirty
+        seconds: a six-minute-old tick, not a clock that moved.
+
+        So two defences. Staleness can only ever bias the reading DOWN
+        — a tick is never stamped in the future — which makes the
+        running MAXIMUM the best estimate available, converging on the
+        truth the moment one fresh tick arrives. And the report is
+        quantised to the half hour, because broker clocks are whole or
+        half hours from UTC (UTC+2, UTC+3, UTC+5:30) and nothing in
+        between is a real setting. A DST roll moves a full hour and
+        still crosses a bucket, so it is still a WARNING.
+
+        The one thing this gives up: a clock that moves BACKWARD is not
+        re-detected until a restart, because the maximum never falls.
+        That is the right trade — a spurious warning every thirty
+        seconds is the failure the operator actually hit."""
         offset = next((r.get('server_offset_sec') for r in rows
                        if r.get('server_offset_sec') is not None), None)
         if offset is None:
             return
-        minutes = int(round(offset / 60.0))
+        best = max(offset, self._server_clock_raw.get(leg_name, offset))
+        self._server_clock_raw[leg_name] = best
+        minutes = int(round(best / 1800.0)) * 30
         if self._server_clock.get(leg_name) == minutes:
             return
         first = leg_name not in self._server_clock

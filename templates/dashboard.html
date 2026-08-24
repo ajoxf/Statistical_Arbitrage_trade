@@ -443,8 +443,7 @@
                                      labels are different widths, so as free
                                      text the prices never lined up with the
                                      other leg's. -->
-                                <table class="mt-1 w-100" id="short-spread-legs"
-                                       style="font-size: 0.75rem; line-height: 1.5;"><tbody></tbody></table>
+                                <div id="short-spread-legs"></div>
                             </div>
                             <div id="long-spread-cell" style="display:none;"
                                  title="LONG the spread: buy Leg B (futures) at its ASK, sell Leg A (spot) at its BID.">
@@ -452,8 +451,7 @@
                                      id="long-spread"
                                      style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
                                 <div class="metric-label">Long</div>
-                                <table class="mt-1 w-100" id="long-spread-legs"
-                                       style="font-size: 0.75rem; line-height: 1.5;"><tbody></tbody></table>
+                                <div id="long-spread-legs"></div>
                             </div>
                             <!-- The MID spread was removed here (operator,
                                  2026-08-24: "Remove this number. It doesn't
@@ -1187,8 +1185,7 @@
                     <span class="fw-bold font-monospace" id="manual-current-spread"
                           style="font-size: 1rem;">&mdash;</span>
                 </div>
-                <table class="w-100 mb-2" id="manual-spread-legs"
-                       style="font-size: 0.75rem; line-height: 1.5;"><tbody></tbody></table>
+                <div id="manual-spread-legs" class="mb-2"></div>
                 <div class="row g-1 mb-2">
                     <div class="col-7">
                         <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>
@@ -1796,12 +1793,13 @@
         }
         const legs = document.getElementById('manual-spread-legs');
         if (legs) {
-            const body = legs.tBodies[0];
-            if (body) body.innerHTML = '';
+            legs.innerHTML = '';
             if (value != null) {
                 renderTouches('manual-spread-legs', short
-                    ? [['Leg B bid', x.futBid], ['Leg A ask', x.spotAsk]]
-                    : [['Leg B ask', x.futAsk], ['Leg A bid', x.spotBid]]);
+                    ? [['Leg B bid', x.futBid, 'bid'],
+                       ['Leg A ask', x.spotAsk, 'ask']]
+                    : [['Leg B ask', x.futAsk, 'ask'],
+                       ['Leg A bid', x.spotBid, 'bid']]);
             }
         }
     }
@@ -3270,21 +3268,32 @@
     // side of that leg is: a spread you can fill at is only as good as
     // the book behind it. textContent throughout; these are broker
     // figures, not markup.
+    // Built like the Leg cards above: a small grey label with the price
+    // under it, BID green and ASK red. Colouring by side rather than by
+    // which spread the touch belongs to is the important part — the leg
+    // cards already use that convention, and a price should not change
+    // colour depending on which of two tables it happens to be sitting
+    // in. Half the size of the spread it builds, so it stays provenance
+    // rather than a second headline.
     function renderTouches(id, rows) {
         const el = document.getElementById(id);
         if (!el) return;
-        const body = el.tBodies[0] || el.appendChild(document.createElement('tbody'));
-        body.innerHTML = '';
-        rows.forEach(([label, value]) => {
-            const tr = body.insertRow();
-            const l = tr.insertCell();
+        el.innerHTML = '';
+        el.className = 'd-flex justify-content-around mt-1';
+        rows.forEach(([label, value, side]) => {
+            const cell = document.createElement('div');
+            cell.className = 'text-center';
+            const l = document.createElement('div');
             l.className = 'text-secondary';
-            l.style.whiteSpace = 'nowrap';
+            l.style.cssText = 'font-size: 0.62rem; line-height: 1.2;';
             l.textContent = label;
-            const v = tr.insertCell();
-            v.className = 'text-end font-monospace';
-            v.style.paddingLeft = '0.6rem';
+            const v = document.createElement('div');
+            v.className = 'font-monospace fw-semibold '
+                + (side === 'bid' ? 'price-up' : 'price-down');
+            v.style.cssText = 'font-size: 0.82rem; line-height: 1.25;';
             v.textContent = value == null ? '—' : Number(value).toFixed(2);
+            cell.appendChild(l); cell.appendChild(v);
+            el.appendChild(cell);
         });
     }
 
@@ -3434,11 +3443,11 @@
                     futBid: data.futures_bid, futAsk: data.futures_ask,
                     spotBid: data.spot_bid, spotAsk: data.spot_ask};
                 renderTouches('short-spread-legs',
-                              [['Leg B bid', data.futures_bid],
-                               ['Leg A ask', data.spot_ask]]);
+                              [['Leg B bid', data.futures_bid, 'bid'],
+                               ['Leg A ask', data.spot_ask, 'ask']]);
                 renderTouches('long-spread-legs',
-                              [['Leg B ask', data.futures_ask],
-                               ['Leg A bid', data.spot_bid]]);
+                              [['Leg B ask', data.futures_ask, 'ask'],
+                               ['Leg A bid', data.spot_bid, 'bid']]);
                 const cost = data.spread_cost;
                 const wB = (data.futures_ask != null && data.futures_bid != null)
                     ? data.futures_ask - data.futures_bid : null;

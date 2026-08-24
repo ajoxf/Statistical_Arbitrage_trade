@@ -2388,8 +2388,8 @@ def test_the_leg_widths_are_stated_once_beside_the_round_turn(client):
     assert 'data.spot_ask - data.spot_bid' in page
     assert "'Leg A ±'" in page
     assert 'one round turn of bid-ask' in page
-    # The touch tables are back to two columns.
-    assert 'rows.forEach(([label, value]) => {' in page
+    # ...and the touches themselves render as label-over-price cells.
+    assert 'rows.forEach(([label, value, side]) => {' in page
 
 
 # ---------------------------------------------------------------------------
@@ -2460,3 +2460,21 @@ def test_the_margin_base_reaches_the_browser():
 def test_the_volume_card_sits_below_the_spread_chart(client):
     page = client.get('/').get_data(as_text=True)
     assert page.index('Spread History') < page.index('Traded Volume')
+
+
+def test_the_touches_are_coloured_by_SIDE_like_the_leg_cards(client):
+    """Operator, 2026-08-24: "does it change colors like green and
+    red?", then "make this very similar to the Leg Card".
+
+    They were plain dark text. Colouring them by which SPREAD they build
+    was the first attempt and the wrong convention: the leg cards above
+    already colour bid green and ask red, and a price must not change
+    colour depending on which of two tables it happens to sit in. Side
+    it is.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert "side === 'bid' ? 'price-up' : 'price-down'" in page
+    assert "['Leg B bid', data.futures_bid, 'bid']" in page
+    assert "['Leg A ask', data.spot_ask, 'ask']" in page
+    # Label above, price below — the leg-card shape.
+    assert "'d-flex justify-content-around mt-1'" in page
