@@ -852,6 +852,21 @@ The touch colours use **`price-up` / `price-down`, not Bootstrap's
 the green and red survive a blocked CDN — a failure this app has already
 had once (2026-08-06), and the leg cards are still exposed to it.
 
+Third pass, "still looks shabby. Remove the outer card if not needed":
+
+- **The wrapper card is gone.** Four cards inside a fifth is a frame
+  around a frame, and it contributed nothing but padding. The Close
+  Market/Limit buttons moved into the POSITION card — the thing they
+  act on — rather than being orphaned with the wrapper.
+- **The header badges are gone.** "SELL B / BUY A" was wide enough to
+  push the card title onto a second line, so the header read as an icon
+  with "Short" underneath it. The fact lives in the card's tooltip and
+  in the note under the row; the header just says "Short spread", in
+  the direction's colour.
+- **`white-space: nowrap` on every touch.** They were breaking mid-
+  number — `4709.1` on one line and `1` on the next. A number split
+  across a line break is a different number.
+
 ## A warning nobody can act on is not a fix (2026-08-24, operator)
 
 Third time round on the same card: "The net should be around $8 and not

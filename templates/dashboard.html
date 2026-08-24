@@ -398,22 +398,11 @@
             </div>
         </div>
 
-        <!-- Signal & Position Combined -->
-        <div class="card mb-3">
-            <div class="card-header py-2 d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-lightning me-2"></i>Signal & Position</span>
-                <span id="close-btn-group" style="display: none;">
-                    <button class="btn btn-sm btn-danger py-0" id="close-market-btn" onclick="closePosition('market')" style="font-size: 0.75rem;"
-                            title="Close NOW at market price — guaranteed instant fill, pays the taker fee. Use when it's urgent.">
-                        <i class="bi bi-lightning-charge"></i> Market
-                    </button>
-                    <button class="btn btn-sm btn-outline-success py-0 ms-1" id="close-limit-btn" onclick="closePosition('limit')" style="font-size: 0.75rem;"
-                            title="Close as maker (limit) — saves the taker fee, may take a bit longer; falls back to market if it can't fill. Use when not urgent.">
-                        <i class="bi bi-cash-coin"></i> Limit
-                    </button>
-                </span>
-            </div>
-            <div class="card-body py-2">
+        <!-- No outer card here (operator, 2026-08-24: "Remove the
+             outer card if not needed"). Four cards inside a fifth
+             was a frame around a frame, and the wrapper contributed
+             nothing but padding. The close buttons moved into the
+             Position card, which is the thing they act on. -->
                 <!-- Four separate cards, built like the Leg cards above:
                      a header naming the reading, the value large in the
                      middle, and its constituent parts in labelled columns
@@ -439,9 +428,8 @@
                     <div class="col-md-3 col-6" id="short-spread-cell" style="display:none;">
                         <div class="card h-100"
                              title="SHORT the spread: sell Leg B at its BID, buy Leg A at its ASK.">
-                            <div class="card-header py-1 d-flex justify-content-between align-items-center">
-                                <small><i class="bi bi-arrow-down-right me-1"></i>Short</small>
-                                <span class="badge bg-danger" style="font-size: 0.6rem;">SELL B / BUY A</span>
+                            <div class="card-header py-1">
+                                <small class="text-danger"><i class="bi bi-arrow-down-right me-1"></i>Short spread</small>
                             </div>
                             <div class="card-body py-2 text-center">
                                 <div class="price-down fw-bold font-monospace" id="short-spread"
@@ -453,9 +441,8 @@
                     <div class="col-md-3 col-6" id="long-spread-cell" style="display:none;">
                         <div class="card h-100"
                              title="LONG the spread: buy Leg B at its ASK, sell Leg A at its BID.">
-                            <div class="card-header py-1 d-flex justify-content-between align-items-center">
-                                <small><i class="bi bi-arrow-up-right me-1"></i>Long</small>
-                                <span class="badge bg-success" style="font-size: 0.6rem;">BUY B / SELL A</span>
+                            <div class="card-header py-1">
+                                <small class="text-success"><i class="bi bi-arrow-up-right me-1"></i>Long spread</small>
                             </div>
                             <div class="card-body py-2 text-center">
                                 <div class="price-up fw-bold font-monospace" id="long-spread"
@@ -483,6 +470,16 @@
                                      style="font-size: 1rem; padding: 0.3rem 0.7rem;">FLAT</div>
                                 <div id="sl-cooldown-indicator" style="display:none; margin-top:4px;">
                                     <span class="badge bg-warning" style="font-size:0.65rem;">SL COOLDOWN <span id="sl-cooldown-secs">0</span>s</span>
+                                </div>
+                                <div id="close-btn-group" class="mt-2" style="display: none;">
+                                    <button class="btn btn-sm btn-danger py-0" id="close-market-btn" onclick="closePosition('market')" style="font-size: 0.7rem;"
+                                            title="Close NOW at market price — guaranteed instant fill, pays the taker fee. Use when it's urgent.">
+                                        <i class="bi bi-lightning-charge"></i> Market
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-success py-0 ms-1" id="close-limit-btn" onclick="closePosition('limit')" style="font-size: 0.7rem;"
+                                            title="Close as maker (limit) — saves the taker fee, may take a bit longer; falls back to market if it can't fill. Use when not urgent.">
+                                        <i class="bi bi-cash-coin"></i> Limit
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -620,8 +617,6 @@
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
 
         <!-- Z-Score Chart -->
         <div class="card mb-3">
@@ -3293,7 +3288,8 @@
             cell.className = 'col-6 text-center';
             const l = document.createElement('div');
             l.className = 'text-secondary';
-            l.style.cssText = 'font-size: 0.7rem; line-height: 1.2;';
+            l.style.cssText = 'font-size: 0.62rem; line-height: 1.2;'
+                + 'white-space: nowrap;';
             l.textContent = label;
             const v = document.createElement('div');
             // price-up / price-down, NOT Bootstrap's text-success /
@@ -3302,7 +3298,8 @@
             // and red the leg cards show, one less thing to lose.
             v.className = 'font-monospace '
                 + (side === 'bid' ? 'price-up' : 'price-down');
-            v.style.cssText = 'font-size: 0.85rem; line-height: 1.25;';
+            v.style.cssText = 'font-size: 0.78rem; line-height: 1.25;'
+                + 'white-space: nowrap;';
             v.textContent = value == null ? '—' : Number(value).toFixed(2);
             cell.appendChild(l); cell.appendChild(v);
             el.appendChild(cell);

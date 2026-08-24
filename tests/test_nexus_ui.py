@@ -2483,3 +2483,24 @@ def test_the_touches_are_coloured_by_SIDE_like_the_leg_cards(client):
     # shape the leg cards use for Bid / Spread / Ask.
     assert "'col-6 text-center'" in page
     assert 'id="short-spread-legs"' in page
+
+
+def test_there_is_no_wrapper_card_around_the_four_readings(client):
+    """Operator, 2026-08-24: "Remove the outer card if not needed."
+    Four cards inside a fifth is a frame around a frame; the wrapper
+    contributed nothing but padding."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'Signal &amp; Position' not in page
+    assert 'Signal & Position' not in page
+    # The close buttons moved to the Position card — the thing they act
+    # on — rather than being orphaned with the wrapper.
+    assert 'id="close-btn-group"' in page
+    pos = page.index('id="position-badge"')
+    assert 0 < page.index('id="close-btn-group"') - pos < 900
+
+
+def test_a_price_never_wraps_mid_number(client):
+    """"4709.1 / 1" on two lines. A number split across a line break is
+    a different number."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'white-space: nowrap;' in page
