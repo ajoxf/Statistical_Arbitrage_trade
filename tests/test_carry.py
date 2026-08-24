@@ -422,8 +422,8 @@ def test_a_typed_expiry_beats_what_the_terminal_reports(coord):
 
 def test_opposite_signs_are_called_out():
     msg = carry.sanity(carry_spread=-51.82, fair_value=48.55)
-    assert msg and 'OPPOSITE' in msg
-    assert 'normally negative' in msg
+    assert msg and 'opposite signs' in msg
+    assert 'normally charged' in msg
 
 
 def test_the_same_swap_with_the_right_sign_agrees_with_fair_value():
@@ -449,7 +449,7 @@ def test_the_plan_carries_the_warning():
         legs=[(+58.0, 0.02, 'XAUUSD long'), (0.0, 0.02, 'GCZ6 short')],
         cost_usd=1.22, fair_value=48.55)
     assert plan['carry_spread'] == pytest.approx(-51.82, abs=0.01)
-    assert plan['warning'] and 'OPPOSITE' in plan['warning']
+    assert plan['warning'] and 'opposite signs' in plan['warning']
 
 
 def test_the_charged_version_of_the_same_trade_is_clean():
@@ -580,3 +580,48 @@ def test_the_arithmetic_survives_as_a_terminal_ladder(client_dash):
     # ...and not as prose.
     assert 'id="carry-plain"' not in page
     assert 'If the spread closes to zero it pays' not in page
+
+
+# --- the check that needs no fair value ---------------------------------
+# `sanity` compares against fairvalue, and a RELATED pair has none — so
+# an inverted swap sign sailed straight through on those pairs
+# (operator, 2026-08-24, on a SWAP row reading +$103.43: "One of them
+# should be Negative").
+
+def test_a_credited_long_leg_is_flagged_without_a_fair_value():
+    msg = carry.credited_long_leg([
+        {'symbol': 'XAUUSD', 'side': 'L', 'per_lot_night': +58.0},
+        {'symbol': 'GCZ6', 'side': 'S', 'per_lot_night': 0.0}])
+    assert msg and 'CREDIT' in msg and 'XAUUSD' in msg
+
+
+def test_a_charged_long_leg_is_normal():
+    assert carry.credited_long_leg([
+        {'symbol': 'XAUUSD', 'side': 'L', 'per_lot_night': -58.0},
+        {'symbol': 'GCZ6', 'side': 'S', 'per_lot_night': +2.0}]) is None
+
+
+def test_a_credited_SHORT_leg_is_normal():
+    """Being paid on the leg you are short is ordinary — that is the
+    other side of the same financing."""
+    assert carry.credited_long_leg([
+        {'symbol': 'GCZ6', 'side': 'S', 'per_lot_night': +58.0}]) is None
+
+
+def test_an_unpriced_leg_is_not_flagged():
+    assert carry.credited_long_leg([
+        {'symbol': 'X', 'side': 'L', 'per_lot_night': None}]) is None
+    assert carry.credited_long_leg([]) is None
+    assert carry.credited_long_leg(None) is None
+
+
+def test_the_coordinator_falls_back_to_it_when_there_is_no_fair_value(coord):
+    """A RELATED pair has no fair value, so the cross-check is silent —
+    this one still catches the sign."""
+    asset = coord.config.ASSETS['GOLD']
+    asset['futures_expiry'] = datetime.now() + timedelta(days=30)
+    asset['pair_type'] = 'RELATED'
+    asset['swap_spot_long_per_lot'] = +58.0
+    asset['swap_futures_short_per_lot'] = 0.0
+    block = coord._carry_block('GOLD', dict(GOLD_MD, fair_value=None), 1.0)
+    assert block['warning'] and 'CREDIT' in block['warning']

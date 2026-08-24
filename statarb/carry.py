@@ -166,18 +166,44 @@ def sanity(carry_spread, fair_value):
     if abs(fair_value) < 1e-9:
         return None
     if carry_spread * fair_value < 0:
-        return (f'The swap says the basis should be {carry_spread:+,.2f} '
-                f'and the carry rate says {fair_value:+,.2f} — OPPOSITE '
-                f'SIGNS, so one of the two inputs is wrong. The usual '
-                f'cause is a swap entered as a credit when the broker '
-                f'charges it: a leg you are LONG is normally charged, so '
-                f'its figure is normally negative.')
+        return (f'Swap says the basis is {carry_spread:+,.2f}, the carry '
+                f'rate says {fair_value:+,.2f} — opposite signs. A leg you '
+                f'are LONG is normally charged, so its swap is negative.')
     ratio = abs(carry_spread) / abs(fair_value)
     if ratio > SANITY_MULT or ratio < 1.0 / SANITY_MULT:
-        return (f'The swap says the basis should be {carry_spread:+,.2f} '
-                f'and the carry rate says {fair_value:+,.2f} — a factor of '
-                f'{max(ratio, 1 / ratio):,.1f} apart. Check the swap units '
-                f'and the carry rate; they are pricing the same thing.')
+        return (f'Swap says the basis is {carry_spread:+,.2f}, the carry '
+                f'rate says {fair_value:+,.2f} — {max(ratio, 1 / ratio):,.1f}x '
+                f'apart. They price the same thing, so check the units.')
+    return None
+
+
+def credited_long_leg(per_leg):
+    """Flag a leg you are LONG that is showing a CREDIT, or None.
+
+    `sanity` above needs a fair value to compare against, and a RELATED
+    pair has none — so on those pairs an inverted swap sign sailed
+    straight through (operator, 2026-08-24, reading a card whose SWAP
+    row was +$103.43: "One of them should be Negative").
+
+    This check needs no second estimate. Holding a long position is
+    financed, so the broker charges you: a long leg's swap is negative
+    on essentially every instrument this engine trades. A CREDIT there
+    is the signature of a magnitude typed without its minus sign, which
+    is exactly the mistake that produced a card reading "you are paid to
+    hold this to expiry at any spread".
+
+    It is possible to be paid on a long leg — a deeply negative-rate
+    funding currency — so this reports rather than refuses. But it must
+    say so, because the alternative is a fabricated edge that looks like
+    the best trade on the screen.
+    """
+    for leg in per_leg or ():
+        rate = leg.get('per_lot_night')
+        if leg.get('side') == 'L' and rate is not None and rate > 0:
+            return (f"{leg.get('symbol') or 'Leg A'} is the leg you would "
+                    f"be LONG and its swap is a CREDIT ({rate:+.2f} a "
+                    f"night). A long leg is normally charged — check the "
+                    f"sign.")
     return None
 
 

@@ -781,12 +781,13 @@
                     </div>
                     <table class="w-100" style="font-size: 0.7rem;" id="edge-breakdown">
                         <tbody>
-                            <tr><td class="text-secondary">Capture, per lot</td>
+                            <tr><td class="text-secondary">Capture</td>
                                 <td class="text-end text-secondary" id="edge-capture-calc">-</td>
-                                <td class="text-end font-monospace" id="edge-capture-per-lot">-</td></tr>
-                            <tr><td class="text-secondary" id="edge-capture-scale-label">&times; lots</td>
-                                <td class="text-end text-secondary"></td>
                                 <td class="text-end font-monospace" id="edge-capture-usd">-</td></tr>
+                            <tr class="text-secondary" style="font-size: 0.92em;">
+                                <td id="edge-capture-scale-label">per lot</td>
+                                <td class="text-end" id="edge-capture-per-lot">-</td>
+                                <td></td></tr>
                             <tr><td class="text-secondary">Required</td>
                                 <td class="text-end text-secondary" id="edge-required-calc">-</td>
                                 <td class="text-end font-monospace" id="edge-required-usd">-</td></tr>
@@ -819,14 +820,19 @@
                                     <td class="text-end text-secondary" id="rt-comm-calc">-</td>
                                     <td class="text-end font-monospace" id="rt-comm-usd">-</td></tr>
                                 <tr style="border-top: 1px solid var(--border-color);">
-                                    <td class="fw-bold pt-1">Total</td>
-                                    <td class="text-end text-secondary pt-1" id="rt-perlot-unit">-</td>
+                                    <td class="fw-bold pt-1" id="round-trip-scale-label">Total</td>
+                                    <td class="text-end text-secondary pt-1" id="rt-total-bps">-</td>
                                     <td class="text-end fw-bold font-monospace pt-1"
-                                        id="round-trip-per-lot">-</td></tr>
-                                <tr><td class="text-secondary" id="round-trip-scale-label">&times; lots</td>
-                                    <td class="text-end text-secondary" id="rt-total-bps">-</td>
-                                    <td class="text-end fw-bold font-monospace"
                                         id="round-trip-cost">-</td></tr>
+                                <!-- Per-lot is an ASIDE, and it lives in the
+                                     middle column so the money column stays
+                                     one basis. Reading 0.32 / 0.78 / 1.10
+                                     and then 55.00 straight down that column
+                                     is what made the card look wrong. -->
+                                <tr class="text-secondary" style="font-size: 0.92em;">
+                                    <td id="rt-perlot-label">per lot</td>
+                                    <td class="text-end font-monospace" id="round-trip-per-lot">-</td>
+                                    <td id="rt-perlot-unit"></td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -2792,8 +2798,14 @@
 
         document.getElementById('carry-gross-usd').textContent =
             money(carry.gross_usd);
+        // The multiplier WITH its derivation. "×2" alone reads as a
+        // factor of two — it is 0.02 lots × 100 per lot = 2 units.
         document.getElementById('carry-gross-note').textContent =
-            carry.spread_units ? '×' + carry.spread_units.toLocaleString() : '';
+            !carry.spread_units ? ''
+            : '×' + carry.spread_units.toLocaleString()
+              + ((carry.leg_b_lots && carry.leg_b_contract)
+                 ? ' (' + carry.leg_b_lots + '×'
+                   + carry.leg_b_contract.toLocaleString() + ')' : '');
         // Swap is a COST when negative; the sign carries that, so the
         // note only has to say over how many nights and at what size.
         document.getElementById('carry-carry-usd').textContent =
@@ -2815,7 +2827,11 @@
             // worth reading. Say that instead of the conclusion.
             gapNote.className = 'mt-1 text-warning';
             gapNote.textContent = '⚠ ' + carry.warning;
-            verdict.textContent = 'CHECK SWAP';
+            // The EDGE cell is a NUMBER column. Putting "CHECK SWAP" in
+            // it read as "EDGE: CHECK SWAP", which is not a reading of
+            // anything. An unmeasurable figure is a dash; the warning
+            // underneath is what says why and what to do.
+            verdict.textContent = '—';
             verdict.className = 'text-end fw-bold pt-1 text-warning';
             document.getElementById('carry-edge-label').textContent = 'EDGE';
         } else {
@@ -3515,20 +3531,31 @@
             const eZ   = data.edge_z, eSig = data.edge_sigma;
             const units = data.rt_units;
 
-            // Per lot, then scaled — the same shape as the round-trip
-            // table below, so the two totals can be read against each
-            // other at either size without dividing anything by hand.
-            const csizeE = data.rt_contract_size;
+            // The formula the ENGINE evaluates: f x z x sigma x k, where
+            // k is LEG B's units. It used to print "x <contract size>",
+            // which is the per-lot form and only equals the computed
+            // value when both legs trade the same lots — true today at
+            // beta 1 with equal contracts, and wrong the moment either
+            // changes. The printed derivation must be the computation,
+            // not a form of it that happens to agree.
+            const kUnits = (data.rt_lots_b != null && data.rt_contract_b != null)
+                ? data.rt_lots_b * data.rt_contract_b : null;
             eSet('edge-capture-calc',
-                 (frac != null && eZ != null && eSig != null && csizeE != null)
+                 (frac != null && eZ != null && eSig != null && kUnits != null)
                  ? frac + ' × z ' + eZ.toFixed(2) + ' × σ ' + eSig.toFixed(4)
-                   + ' × ' + Math.round(csizeE)
+                   + ' × ' + (+kUnits.toFixed(4)) + ' units'
                  : (eZ == null ? 'no usable Z yet' : ''));
-            eSet('edge-capture-per-lot', cash(data.edge_capture_per_lot),
-                 'text-end font-monospace');
-            eSet('edge-capture-scale-label', data.rt_lots != null
-                 ? '× ' + (+data.rt_lots.toFixed(2)) + ' lots' : '× lots');
             eSet('edge-capture-usd', cash(cap), 'text-end font-monospace');
+            // The per-lot figure is an ASIDE — muted, and in the middle
+            // column, so the money column is all at YOUR size. $22.20
+            // sitting directly above $0.44 and a $1.32 requirement read
+            // as capture dwarfing the requirement on a card that says
+            // shortfall.
+            eSet('edge-capture-per-lot', cash(data.edge_capture_per_lot),
+                 'text-end');
+            eSet('edge-capture-scale-label', data.rt_lots != null
+                 ? 'per lot (÷ ' + (+data.rt_lots.toFixed(2)) + ')'
+                 : 'per lot');
             eSet('edge-required-calc',
                  (data.std_ratio_required != null
                   && data.round_trip_cost_usd != null)
@@ -3645,17 +3672,20 @@
                 }
 
                 // The two legs above are already totals for the whole
-                // position, so the bottom rows are the sum and a
-                // per-Leg-A-lot figure. "Per lot" alone stopped meaning
-                // anything once the legs trade different lot counts.
+                // position, so TOTAL is their sum at your size — the same
+                // basis as every row above it. The per-Leg-A-lot figure
+                // is an aside and sits in the middle column, muted:
+                // $55.00 in the money column under $0.32 / $0.78 / $1.10
+                // is four numbers on two different bases.
                 set('rt-perlot-unit', '');
-                set('round-trip-per-lot', money(usd));
-                set('round-trip-scale-label', lA != null
-                    ? 'per Leg A lot (÷ ' + (+lA.toFixed(2)) + ')'
-                    : 'per lot');
+                set('round-trip-scale-label', 'Total');
                 set('rt-total-bps', bps != null
                     ? bps.toFixed(1) + ' bps of Leg A notional' : '');
-                set('round-trip-cost', money(perLot));
+                set('round-trip-cost', money(usd));
+                set('rt-perlot-label', lA != null
+                    ? 'per Leg A lot (÷ ' + (+lA.toFixed(2)) + ')'
+                    : 'per lot');
+                set('round-trip-per-lot', money(perLot));
 
                 if (ss != null && fs != null) {
                     const n = (x, d) => (x == null ? '?' : x.toFixed(d));

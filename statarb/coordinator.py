@@ -2285,6 +2285,11 @@ class Coordinator:
         # = 2 UNITS of the underlying, and the swap is charged once.
         for entry, label in zip(block.get('per_leg') or [], leg_labels):
             entry.update(label)
+        # The fair-value cross-check above needs a fair value, and a
+        # RELATED pair has none — so an inverted swap sign sailed
+        # through on those. This one needs no second estimate.
+        if not block.get('warning'):
+            block['warning'] = carry.credited_long_leg(block.get('per_leg'))
         block['leg_b_lots'] = plan.get('leg_b_lots')
         block['leg_b_contract'] = plan.get('leg_b_contract')
         block['pair_type'] = md.get('pair_type')

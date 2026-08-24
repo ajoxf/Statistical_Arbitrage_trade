@@ -2380,3 +2380,38 @@ def test_each_touch_carries_its_own_leg_width(client):
     page = client.get('/').get_data(as_text=True)
     assert 'data.futures_ask - data.futures_bid' in page
     assert 'data.spot_ask - data.spot_bid' in page
+
+
+# ---------------------------------------------------------------------------
+# The Filters card: one basis per column (2026-08-24, operator)
+# ---------------------------------------------------------------------------
+# "Go through these numbers thoroughly. Something seems wrong here."
+# Every figure reconciled exactly. What was wrong was the COLUMN: read
+# straight down the money column it went 22.20 / 0.44 / 1.32 / -0.88,
+# where the first is per LOT and the rest are at the operator's size.
+# Capture appeared to dwarf a requirement on a card reporting a
+# shortfall. Same fault as the carry card's bare "x 2".
+
+def test_the_per_lot_figures_are_not_in_the_money_column(client):
+    page = client.get('/').get_data(as_text=True)
+    # Both per-lot values now render into the middle (calc) column and
+    # are muted, so the right-hand column is all at-size.
+    edge = page[page.index('id="edge-breakdown"'):]
+    edge = edge[:edge.index('</table>')]
+    assert 'id="edge-capture-usd"' in edge
+    per_lot_row = edge[edge.index('id="edge-capture-scale-label"'):]
+    assert 'id="edge-capture-per-lot"' in per_lot_row
+    assert 'text-secondary' in edge
+
+
+def test_the_capture_formula_is_the_one_the_engine_evaluates(client):
+    """It printed "x <contract size>", the per-lot form, which equals
+    the computed value only when both legs trade the same lots — true
+    at beta 1 with equal contracts and wrong the moment either moves.
+    The derivation must BE the computation: f x z x sigma x k, k in
+    leg B's units."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'data.rt_lots_b * data.rt_contract_b' in page
+    assert "' units'" in page
+    # The old per-lot form is gone.
+    assert "Math.round(csizeE)" not in page

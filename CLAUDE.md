@@ -734,6 +734,31 @@ was outranking the prices the operator fills at.
   side by side and are read against each other, so "58.7" next to
   "59.17" invites a misread of the gap between them.
 
+## "Go through these numbers thoroughly" (2026-08-24, operator)
+
+The Filters card. Every figure reconciled to the cent — capture, the
+1.2x requirement, the shortfall, both leg spreads, the total, the bps,
+the z needed and the cost in sigmas all check out against the engine's
+own arithmetic. What was wrong was the COLUMN.
+
+Read straight down the money column it went **22.20 / 0.44 / 1.32 /
+-0.88**: the first is per LOT and the rest are at the operator's size.
+So capture appeared to dwarf a requirement on a card reporting a
+shortfall. The round-trip table had the same shape — 0.32 / 0.78 / 1.10
+and then **55.00**. Both per-lot figures moved into the middle column,
+muted, so the money column is one basis throughout.
+
+Found while checking it: **the capture formula printed was not the one
+the engine evaluates.** It read `0.5 x z x sigma x 100` — the per-lot
+form, using leg A's contract size — while the value is
+`capture / lots_a` and capture is `f x z x sigma x k` with `k` in LEG
+B's units. Those agree only when both legs trade the same lots, which
+is true at beta 1 with equal contracts and false the moment either
+moves. It now prints `x 2 units` from `rt_lots_b x rt_contract_b`, so
+the derivation IS the computation rather than a form of it that happens
+to agree. Same family as the `expected_capture` leg mix-up of
+2026-08-11.
+
 ## A stray </div> put every card below it across the page (2026-08-24)
 
 Operator: "This card has got misaligned" — the Reset card the full width
