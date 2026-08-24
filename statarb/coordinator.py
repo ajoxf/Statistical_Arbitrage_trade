@@ -2274,6 +2274,12 @@ class Coordinator:
             # checked against each other rather than sitting side by
             # side on the dashboard disagreeing in silence.
             fair_value=md.get('fair_value'))
+        # What `k` is MADE OF. Shown as "x 2" with no unit it reads as a
+        # factor of two — operator, 2026-08-24: "Why is '56.5400 x 2'?
+        # Why swap being charged 2 times". It is 0.02 lots x 100 per lot
+        # = 2 UNITS of the underlying, and the swap is charged once.
+        block['leg_b_lots'] = plan.get('leg_b_lots')
+        block['leg_b_contract'] = plan.get('leg_b_contract')
         block['pair_type'] = md.get('pair_type')
         block['expiry'] = (asset['futures_expiry'].date().isoformat()
                            if asset.get('futures_expiry') else None)

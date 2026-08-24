@@ -634,11 +634,36 @@ def test_the_settings_page_says_fair_value_is_reference_only(client):
     assert 'never reads this' in page
 
 
-def test_the_dashboard_marks_the_fair_value_reference_only(client):
+def test_the_dashboard_does_not_render_fair_value(client):
+    """Operator, 2026-08-24: "The above is incorrect and not needed."
+
+    Fair value stayed on the spread card through three rounds of
+    pushback — first as a bare number nobody could check, then with the
+    derivation spelled out, then with the derivation moved to a tooltip.
+    It is REFERENCE, and it was sitting above the two prices the
+    operator actually fills at. Removed from the card.
+
+    It is still COMPUTED and still published: carry.sanity reads it to
+    catch a swap entered with the wrong sign, which is what caught a
+    +58/night credit reading as "you are paid to hold this at any
+    spread". Deleting the computation would take that check with it.
+    """
     page = client.get('/').get_data(as_text=True)
-    assert 'id="fair-value-row"' in page
-    assert 'ref only' in page
-    assert 'REFERENCE ONLY' in page
+    assert 'id="fair-value-row"' not in page
+    assert 'id="fair-working"' not in page
+
+
+def test_fair_value_is_still_computed_for_the_carry_sanity_check(config):
+    """The check that survives the display being removed."""
+    from datetime import datetime, timedelta
+    from statarb import carry, fairvalue
+    asset = dict(config.ASSETS['GOLD'])
+    asset.update(pair_type='SPOT_FUTURE', risk_free_rate=0.0425,
+                 futures_expiry=datetime.now() + timedelta(days=89))
+    block = fairvalue.fair_value_block(asset, 4658.10, 4714.22, 56.99, 1.0)
+    assert block['fair_value'] is not None
+    # A swap entered as a credit still gets caught.
+    assert carry.sanity(-51.77, block['fair_value'])
 
 
 # ---------------------------------------------------------------------------

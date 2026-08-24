@@ -461,12 +461,20 @@
                                          id="short-spread"
                                          style="font-size: 1.5rem; line-height: 1.1;">&mdash;</div>
                                     <div class="metric-label">Short</div>
+                                    <!-- The two touches it is BUILT from, so the
+                                         number can be checked against the book. -->
+                                    <div class="text-secondary font-monospace"
+                                         id="short-spread-legs"
+                                         style="font-size: 0.58rem; line-height: 1.3;"></div>
                                 </div>
                                 <div title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
                                     <div class="price-up fw-bold font-monospace"
                                          id="long-spread"
                                          style="font-size: 1.5rem; line-height: 1.1;">&mdash;</div>
                                     <div class="metric-label">Long</div>
+                                    <div class="text-secondary font-monospace"
+                                         id="long-spread-legs"
+                                         style="font-size: 0.58rem; line-height: 1.3;"></div>
                                 </div>
                             </div>
                             <div class="text-secondary mt-1" id="exec-spread-note"
@@ -479,31 +487,14 @@
                         <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
                              id="spread-breakdown"
                              title="What the engine z-scores: Leg B (futures) minus the hedge ratio times Leg A (spot)."></div>
-                        <div class="mt-1" style="display:none;" id="fair-value-row"
-                             title="Theoretical value of the spread from cost of carry. REFERENCE ONLY — the signal is the z-score on the spread and never reads this. A large gap usually means the contract month, multiplier or contract size is wrong, not that the trade is good.">
-                            <div>
-                                <span class="text-secondary" style="font-size: 0.7rem;">fair</span>
-                                <span class="text-info fw-bold" id="fair-value"
-                                      style="font-size: 1.15rem;">&mdash;</span>
-                                <span class="text-secondary" id="fair-gap"
-                                      style="font-size: 0.8rem;"></span>
-                                <span class="badge bg-secondary ms-1" style="font-size: 0.5rem;">ref only</span>
-                                <a href="/settings#pair-selection" class="ms-1 text-secondary"
-                                   style="font-size: 0.6rem;"
-                                   title="Carry rate and pair type — Settings &rarr; Pair Selection">edit</a>
-                            </div>
-                            <!-- The derivation lives in this row's tooltip
-                                 rather than on the card: three lines of
-                                 arithmetic under a reference number crowded
-                                 out the two spreads that are actually
-                                 tradable. What stays visible is the rate
-                                 comparison, and only when the two rates
-                                 disagree enough to be worth acting on —
-                                 the same event-driven rule the log uses. -->
-                            <div class="text-secondary mt-1"
-                                 id="fair-working"
-                                 style="font-size: 0.62rem; line-height: 1.35;"></div>
-                        </div>
+                        <!-- The fair-value row was REMOVED here
+                             (operator, 2026-08-24: "The above is
+                             incorrect and not needed"). It is still
+                             computed: carry.sanity reads it to catch a
+                             swap entered with the wrong sign, which is
+                             the check that caught the +58 credit. It
+                             just no longer occupies the card above the
+                             two prices that can actually be traded. -->
                     </div>
                     <div class="col-4 text-center">
                         <div class="d-flex align-items-center justify-content-center gap-2">
@@ -850,87 +841,6 @@
             </div>
         </div>
 
-        <!-- Carry to expiry — the convergence trade, for a MANUAL
-             decision. This asks a different question from every other
-             card on the page: not "is the spread unusual against its own
-             history" (the z-score) but "at expiry the future must become
-             the spot, so is today's spread wider than what it costs to
-             hold the pair until then". The answer does not depend on
-             mean reversion happening — only on the contract expiring.
-             Nothing in the signal, sizing or exit path reads it. -->
-        <div id="carry-card" class="card mb-3" style="display:none;">
-            <div class="card-header py-1 d-flex justify-content-between align-items-center">
-                <small><i class="bi bi-calendar-event me-2"></i>Carry to Expiry</small>
-                <span class="text-secondary" id="carry-days" style="font-size: 0.65rem;">&mdash;</span>
-            </div>
-            <div class="card-body py-2" style="font-size: 0.8rem;">
-                <div id="carry-unavailable" class="text-secondary"
-                     style="font-size: 0.7rem; display:none;"></div>
-                <div id="carry-detail" style="display:none;">
-                    <table class="w-100" style="font-size: 0.7rem;">
-                        <tbody>
-                            <tr><td class="text-secondary">Spread at convergence</td>
-                                <td class="text-end text-secondary" id="carry-gross-calc">-</td>
-                                <td class="text-end font-monospace" id="carry-gross-usd">-</td></tr>
-                            <tr><td class="text-secondary">Carry to expiry</td>
-                                <td class="text-end text-secondary" id="carry-nights">-</td>
-                                <td class="text-end font-monospace" id="carry-carry-usd">-</td></tr>
-                            <tr><td class="text-secondary">Round trip</td>
-                                <td class="text-end text-secondary"></td>
-                                <td class="text-end font-monospace" id="carry-cost-usd">-</td></tr>
-                            <tr style="border-top: 1px solid var(--border-color);">
-                                <td class="fw-bold pt-1">Net if held to expiry</td>
-                                <td class="text-end text-secondary pt-1" id="carry-verdict">-</td>
-                                <td class="text-end fw-bold font-monospace pt-1"
-                                    id="carry-net-usd">-</td></tr>
-                        </tbody>
-                    </table>
-                    <!-- The same arithmetic in SPREAD, which is the unit
-                         on the screen. Dollars move with lots and
-                         leverage; the spread the pair has to beat does
-                         not, so this is the row to read. -->
-                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
-                        <table class="w-100" style="font-size: 0.7rem;">
-                            <tbody>
-                                <tr><td class="text-secondary">Carry says the spread should be</td>
-                                    <td class="text-end font-monospace" id="carry-implied-spread">-</td></tr>
-                                <tr><td class="text-secondary">Worth trading above</td>
-                                    <td class="text-end font-monospace" id="carry-breakeven-spread">-</td></tr>
-                                <tr><td class="fw-bold">Spread now</td>
-                                    <td class="text-end fw-bold font-monospace"
-                                        id="carry-spread-now">-</td></tr>
-                            </tbody>
-                        </table>
-                        <div id="carry-gap-note" class="mt-1" style="font-size: 0.65rem;"></div>
-                    </div>
-                    <!-- How the threshold decays toward expiry. Carry
-                         shrinks with the days left; the round trip does
-                         NOT, so this flattens onto the commission rather
-                         than onto zero. -->
-                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
-                        <div class="text-secondary mb-1" style="font-size: 0.68rem;">
-                            Spread needed, by days left
-                        </div>
-                        <table class="w-100" style="font-size: 0.65rem;" id="carry-schedule">
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
-                        <div class="text-secondary mb-1" style="font-size: 0.68rem;">
-                            Swap per leg &mdash; signed, negative is charged
-                        </div>
-                        <div id="carry-legs" style="font-size: 0.65rem;"></div>
-                    </div>
-                    <div class="text-secondary mt-2" style="font-size: 0.62rem;">
-                        Reference for a <strong>manual</strong> trade. Assumes the
-                        position is held to expiry and the future converges fully;
-                        it does not model the spread widening against you in the
-                        meantime, margin calls, or a contract roll.
-                        <a href="/settings#pair-selection" class="text-secondary">edit swap</a>
-                    </div>
-                </div>
-            </div>
-        </div>
 
         <!-- Last Signal Blocked — always visible so layout stays stable; populated
              with idle hints when there's nothing to block (waiting / in position). -->
@@ -1325,6 +1235,76 @@
                     but never the risk limits or circuit breakers. The engine's
                     own dollar stop stays armed alongside your Stop Loss;
                     whichever the spread reaches first closes the trade.
+                </div>
+            </div>
+        </div>
+
+        <!-- Carry to expiry — the convergence trade, for a MANUAL
+             decision. This asks a different question from every other
+             card on the page: not "is the spread unusual against its own
+             history" (the z-score) but "at expiry the future must become
+             the spot, so is today's spread wider than what it costs to
+             hold the pair until then". The answer does not depend on
+             mean reversion happening — only on the contract expiring.
+             Nothing in the signal, sizing or exit path reads it. -->
+        <div id="carry-card" class="card mb-3" style="display:none;">
+            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                <small><i class="bi bi-calendar-event me-2"></i>Carry to Expiry</small>
+                <span class="text-secondary" id="carry-days" style="font-size: 0.65rem;">&mdash;</span>
+            </div>
+            <div class="card-body py-2" style="font-size: 0.8rem;">
+                <div id="carry-unavailable" class="text-secondary"
+                     style="font-size: 0.7rem; display:none;"></div>
+                <div id="carry-detail" style="display:none;">
+                    <table class="w-100" style="font-size: 0.7rem;">
+                        <tbody>
+                            <tr><td class="text-secondary">Spread at convergence</td>
+                                <td class="text-end text-secondary" id="carry-gross-calc">-</td>
+                                <td class="text-end font-monospace" id="carry-gross-usd">-</td></tr>
+                            <tr><td class="text-secondary">Carry to expiry</td>
+                                <td class="text-end text-secondary" id="carry-nights">-</td>
+                                <td class="text-end font-monospace" id="carry-carry-usd">-</td></tr>
+                            <tr><td class="text-secondary">Round trip</td>
+                                <td class="text-end text-secondary"></td>
+                                <td class="text-end font-monospace" id="carry-cost-usd">-</td></tr>
+                            <tr style="border-top: 1px solid var(--border-color);">
+                                <td class="fw-bold pt-1">Net if held to expiry</td>
+                                <td class="text-end text-secondary pt-1" id="carry-verdict">-</td>
+                                <td class="text-end fw-bold font-monospace pt-1"
+                                    id="carry-net-usd">-</td></tr>
+                        </tbody>
+                    </table>
+                    <!-- The same arithmetic in SPREAD, which is the unit
+                         on the screen. Dollars move with lots and
+                         leverage; the spread the pair has to beat does
+                         not, so this is the row to read. -->
+                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
+                        <table class="w-100" style="font-size: 0.7rem;">
+                            <tbody>
+                                <tr><td class="text-secondary">Carry says the spread should be</td>
+                                    <td class="text-end font-monospace" id="carry-implied-spread">-</td></tr>
+                                <tr><td class="text-secondary">Worth trading above</td>
+                                    <td class="text-end font-monospace" id="carry-breakeven-spread">-</td></tr>
+                                <tr><td class="fw-bold">Spread now</td>
+                                    <td class="text-end fw-bold font-monospace"
+                                        id="carry-spread-now">-</td></tr>
+                            </tbody>
+                        </table>
+                        <div id="carry-gap-note" class="mt-1" style="font-size: 0.65rem;"></div>
+                    </div>
+                    <div class="mt-2 pt-1" style="border-top: 1px solid var(--border-color);">
+                        <div class="text-secondary mb-1" style="font-size: 0.68rem;">
+                            Swap per leg &mdash; signed, negative is charged
+                        </div>
+                        <div id="carry-legs" style="font-size: 0.65rem;"></div>
+                    </div>
+                    <div class="text-secondary mt-2" style="font-size: 0.62rem;">
+                        Reference for a <strong>manual</strong> trade. Assumes the
+                        position is held to expiry and the future converges fully;
+                        it does not model the spread widening against you in the
+                        meantime, margin calls, or a contract roll.
+                        <a href="/settings#pair-selection" class="text-secondary">edit swap</a>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2750,15 +2730,28 @@
             : (v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2));
         document.getElementById('carry-gross-usd').textContent =
             money(carry.gross_usd);
+        // "x 2" with no unit reads as a factor of two. It is 2 UNITS
+        // of the underlying — 0.02 lots x 100 per lot — and naming the
+        // pieces is the difference between a checkable figure and one
+        // that looks like the swap being counted twice.
+        const kNote = (carry.leg_b_lots && carry.leg_b_contract)
+            ? ' (' + carry.leg_b_lots + ' lots × '
+              + carry.leg_b_contract.toLocaleString() + ')'
+            : '';
         document.getElementById('carry-gross-calc').textContent =
             (carry.spread == null || !carry.spread_units)
                 ? 'full convergence'
                 : Math.abs(carry.spread).toFixed(4) + ' × '
-                  + carry.spread_units.toLocaleString();
+                  + carry.spread_units.toLocaleString() + ' units' + kNote;
         document.getElementById('carry-carry-usd').textContent =
             money(carry.carry_usd);
+        // Per LOT per night, so the derivation is lots x nights — a
+        // different base from the gross above, which is in units. Both
+        // are stated so neither looks like the other doubled.
+        const legLots = (carry.per_leg || []).find(l => l.lots);
         document.getElementById('carry-nights').textContent =
-            '~' + Math.round(days) + ' nights';
+            (legLots ? legLots.lots + ' lots × ' : '')
+            + Math.round(days) + ' nights';
         // Always a subtraction, so it is shown as one whatever sign the
         // cost model hands over.
         document.getElementById('carry-cost-usd').textContent =
@@ -2811,29 +2804,6 @@
                 : 'Short by ' + Math.abs(gap).toFixed(4) + ' of spread — '
                   + 'convergence does not cover the carry and the round trip.';
         }
-
-        // The decay. Worth showing rather than describing, because the
-        // shape is the point: the curve flattens onto the round trip
-        // instead of reaching zero, so waiting buys less than it looks
-        // like it should.
-        const sched = document.querySelector('#carry-schedule tbody');
-        sched.innerHTML = '';
-        (carry.schedule || []).forEach(pt => {
-            const tr = document.createElement('tr');
-            const d = document.createElement('td');
-            d.className = 'text-secondary';
-            d.textContent = pt.days <= 0 ? 'at expiry'
-                : (pt.days < 10 ? pt.days.toFixed(1) : Math.round(pt.days))
-                  + ' days';
-            const c = document.createElement('td');
-            c.className = 'text-end text-secondary font-monospace';
-            c.textContent = money(pt.carry_usd);
-            const b = document.createElement('td');
-            b.className = 'text-end font-monospace';
-            b.textContent = sp(pt.breakeven_spread);
-            tr.appendChild(d); tr.appendChild(c); tr.appendChild(b);
-            sched.appendChild(tr);
-        });
 
         const legs = document.getElementById('carry-legs');
         legs.innerHTML = '';
@@ -3141,62 +3111,11 @@
             breakdownEl.style.display = '';
         }
 
-        // Theoretical fair value — REFERENCE ONLY. Shown so the operator
-        // can sanity-check that the mean the z-score is anchored on is
-        // in the region carry says it should be; a big gap points at the
-        // contract month or contract size, not at the trade. Hidden
-        // entirely when the pair has no fair value (two different
-        // instruments) rather than showing a misleading zero.
-        const fairRow = document.getElementById('fair-value-row');
-        if (fairRow) {
-            if (data.fair_value != null) {
-                document.getElementById('fair-value').textContent =
-                    data.fair_value.toFixed(2);
-                const gapEl = document.getElementById('fair-gap');
-                const gap = data.fair_gap;
-                gapEl.textContent = (gap != null)
-                    ? '(' + (gap >= 0 ? '+' : '') + gap.toFixed(2) + ')' : '';
-                const w = document.getElementById('fair-working');
-                const fi = data.fair_inputs;
-                const n = (v, d) => Number(v).toLocaleString(
-                    undefined, {minimumFractionDigits: d,
-                                maximumFractionDigits: d});
-                // The derivation goes in the TOOLTIP. It is still there
-                // to check a wrong contract month or multiplier against,
-                // but three lines of arithmetic under a reference number
-                // crowded out the two spreads that can be traded.
-                fairRow.title = fi
-                    ? n(fi.base_price, 2) + ' × e^(' + n(fi.rate_pct, 2)
-                      + '% × ' + Math.round(fi.days) + '/365) = '
-                      + n(fi.compounded, 2) + '  −  '
-                      + n(fi.beta, 4).replace(/0+$/, '').replace(/\.$/, '')
-                      + ' × ' + n(fi.base_price, 2) + '  =  '
-                      + n(data.fair_value, 2)
-                      + '\n\n' + (data.fair_detail || '')
-                    : (data.fair_detail || fairRow.title);
-                if (w) {
-                    // Only the rate comparison stays visible, and only
-                    // when the two disagree by enough to act on. A rate
-                    // that already agrees is not news, and a line that
-                    // is always there stops being read — the same
-                    // event-driven rule the status log follows.
-                    const impl = fi && fi.implied_rate_pct;
-                    const drift = (impl == null) ? 0
-                                                 : Math.abs(impl - fi.rate_pct);
-                    if (drift > 0.5) {
-                        w.textContent = 'live spread implies '
-                            + n(impl, 2) + '% a year vs '
-                            + n(fi.rate_pct, 2) + '% configured';
-                        w.style.display = '';
-                    } else {
-                        w.style.display = 'none';
-                    }
-                }
-                fairRow.style.display = '';
-            } else {
-                fairRow.style.display = 'none';
-            }
-        }
+        // Fair value is still COMPUTED and still published — carry.sanity
+        // reads it to catch a swap entered with the wrong sign, which is
+        // what caught the +58 credit that read as "you are paid to hold
+        // this at any spread". It is no longer RENDERED on the spread
+        // card (operator: "The above is incorrect and not needed").
 
         // Position Δ Spread — how far the spread has moved since entry, colored
         // by whether that move is favorable for the current direction.
@@ -3324,6 +3243,25 @@
                     sh.toFixed(2);
                 document.getElementById('long-spread').textContent =
                     lg.toFixed(2);
+                // The exact two prices each one is made of. Without them
+                // the spread is a number with no visible provenance, and
+                // the whole point of showing both is that they come from
+                // different sides of the book.
+                const px = v => v == null ? '—' : Number(v).toFixed(2);
+                const shortLegs = document.getElementById('short-spread-legs');
+                const longLegs = document.getElementById('long-spread-legs');
+                if (shortLegs) {
+                    shortLegs.textContent =
+                        'fut bid ' + px(data.futures_bid) + '\n'
+                        + 'spot ask ' + px(data.spot_ask);
+                    shortLegs.style.whiteSpace = 'pre';
+                }
+                if (longLegs) {
+                    longLegs.textContent =
+                        'fut ask ' + px(data.futures_ask) + '\n'
+                        + 'spot bid ' + px(data.spot_bid);
+                    longLegs.style.whiteSpace = 'pre';
+                }
                 const cost = data.spread_cost;
                 document.getElementById('exec-spread-note').textContent =
                     cost == null ? ''

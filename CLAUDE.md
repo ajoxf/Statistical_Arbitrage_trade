@@ -734,6 +734,44 @@ was outranking the prices the operator fills at.
   side by side and are read against each other, so "58.7" next to
   "59.17" invites a misread of the gap between them.
 
+## "Why x 2? Why is the swap charged twice?" (2026-08-24, operator)
+
+It is not. `56.5400 x 2` was `|spread| x k`, and `k` is
+`sizing.spread_units` — leg B's lots times its contract size, here 0.02
+x 100 = **2 OUNCES**. Printed bare it reads as a factor of two, and the
+carry line beside it happened to be a similar magnitude, so the pair of
+them looked like one number doubled.
+
+Nothing was wrong in the arithmetic and everything was wrong in the
+label. The unit was missing, and the two rows are on DIFFERENT bases
+for good reason: the spread is per UNIT of the underlying while swap is
+quoted per LOT. Both now show their derivation —
+`56.5400 x 2 units (0.02 lots x 100)` and `0.02 lots x 89 nights` — so
+neither can be read as the other.
+
+The rule this keeps breaking: a multiplier with no unit is not a
+checkable figure. Same fault as the bare fair value, the bare round
+trip, and the bare carry total before it.
+
+Removed the same day, all operator calls:
+
+- **The fair-value row is gone from the spread card.** It survived three
+  rounds of pushback — bare number, then derivation, then derivation in
+  a tooltip — and it is REFERENCE sitting above the two prices that get
+  filled. Still COMPUTED and still published, because `carry.sanity`
+  reads it to catch a swap entered with the wrong sign; deleting the
+  computation would take that check with it
+  (regression-tested both halves).
+- **The carry decay table is gone.** The shape was the argument for it —
+  flattening onto the round trip rather than onto zero — and the
+  operator did not need seven rows to hold that.
+- **Carry to Expiry moved below Manual Spread Trade**, which is the card
+  it informs.
+- **Each executable spread shows the two touches it is built from**
+  (`fut bid` / `spot ask` under short, `fut ask` / `spot bid` under
+  long). The provenance is the point: they come from opposite sides of
+  the book, and a bare pair of numbers does not show that.
+
 ## A pair could be created but never removed (2026-08-07)
 
 Assets were only ever created — implicitly, by saving a symbol on a
