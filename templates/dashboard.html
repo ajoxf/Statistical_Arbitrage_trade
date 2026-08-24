@@ -606,6 +606,16 @@
                                   title="Dollar stop: force-exit if net P&L falls to this level">Stop:</span>
                             <span id="position-stop" class="price-down fw-semibold">-</span>
                         </div>
+                        <!-- Which knob set the stop, and what the
+                             geometry demands. Three settings in three
+                             units resolve to one dollar figure, so "why
+                             is the stop $4.77" is not answerable from
+                             the number — and a stop wider than the
+                             target is a win rate nobody chose on
+                             purpose. -->
+                        <div class="col-12 text-secondary mt-1"
+                             id="position-stop-basis"
+                             style="font-size: 0.62rem;"></div>
                     </div>
                     <!-- P&L progress gauge: left=stop, centre=breakeven, right=target -->
                     <div id="position-pnl-bar-row" style="display:none; padding: 2px 0 4px 0;">
@@ -3131,7 +3141,17 @@
                             + '− ' + n(fi.beta, 4).replace(/0+$/, '')
                                        .replace(/\.$/, '')
                             + ' × ' + n(fi.base_price, 2) + ' = '
-                            + n(data.fair_value, 2);
+                            + n(data.fair_value, 2)
+                            // The gap has two quite different causes and
+                            // the number alone cannot tell them apart: a
+                            // stale carry rate, or a pair carry does not
+                            // describe. The rate the LIVE spread implies
+                            // settles it at a glance.
+                            + (fi.implied_rate_pct == null ? ''
+                               : '\nlive ' + n(fi.spread_now ?? 0, 2)
+                                 + ' implies ' + n(fi.implied_rate_pct, 2)
+                                 + '% a year vs ' + n(fi.rate_pct, 2)
+                                 + '% configured');
                         w.style.whiteSpace = 'pre';
                     }
                 }
@@ -3973,6 +3993,23 @@ function updateFilterStatus(elementId, passed, value) {
                 if (targetsRow) targetsRow.style.display = (targetUsd > 0 || stopUsd > 0) ? '' : 'none';
                 if (targetEl2)  targetEl2.textContent = targetUsd > 0 ? '+$' + targetUsd.toFixed(2) : '—';
                 if (stopEl2)    stopEl2.textContent   = stopUsd   > 0 ? '-$' + stopUsd.toFixed(2)   : '—';
+
+                const basisEl2 = document.getElementById('position-stop-basis');
+                if (basisEl2) {
+                    const parts = [];
+                    if (t.stop_source) parts.push('stop from ' + t.stop_source);
+                    const beWr = t.breakeven_win_rate;
+                    if (beWr != null) {
+                        parts.push('needs ' + (beWr * 100).toFixed(0)
+                                   + '% of trades to win to break even');
+                    }
+                    basisEl2.textContent = parts.join(' · ');
+                    // Amber past a coin flip. Not wrong — a wide stop is
+                    // a bet on frequency — but it must be a choice.
+                    basisEl2.className = 'col-12 mt-1 '
+                        + (beWr != null && beWr > 0.5
+                           ? 'text-warning' : 'text-secondary');
+                }
 
                 if (pnlBarRow && pnlBar && pnlZeroMark && targetUsd > 0 && stopUsd > 0 && pnl !== null) {
                     const span    = targetUsd + stopUsd;

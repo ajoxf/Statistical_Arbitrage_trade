@@ -177,15 +177,26 @@ class ExitLadder:
                 logging.info("Exit plan not viable: %s", self.last_refusal)
                 return None
 
-        # Stop: the TIGHTER of every armed form
-        candidates = [exits.get('STOP_USD_PER_LOT', 0) * lots]
+        # Stop: the TIGHTER of every armed form. Which one BOUND is
+        # carried out with it — three knobs in three different units
+        # resolve to one dollar figure, and "why is the stop $4.77"
+        # (operator, 2026-08-24) is not answerable from the number.
+        candidates = [
+            (exits.get('STOP_USD_PER_LOT', 0) * lots,
+             f"STOP_USD_PER_LOT ${exits.get('STOP_USD_PER_LOT', 0):g} "
+             f"x {lots:g} lots"),
+        ]
         if exits.get('STOP_CAPITAL_PCT', 0) > 0 and capital:
-            candidates.append(exits['STOP_CAPITAL_PCT'] / 100 * capital)
+            candidates.append(
+                (exits['STOP_CAPITAL_PCT'] / 100 * capital,
+                 f"STOP_CAPITAL_PCT {exits['STOP_CAPITAL_PCT']:g}% of "
+                 f"${capital:,.0f}"))
         rr = exits.get('RR', 0)
         if tp and rr > 0:
-            candidates.append(tp / rr)
-        armed = [c for c in candidates if c > 0]
-        stop = min(armed) if armed else 0.0
+            candidates.append(
+                (tp / rr, f"target ${tp:,.2f} / RR {rr:g}"))
+        armed = [c for c in candidates if c[0] > 0]
+        stop, stop_source = min(armed) if armed else (0.0, 'no stop armed')
 
         if half_life_sec:
             max_hold = exits.get('MAX_HOLD_HALF_LIVES', 4) * half_life_sec
@@ -221,6 +232,17 @@ class ExitLadder:
             'capital_at_risk': capital,
             'half_life_sec': half_life_sec,
             'expectancy': expectancy_block,
+            'stop_source': stop_source,
+            # stop / (target + stop): the win rate this geometry needs
+            # just to break even, before any edge. CLAUDE.md has carried
+            # the rule "verify measured win rate clears stop/(target +
+            # stop)" since the cost measurements, and nothing computed
+            # it. Unlike the EV block it needs no sigma, so it is
+            # available on the very first trade of a cold start — which
+            # is exactly when a hand-set target and an RR-derived stop
+            # can quietly ask for a 77% hit rate.
+            'breakeven_win_rate': (stop / (tp + stop)
+                                   if tp and stop and (tp + stop) else None),
         }
 
         # An OPT-IN veto (0 = off, the default). A negative-EV trade is
@@ -250,6 +272,17 @@ class ExitLadder:
                      max_hold * exits.get('HARD_TIME_STOP_MULT', 0) / 60,
                      rt_cost,
                      f", capital ${capital:,.0f}" if capital else "")
+        # Say which knob set the stop and what the geometry demands.
+        # A stop WIDER than the target is not wrong — it is a bet on
+        # frequency — but it needs saying, because nobody chooses a 77%
+        # win rate on purpose.
+        if stop:
+            be_wr = plan['breakeven_win_rate']
+            logging.info(
+                "Exit plan (RISK): stop $%.2f from %s%s", stop, stop_source,
+                (f"; risking ${stop:,.2f} to make ${tp:,.2f} needs "
+                 f"{be_wr * 100:.0f}% of trades to win just to break even"
+                 if be_wr else ""))
         logging.info("Exit plan (VALUE): %s",
                      expectancy.summarise(expectancy_block))
         return plan

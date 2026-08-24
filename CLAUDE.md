@@ -576,6 +576,45 @@ be checked against anything. `fair_spread` keeps its two-tuple
 signature — 14 call sites unpack it — so `_derive` is the shared
 implementation rather than a second copy of the carry maths.
 
+## "Why is the fair spread wrong?" and "why is the stop $4.77?"
+
+Two readings on one card (operator, 2026-08-24), neither of them a
+miscalculation, and neither answerable from the number shown.
+
+**Fair 48.72 against a live 57.01.** The arithmetic was right. Fair
+value is only ever as good as `risk_free_rate`, a hand-typed number
+defaulting to 4.25% that nothing keeps current, and gold was funding
+nearer 4.9%. But a gap has two quite different causes — a stale rate, or
+a pair carry does not describe — and the card could not tell them apart,
+which is the ONE thing it exists to do. `fairvalue.implied_rate`
+inverts the same formula (`r = ln((spread + beta x S) / S) / T`) so the
+two rates sit side by side: "live 57.01 implies 4.94% a year vs 4.25%
+configured" reads as a stale input; 300% reads as a mislabelled pair.
+It is a READING, never a correction — fitting the rate to the price
+would make fair value agree with the spread by construction and it
+would then catch nothing.
+
+**A $1.43 target against a $4.77 stop.** Three knobs in three units
+(`STOP_USD_PER_LOT` x lots, `STOP_CAPITAL_PCT` of capital, `TP / RR`)
+collapse to one dollar figure via `min()`, and the figure does not say
+which bound. Here it was `RR`: 1.43 / 0.3 = 4.77. The operator had
+hand-set the target; the engine then derived a stop 3.3x wider from it,
+so a level they chose silently produced a risk they did not.
+
+- `plan['stop_source']` names the binding knob, in the log
+  (`Exit plan (RISK)`) and under Target/Stop on the card.
+- `plan['breakeven_win_rate']` = `stop / (target + stop)` — the win rate
+  the geometry needs before any edge. **CLAUDE.md has carried the rule
+  "verify measured win rate clears stop/(target+stop)" since the cost
+  measurements and nothing ever computed it.** Unlike the EV block it
+  needs no sigma, so it is there on the first trade of a cold start —
+  exactly when a hand-set target and an RR-derived stop can quietly ask
+  for 77%. Amber past a coin flip: a stop wider than the target is a bet
+  on frequency, which is legitimate and must be a choice.
+
+RR < 1 is the trap. It reads like a risk setting and it is a REWARD
+ratio: at 0.3 the stop is 3.3x the target.
+
 ## A pair could be created but never removed (2026-08-07)
 
 Assets were only ever created — implicitly, by saving a symbol on a

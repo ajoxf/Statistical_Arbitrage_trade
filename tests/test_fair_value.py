@@ -269,3 +269,45 @@ def test_no_fair_value_publishes_no_inputs():
     block = fairvalue.fair_value_block(asset, 70.0, 74.0, 4.0, 1.0, now=NOW)
     assert block['fair_value'] is None
     assert block['fair_inputs'] is None
+
+
+# --- is the gap a bad pair, or a stale rate? ----------------------------
+# Operator, 2026-08-24: "Why is the Fair Spread in this calculating an
+# incorrect Value" — fair 48.72 against a live 57.01. The arithmetic was
+# right; risk_free_rate was a hand-typed 4.25% and the market was paying
+# nearer 5%. The card could not tell that apart from a mislabelled pair,
+# which is the thing it exists to catch.
+
+def test_the_implied_rate_inverts_the_fair_value_formula():
+    """Feed the fair spread back in and the configured rate comes out."""
+    asset = {'pair_type': 'SPOT_FUTURE', 'risk_free_rate': 0.0425,
+             'futures_expiry': datetime(2026, 11, 25)}
+    block = fairvalue.fair_value_block(asset, 4269.73, 4328.80, 0.0,
+                                       1.0, now=NOW)
+    i = block['fair_inputs']
+    assert fairvalue.implied_rate(i['base_price'], block['fair_value'],
+                                  i['beta'], i['years']) == \
+        pytest.approx(4.25, abs=1e-6)
+
+
+def test_a_wider_live_spread_implies_a_higher_rate():
+    """The operator's own screen: gold spot 4658.10, a live spread of
+    57.01, and 90 days to a 2026-11-22 expiry. Fair value read 48.72 and
+    looked wrong; the market was simply paying ~4.9% against a
+    hand-typed 4.25%."""
+    asset = {'pair_type': 'SPOT_FUTURE', 'risk_free_rate': 0.0425,
+             'futures_expiry': datetime(2026, 11, 22)}
+    block = fairvalue.fair_value_block(asset, 4658.10, 4714.22, 57.01, 1.0,
+                                       now=datetime(2026, 8, 24, 14, 0))
+    implied = block['fair_inputs']['implied_rate_pct']
+    assert block['fair_value'] == pytest.approx(48.7, abs=0.5)
+    assert implied > block['fair_inputs']['rate_pct']
+    # A gold basis this size is a funding rate, not a broken pair.
+    assert 4.5 < implied < 6.0
+
+
+def test_an_impossible_spread_implies_no_rate():
+    """A spread below -beta x S puts the far price at or under zero, and
+    there is no rate that produces it."""
+    assert fairvalue.implied_rate(100.0, -200.0, 1.0, 0.25) is None
+    assert fairvalue.implied_rate(100.0, 5.0, 1.0, 0) is None

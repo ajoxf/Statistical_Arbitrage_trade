@@ -1291,6 +1291,8 @@ class Coordinator:
                 'entry_z': plan.get('entry_z'),
                 'tp_usd': plan.get('tp_usd'),
                 'stop_usd': plan.get('stop_usd'),
+                'stop_source': plan.get('stop_source'),
+                'breakeven_win_rate': plan.get('breakeven_win_rate'),
                 'rt_cost_usd': plan.get('rt_cost_usd'),
                 'gate_floor_usd': plan.get('gate_floor_usd'),
                 'expectancy': plan.get('expectancy'),

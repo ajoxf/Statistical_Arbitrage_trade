@@ -334,3 +334,50 @@ def test_the_floor_can_be_switched_off(config):
           'futures_bid': 4394.03, 'futures_ask': 4394.37}
     plan = ladder.build_plan(1.0, 100, 3.0, 0.5, 3.0, md)
     assert plan['max_hold_sec'] == pytest.approx(12.0)
+
+
+# --- why is the stop that number? ---------------------------------------
+# Operator, 2026-08-24: "Why is the Stop Loss at -$4.77?" Three knobs in
+# three different units resolve to one dollar figure, and the figure
+# does not say which one bound.
+
+def _plan(config, **over):
+    md = {'spot_price': 4658.10, 'futures_price': 4714.22,
+          'spot_bid': 4658.05, 'spot_ask': 4658.15,
+          'futures_bid': 4714.17, 'futures_ask': 4714.27}
+    config.EXITS.update(over)
+    return ExitLadder(config).build_plan(
+        lots=0.02, contract_size=100.0, entry_z=3.0, sigma=0.2,
+        half_life_sec=600.0, market_data=md)
+
+
+def test_the_plan_names_the_knob_that_set_the_stop(config):
+    """RR turns the TARGET into the stop, so a hand-set target of $1.43
+    at RR 0.3 produces a $4.77 stop nobody typed."""
+    plan = _plan(config, STOP_USD_PER_LOT=0.0, STOP_CAPITAL_PCT=0.0, RR=0.3)
+    assert plan['stop_usd'] == pytest.approx(plan['tp_usd'] / 0.3)
+    assert 'RR' in plan['stop_source']
+    assert '0.3' in plan['stop_source']
+
+
+def test_a_per_lot_stop_that_binds_says_so(config):
+    plan = _plan(config, STOP_USD_PER_LOT=1.0, STOP_CAPITAL_PCT=0.0, RR=0.3)
+    assert plan['stop_usd'] == pytest.approx(0.02)
+    assert 'STOP_USD_PER_LOT' in plan['stop_source']
+
+
+def test_the_plan_states_the_win_rate_the_geometry_needs(config):
+    """CLAUDE.md has carried the rule 'verify measured win rate clears
+    stop/(target+stop)' since the cost measurements. Nothing computed
+    it. Unlike EV it needs no sigma, so it is there on a cold start."""
+    plan = _plan(config, STOP_USD_PER_LOT=0.0, STOP_CAPITAL_PCT=0.0, RR=0.3)
+    assert plan['breakeven_win_rate'] == pytest.approx(
+        plan['stop_usd'] / (plan['tp_usd'] + plan['stop_usd']))
+    # RR below 1 means the stop is wider than the target, so more than
+    # half the trades have to win.
+    assert plan['breakeven_win_rate'] > 0.5
+
+
+def test_rr_above_one_needs_fewer_than_half_the_trades(config):
+    plan = _plan(config, STOP_USD_PER_LOT=0.0, STOP_CAPITAL_PCT=0.0, RR=2.0)
+    assert plan['breakeven_win_rate'] < 0.5

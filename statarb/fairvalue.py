@@ -120,8 +120,41 @@ def _derive(asset_cfg, spot_price, hedge_ratio=1.0, now=None):
         'compounded': fair_far,
         'beta': beta,
         'over': over,
+        'years': years,
     }
     return fair_far - beta * spot_price, detail, inputs
+
+
+def implied_rate(base_price, spread, beta=1.0, years=None):
+    """The annual carry rate the LIVE spread is pricing, or None.
+
+    Fair value is only ever as good as `risk_free_rate`, which is a
+    hand-typed number that defaults to 4.25% and nothing keeps current.
+    So a gap between the fair and live spread has two quite different
+    explanations — the pair is mislabelled or misconfigured, which is
+    what the card exists to catch, or the rate is simply stale — and
+    the card could not tell them apart (operator, 2026-08-24: "Why is
+    the Fair Spread in this calculating an incorrect Value").
+
+    Inverting the same formula settles it. From
+    `spread = S x e^(r x T) - beta x S`:
+
+        r = ln((spread + beta x S) / S) / T
+
+    Read the two rates side by side: 4.97% against a configured 4.25%
+    is a stale input, and the fair value is arithmetically fine. A
+    figure like 300% is the pair not being a basis pair at all.
+
+    This is a READING of the market, not a correction to apply. Fitting
+    the rate to the price would make fair value agree with the spread by
+    construction and it would then catch nothing.
+    """
+    if not base_price or not years or years <= 0 or spread is None:
+        return None
+    far = spread + float(beta or 1.0) * base_price
+    if far <= 0:
+        return None
+    return math.log(far / base_price) / years * 100.0
 
 
 #: How far the live spread may sit from the carry-implied one before
@@ -168,6 +201,10 @@ def fair_value_block(asset_cfg, spot_price, futures_price, spread,
     """The reference block the dashboard shows under the spread."""
     value, detail, inputs = _derive(asset_cfg, spot_price,
                                     hedge_ratio, now)
+    if inputs:
+        inputs['implied_rate_pct'] = implied_rate(
+            inputs['base_price'], spread, inputs['beta'], inputs['years'])
+        inputs['spread_now'] = spread
     pair_type = (asset_cfg.get('pair_type') or SPOT_FUTURE).upper()
     return {
         'pair_type': pair_type,

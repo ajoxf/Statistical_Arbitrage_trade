@@ -739,6 +739,10 @@ def status_to_ui(status, config_raw):
             'half_life_minutes': open_position.get('half_life_min'),
             'exit_target_usd': open_position.get('tp_usd'),
             'exit_stop_usd': open_position.get('stop_usd'),
+            # Which of the three stop knobs BOUND, and the win rate
+            # this geometry needs just to break even.
+            'stop_source': open_position.get('stop_source'),
+            'breakeven_win_rate': open_position.get('breakeven_win_rate'),
             'exit_gate_floor_usd': open_position.get('gate_floor_usd'),
             # What the frozen geometry was worth going in. None (not 0)
             # whenever it could not be computed.
