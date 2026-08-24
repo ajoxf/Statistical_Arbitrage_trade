@@ -1585,13 +1585,25 @@ running the page in the bundled Chromium under Playwright and reading
   (live)" preview also read the lot count as dollars ("$100" for a clip
   whose real notional is $42m); it now converts lots x contract size x
   live mid and shows that conversion in the breakdown.
-- **config.example.json ships PRODUCTION scale** (CLIP_LOTS 50,
+- **config.example.json used to ship PRODUCTION scale** (CLIP_LOTS 50,
   SLICE_LOTS 10, MAX_LOT_SIZE 50, DAILY_LOT_TARGET 500) and start.py
-  copies it verbatim on first run, so a fresh install is ~$43m of gold
+  copies it verbatim on first run, so a fresh install was ~$43m of gold
   notional out of the box. The code defaults in config.py are 1.0, but
-  they only apply when a key is ABSENT. Note MAX_LOT_SIZE 50 does NOT
-  block a 50-lot clip, and there is no pre-trade margin guard — only
-  the edge filter and MT5's own margin rejection stand in the way.
+  they only apply when a key is ABSENT, so the file always won. FIXED
+  2026-08-24 (operator: "Set CLIP_LOTS to something sane. It shouldn't
+  be 50") — the four sizing keys now ship AT the code defaults
+  (1 / 0 / 0 / 1), and `tests/test_startup_config.py` fails the build if
+  the example ever exceeds them again, if the slice is bigger than the
+  clip, or if the cap is under the clip. The owner's 500/50/10 spec is a
+  target to scale UP to on a configured account; the file that seeds
+  first runs is the wrong place to record it. This was flagged here on
+  2026-08-07 and was still live on 2026-08-24, when a blank manual Lots
+  box picked up the 50 — a note in a memory file is not a guard.
+  Still true, and still unguarded: there is no pre-trade margin check —
+  only the edge filter and MT5's own margin rejection stand in the way.
+  `RISK_LIMITS.MAX_EXPOSURE_USD` is defined and **never read by
+  anything** — a dead key like `swap_charge`, so the $200m in the
+  example was never a limit at all.
 
 ## Dialogs (2026-08-06)
 

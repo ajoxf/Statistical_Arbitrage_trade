@@ -21,9 +21,9 @@
     "futures": "account_a"
   },
   "trading": {
-    "CLIP_LOTS": 50.0,
-    "SLICE_LOTS": 10.0,
-    "DAILY_LOT_TARGET": 500.0,
+    "CLIP_LOTS": 1.0,
+    "SLICE_LOTS": 0.0,
+    "DAILY_LOT_TARGET": 0.0,
     "HEDGE_RATIO": 1.0,
     "POLL_INTERVAL_SEC": 0.3
   },
@@ -35,7 +35,7 @@
   },
   "risk_limits": {
     "MAX_POSITIONS_PER_ASSET": 3,
-    "MAX_LOT_SIZE": 50.0,
+    "MAX_LOT_SIZE": 1.0,
     "MAX_DAILY_TRADES": 20,
     "STOP_LOSS_PCT": 5.0,
     "MAX_EXPOSURE_USD": 200000000,

@@ -1463,3 +1463,58 @@ def test_separate_terminals_carry_no_warning(client):
     rows = {r['id']: r for r in client.get('/api/exchanges').get_json()}
     assert rows['a']['terminal_clash'] is None
     assert rows['b']['terminal_clash'] is None
+
+
+# --- what a BRAND-NEW install trades with -------------------------------
+# start.py copies config.example.json verbatim on first run, so whatever
+# is in that file is what an install trades with before anyone has looked
+# at it. It used to ship the owner's production spec — CLIP_LOTS 50,
+# SLICE_LOTS 10, MAX_LOT_SIZE 50, DAILY_LOT_TARGET 500 — which is roughly
+# $21m per leg of gold out of the box. CLAUDE.md flagged it on 2026-08-07
+# and it was still there on 2026-08-24, when a blank manual Lots box
+# picked up the 50 and only MAX_LOT_SIZE caught it.
+#
+# The production spec is a target to scale UP to on a configured account.
+# It is not a first-run default, and the file that seeds first runs is
+# the wrong place to record it.
+
+import json
+import pathlib
+
+
+def _example():
+    root = pathlib.Path(__file__).resolve().parent.parent
+    return json.loads((root / 'config.example.json').read_text())
+
+
+def test_the_example_config_does_not_ship_production_scale():
+    from statarb.config import AlgoTradingConfig
+    defaults = AlgoTradingConfig()
+    example = _example()
+    for section, key in (('trading', 'CLIP_LOTS'),
+                         ('trading', 'SLICE_LOTS'),
+                         ('trading', 'DAILY_LOT_TARGET'),
+                         ('risk_limits', 'MAX_LOT_SIZE')):
+        shipped = example[section][key]
+        coded = (defaults.TRADING if section == 'trading'
+                 else defaults.RISK_LIMITS)[key]
+        assert shipped <= coded, (
+            f"config.example.json ships {section}.{key}={shipped}, above "
+            f"the code default {coded}. start.py copies this file verbatim "
+            f"on first run.")
+
+
+def test_the_example_slice_is_not_bigger_than_the_example_clip():
+    """A child order larger than the order it slices is incoherent, and
+    _precheck_pair would reject every entry on it."""
+    trading = _example()['trading']
+    assert trading['SLICE_LOTS'] <= trading['CLIP_LOTS'] \
+        or trading['SLICE_LOTS'] == 0
+
+
+def test_the_example_cap_is_not_below_the_example_clip():
+    """MAX_LOT_SIZE under CLIP_LOTS refuses every entry under `lots`
+    sizing — a dead engine whose only symptom is a refusal line."""
+    example = _example()
+    assert example['risk_limits']['MAX_LOT_SIZE'] >= \
+        example['trading']['CLIP_LOTS']
