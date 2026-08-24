@@ -2310,3 +2310,51 @@ def test_the_manual_price_is_driven_by_the_fast_loop(client):
     body = page[page.index('function updateSignal(data) {'):]
     body = body[:body.index('\n    function ')]
     assert 'renderManualSpread();' in body
+
+
+# ---------------------------------------------------------------------------
+# Structural: the templates' tags must balance
+# ---------------------------------------------------------------------------
+# Live 2026-08-24: moving the Carry card left a duplicate </div>, which
+# closed the sidebar COLUMN early. Every card after it escaped the
+# column and spanned the page. Nothing failed, nothing logged — the
+# operator saw a Reset card the width of the screen.
+
+@pytest.mark.parametrize('name', ['dashboard.html', 'settings.html',
+                                  'setup.html', 'analysis.html',
+                                  'base.html'])
+def test_the_template_tags_balance(name):
+    import pathlib
+    import re
+    from html.parser import HTMLParser
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / 'templates' / name).read_text()
+    # Strip Jinja: its blocks are not HTML and its expressions can
+    # contain angle brackets.
+    src = re.sub(r'\{%.*?%\}', '', src, flags=re.S)
+    src = re.sub(r'\{\{.*?\}\}', 'x', src, flags=re.S)
+
+    tracked = {'div', 'table', 'tbody', 'thead', 'tr', 'td', 'th', 'form'}
+
+    class Balance(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack, self.bad = [], []
+
+        def handle_starttag(self, tag, attrs):
+            if tag in tracked:
+                self.stack.append((tag, self.getpos()[0]))
+
+        def handle_endtag(self, tag):
+            if tag not in tracked:
+                return
+            if self.stack and self.stack[-1][0] == tag:
+                self.stack.pop()
+            else:
+                self.bad.append((tag, self.getpos()[0]))
+
+    parser = Balance()
+    parser.feed(src)
+    assert not parser.bad, f'{name}: stray closing tags at {parser.bad[:3]}'
+    assert not parser.stack, f'{name}: unclosed tags at {parser.stack[:3]}'

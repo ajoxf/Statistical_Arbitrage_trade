@@ -467,10 +467,13 @@
                                      style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
                                 <div class="metric-label">Short</div>
                                 <!-- The two touches it is BUILT from, so the
-                                     number can be checked against the book. -->
-                                <div class="text-secondary font-monospace mt-1"
-                                     id="short-spread-legs"
-                                     style="font-size: 0.74rem; line-height: 1.4;"></div>
+                                     number can be checked against the book.
+                                     A TABLE, not two lines of text: the
+                                     labels are different widths, so as free
+                                     text the prices never lined up with the
+                                     other leg's. -->
+                                <table class="mt-1 mx-auto" id="short-spread-legs"
+                                       style="font-size: 0.8rem; line-height: 1.35;"><tbody></tbody></table>
                             </div>
                             <div id="long-spread-cell" style="display:none;"
                                  title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
@@ -478,9 +481,8 @@
                                      id="long-spread"
                                      style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
                                 <div class="metric-label">Long</div>
-                                <div class="text-secondary font-monospace mt-1"
-                                     id="long-spread-legs"
-                                     style="font-size: 0.74rem; line-height: 1.4;"></div>
+                                <table class="mt-1 mx-auto" id="long-spread-legs"
+                                       style="font-size: 0.8rem; line-height: 1.35;"><tbody></tbody></table>
                             </div>
                             <!-- The MID spread was removed here (operator,
                                  2026-08-24: "Remove this number. It doesn't
@@ -1176,9 +1178,8 @@
                     <span class="fw-bold font-monospace" id="manual-current-spread"
                           style="font-size: 1rem;">&mdash;</span>
                 </div>
-                <div class="text-secondary font-monospace text-end mb-2"
-                     id="manual-spread-legs"
-                     style="font-size: 0.74rem; line-height: 1.4;"></div>
+                <table class="ms-auto mb-2" id="manual-spread-legs"
+                       style="font-size: 0.8rem; line-height: 1.35;"><tbody></tbody></table>
                 <div class="row g-1 mb-2">
                     <div class="col-7">
                         <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>
@@ -1315,7 +1316,6 @@
                         you place by hand.
                         <a href="/settings#pair-selection" class="text-secondary">edit swap</a>
                     </div>
-                </div>
                 </div>
             </div>
         </div>
@@ -1771,11 +1771,13 @@
         }
         const legs = document.getElementById('manual-spread-legs');
         if (legs) {
-            const px = v => v == null ? '—' : Number(v).toFixed(2);
-            legs.textContent = value == null ? ''
-                : (short
-                    ? 'fut bid ' + px(x.futBid) + ' − spot ask ' + px(x.spotAsk)
-                    : 'fut ask ' + px(x.futAsk) + ' − spot bid ' + px(x.spotBid));
+            const body = legs.tBodies[0];
+            if (body) body.innerHTML = '';
+            if (value != null) {
+                renderTouches('manual-spread-legs', short
+                    ? [['fut bid', x.futBid], ['spot ask', x.spotAsk]]
+                    : [['fut ask', x.futAsk], ['spot bid', x.spotBid]]);
+            }
         }
     }
 
@@ -3099,6 +3101,25 @@
         return 6;
     }
 
+    // Label left, price right, in a table so the two legs' prices line
+    // up with each other. textContent throughout — these are broker
+    // figures, not markup.
+    function renderTouches(id, rows) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const body = el.tBodies[0] || el.appendChild(document.createElement('tbody'));
+        body.innerHTML = '';
+        rows.forEach(([label, value]) => {
+            const tr = body.insertRow();
+            const l = tr.insertCell();
+            l.className = 'text-secondary pe-2';
+            l.textContent = label;
+            const v = tr.insertCell();
+            v.className = 'text-end font-monospace';
+            v.textContent = value == null ? '—' : Number(value).toFixed(2);
+        });
+    }
+
     function updateSignal(data) {
         const zscore = data.zscore || 0;
         const zscoreEl = document.getElementById('current-zscore');
@@ -3244,20 +3265,12 @@
                     short: sh, long: lg,
                     futBid: data.futures_bid, futAsk: data.futures_ask,
                     spotBid: data.spot_bid, spotAsk: data.spot_ask};
-                const shortLegs = document.getElementById('short-spread-legs');
-                const longLegs = document.getElementById('long-spread-legs');
-                if (shortLegs) {
-                    shortLegs.textContent =
-                        'fut bid ' + px(data.futures_bid) + '\n'
-                        + 'spot ask ' + px(data.spot_ask);
-                    shortLegs.style.whiteSpace = 'pre';
-                }
-                if (longLegs) {
-                    longLegs.textContent =
-                        'fut ask ' + px(data.futures_ask) + '\n'
-                        + 'spot bid ' + px(data.spot_bid);
-                    longLegs.style.whiteSpace = 'pre';
-                }
+                renderTouches('short-spread-legs',
+                              [['fut bid', data.futures_bid],
+                               ['spot ask', data.spot_ask]]);
+                renderTouches('long-spread-legs',
+                              [['fut ask', data.futures_ask],
+                               ['spot bid', data.spot_bid]]);
                 const cost = data.spread_cost;
                 document.getElementById('exec-spread-note').textContent =
                     cost == null ? ''

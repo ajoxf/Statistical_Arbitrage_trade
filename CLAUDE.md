@@ -734,6 +734,28 @@ was outranking the prices the operator fills at.
   side by side and are read against each other, so "58.7" next to
   "59.17" invites a misread of the gap between them.
 
+## A stray </div> put every card below it across the page (2026-08-24)
+
+Operator: "This card has got misaligned" — the Reset card the full width
+of the screen.
+
+Moving the Carry card below Manual Spread Trade left ONE duplicate
+`</div>`, which closed the sidebar COLUMN early. Every card after it
+escaped the column and spanned the page. Nothing failed, nothing logged,
+and the browser recovers silently — the only symptom is a layout that
+looks wrong somewhere other than where the fault is.
+
+`tests/test_nexus_ui.py::test_the_template_tags_balance` now parses all
+five templates and fails on an unclosed or stray tag. It immediately
+found SEVEN more strays at the end of settings.html, present since the
+vendored Nexus UI landed (`ddd10fd`) — browsers had been discarding them
+for months. Removed.
+
+The bid/ask touches under each spread are TABLES now, not two lines of
+text: "fut bid" and "spot ask" are different widths, so as free text the
+two legs' prices never lined up with each other. 0.74rem -> 0.8rem, one
+shared `renderTouches` for all three places that draw them.
+
 ## Crisp like a trading platform (2026-08-24, operator)
 
 Four passes over the same two cards, each one the same fault: the
