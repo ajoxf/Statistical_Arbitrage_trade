@@ -179,8 +179,15 @@ def to_ui_config(raw, defaults=None):
     # Hand-entered swap, per lot per night, per leg. MT5 reports its own
     # in swap_mode units this cannot always convert, so the operator
     # needs to be able to say what the broker actually charges.
-    out['swap_spot_per_lot'] = asset.get('swap_spot_per_lot')
-    out['swap_futures_per_lot'] = asset.get('swap_futures_per_lot')
+    # Per leg per SIDE. A pre-split config carries one value per leg;
+    # show it in BOTH boxes so the operator can see what is in force and
+    # correct whichever side is wrong.
+    for _role in ('spot', 'futures'):
+        _legacy = asset.get(f'swap_{_role}_per_lot')
+        for _side in ('long', 'short'):
+            _f = f'swap_{_role}_{_side}_per_lot'
+            _v = asset.get(_f)
+            out[_f] = _legacy if _v is None else _v
     out['pair_type'] = (asset.get('pair_type') or 'SPOT_FUTURE').upper()
     out['carry_rate_pct'] = round(
         (asset.get('risk_free_rate') or 0.0) * 100, 4)
@@ -247,10 +254,22 @@ def apply_ui_config(raw, payload):
         # outlive the pair it was typed for, and for an EXPIRY that is
         # the difference between a convergence date and a rolling
         # contract that has none.
-        for field, cast in (('swap_spot_per_lot', float),
-                            ('swap_futures_per_lot', float),
-                            ('futures_expiry', _expiry_or_raise),
-                            ('spot_expiry', _expiry_or_raise)):
+        # Swap is per leg per SIDE: MT5 quotes swap_long and swap_short
+        # separately and they routinely differ in sign, so one box per
+        # leg silently changed meaning whenever the spread crossed zero.
+        swap_fields = [(f'swap_{role}_{side}_per_lot', float)
+                       for role in ('spot', 'futures')
+                       for side in ('long', 'short')]
+        for role in ('spot', 'futures'):
+            # Saving either side retires that leg's legacy single value.
+            # Leaving it behind would keep a number meaning "both sides"
+            # underneath two that mean one side each.
+            if any(f'swap_{role}_{s}_per_lot' in payload
+                   for s in ('long', 'short')):
+                asset.pop(f'swap_{role}_per_lot', None)
+        for field, cast in swap_fields + [
+                ('futures_expiry', _expiry_or_raise),
+                ('spot_expiry', _expiry_or_raise)]:
             if field not in payload:
                 continue
             if payload[field] in (None, ''):

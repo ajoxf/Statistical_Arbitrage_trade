@@ -101,29 +101,54 @@
                         <div class="col-12 mt-3">
                             <div class="p-2 rounded" style="background: rgba(0,0,0,0.03);">
                                 <div class="fw-semibold mb-1">Overnight swap &mdash; per lot, per night</div>
-                                <div class="row g-2">
-                                    <div class="col-md-4">
-                                        <label class="form-label mb-1" for="swap_spot_per_lot">
+                                <div class="row g-2 align-items-end">
+                                    <div class="col-md-3">
+                                        <label class="form-label mb-1" for="swap_spot_long_per_lot">
                                             Leg A <small class="text-secondary">({{ config.spot_symbol or 'spot' }})</small>
+                                            &mdash; long
                                         </label>
-                                        <input type="number" class="form-control" id="swap_spot_per_lot"
-                                               name="swap_spot_per_lot" value="{{ config.swap_spot_per_lot
-                                               if config.swap_spot_per_lot is not none else '' }}"
+                                        <input type="number" class="form-control" id="swap_spot_long_per_lot"
+                                               name="swap_spot_long_per_lot" value="{{ config.swap_spot_long_per_lot
+                                               if config.swap_spot_long_per_lot is not none else '' }}"
                                                step="0.01" placeholder="from MT5">
                                     </div>
-                                    <div class="col-md-4">
-                                        <label class="form-label mb-1" for="swap_futures_per_lot">
-                                            Leg B <small class="text-secondary">({{ config.futures_symbol or 'futures' }})</small>
+                                    <div class="col-md-3">
+                                        <label class="form-label mb-1" for="swap_spot_short_per_lot">
+                                            &nbsp;&mdash; short
                                         </label>
-                                        <input type="number" class="form-control" id="swap_futures_per_lot"
-                                               name="swap_futures_per_lot" value="{{ config.swap_futures_per_lot
-                                               if config.swap_futures_per_lot is not none else '' }}"
+                                        <input type="number" class="form-control" id="swap_spot_short_per_lot"
+                                               name="swap_spot_short_per_lot" value="{{ config.swap_spot_short_per_lot
+                                               if config.swap_spot_short_per_lot is not none else '' }}"
+                                               step="0.01" placeholder="from MT5">
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label mb-1" for="swap_futures_long_per_lot">
+                                            Leg B <small class="text-secondary">({{ config.futures_symbol or 'futures' }})</small>
+                                            &mdash; long
+                                        </label>
+                                        <input type="number" class="form-control" id="swap_futures_long_per_lot"
+                                               name="swap_futures_long_per_lot" value="{{ config.swap_futures_long_per_lot
+                                               if config.swap_futures_long_per_lot is not none else '' }}"
+                                               step="0.01" placeholder="from MT5">
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label mb-1" for="swap_futures_short_per_lot">
+                                            &nbsp;&mdash; short
+                                        </label>
+                                        <input type="number" class="form-control" id="swap_futures_short_per_lot"
+                                               name="swap_futures_short_per_lot" value="{{ config.swap_futures_short_per_lot
+                                               if config.swap_futures_short_per_lot is not none else '' }}"
                                                step="0.01" placeholder="from MT5">
                                     </div>
                                 </div>
                                 <small class="text-secondary d-block mt-1">
+                                    MT5 quotes <strong>long</strong> and <strong>short</strong> swap
+                                    separately and they routinely differ in sign, so each leg has a box for
+                                    each side; the pair uses whichever side it actually holds that leg on.
                                     In <strong>account currency</strong>, <strong>signed</strong>: negative is
-                                    charged to you, positive is credited. Leave blank to use whatever the
+                                    charged to you, positive is credited &mdash; a leg you are LONG is
+                                    normally CHARGED, so its figure is normally negative.
+                                    Leave blank to use whatever the
                                     broker reports &mdash; MT5 quotes swap in points, currency or annual
                                     percent depending on the symbol, and the engine converts it when it
                                     can and says so when it cannot. Feeds the
@@ -2050,8 +2075,10 @@
             // '' so it CLEARS the override. NaN would serialise to null,
             // which happens to work, and would silently stop working the
             // day the server distinguishes the two.
-            swap_spot_per_lot: document.getElementById('swap_spot_per_lot').value.trim(),
-            swap_futures_per_lot: document.getElementById('swap_futures_per_lot').value.trim(),
+            swap_spot_long_per_lot: document.getElementById('swap_spot_long_per_lot').value.trim(),
+            swap_spot_short_per_lot: document.getElementById('swap_spot_short_per_lot').value.trim(),
+            swap_futures_long_per_lot: document.getElementById('swap_futures_long_per_lot').value.trim(),
+            swap_futures_short_per_lot: document.getElementById('swap_futures_short_per_lot').value.trim(),
             // Same rule: blank must reach the server as '' so it CLEARS
             // the date back to "read MT5 / rolling contract".
             futures_expiry: document.getElementById('futures_expiry').value.trim(),
@@ -2362,10 +2389,11 @@
                 // `?? ''` and not `|| ''`: a swap of 0 is a real override
                 // meaning "this symbol is not charged", and `||` would
                 // wipe it back to "read MT5" on every page load.
-                document.getElementById('swap_spot_per_lot').value =
-                    config.swap_spot_per_lot ?? '';
-                document.getElementById('swap_futures_per_lot').value =
-                    config.swap_futures_per_lot ?? '';
+                ['swap_spot_long_per_lot', 'swap_spot_short_per_lot',
+                 'swap_futures_long_per_lot', 'swap_futures_short_per_lot']
+                    .forEach(f => {
+                        document.getElementById(f).value = config[f] ?? '';
+                    });
                 document.getElementById('futures_expiry').value =
                     config.futures_expiry ?? '';
                 document.getElementById('spot_expiry').value =

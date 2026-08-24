@@ -449,35 +449,36 @@
                         <div class="metric-label">Z-Score</div>
                     </div>
                     <div class="col-4 text-center">
-                        <div class="price-large" id="spread-value" style="font-size: 1.5rem;">0.00</div>
-                        <div class="metric-label">Spread</div>
+                        <!-- The two spreads you can actually trade lead
+                             here, because they are the only two prices
+                             anyone fills at. The mid below is a midpoint
+                             of two midpoints: it is the series the
+                             z-score is measured on and nothing else. -->
+                        <div id="exec-spread-row" style="display:none;">
+                            <div class="d-flex justify-content-center gap-4">
+                                <div title="SHORT the spread: sell futures at the BID, buy spot at the ASK.">
+                                    <div class="price-down fw-bold font-monospace"
+                                         id="short-spread"
+                                         style="font-size: 1.5rem; line-height: 1.1;">&mdash;</div>
+                                    <div class="metric-label">Short</div>
+                                </div>
+                                <div title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
+                                    <div class="price-up fw-bold font-monospace"
+                                         id="long-spread"
+                                         style="font-size: 1.5rem; line-height: 1.1;">&mdash;</div>
+                                    <div class="metric-label">Long</div>
+                                </div>
+                            </div>
+                            <div class="text-secondary mt-1" id="exec-spread-note"
+                                 style="font-size: 0.6rem;"></div>
+                        </div>
+                        <div id="mid-spread-row">
+                            <div class="price-large" id="spread-value" style="font-size: 1.5rem;">0.00</div>
+                            <div class="metric-label">Spread</div>
+                        </div>
                         <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
                              id="spread-breakdown"
                              title="What the engine z-scores: Leg B (futures) minus the hedge ratio times Leg A (spot)."></div>
-                        <!-- The two spreads you can actually trade. The
-                             big number above is a midpoint of two
-                             midpoints and nobody fills there; each
-                             direction crosses a different pair of
-                             touches, and the gap between these two IS
-                             the round-turn bid-ask. -->
-                        <div class="mt-1" id="exec-spread-row" style="display:none;">
-                            <div class="d-flex justify-content-center gap-3 align-items-baseline">
-                                <span title="SHORT the spread: sell futures at the BID, buy spot at the ASK.">
-                                    <span class="text-secondary" style="font-size: 0.7rem;">short</span>
-                                    <span class="price-down fw-bold font-monospace"
-                                          id="short-spread"
-                                          style="font-size: 1.15rem;">&mdash;</span>
-                                </span>
-                                <span title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
-                                    <span class="text-secondary" style="font-size: 0.7rem;">long</span>
-                                    <span class="price-up fw-bold font-monospace"
-                                          id="long-spread"
-                                          style="font-size: 1.15rem;">&mdash;</span>
-                                </span>
-                            </div>
-                            <div class="text-secondary" id="exec-spread-note"
-                                 style="font-size: 0.6rem;"></div>
-                        </div>
                         <div class="mt-1" style="display:none;" id="fair-value-row"
                              title="Theoretical value of the spread from cost of carry. REFERENCE ONLY — the signal is the z-score on the spread and never reads this. A large gap usually means the contract month, multiplier or contract size is wrong, not that the trade is good.">
                             <div>
@@ -491,11 +492,15 @@
                                    style="font-size: 0.6rem;"
                                    title="Carry rate and pair type — Settings &rarr; Pair Selection">edit</a>
                             </div>
-                            <!-- The arithmetic, not just its answer. Catching a
-                                 wrong contract month or multiplier is the whole
-                                 reason fair value is on the screen, and a bare
-                                 number cannot be checked against anything. -->
-                            <div class="text-secondary font-monospace mt-1"
+                            <!-- The derivation lives in this row's tooltip
+                                 rather than on the card: three lines of
+                                 arithmetic under a reference number crowded
+                                 out the two spreads that are actually
+                                 tradable. What stays visible is the rate
+                                 comparison, and only when the two rates
+                                 disagree enough to be worth acting on —
+                                 the same event-driven rule the log uses. -->
+                            <div class="text-secondary mt-1"
                                  id="fair-working"
                                  style="font-size: 0.62rem; line-height: 1.35;"></div>
                         </div>
@@ -3151,39 +3156,40 @@
                 const gap = data.fair_gap;
                 gapEl.textContent = (gap != null)
                     ? '(' + (gap >= 0 ? '+' : '') + gap.toFixed(2) + ')' : '';
-                fairRow.title = data.fair_detail || fairRow.title;
-                // The derivation in two lines: compound the base price
-                // to expiry, then subtract β times the spot. Rendered
-                // from the engine's OWN inputs — recomputing the carry
-                // here would be a second implementation that drifts.
                 const w = document.getElementById('fair-working');
                 const fi = data.fair_inputs;
+                const n = (v, d) => Number(v).toLocaleString(
+                    undefined, {minimumFractionDigits: d,
+                                maximumFractionDigits: d});
+                // The derivation goes in the TOOLTIP. It is still there
+                // to check a wrong contract month or multiplier against,
+                // but three lines of arithmetic under a reference number
+                // crowded out the two spreads that can be traded.
+                fairRow.title = fi
+                    ? n(fi.base_price, 2) + ' × e^(' + n(fi.rate_pct, 2)
+                      + '% × ' + Math.round(fi.days) + '/365) = '
+                      + n(fi.compounded, 2) + '  −  '
+                      + n(fi.beta, 4).replace(/0+$/, '').replace(/\.$/, '')
+                      + ' × ' + n(fi.base_price, 2) + '  =  '
+                      + n(data.fair_value, 2)
+                      + '\n\n' + (data.fair_detail || '')
+                    : (data.fair_detail || fairRow.title);
                 if (w) {
-                    if (!fi) {
-                        w.textContent = '';
+                    // Only the rate comparison stays visible, and only
+                    // when the two disagree by enough to act on. A rate
+                    // that already agrees is not news, and a line that
+                    // is always there stops being read — the same
+                    // event-driven rule the status log follows.
+                    const impl = fi && fi.implied_rate_pct;
+                    const drift = (impl == null) ? 0
+                                                 : Math.abs(impl - fi.rate_pct);
+                    if (drift > 0.5) {
+                        w.textContent = 'live spread implies '
+                            + n(impl, 2) + '% a year vs '
+                            + n(fi.rate_pct, 2) + '% configured';
+                        w.style.display = '';
                     } else {
-                        const n = (v, d) => Number(v).toLocaleString(
-                            undefined, {minimumFractionDigits: d,
-                                        maximumFractionDigits: d});
-                        w.textContent =
-                            n(fi.base_price, 2) + ' × e^(' + n(fi.rate_pct, 2)
-                            + '% × ' + Math.round(fi.days) + '/365) = '
-                            + n(fi.compounded, 2) + '\n'
-                            + '− ' + n(fi.beta, 4).replace(/0+$/, '')
-                                       .replace(/\.$/, '')
-                            + ' × ' + n(fi.base_price, 2) + ' = '
-                            + n(data.fair_value, 2)
-                            // The gap has two quite different causes and
-                            // the number alone cannot tell them apart: a
-                            // stale carry rate, or a pair carry does not
-                            // describe. The rate the LIVE spread implies
-                            // settles it at a glance.
-                            + (fi.implied_rate_pct == null ? ''
-                               : '\nlive ' + n(fi.spread_now ?? 0, 2)
-                                 + ' implies ' + n(fi.implied_rate_pct, 2)
-                                 + '% a year vs ' + n(fi.rate_pct, 2)
-                                 + '% configured');
-                        w.style.whiteSpace = 'pre';
+                        w.style.display = 'none';
                     }
                 }
                 fairRow.style.display = '';
@@ -3311,8 +3317,13 @@
         if (execRow) {
             const sh = data.short_spread, lg = data.long_spread;
             if (sh != null && lg != null) {
-                document.getElementById('short-spread').textContent = fmt(sh);
-                document.getElementById('long-spread').textContent = fmt(lg);
+                // Fixed 2dp rather than fmt's max-2: the two sit side by
+                // side and are read against each other, so "58.7" next
+                // to "59.17" invites a misread of the gap between them.
+                document.getElementById('short-spread').textContent =
+                    sh.toFixed(2);
+                document.getElementById('long-spread').textContent =
+                    lg.toFixed(2);
                 const cost = data.spread_cost;
                 document.getElementById('exec-spread-note').textContent =
                     cost == null ? ''

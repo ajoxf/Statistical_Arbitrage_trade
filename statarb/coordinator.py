@@ -2235,14 +2235,26 @@ class Coordinator:
                 ('futures', plan.get('leg_b_lots'),
                  md.get('futures_price'))):
             spec = dict(self._swap_specs.get((asset_key, role)) or {})
-            # A hand-entered rate wins: the operator can see MT5's
-            # units and this cannot always convert them.
-            override = asset.get(f'swap_{role}_per_lot')
             long_side = (role == 'spot') if short_spread else (role != 'spot')
+            side = 'long' if long_side else 'short'
+            # A hand-entered rate wins: the operator can see MT5's
+            # units and this cannot always convert them. Per SIDE,
+            # because swap_long and swap_short routinely differ in sign
+            # and a single box silently changed meaning whenever the
+            # spread crossed zero. The legacy single-value key is still
+            # honoured — and SAYS it is being used for both sides, so a
+            # config written before the split cannot quietly mean
+            # something it never said.
+            override = asset.get(f'swap_{role}_{side}_per_lot')
+            legacy = override is None and asset.get(f'swap_{role}_per_lot')
+            if legacy not in (None, False, ''):
+                override = asset.get(f'swap_{role}_per_lot')
             if override not in (None, ''):
                 per_night, note = float(override), (
                     f'{float(override):+.2f} per lot per night, entered by '
-                    f'hand')
+                    f'hand' + (' (one value for both sides — set the '
+                               f'{side} box)' if legacy not in
+                               (None, False, '') else ''))
             else:
                 per_night, note = carry.swap_per_lot_night(
                     spec.get('swap_long' if long_side else 'swap_short'),

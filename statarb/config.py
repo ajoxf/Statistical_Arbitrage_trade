@@ -358,7 +358,13 @@ class AlgoTradingConfig:
     #: feed the Carry to Expiry card and nothing in the signal, sizing
     #: or exit path. Anything else under `assets` is structural and
     #: needs a restart.
+    #: MT5 quotes swap_long and swap_short separately and they routinely
+    #: differ in SIGN, so the override is per leg per SIDE. The two
+    #: legacy single-value keys are kept here so a save can CLEAR them.
     CARRY_ASSET_KEYS = ('futures_expiry', 'spot_expiry',
+                        'swap_spot_long_per_lot', 'swap_spot_short_per_lot',
+                        'swap_futures_long_per_lot',
+                        'swap_futures_short_per_lot',
                         'swap_spot_per_lot', 'swap_futures_per_lot')
 
     HOT_TRADING_KEYS = ('CLIP_LOTS', 'SLICE_LOTS', 'DAILY_LOT_TARGET',

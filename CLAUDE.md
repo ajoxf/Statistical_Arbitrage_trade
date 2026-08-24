@@ -612,12 +612,17 @@ be displayed at all, least of all this one — "you are paid to hold this
 at any spread" is a licence to print money and must never render
 unchallenged.
 
-Still outstanding: the override is ONE box per leg, but MT5 quotes
-`swap_long` and `swap_short` separately and they routinely differ in
-sign. The card labels which side it applied ("XAUUSD long: ..."), and
-the side follows the spread's sign, so a hand-entered number silently
-changes meaning if the spread crosses zero. Two boxes per leg would
-settle it.
+**FIXED the same day** (operator: "add two boxes per leg for long and
+short swap"). MT5 quotes `swap_long` and `swap_short` separately and
+they routinely differ in sign; one box per leg silently changed meaning
+whenever the spread crossed zero, because the side follows the spread's
+sign. Now four keys —
+`swap_{spot,futures}_{long,short}_per_lot` — and the pair reads
+whichever side it actually holds that leg on. The pre-split single value
+is still honoured and SAYS SO in the note ("one value for both sides"),
+shows in BOTH boxes so the operator can see what is in force, and is
+RETIRED the moment either side of that leg is saved: a number meaning
+"both sides" must not survive underneath two that mean one side each.
 
 ## The two spreads you can actually trade (2026-08-24, operator)
 
@@ -703,6 +708,31 @@ so a level they chose silently produced a risk they did not.
 
 RR < 1 is the trap. It reads like a risk setting and it is a REWARD
 ratio: at 0.3 the stop is 3.3x the target.
+
+## The card had the answer and buried it under arithmetic (2026-08-24)
+
+Operator: "The screenshot details is not required. The 2 spreads need to
+be displayed clearly."
+
+Three lines of fair-value derivation sat above the two spreads that can
+actually be traded. The derivation was added the same day to make fair
+value checkable, and it was right to add — but it is REFERENCE, and it
+was outranking the prices the operator fills at.
+
+- The derivation moved into the row's TOOLTIP. Still there to catch a
+  wrong contract month or multiplier; no longer occupying the card.
+- The implied-rate line stays VISIBLE, but only when the two rates
+  differ by more than 0.5pp. A rate that already agrees is not news, and
+  a line that is always there stops being read — the same event-driven
+  rule the status log follows.
+- `short_spread` and `long_spread` are now the HEADLINE, 1.5rem with
+  their own labels, and the mid steps down beneath them. The mid is a
+  midpoint of two midpoints: it is the series the z-score is measured on
+  and nothing else, and it had the big number purely because it was
+  there first.
+- Both are rendered at a FIXED 2dp rather than `fmt`'s max-2. They sit
+  side by side and are read against each other, so "58.7" next to
+  "59.17" invites a misread of the gap between them.
 
 ## A pair could be created but never removed (2026-08-07)
 

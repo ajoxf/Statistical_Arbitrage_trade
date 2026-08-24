@@ -214,7 +214,7 @@ def test_a_hand_entered_swap_beats_what_mt5_reported(coord):
         'swap_short': 0.0}
     # Mode 8 is unconvertible, so without an override there is no number.
     assert coord._carry_block('GOLD', GOLD_MD, 59.0)['net_usd'] is None
-    asset['swap_spot_per_lot'] = -1.25
+    asset['swap_spot_long_per_lot'] = -1.25
     block = coord._carry_block('GOLD', GOLD_MD, 59.0)
     assert block['net_usd'] is not None
     assert 'entered by hand' in block['per_leg'][0]['note']
@@ -242,8 +242,8 @@ def test_each_leg_is_charged_the_side_it_will_be_traded_on(coord):
 def test_the_net_subtracts_the_round_trip(coord):
     asset = coord.config.ASSETS['GOLD']
     asset['futures_expiry'] = datetime.now() + timedelta(days=30)
-    asset['swap_spot_per_lot'] = 0.0
-    asset['swap_futures_per_lot'] = 0.0
+    asset['swap_spot_long_per_lot'] = 0.0
+    asset['swap_futures_short_per_lot'] = 0.0
     free = coord._carry_block('GOLD', GOLD_MD, 0.0)
     charged = coord._carry_block('GOLD', GOLD_MD, 59.0)
     assert charged['net_usd'] == pytest.approx(free['net_usd'] - 59.0)
@@ -255,10 +255,11 @@ def test_a_blank_swap_field_clears_the_override():
     """Blank means "use MT5's". An override the operator cannot delete
     would outlive the pair it was typed for."""
     from statarb import webapi
-    raw = {'assets': {'GOLD': {'name': 'GOLD', 'swap_spot_per_lot': -1.25}}}
+    raw = {'assets': {'GOLD': {'name': 'GOLD',
+                               'swap_spot_long_per_lot': -1.25}}}
     out, _, _ = webapi.apply_ui_config(
-        raw, {'asset': 'GOLD', 'swap_spot_per_lot': ''})
-    assert 'swap_spot_per_lot' not in out['assets']['GOLD']
+        raw, {'asset': 'GOLD', 'swap_spot_long_per_lot': ''})
+    assert 'swap_spot_long_per_lot' not in out['assets']['GOLD']
 
 
 def test_a_zero_swap_is_kept_as_an_override():
@@ -266,18 +267,18 @@ def test_a_zero_swap_is_kept_as_an_override():
     be read as "unset"."""
     from statarb import webapi
     out, _, _ = webapi.apply_ui_config(
-        {'assets': {}}, {'asset': 'GOLD', 'swap_futures_per_lot': '0'})
-    assert out['assets']['GOLD']['swap_futures_per_lot'] == 0.0
+        {'assets': {}}, {'asset': 'GOLD', 'swap_futures_short_per_lot': '0'})
+    assert out['assets']['GOLD']['swap_futures_short_per_lot'] == 0.0
 
 
 def test_the_override_survives_a_round_trip_through_the_ui():
     from statarb import webapi
     raw, _, _ = webapi.apply_ui_config(
-        {'assets': {}}, {'asset': 'GOLD', 'swap_spot_per_lot': '-1.25',
-                        'swap_futures_per_lot': '2.5'})
+        {'assets': {}}, {'asset': 'GOLD', 'swap_spot_long_per_lot': '-1.25',
+                        'swap_futures_short_per_lot': '2.5'})
     ui = webapi.to_ui_config(raw)
-    assert ui['swap_spot_per_lot'] == -1.25
-    assert ui['swap_futures_per_lot'] == 2.5
+    assert ui['swap_spot_long_per_lot'] == -1.25
+    assert ui['swap_futures_short_per_lot'] == 2.5
 
 
 def test_the_gross_is_shown_as_a_multiplication_not_just_a_total():
@@ -460,3 +461,75 @@ def test_the_charged_version_of_the_same_trade_is_clean():
     # And the edge all but vanishes, which is the honest answer: the
     # basis IS the financing, so capturing it barely beats paying it.
     assert plan['net_usd'] == pytest.approx(8.24, abs=0.5)
+
+
+# --- one box per leg per SIDE -------------------------------------------
+# MT5 quotes swap_long and swap_short separately and they routinely
+# differ in sign. A single box per leg silently changed meaning whenever
+# the spread crossed zero, because the side follows the spread's sign.
+
+def test_each_side_gets_its_own_override(coord):
+    asset = coord.config.ASSETS['GOLD']
+    asset['futures_expiry'] = datetime.now() + timedelta(days=30)
+    asset['swap_spot_long_per_lot'] = -1.25
+    asset['swap_spot_short_per_lot'] = +0.40
+    asset['swap_futures_long_per_lot'] = 0.0
+    asset['swap_futures_short_per_lot'] = 0.0
+
+    # A POSITIVE spread is shorted: long leg A, so leg A reads its LONG box.
+    short = coord._carry_block('GOLD', dict(GOLD_MD, spread=58.94), 0.0)
+    assert short['per_leg'][0]['per_lot_night'] == -1.25
+
+    # A NEGATIVE spread is bought: leg A is now short, so the other box.
+    long_ = coord._carry_block('GOLD', dict(GOLD_MD, spread=-58.94), 0.0)
+    assert long_['per_leg'][0]['per_lot_night'] == +0.40
+
+
+def test_a_pre_split_config_still_works_and_says_so(coord):
+    """One value written before the split cannot quietly start meaning
+    one side only."""
+    asset = coord.config.ASSETS['GOLD']
+    asset['futures_expiry'] = datetime.now() + timedelta(days=30)
+    asset['swap_spot_per_lot'] = -1.25
+    asset['swap_futures_per_lot'] = 0.0
+    block = coord._carry_block('GOLD', GOLD_MD, 0.0)
+    assert block['per_leg'][0]['per_lot_night'] == -1.25
+    assert 'both sides' in block['per_leg'][0]['note']
+
+
+def test_a_side_specific_box_beats_the_legacy_one(coord):
+    asset = coord.config.ASSETS['GOLD']
+    asset['futures_expiry'] = datetime.now() + timedelta(days=30)
+    asset['swap_spot_per_lot'] = -1.25
+    asset['swap_spot_long_per_lot'] = -2.00
+    asset['swap_futures_per_lot'] = 0.0
+    block = coord._carry_block('GOLD', dict(GOLD_MD, spread=58.94), 0.0)
+    assert block['per_leg'][0]['per_lot_night'] == -2.00
+    assert 'both sides' not in block['per_leg'][0]['note']
+
+
+def test_saving_a_side_retires_that_legs_legacy_value():
+    """Leaving it behind would keep a number meaning "both sides"
+    underneath two that mean one side each."""
+    from statarb import webapi
+    raw = {'assets': {'GOLD': {'name': 'GOLD',
+                               'swap_spot_per_lot': -1.25,
+                               'swap_futures_per_lot': -0.50}}}
+    out, _, _ = webapi.apply_ui_config(
+        raw, {'asset': 'GOLD', 'swap_spot_long_per_lot': '-2.0'})
+    gold = out['assets']['GOLD']
+    assert 'swap_spot_per_lot' not in gold
+    assert gold['swap_spot_long_per_lot'] == -2.0
+    # The OTHER leg was not touched, so its legacy value survives.
+    assert gold['swap_futures_per_lot'] == -0.50
+
+
+def test_a_pre_split_value_shows_in_both_boxes():
+    """So the operator can see what is in force and fix whichever side
+    is wrong."""
+    from statarb import webapi
+    ui = webapi.to_ui_config(
+        {'assets': {'GOLD': {'name': 'GOLD', 'enabled': True,
+                             'swap_spot_per_lot': -1.25}}})
+    assert ui['swap_spot_long_per_lot'] == -1.25
+    assert ui['swap_spot_short_per_lot'] == -1.25
