@@ -835,9 +835,22 @@ red under short, all green under long). Wrong convention: the leg cards
 above already colour **bid green and ask red**, and a price must not
 change colour depending on which of two tables it happens to sit in.
 Now `Leg B bid` is green wherever it appears and `Leg A ask` is red
-wherever it appears, rendered as the leg cards do it — a small grey
-label with the price beneath — at half the size of the spread they
-build, so they stay provenance rather than a second headline.
+wherever it appears.
+
+Then: "This looks so bad — can break this up into smaller cards and make
+it similar to the Legs Card". One flat row of four readings ran the two
+touches together — `4709.114652.04`, two prices with no gap, because a
+hand-rolled flex row gave them nothing to sit in. The row is now FOUR
+CARDS in the leg cards' own shape: a header naming the reading, the
+value large in the middle, and its parts in labelled Bootstrap columns
+underneath. Copying the structure that already works beats approximating
+it, and `col-6` inside a `row g-1` cannot collide the way a bare flex
+row did.
+
+The touch colours use **`price-up` / `price-down`, not Bootstrap's
+`text-success` / `text-danger`**. base.html defines those two itself, so
+the green and red survive a blocked CDN — a failure this app has already
+had once (2026-08-06), and the leg cards are still exposed to it.
 
 ## A warning nobody can act on is not a fix (2026-08-24, operator)
 

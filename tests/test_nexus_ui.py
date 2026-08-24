@@ -2473,8 +2473,13 @@ def test_the_touches_are_coloured_by_SIDE_like_the_leg_cards(client):
     it is.
     """
     page = client.get('/').get_data(as_text=True)
+    # price-up / price-down rather than Bootstrap's text-success /
+    # text-danger: base.html defines these itself, so the green and red
+    # survive a blocked CDN — a failure this app has already had once.
     assert "side === 'bid' ? 'price-up' : 'price-down'" in page
     assert "['Leg B bid', data.futures_bid, 'bid']" in page
     assert "['Leg A ask', data.spot_ask, 'ask']" in page
-    # Label above, price below — the leg-card shape.
-    assert "'d-flex justify-content-around mt-1'" in page
+    # Label above, price below, one Bootstrap column each — the same
+    # shape the leg cards use for Bid / Spread / Ask.
+    assert "'col-6 text-center'" in page
+    assert 'id="short-spread-legs"' in page

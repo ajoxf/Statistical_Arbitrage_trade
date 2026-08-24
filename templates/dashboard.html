@@ -414,79 +414,82 @@
                 </span>
             </div>
             <div class="card-body py-2">
-                <!-- Four readings on ONE baseline at ONE size
-                     (operator, 2026-08-24: "This should be well aligned.
-                     All numbers in the card should be around the same
-                     size"). They were 2rem / 1.5rem / 1.5rem stacked in
-                     two tiers, so nothing lined up with anything and the
-                     size differences implied a ranking that is not
-                     there: the z-score, the two tradable spreads and the
-                     mid are four different questions, not one headline
-                     and three footnotes. -->
-                <div class="row align-items-start g-0">
-                    <div class="col-9">
-                        <div class="d-flex justify-content-around text-center">
-                            <div>
+                <!-- Four separate cards, built like the Leg cards above:
+                     a header naming the reading, the value large in the
+                     middle, and its constituent parts in labelled columns
+                     underneath (operator, 2026-08-24: "break this up into
+                     smaller cards and make it similar to the Legs Card").
+                     One flat row of numbers with no boxes around them ran
+                     the two touches together — 4709.11 and 4652.04 read as
+                     a single figure. -->
+                <div class="row g-2">
+                    <div class="col-md-3 col-6">
+                        <div class="card h-100">
+                            <div class="card-header py-1">
+                                <small><i class="bi bi-graph-up-arrow me-1"></i>Z-Score</small>
+                            </div>
+                            <div class="card-body py-2 text-center">
                                 <div class="metric-value" id="current-zscore"
                                      style="font-size: 1.5rem; line-height: 1.15;">0.00</div>
-                                <div class="metric-label">Z-Score</div>
+                                <div class="text-secondary" style="font-size: 0.65rem;"
+                                     id="zscore-note">on the mid spread</div>
                             </div>
-                            <div id="short-spread-cell" style="display:none;"
-                                 title="SHORT the spread: sell Leg B (futures) at its BID, buy Leg A (spot) at its ASK.">
-                                <div class="price-down fw-bold font-monospace"
-                                     id="short-spread"
-                                     style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
-                                <div class="metric-label">Short</div>
-                                <!-- The two touches it is BUILT from, so the
-                                     number can be checked against the book.
-                                     A TABLE, not two lines of text: the
-                                     labels are different widths, so as free
-                                     text the prices never lined up with the
-                                     other leg's. -->
-                                <div id="short-spread-legs"></div>
-                            </div>
-                            <div id="long-spread-cell" style="display:none;"
-                                 title="LONG the spread: buy Leg B (futures) at its ASK, sell Leg A (spot) at its BID.">
-                                <div class="price-up fw-bold font-monospace"
-                                     id="long-spread"
-                                     style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
-                                <div class="metric-label">Long</div>
-                                <div id="long-spread-legs"></div>
-                            </div>
-                            <!-- The MID spread was removed here (operator,
-                                 2026-08-24: "Remove this number. It doesn't
-                                 make any sense"). It is a midpoint of two
-                                 midpoints — no order ever fills there — and
-                                 with both executable spreads now shown it
-                                 sits between them adding nothing anyone acts
-                                 on. It is still the series mu/sigma/z are
-                                 measured on and is still published as
-                                 `spread`; only the tile is gone. -->
                         </div>
-                        <div class="text-secondary text-center mt-1" id="exec-spread-note"
-                             style="font-size: 0.6rem;"></div>
                     </div>
-                    <div class="col-3 text-center">
-                        <div class="d-flex align-items-center justify-content-center gap-2">
-                            <div id="position-badge" class="badge bg-secondary" style="font-size: 1rem; padding: 0.3rem 0.7rem;">
-                                FLAT
+                    <div class="col-md-3 col-6" id="short-spread-cell" style="display:none;">
+                        <div class="card h-100"
+                             title="SHORT the spread: sell Leg B at its BID, buy Leg A at its ASK.">
+                            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                                <small><i class="bi bi-arrow-down-right me-1"></i>Short</small>
+                                <span class="badge bg-danger" style="font-size: 0.6rem;">SELL B / BUY A</span>
                             </div>
-                            <div class="dropdown">
-                                <button class="btn btn-sm btn-outline-secondary py-0 px-1" type="button" data-bs-toggle="dropdown" title="Sync Position">
-                                    <i class="bi bi-arrow-repeat"></i>
-                                </button>
-                                <ul class="dropdown-menu dropdown-menu-end">
-                                    <li><a class="dropdown-item" href="#" onclick="syncPosition('recover'); return false;"><i class="bi bi-download me-2"></i>Recover from DB</a></li>
-                                    <li><a class="dropdown-item text-danger" href="#" onclick="syncPosition('clear'); return false;"><i class="bi bi-x-circle me-2"></i>Clear Position</a></li>
-                                </ul>
+                            <div class="card-body py-2 text-center">
+                                <div class="price-down fw-bold font-monospace" id="short-spread"
+                                     style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
+                                <div class="row g-1 mt-1" id="short-spread-legs"></div>
                             </div>
                         </div>
-                        <div id="sl-cooldown-indicator" style="display:none; margin-top:4px;">
-                            <span class="badge bg-warning" style="font-size:0.65rem;">SL COOLDOWN <span id="sl-cooldown-secs">0</span>s</span>
+                    </div>
+                    <div class="col-md-3 col-6" id="long-spread-cell" style="display:none;">
+                        <div class="card h-100"
+                             title="LONG the spread: buy Leg B at its ASK, sell Leg A at its BID.">
+                            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                                <small><i class="bi bi-arrow-up-right me-1"></i>Long</small>
+                                <span class="badge bg-success" style="font-size: 0.6rem;">BUY B / SELL A</span>
+                            </div>
+                            <div class="card-body py-2 text-center">
+                                <div class="price-up fw-bold font-monospace" id="long-spread"
+                                     style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
+                                <div class="row g-1 mt-1" id="long-spread-legs"></div>
+                            </div>
                         </div>
-                        <div class="metric-label mt-1">Position</div>
+                    </div>
+                    <div class="col-md-3 col-6">
+                        <div class="card h-100">
+                            <div class="card-header py-1 d-flex justify-content-between align-items-center">
+                                <small><i class="bi bi-briefcase me-1"></i>Position</small>
+                                <div class="dropdown">
+                                    <button class="btn btn-sm btn-outline-secondary py-0 px-1" type="button" data-bs-toggle="dropdown" title="Sync Position">
+                                        <i class="bi bi-arrow-repeat"></i>
+                                    </button>
+                                    <ul class="dropdown-menu dropdown-menu-end">
+                                        <li><a class="dropdown-item" href="#" onclick="syncPosition('recover'); return false;"><i class="bi bi-download me-2"></i>Recover from DB</a></li>
+                                        <li><a class="dropdown-item text-danger" href="#" onclick="syncPosition('clear'); return false;"><i class="bi bi-x-circle me-2"></i>Clear Position</a></li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <div class="card-body py-2 text-center">
+                                <div id="position-badge" class="badge bg-secondary"
+                                     style="font-size: 1rem; padding: 0.3rem 0.7rem;">FLAT</div>
+                                <div id="sl-cooldown-indicator" style="display:none; margin-top:4px;">
+                                    <span class="badge bg-warning" style="font-size:0.65rem;">SL COOLDOWN <span id="sl-cooldown-secs">0</span>s</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
+                <div class="text-secondary text-center mt-2" id="exec-spread-note"
+                     style="font-size: 0.65rem;"></div>
                 <div id="position-details" class="mt-1 pt-1" style="display: none; border-top: 1px solid var(--border-color); font-size: 0.78rem; line-height: 1.45;">
                     <div class="row g-0">
                         <div class="col-6">
@@ -3282,18 +3285,24 @@
         const el = document.getElementById(id);
         if (!el) return;
         el.innerHTML = '';
-        el.className = 'd-flex justify-content-around mt-1';
         rows.forEach(([label, value, side]) => {
+            // A Bootstrap COLUMN per touch, exactly as the leg cards do
+            // it. A bare flex row left the two values touching, so
+            // 4709.11 and 4652.04 read as one number.
             const cell = document.createElement('div');
-            cell.className = 'text-center';
+            cell.className = 'col-6 text-center';
             const l = document.createElement('div');
             l.className = 'text-secondary';
-            l.style.cssText = 'font-size: 0.62rem; line-height: 1.2;';
+            l.style.cssText = 'font-size: 0.7rem; line-height: 1.2;';
             l.textContent = label;
             const v = document.createElement('div');
-            v.className = 'font-monospace fw-semibold '
+            // price-up / price-down, NOT Bootstrap's text-success /
+            // text-danger: these are defined in base.html's own style
+            // block, so the colours survive a blocked CDN. Same green
+            // and red the leg cards show, one less thing to lose.
+            v.className = 'font-monospace '
                 + (side === 'bid' ? 'price-up' : 'price-down');
-            v.style.cssText = 'font-size: 0.82rem; line-height: 1.25;';
+            v.style.cssText = 'font-size: 0.85rem; line-height: 1.25;';
             v.textContent = value == null ? '—' : Number(value).toFixed(2);
             cell.appendChild(l); cell.appendChild(v);
             el.appendChild(cell);
