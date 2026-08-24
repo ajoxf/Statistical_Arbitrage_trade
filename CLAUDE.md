@@ -761,6 +761,22 @@ LAYOUT was carrying a meaning the numbers do not have.
   It now shows the spread for the SELECTED direction, labelled "Short
   spread (fill here)", with its two touches underneath, and it
   re-renders when the Direction selector changes.
+- **"This number needs to be update equally fast."** That panel polls
+  `/api/manual-trade` every 3s, ten times slower than the dashboard's
+  own 300ms tick, so its price lagged the card beside it — on the one
+  panel that places orders. `updateSignal` now re-renders it on every
+  tick, immediately after refreshing the touches it reads.
+- **The MID spread tile is gone** ("Remove this number. It doesn't make
+  any sense"). A midpoint of two midpoints: no order fills there, and
+  with both executable spreads on the card it sat between them adding
+  nothing anyone acts on. It is still the series mu/sigma/z are measured
+  on and still published. The element and all three write sites were
+  removed TOGETHER — one of them had no null guard, so leaving the JS
+  would have thrown inside `updateSignal` and killed the handler, the
+  same failure mode as the 2026-08-06 temporal dead zone and just as
+  invisible from Python. A test now forbids the id reappearing.
+- The bid/ask lines under each spread went 0.6rem -> 0.74rem. They are
+  read against the book, not decoration.
 - **"Round off to 2 decimal places."** `$-4.46000000000946` on the
   Analysis tiles. Sums and quotients of floats, so the binary
   representation leaks through. Rounded in `statistics_from_rows` —

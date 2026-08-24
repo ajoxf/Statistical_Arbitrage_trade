@@ -470,7 +470,7 @@
                                      number can be checked against the book. -->
                                 <div class="text-secondary font-monospace mt-1"
                                      id="short-spread-legs"
-                                     style="font-size: 0.6rem; line-height: 1.35;"></div>
+                                     style="font-size: 0.74rem; line-height: 1.4;"></div>
                             </div>
                             <div id="long-spread-cell" style="display:none;"
                                  title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
@@ -480,19 +480,20 @@
                                 <div class="metric-label">Long</div>
                                 <div class="text-secondary font-monospace mt-1"
                                      id="long-spread-legs"
-                                     style="font-size: 0.6rem; line-height: 1.35;"></div>
+                                     style="font-size: 0.74rem; line-height: 1.4;"></div>
                             </div>
-                            <div title="The midpoint of two midpoints — the series the z-score is measured on. Nobody fills here.">
-                                <div class="price-large font-monospace" id="spread-value"
-                                     style="font-size: 1.5rem; line-height: 1.15;">0.00</div>
-                                <div class="metric-label">Spread</div>
-                            </div>
+                            <!-- The MID spread was removed here (operator,
+                                 2026-08-24: "Remove this number. It doesn't
+                                 make any sense"). It is a midpoint of two
+                                 midpoints — no order ever fills there — and
+                                 with both executable spreads now shown it
+                                 sits between them adding nothing anyone acts
+                                 on. It is still the series mu/sigma/z are
+                                 measured on and is still published as
+                                 `spread`; only the tile is gone. -->
                         </div>
                         <div class="text-secondary text-center mt-1" id="exec-spread-note"
                              style="font-size: 0.6rem;"></div>
-                        <div class="text-secondary text-center" style="font-size: 0.6rem; display:none;"
-                             id="spread-breakdown"
-                             title="What the engine z-scores: Leg B (futures) minus the hedge ratio times Leg A (spot)."></div>
                     </div>
                     <div class="col-3 text-center">
                         <div class="d-flex align-items-center justify-content-center gap-2">
@@ -1177,7 +1178,7 @@
                 </div>
                 <div class="text-secondary font-monospace text-end mb-2"
                      id="manual-spread-legs"
-                     style="font-size: 0.6rem; line-height: 1.35;"></div>
+                     style="font-size: 0.74rem; line-height: 1.4;"></div>
                 <div class="row g-1 mb-2">
                     <div class="col-7">
                         <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>
@@ -2964,13 +2965,6 @@
         if (spot && futures) {
             const spotMid = _headlinePrice(spot);
             const futMid = _headlinePrice(futures);
-            const spread = futMid - spotMid;
-            const spreadEl = document.getElementById('spread-value');
-            if (spreadEl) {
-                spreadEl.classList.remove('price-up', 'price-down', 'price-neutral');
-                spreadEl.classList.add(spread > 0 ? 'price-up' : spread < 0 ? 'price-down' : 'price-neutral');
-            }
-
             // Update margin display if we have a position (use mid, not stale last)
             if (currentPosition.type !== 'NONE' && currentPosition.quantity > 0) {
                 updateMarginDisplay(spotMid, futMid);
@@ -3110,20 +3104,10 @@
         zscoreEl.textContent = zscore.toFixed(4);
         zscoreEl.className = 'metric-value ' + (zscore > 0.5 ? 'zscore-positive' : zscore < -0.5 ? 'zscore-negative' : 'zscore-neutral');
 
+        // `data.spread` is still the mid, still the series z is measured
+        // on, and still used below for the position's delta. It just has
+        // no tile of its own any more.
         const spread = data.spread || 0;
-        const spreadEl = document.getElementById('spread-value');
-        spreadEl.textContent = spread.toFixed(2);
-        spreadEl.classList.remove('price-up', 'price-down', 'price-neutral');
-        spreadEl.classList.add(spread > 0 ? 'price-up' : spread < 0 ? 'price-down' : 'price-neutral');
-
-        // Show how the spread was derived. A carry-detrended spread does
-        // NOT equal futures minus spot, and one bare number on a card
-        // gives no way to tell a detrended spread from a broken one.
-        const breakdownEl = document.getElementById('spread-breakdown');
-        if (breakdownEl && data.spread_formula) {
-            breakdownEl.textContent = data.spread_formula;
-            breakdownEl.style.display = '';
-        }
 
         // Fair value is still COMPUTED and still published — carry.sanity
         // reads it to catch a swap entered with the wrong sign, which is
@@ -3230,23 +3214,10 @@
                 futConv.style.display = 'none';
             }
         }
-        const spreadBreak = document.getElementById('spread-breakdown');
-        if (spreadBreak) {
-            if (showBeta && bxs && isFinite(spread)) {
-                // spread = F - β·S  →  show F and β·S so the user can eyeball them
-                const futApprox = spread + bxs;
-                spreadBreak.textContent = fmt(futApprox) + ' − ' + fmt(bxs);
-                spreadBreak.style.display = '';
-            } else {
-                spreadBreak.style.display = 'none';
-            }
-        }
-
         // The two executable spreads. Both are always shown, whichever
         // way a position happens to be facing — the pair of them IS the
         // cost, and hiding the side you are not trading hides half of
-        // that. The mid above sits between them by construction.
-        // The two tradable cells hide together — they are one reading
+        // that. They hide together — they are one reading
         // in two halves, and showing either alone would invite reading
         // it as "the" price.
         const execRow = document.getElementById('short-spread-cell');
@@ -3272,6 +3243,12 @@
                     short: sh, long: lg,
                     futBid: data.futures_bid, futAsk: data.futures_ask,
                     spotBid: data.spot_bid, spotAsk: data.spot_ask};
+                // Re-render the manual panel HERE. Its own poll runs at
+                // 3s, ten times slower than this one, so the price the
+                // operator arms against lagged the card beside it —
+                // and that panel is the one that places the order.
+                if (typeof renderManualSpread === 'function')
+                    renderManualSpread();
                 const shortLegs = document.getElementById('short-spread-legs');
                 const longLegs = document.getElementById('long-spread-legs');
                 if (shortLegs) {

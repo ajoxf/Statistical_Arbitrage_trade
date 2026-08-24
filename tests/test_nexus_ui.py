@@ -2263,3 +2263,47 @@ def test_the_manual_panel_shows_the_executable_spread(client):
     assert 'Short spread (fill here):' in page
     # ...and it follows the Direction selector.
     assert 'renderManualSpread();' in page
+
+
+def test_the_mid_spread_tile_is_gone(client):
+    """Operator, 2026-08-24: "Remove this number. It doesn't make any
+    sense." A midpoint of two midpoints — no order ever fills there, and
+    with both executable spreads on the card it sat between them adding
+    nothing anyone acts on.
+
+    The ELEMENT and every reference to it go together. One of the three
+    write sites had no null guard, so leaving the JS behind would have
+    thrown inside updateSignal and killed the whole handler — the same
+    failure mode as the 2026-08-06 temporal dead zone, and just as
+    invisible from Python.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert 'id="spread-value"' not in page
+    assert 'spread-value' not in page
+    assert 'spread-breakdown' not in page
+
+
+def test_the_mid_is_still_published_because_z_is_measured_on_it(config):
+    """Removing the tile must not remove the series."""
+    from types import SimpleNamespace
+    from statarb.marketdata import compute_market_data
+    tick = lambda b, a: SimpleNamespace(bid=b, ask=a, last=0, time=1)
+    md = compute_market_data(dict(config.ASSETS['GOLD']),
+                             tick(4292.55, 4292.68),
+                             tick(4351.38, 4351.72), 1.0)
+    assert md['spread'] is not None
+    assert md['short_spread'] < md['spread'] < md['long_spread']
+
+
+def test_the_manual_price_is_driven_by_the_fast_loop(client):
+    """Operator, 2026-08-24: "This number needs to be update equally
+    fast." refreshManualTrade polls every 3s, ten times slower than the
+    dashboard's own 300ms tick, so the price the operator arms against
+    lagged the card it is read against — and that panel is the one that
+    places the order. updateSignal now re-renders it on every tick."""
+    page = client.get('/').get_data(as_text=True)
+    fast = page.index('window.__execSpreads = {')
+    call = page.index('renderManualSpread();', fast)
+    # The re-render sits inside the fast handler, right after the
+    # touches it reads are refreshed.
+    assert call - fast < 600, 'renderManualSpread not on the fast path'
