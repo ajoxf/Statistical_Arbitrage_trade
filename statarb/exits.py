@@ -336,7 +336,16 @@ class ExitLadder:
     def _reversion_home(self, plan, z, spread, signal_type):
         """Has the spread 'come home'? Depends on SIGNALS.EXIT_MODE:
         zscore (z inside the band), spread (crossed the mean frozen at
-        entry), or hybrid (either)."""
+        entry), or hybrid (either).
+
+        `spread` here is the MID. This is a STATISTICAL test — has the
+        series returned to the mean it was measured against — and
+        `entry_mu` is a mean of mids. Feeding it the buy-back price
+        would compare two different definitions and bias the gate by
+        half a round turn in whichever direction the position faces.
+        The operator's own stop and target are the opposite case and DO
+        read the executable side: those are prices they named, not
+        statistics."""
         cfg = self.config.SIGNALS
         z_home = z is not None and abs(z) <= cfg['EXIT_Z']
         spread_home = False
@@ -353,8 +362,16 @@ class ExitLadder:
             return z_home or spread_home
         return z_home
 
-    def evaluate(self, position, plan, z, gross_pnl, age_sec, spread=None):
+    def evaluate(self, position, plan, z, gross_pnl, age_sec, spread=None,
+                 mid_spread=None):
         """Return an exit reason string, or None to keep holding.
+
+        `spread` is the EXECUTABLE spread this position would CLOSE at —
+        a short spread is bought back on the long side — and it is what
+        the operator's hand-set stop and target are compared against.
+        `mid_spread` is the series the statistics are measured on and is
+        what the reversion gate reads; it falls back to `spread`, so
+        callers that pass one spread keep their old behaviour.
 
         gross_pnl is the mark-to-market price move. Profit decisions
         act on NET = gross - round-trip costs (break-even aware: the
@@ -402,7 +419,9 @@ class ExitLadder:
             return 'TAKE_PROFIT'
 
         # 3. Reversion exit — gate floor decays with age (deadlock fix)
-        if self._reversion_home(plan, z, spread, position.signal_type):
+        if self._reversion_home(
+                plan, z, mid_spread if mid_spread is not None else spread,
+                position.signal_type):
             if net_pnl is None:
                 return 'REVERSION_EXIT'              # fail-open
             if age_sec >= 2 * max_hold:

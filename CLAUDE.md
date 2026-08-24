@@ -734,6 +734,36 @@ was outranking the prices the operator fills at.
   side by side and are read against each other, so "58.7" next to
   "59.17" invites a misread of the gap between them.
 
+## Which spread each decision reads (2026-08-24, operator)
+
+Operator: "will the algo know which Bid and ask to take into
+consideration?" It does, and the answer is deliberately NOT the same
+everywhere. The rule, in one place:
+
+| decision | reads | why |
+|---|---|---|
+| which side each leg trades | signal type | a SELL_BASIS sells leg B and buys leg A; MT5 takes the touch |
+| limit peg price | that leg's own bid/ask, fresh tick | `_peg_price`, kept strictly inside the book |
+| round-trip cost | BOTH legs' full bid-ask | direction-independent by construction |
+| slippage | mid -> touch -> fill, direction-aware, flipped on exit | `slippage.selling_the_spread` |
+| **entry signal (z)** | **MID** | mu/sigma/z need ONE continuous series |
+| operator's stop / target | executable CLOSING side | prices they named, not statistics |
+| armed manual trigger | executable ENTRY side | the level must be one the market offers |
+| **reversion gate** | **MID** | it tests against `entry_mu`, a mean of mids |
+
+The last row was wrong until now. `_reversion_home` was handed the
+executable closing spread while comparing it against `entry_mu` — two
+different definitions, which biased the gate by half a round turn in
+whichever direction the position happened to face (a short is bought
+back HIGHER, so its gate silently tightened). `evaluate` now takes
+`mid_spread` alongside `spread`; the operator's levels read the
+executable side and the statistical test reads the mid. `mid_spread`
+falls back to `spread`, so single-spread callers are unchanged.
+
+The distinction to keep: **a price someone named is compared against
+what the market offers; a statistic is compared against the series it
+was measured on.**
+
 ## "Go through these numbers thoroughly" (2026-08-24, operator)
 
 The Filters card. Every figure reconciled to the cent — capture, the

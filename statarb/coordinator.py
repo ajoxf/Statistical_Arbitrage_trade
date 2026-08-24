@@ -948,7 +948,11 @@ class Coordinator:
                 # stop and target half a round turn away from where
                 # the market would actually fill it.
                 spread=marketdata.executable_spread(
-                    market_data, position.signal_type, closing=True))
+                    market_data, position.signal_type, closing=True),
+                # The reversion gate is a statistical test against a mean
+                # of MIDS, so it gets the mid. Only the operator's own
+                # levels read the executable side.
+                mid_spread=market_data.get('spread'))
         # Legacy premium-based paths
         hit, action = self.risk_manager.check_position_risk(
             position, market_data['basis_pct'])

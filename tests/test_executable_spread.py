@@ -218,3 +218,48 @@ def test_a_short_positions_manual_stop_reads_the_buy_back_price(config):
                            age_sec=1, spread=mid) is None
     assert ladder.evaluate(position, plan, z=3.0, gross_pnl=0.0,
                            age_sec=1, spread=closing) == 'MANUAL_STOP'
+
+
+# --- which spread each decision reads -----------------------------------
+# Operator, 2026-08-24: "will the algo know which Bid and ask to take
+# into consideration?" Yes — and the answer is not the same everywhere,
+# which is the part worth pinning.
+
+def test_the_reversion_gate_reads_the_MID_not_the_buy_back_price(config):
+    """`entry_mu` is a mean of MIDS. Testing an executable spread
+    against it compares two different definitions and biases the gate
+    by half a round turn in whichever direction the position faces."""
+    from statarb.exits import ExitLadder
+    from statarb.models import OrderSide, Position, Trade
+
+    config.SIGNALS['EXIT_MODE'] = 'spread'
+    ladder = ExitLadder(config)
+    position = Position('P1', 'GOLD', SignalType.SELL_BASIS,
+                        Trade('XAUUSD_', OrderSide.BUY, 1.0),
+                        Trade('GC1226', OrderSide.SELL, 1.0))
+    plan = {'stop_usd': 0, 'tp_usd': 0, 'gate_floor_usd': 0.0,
+            'max_hold_sec': 9e9, 'rt_cost_usd': 0.0, 'entry_mu': 58.90}
+
+    # A short is home when the spread falls to the mean. The mid has;
+    # the price it would be bought back at has not.
+    mid, closing = 58.85, 59.10
+    assert ladder.evaluate(position, plan, z=3.0, gross_pnl=1.0, age_sec=1,
+                           spread=closing, mid_spread=mid) == 'REVERSION_EXIT'
+    # Without the mid it would read the buy-back price and hold on.
+    assert ladder.evaluate(position, plan, z=3.0, gross_pnl=1.0, age_sec=1,
+                           spread=closing) is None
+
+
+def test_one_spread_still_works_for_older_callers(config):
+    """mid_spread falls back to spread."""
+    from statarb.exits import ExitLadder
+    from statarb.models import OrderSide, Position, Trade
+    config.SIGNALS['EXIT_MODE'] = 'spread'
+    ladder = ExitLadder(config)
+    position = Position('P1', 'GOLD', SignalType.SELL_BASIS,
+                        Trade('XAUUSD_', OrderSide.BUY, 1.0),
+                        Trade('GC1226', OrderSide.SELL, 1.0))
+    plan = {'stop_usd': 0, 'tp_usd': 0, 'gate_floor_usd': 0.0,
+            'max_hold_sec': 9e9, 'rt_cost_usd': 0.0, 'entry_mu': 58.90}
+    assert ladder.evaluate(position, plan, z=3.0, gross_pnl=1.0, age_sec=1,
+                           spread=58.85) == 'REVERSION_EXIT'
