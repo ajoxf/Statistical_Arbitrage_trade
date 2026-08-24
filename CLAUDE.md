@@ -771,6 +771,30 @@ this pair moves in a session. The number is honest; whether it is
 reachable is the operator's call, and the break-even line beside it is
 the one that is always attainable.
 
+## Short only, long only, or both (2026-08-24, operator)
+
+"While running the Algo, can the user select if he only wants to
+execute Short Spread, Long Spread or both?" It could not. z fires
+symmetrically and nothing stood between the sign of z and an order.
+
+`SIGNALS.ALLOWED_DIRECTIONS` — `both` (default), `short`, `long` — is a
+gate in `ZSignalGenerator.entry_signal`, checked immediately after the
+direction is decided and BEFORE the trend filter and the cooldowns. The
+order matters: "long only" is a standing decision, not a market
+condition, and reporting it as a trend block would send the operator
+looking at the wrong thing. It reports through the same `_blocking`
+machinery as every other gate, so it shows up on the health line's
+"held up by" and in the blocked-signal card, and it is deduped the same
+way rather than logging on every tick.
+
+- **ENTRIES only.** Exits are never filtered — a position must always
+  be able to close, whatever the entry rule says today — and a MANUAL
+  trade is never blocked by it, consistent with every other signal gate.
+- SIGNALS is a hot section, so the operator changes their mind without
+  a restart.
+- Anything unrecognised falls back to `both`, because the failure mode
+  of a typo must not be a silently halted engine.
+
 ## The broker-clock line flapped again (2026-08-24, LIVE)
 
 ```

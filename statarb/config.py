@@ -166,6 +166,11 @@ class AlgoTradingConfig:
                                        # against a SMALL sigma putting z
                                        # inside the entry band on noise
             'MAX_ABS_Z': 25.0,         # beyond this the stats are junk
+            # Which spread directions the algo may OPEN. 'both' (the
+            # default), 'short' (sell leg B / buy leg A only) or 'long'.
+            # Exits are never filtered — a position must always be able
+            # to close, whatever the entry rule says today.
+            'ALLOWED_DIRECTIONS': 'both',
             'TREND_FILTER': True,      # rising S -> SHORT-only, etc.
             'TREND_WINDOW_SEC': 900,
             'ENTRY_COOLDOWN_SEC': 60,

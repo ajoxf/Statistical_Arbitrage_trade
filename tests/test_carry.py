@@ -715,3 +715,21 @@ def test_a_correction_without_the_asset_writes_nothing():
                                'swap_spot_long_per_lot': 58.0}}}
     out, _, _ = webapi.apply_ui_config(raw, {'swap_spot_long_per_lot': -58.0})
     assert out['assets']['GOLD']['swap_spot_long_per_lot'] == 58.0
+
+
+def test_the_breakeven_row_states_its_formula(client_dash):
+    """Operator, 2026-08-24: "BREAKEVEN — in brackets, in 3-4 words,
+    give the formula for the result." carry is SIGNED, so a charge adds
+    to the requirement and a credit subtracts from it — which is why
+    the row can read ANY."""
+    assert '(fees &minus; carry) &divide; units' in client_dash
+
+
+def test_the_breakeven_formula_is_the_one_computed():
+    """The printed derivation has to BE the computation, not a form of
+    it that happens to agree."""
+    plan = carry.convergence_plan(
+        spread=56.09, days=89.0, spread_units=2.0,
+        legs=[(-58.0, 0.02, 'a')], cost_usd=1.16)
+    assert plan['breakeven_spread'] == pytest.approx(
+        (plan['cost_usd'] - plan['carry_usd']) / plan['spread_units'])

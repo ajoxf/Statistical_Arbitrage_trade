@@ -52,6 +52,7 @@ FIELD_MAP = {
     'min_history_sec': ('SIGNALS', 'MIN_HISTORY_SEC'),
     'min_sigma': ('SIGNALS', 'MIN_SIGMA'),
     'max_abs_z': ('SIGNALS', 'MAX_ABS_Z'),
+    'allowed_directions': ('SIGNALS', 'ALLOWED_DIRECTIONS'),
     'trend_direction_filter': ('SIGNALS', 'TREND_FILTER'),
     'trend_window_sec': ('SIGNALS', 'TREND_WINDOW_SEC'),
     'entry_cooldown_seconds': ('SIGNALS', 'ENTRY_COOLDOWN_SEC'),
@@ -141,7 +142,8 @@ SECTION_JSON_KEY = {
 }
 
 # Values the UI sends uppercase but the engine stores lowercase
-LOWERCASE_FIELDS = {'entry_execution_mode', 'exit_signal_mode', 'on_timeout'}
+LOWERCASE_FIELDS = {'entry_execution_mode', 'exit_signal_mode',
+                    'on_timeout', 'allowed_directions'}
 BOOL_FIELDS = {'z_stop_exit_enabled', 'trend_direction_filter',
                'use_sigma_target', 'use_z_signals', 'telegram_enabled',
                'telegram_notify_trades', 'telegram_notify_errors',

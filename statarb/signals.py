@@ -117,6 +117,26 @@ class ZSignalGenerator:
         # Basis rich (z>0): sell it. Basis cheap (z<0): buy it.
         direction = SignalType.SELL_BASIS if z > 0 else SignalType.BUY_BASIS
 
+        # Which directions the operator is willing to trade at all
+        # (2026-08-24). A pair is not always symmetric: one leg can be
+        # hard to borrow, a broker can charge asymmetric swap, or the
+        # operator may simply have a view. Checked BEFORE the trend
+        # filter and the cooldowns so the log names the real reason —
+        # "long only" is a standing decision, not a market condition,
+        # and reporting it as a trend block would send them looking at
+        # the wrong thing.
+        allowed = str(cfg.get('ALLOWED_DIRECTIONS', 'both') or 'both').lower()
+        if allowed == 'short' and direction != SignalType.SELL_BASIS:
+            return self._blocked(
+                asset, 'direction-long',
+                "%s: BUY_BASIS blocked — set to SHORT SPREAD only "
+                "(further ticks suppressed)", asset)
+        if allowed == 'long' and direction != SignalType.BUY_BASIS:
+            return self._blocked(
+                asset, 'direction-short',
+                "%s: SELL_BASIS blocked — set to LONG SPREAD only "
+                "(further ticks suppressed)", asset)
+
         if cfg.get('TREND_FILTER', True):
             slope = stats.trend_slope()
             # Never fight the tape: SELL_BASIS profits when the spread

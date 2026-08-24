@@ -476,6 +476,23 @@
                             <small class="text-secondary">Only enter when the trade's <strong>net profit target</strong> (f &times; |Z| &times; &sigma; &times; qty &mdash; the same number the exit aims for) is &ge; this &times; round-trip cost (fees + slippage). <strong>1.5&ndash;2.0</strong> recommended. Auto-floored at the Profit Cost Floor so entry can never be looser than the exit.</small>
                         </div>
                         <div class="col-md-6 mt-3">
+                            <label class="form-label">Directions the algo may open</label>
+                            <select class="form-select" id="allowed_directions"
+                                    name="allowed_directions">
+                                <option value="both" {% if config.allowed_directions == 'both' %}selected{% endif %}>Both &mdash; short and long spread</option>
+                                <option value="short" {% if config.allowed_directions == 'short' %}selected{% endif %}>Short spread only &mdash; sell Leg B, buy Leg A</option>
+                                <option value="long" {% if config.allowed_directions == 'long' %}selected{% endif %}>Long spread only &mdash; buy Leg B, sell Leg A</option>
+                            </select>
+                            <small class="text-secondary d-block">
+                                Which way the algo is allowed to OPEN. A pair is not always
+                                symmetric &mdash; one leg can be hard to borrow, or the swap
+                                can be punitive on one side only. <strong>Exits are never
+                                filtered</strong>: an open position can always close, and a
+                                <strong>manual</strong> trade is never blocked by this.
+                                Applies live, no restart.
+                            </small>
+                        </div>
+                        <div class="col-md-6 mt-3">
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="trend_direction_filter" name="trend_direction_filter" {% if config.trend_direction_filter %}checked{% endif %}>
                                 <label class="form-check-label fw-semibold" for="trend_direction_filter">Trend Direction Filter</label>
@@ -2088,6 +2105,7 @@
             trailing_stop_pct: parseFloat(document.getElementById('trailing_stop_pct').value) || 0,
             trailing_stop_floor_pct: parseFloat(document.getElementById('trailing_stop_floor_pct').value) || 0,
             std_filter_enabled: document.getElementById('std_filter_enabled').checked,
+            allowed_directions: document.getElementById('allowed_directions').value,
             trend_direction_filter: document.getElementById('trend_direction_filter').checked,
             z_reset_gate_enabled: document.getElementById('z_reset_gate_enabled').checked,
             min_std_multiple: parseFloat(document.getElementById('min_std_multiple').value),
@@ -2406,6 +2424,8 @@
                 document.getElementById('trailing_stop_pct').value = config.trailing_stop_pct || 0;
                 document.getElementById('trailing_stop_floor_pct').value = config.trailing_stop_floor_pct || 0;
                 document.getElementById('std_filter_enabled').checked = config.std_filter_enabled;
+                document.getElementById('allowed_directions').value =
+                    config.allowed_directions || 'both';
                 document.getElementById('trend_direction_filter').checked = config.trend_direction_filter || false;
                 document.getElementById('z_reset_gate_enabled').checked = config.z_reset_gate_enabled !== false;
                 document.getElementById('min_std_multiple').value = config.min_std_multiple;
