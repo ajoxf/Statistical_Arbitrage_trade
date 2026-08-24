@@ -410,3 +410,53 @@ def test_a_typed_expiry_beats_what_the_terminal_reports(coord):
     asset['futures_expiry'] = _dt(2026, 11, 25)
     block = coord._carry_block('GOLD', GOLD_MD, 39.0)
     assert block['expiry'] == '2026-11-25'
+
+
+# --- the swap and the carry rate price the same basis --------------------
+# Live 2026-08-24 they sat side by side on the dashboard disagreeing in
+# SIGN, and nothing said so. The operator had entered +58.00 per lot per
+# night on the spot leg: the right magnitude (58 x 365 / (100 x 4,646) =
+# 4.56% a year, exactly what gold funds at) with the sign inverted. A
+# long spot position is CHARGED that.
+
+def test_opposite_signs_are_called_out():
+    msg = carry.sanity(carry_spread=-51.82, fair_value=48.55)
+    assert msg and 'OPPOSITE' in msg
+    assert 'normally negative' in msg
+
+
+def test_the_same_swap_with_the_right_sign_agrees_with_fair_value():
+    """Flip it and the two independent estimates agree to within 7%."""
+    assert carry.sanity(carry_spread=+51.82, fair_value=48.55) is None
+
+
+def test_a_wildly_different_magnitude_is_called_out():
+    assert carry.sanity(carry_spread=500.0, fair_value=48.55)
+    assert carry.sanity(carry_spread=1.0, fair_value=48.55)
+
+
+def test_no_fair_value_means_no_opinion():
+    """A RELATED pair has no fair value, and that is not a disagreement."""
+    assert carry.sanity(carry_spread=-51.82, fair_value=None) is None
+    assert carry.sanity(carry_spread=None, fair_value=48.55) is None
+    assert carry.sanity(carry_spread=-51.82, fair_value=0.0) is None
+
+
+def test_the_plan_carries_the_warning():
+    plan = carry.convergence_plan(
+        spread=56.545, days=89.34, spread_units=2.0,
+        legs=[(+58.0, 0.02, 'XAUUSD long'), (0.0, 0.02, 'GCZ6 short')],
+        cost_usd=1.22, fair_value=48.55)
+    assert plan['carry_spread'] == pytest.approx(-51.82, abs=0.01)
+    assert plan['warning'] and 'OPPOSITE' in plan['warning']
+
+
+def test_the_charged_version_of_the_same_trade_is_clean():
+    plan = carry.convergence_plan(
+        spread=56.545, days=89.34, spread_units=2.0,
+        legs=[(-58.0, 0.02, 'XAUUSD long'), (0.0, 0.02, 'GCZ6 short')],
+        cost_usd=1.22, fair_value=48.55)
+    assert plan['warning'] is None
+    # And the edge all but vanishes, which is the honest answer: the
+    # basis IS the financing, so capturing it barely beats paying it.
+    assert plan['net_usd'] == pytest.approx(8.24, abs=0.5)

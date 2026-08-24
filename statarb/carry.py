@@ -133,8 +133,56 @@ def swap_per_lot_night(swap, mode, contract_size=None, price=None,
                   f'this can convert')
 
 
+#: How far the swap-implied basis may sit from the rate-implied one
+#: before the swap input is the likeliest explanation.
+SANITY_MULT = 3.0
+
+
+def sanity(carry_spread, fair_value):
+    """Do the broker's swap and the carry rate tell the same story?
+
+    Two independent estimates of ONE physical quantity end up on the
+    dashboard together: `fairvalue` prices the basis from an annual
+    rate, and this module prices it from the swap the broker actually
+    charges. They are computed from different inputs by different code,
+    so when they disagree one of the two inputs is wrong — and that is
+    the cheapest check available anywhere on this screen.
+
+    Live 2026-08-24 it would have caught the whole thing at a glance.
+    The operator entered +58.00 per lot per night on the spot leg. The
+    MAGNITUDE was right — 58 x 365 / (100 oz x 4,646) is 4.56% a year,
+    which is exactly what gold funds at — but the SIGN was inverted:
+    a long spot position is CHARGED that, not paid it. The card then
+    reported a carry-implied basis of -51.82 next to a fair value of
+    +48.55 and concluded "you are paid to hold this to expiry at any
+    spread", which is a licence to print money and should never be
+    displayed without challenge. Flip the sign and the two agree to
+    within 7%.
+
+    Returns a message, or None when they are consistent.
+    """
+    if carry_spread is None or fair_value is None:
+        return None
+    if abs(fair_value) < 1e-9:
+        return None
+    if carry_spread * fair_value < 0:
+        return (f'The swap says the basis should be {carry_spread:+,.2f} '
+                f'and the carry rate says {fair_value:+,.2f} — OPPOSITE '
+                f'SIGNS, so one of the two inputs is wrong. The usual '
+                f'cause is a swap entered as a credit when the broker '
+                f'charges it: a leg you are LONG is normally charged, so '
+                f'its figure is normally negative.')
+    ratio = abs(carry_spread) / abs(fair_value)
+    if ratio > SANITY_MULT or ratio < 1.0 / SANITY_MULT:
+        return (f'The swap says the basis should be {carry_spread:+,.2f} '
+                f'and the carry rate says {fair_value:+,.2f} — a factor of '
+                f'{max(ratio, 1 / ratio):,.1f} apart. Check the swap units '
+                f'and the carry rate; they are pricing the same thing.')
+    return None
+
+
 def convergence_plan(spread, days, spread_units, legs, cost_usd=0.0,
-                     nights_per_week=7.0):
+                     nights_per_week=7.0, fair_value=None):
     """Is the spread wider than the carry to expiry?
 
     `legs` is an iterable of (money_per_lot_night, lots, note) — one
@@ -153,7 +201,8 @@ def convergence_plan(spread, days, spread_units, legs, cost_usd=0.0,
            'gross_usd': None, 'carry_usd': None,
            'cost_usd': cost_usd, 'net_usd': None, 'per_leg': [],
            'carry_spread': None, 'breakeven_spread': None,
-           'spread_gap': None, 'schedule': [], 'reason': None}
+           'spread_gap': None, 'schedule': [], 'reason': None,
+           'warning': None}
     if spread is None or not spread_units:
         out['reason'] = 'no live spread or no sizing yet'
         return out
@@ -204,6 +253,10 @@ def convergence_plan(spread, days, spread_units, legs, cost_usd=0.0,
     out['carry_spread'] = -total / spread_units
     out['breakeven_spread'] = ((cost_usd or 0.0) - total) / spread_units
     out['spread_gap'] = abs(spread) - out['breakeven_spread']
+    # Does the broker's swap agree with the carry rate about which way
+    # this basis points? They price the same thing from different
+    # inputs, so a disagreement means one input is wrong.
+    out['warning'] = sanity(out['carry_spread'], fair_value)
 
     # How that threshold decays as expiry approaches. Carry shrinks with
     # the days left; the ROUND TRIP DOES NOT, so the curve flattens onto

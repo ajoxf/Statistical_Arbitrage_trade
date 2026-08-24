@@ -2257,7 +2257,11 @@ class Coordinator:
 
         block = carry.convergence_plan(
             md.get('spread'), days, units, legs,
-            cost_usd=cost_usd)
+            cost_usd=cost_usd,
+            # The rate-implied basis, so the two estimates can be
+            # checked against each other rather than sitting side by
+            # side on the dashboard disagreeing in silence.
+            fair_value=md.get('fair_value'))
         block['pair_type'] = md.get('pair_type')
         block['expiry'] = (asset['futures_expiry'].date().isoformat()
                            if asset.get('futures_expiry') else None)

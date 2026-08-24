@@ -576,6 +576,49 @@ be checked against anything. `fair_spread` keeps its two-tuple
 signature — 14 call sites unpack it — so `_derive` is the shared
 implementation rather than a second copy of the carry maths.
 
+## The swap and the carry rate must agree (2026-08-24, operator)
+
+Operator, on a Carry to Expiry card reading "you are paid to hold this
+to expiry at any spread": "Check this better. This seems like an error."
+
+Every line of that card was internally consistent — gross, carry, net,
+the two spread readings and the decay table all reconciled to the cent.
+The INPUT was wrong. The operator had entered `+58.00` per lot per night
+on the spot leg, and the magnitude was right: 58 x 365 / (100 oz x
+4,646) is **4.56% a year**, exactly what gold funds at. The SIGN was
+inverted. A long spot position is CHARGED that, not paid it.
+
+With the sign flipped the same trade reads net **+$8.24** on a $113
+convergence — the basis IS the financing, so capturing it barely beats
+paying it, which is the honest answer and the opposite of the $215.50
+the card showed.
+
+`carry.sanity` catches it, and the check costs nothing because the
+answer was already on the screen. **`fairvalue` prices the basis from an
+annual rate and `carry` prices it from the broker's swap — two
+independent estimates of ONE physical quantity, from different inputs,
+in different code.** They sat side by side disagreeing in SIGN (-51.82
+against +48.55) and nothing said so. Now:
+
+- opposite signs -> named as such, with the usual cause ("a leg you are
+  LONG is normally charged, so its figure is normally negative");
+- more than `SANITY_MULT` (3x) apart either way -> flagged as a units
+  problem, since both are pricing the same thing;
+- no fair value (a RELATED pair) -> no opinion, not a warning.
+
+The warning REPLACES the verdict line rather than sitting under it. A
+conclusion drawn from an input the engine can prove is wrong should not
+be displayed at all, least of all this one — "you are paid to hold this
+at any spread" is a licence to print money and must never render
+unchallenged.
+
+Still outstanding: the override is ONE box per leg, but MT5 quotes
+`swap_long` and `swap_short` separately and they routinely differ in
+sign. The card labels which side it applied ("XAUUSD long: ..."), and
+the side follows the spread's sign, so a hand-entered number silently
+changes meaning if the spread crosses zero. Two boxes per leg would
+settle it.
+
 ## The two spreads you can actually trade (2026-08-24, operator)
 
 Operator: "Short Spread - Sell Future and Buy Spot - The spread should

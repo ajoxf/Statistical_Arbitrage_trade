@@ -461,21 +461,22 @@
                              touches, and the gap between these two IS
                              the round-turn bid-ask. -->
                         <div class="mt-1" id="exec-spread-row" style="display:none;">
-                            <div class="d-flex justify-content-center gap-3"
-                                 style="font-size: 0.66rem;">
+                            <div class="d-flex justify-content-center gap-3 align-items-baseline">
                                 <span title="SHORT the spread: sell futures at the BID, buy spot at the ASK.">
-                                    <span class="text-secondary">short</span>
-                                    <span class="price-down fw-semibold font-monospace"
-                                          id="short-spread">&mdash;</span>
+                                    <span class="text-secondary" style="font-size: 0.7rem;">short</span>
+                                    <span class="price-down fw-bold font-monospace"
+                                          id="short-spread"
+                                          style="font-size: 1.15rem;">&mdash;</span>
                                 </span>
                                 <span title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
-                                    <span class="text-secondary">long</span>
-                                    <span class="price-up fw-semibold font-monospace"
-                                          id="long-spread">&mdash;</span>
+                                    <span class="text-secondary" style="font-size: 0.7rem;">long</span>
+                                    <span class="price-up fw-bold font-monospace"
+                                          id="long-spread"
+                                          style="font-size: 1.15rem;">&mdash;</span>
                                 </span>
                             </div>
                             <div class="text-secondary" id="exec-spread-note"
-                                 style="font-size: 0.58rem;"></div>
+                                 style="font-size: 0.6rem;"></div>
                         </div>
                         <div class="mt-1" style="display:none;" id="fair-value-row"
                              title="Theoretical value of the spread from cost of carry. REFERENCE ONLY — the signal is the z-score on the spread and never reads this. A large gap usually means the contract month, multiplier or contract size is wrong, not that the trade is good.">
@@ -2783,7 +2784,14 @@
         nowEl.className = 'text-end fw-bold font-monospace '
             + (gap > 0 ? 'price-up' : 'price-down');
         const gapNote = document.getElementById('carry-gap-note');
-        if (gap == null) {
+        if (carry.warning) {
+            // The swap and the carry rate price the same basis from
+            // different inputs. When they disagree one input is wrong,
+            // and no conclusion below is worth reading until it is
+            // fixed — least of all "you are paid to hold this".
+            gapNote.className = 'mt-1 text-warning fw-semibold';
+            gapNote.textContent = '⚠ ' + carry.warning;
+        } else if (gap == null) {
             gapNote.textContent = '';
         } else if (carry.breakeven_spread <= 0) {
             gapNote.className = 'mt-1 price-up';
