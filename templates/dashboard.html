@@ -1220,8 +1220,11 @@
                         </select>
                     </div>
                     <div class="col-5">
-                        <label class="form-label mb-0" style="font-size:0.65rem;">Lots</label>
-                        <input type="number" class="form-control form-control-sm py-0" id="manual-lots" step="0.01" min="0.01" placeholder="clip" style="font-size:0.75rem;">
+                        <label class="form-label mb-0" style="font-size:0.65rem;">Lots
+                            <span class="text-secondary" style="font-size:0.58rem;">blank = engine size</span>
+                        </label>
+                        <input type="number" class="form-control form-control-sm py-0" id="manual-lots" step="0.01" min="0.01" placeholder="engine" style="font-size:0.75rem;"
+                               title="Leave blank to trade whatever the engine would size — the same plan the Position Sizing card shows, honouring your sizing mode, the volume step and each leg's minimum. A number typed here is used exactly as typed; MAX_LOT_SIZE still applies.">
                     </div>
                 </div>
                 <!-- Entry / Take Profit / Stop Loss, all SPREAD levels.
@@ -2540,6 +2543,15 @@
                 ? (sz.leg_a_lots || 0).toFixed(2) + ' / '
                   + (sz.leg_b_lots || 0).toFixed(2)
                 : '—';
+        }
+        // A blank Lots box on the manual panel means "whatever the
+        // engine would trade", so say what that is. The placeholder
+        // used to read "clip", which named a config key rather than a
+        // number — and under notional sizing it named the WRONG one.
+        const manualLots = document.getElementById('manual-lots');
+        if (manualLots) {
+            manualLots.placeholder = (sz && sz.leg_a_lots)
+                ? sz.leg_a_lots.toFixed(2) : 'engine';
         }
         if (balEl) {
             if (!sz || sz.imbalance_pct == null) {

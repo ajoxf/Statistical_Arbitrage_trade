@@ -1917,7 +1917,42 @@ class Coordinator:
         halted, why = self.risk_manager.halted()
         if halted:
             return self._manual_reject(f"circuit breaker ({why})")
-        lots = float(lots or self.config.TRADING.get('CLIP_LOTS', 1.0))
+
+        # Market data first, because the size depends on it.
+        market_data = self.get_market_data(asset_key) \
+            or self.active_assets[asset_key]['last_data']
+        if not market_data:
+            return self._manual_reject("no market data")
+
+        # A BLANK lots box means "whatever the engine would trade", and
+        # that has to be the SIZING PLAN, not raw CLIP_LOTS.
+        #
+        # It used to be CLIP_LOTS, which is only the anchor under `lots`
+        # sizing. Under `notional` sizing the engine sizes a signal
+        # entry from NOTIONAL_PER_LEG_USD — and a blank manual box on
+        # the same pair still meant CLIP_LOTS, a completely different
+        # number. Live 2026-08-24 the dashboard read 1.15 lots while a
+        # blank box meant 50, which is $21m per leg of gold; only
+        # MAX_LOT_SIZE caught it. The two paths must agree about what
+        # "one trade" is.
+        #
+        # An EXPLICIT figure is left exactly as typed — including past
+        # the volume step and past the streak reducer. Manual means
+        # manual, the same rule as a hand-entered exit target; MAX_LOT_SIZE
+        # and the pre-checks still stand behind it.
+        # `not lots` and not `is None`: the panel sends null for a blank
+        # box, but 0 has to mean the same thing rather than an order for
+        # nothing. This is the one part of the old `lots or CLIP_LOTS`
+        # that was right.
+        if not lots:
+            plan = self._sizing_plan(asset_key, market_data)
+            lots = plan.get('leg_a_lots') or 0.0
+            if plan.get('reason') or lots <= 0:
+                return self._manual_reject(
+                    plan.get('reason')
+                    or 'sizing resolved to 0 lots — set a lot size on the '
+                       'panel, or raise the notional per leg')
+        lots = float(lots)
         if lots > self.config.RISK_LIMITS['MAX_LOT_SIZE']:
             return self._manual_reject(
                 f"{lots:g} lots exceeds MAX_LOT_SIZE "
@@ -1925,11 +1960,6 @@ class Coordinator:
         active = self.position_manager.get_positions_for_asset(asset_key)
         if len(active) >= self.config.RISK_LIMITS['MAX_POSITIONS_PER_ASSET']:
             return self._manual_reject("max positions per asset reached")
-
-        market_data = self.get_market_data(asset_key) \
-            or self.active_assets[asset_key]['last_data']
-        if not market_data:
-            return self._manual_reject("no market data")
 
         # Levels are checked against the price we are actually filling
         # at, not the level that armed the order — the spread has moved

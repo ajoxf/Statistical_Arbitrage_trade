@@ -1025,6 +1025,43 @@ The drift badge also stops saturating: as a percentage OF the
 configured beta, 66.94 against a live 1.0413 reads "-98.44%" and so
 would 6,694. Past 2x it now says "64.3x too high".
 
+## A blank manual Lots box meant CLIP_LOTS (2026-08-24, operator)
+
+Operator: "Last manual trade: 50 lots exceeds MAX_LOT_SIZE 10 ... Why is
+50 the lot size?" They had left the Lots box blank, and `_manual_open`
+fell through to `TRADING.CLIP_LOTS` — which `config.example.json` ships
+at 50, `start.py` copies verbatim on first run, and nobody had chosen
+for that box.
+
+The fallback was wrong for a deeper reason than the number. CLIP_LOTS is
+only the anchor under `lots` sizing. Under `notional` sizing a SIGNAL
+entry goes through `_sizing_plan` -> `sizing.plan`, which honours the
+sizing mode, the volume step, each leg's minimum and the streak reducer
+— so the dashboard read 1.15 lots from NOTIONAL_PER_LEG_USD while a
+blank box on the same pair meant 50, roughly **$21m per leg of gold**.
+Same panel, same pair, two orders of magnitude apart, and MAX_LOT_SIZE
+was the only thing that caught it.
+
+A blank box now means the SIZING PLAN, so the manual and signal paths
+agree about what one trade is. Notes:
+
+- **`not lots`, not `is None`.** The panel sends null for a blank box,
+  but 0 has to mean the same thing rather than an order for nothing.
+  That is the one part of the old `lots or CLIP_LOTS` that was right.
+- **A typed figure is used exactly as typed** — past the volume step and
+  past the streak reducer. Manual means manual, the same rule as a
+  hand-entered exit target; MAX_LOT_SIZE and `_precheck_pair` still
+  stand behind it.
+- **A plan REFUSAL is reported, not worked around.** Below the pair's
+  minimum notional the plan returns a reason and no lots; falling back
+  to CLIP_LOTS there would place a trade the engine had just called
+  untradable.
+- Market data is fetched BEFORE the size is chosen now, because the
+  plan needs prices.
+- The placeholder read `clip` — a config key rather than a number, and
+  under notional sizing the wrong key. It now shows the engine's actual
+  derived lots, so the size is visible before arming.
+
 ## Position sizing: notional per leg (2026-08-07, owner)
 
 Owner: "the way we had it before in the W3 project is — User fixes the

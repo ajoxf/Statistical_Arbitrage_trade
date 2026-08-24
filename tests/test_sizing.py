@@ -960,3 +960,71 @@ def test_no_sigma_means_no_verdict(coord):
     out = coord._edge_reachability(SimpleNamespace(sigma=None, z=None),
                                    cost=39.0, lots_b=0.11, contract_b=1000.0)
     assert out['edge_z_needed'] is None and out['edge_reachable'] is None
+
+
+# --- a manual trade sizes the same way a signal entry does --------------
+# Operator, 2026-08-24: "Last manual trade: 50 lots exceeds MAX_LOT_SIZE
+# 10 ... Why is 50 the lot size?" A blank Lots box fell through to raw
+# CLIP_LOTS, which is only the anchor under `lots` sizing. On the same
+# box the dashboard read 1.15 lots from NOTIONAL_PER_LEG_USD while a
+# blank manual box meant 50 — $21m per leg of gold. Only MAX_LOT_SIZE
+# stood in the way.
+
+def _manual_ready(coord):
+    """Get the coordinator past the checks _manual_open runs before it
+    reaches the sizing decision."""
+    coord.get_market_data = lambda key: gold_md()
+    coord.config.RISK_LIMITS['MAX_LOT_SIZE'] = 1000.0
+    # Above the pair's minimum notional ($42,926 on gold at 4292/4351),
+    # or the plan refuses before the size is ever chosen.
+    coord.config.TRADING['NOTIONAL_PER_LEG_USD'] = 500_000.0
+    placed = {}
+
+    def record(asset, signal, lots, *a, **k):
+        placed['lots'] = lots
+        return None
+
+    coord._open_position = record
+    return placed
+
+
+def test_a_blank_lots_box_uses_the_engines_own_plan(coord):
+    """Not CLIP_LOTS. The two paths must agree about what one trade is."""
+    placed = _manual_ready(coord)
+    coord.config.TRADING['CLIP_LOTS'] = 50.0
+    expected = coord._sizing_plan('GOLD', gold_md())['leg_a_lots']
+    coord._manual_open('GOLD', 'SELL_BASIS', lots=None)
+    assert placed['lots'] == pytest.approx(expected)
+    assert placed['lots'] != 50.0
+
+
+def test_a_typed_lot_size_is_used_exactly_as_typed(coord):
+    """Manual means manual — the same rule as a hand-entered target."""
+    placed = _manual_ready(coord)
+    coord._manual_open('GOLD', 'SELL_BASIS', lots=0.37)
+    assert placed['lots'] == pytest.approx(0.37)
+
+
+def test_zero_lots_means_blank_not_an_order_for_nothing(coord):
+    placed = _manual_ready(coord)
+    coord._manual_open('GOLD', 'SELL_BASIS', lots=0)
+    assert placed['lots'] > 0
+
+
+def test_a_manual_trade_is_still_capped_by_max_lot_size(coord):
+    coord.get_market_data = lambda key: gold_md()
+    coord.config.RISK_LIMITS['MAX_LOT_SIZE'] = 0.001
+    assert coord._manual_open('GOLD', 'SELL_BASIS', lots=5.0) is None
+    assert 'MAX_LOT_SIZE' in coord.manual_note['text']
+
+
+def test_a_manual_trade_reports_a_sizing_refusal_rather_than_guessing(coord):
+    """Under the minimum notional the plan refuses with a reason. Falling
+    back to CLIP_LOTS there would place a trade the engine had just said
+    was untradable."""
+    coord.get_market_data = lambda key: gold_md()
+    coord.config.TRADING['NOTIONAL_PER_LEG_USD'] = 100.0
+    coord.config.RISK_LIMITS['MAX_LOT_SIZE'] = 1000.0
+    assert coord._manual_open('GOLD', 'SELL_BASIS', lots=None) is None
+    assert coord.manual_note['ok'] is False
+    assert coord.manual_note['text']
