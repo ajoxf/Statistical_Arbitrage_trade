@@ -796,6 +796,11 @@ of four swap boxes and retyping the number with a minus in front.
 - The partial POST is safe because `apply_ui_config` iterates the
   payload's own keys — regression-tested that symbols, contract size
   and the other legs survive the write.
+- **The fix carries its own asset key**, from the engine. The browser's
+  `__manualAsset` comes from a different endpoint and can be unset, and
+  `apply_ui_config` SKIPS the entire asset block when `asset` is
+  missing — so the first cut would have reported success and written
+  nothing. Both halves are pinned by tests.
 - The swap is a `CARRY_ASSET_KEY`, so it hot-applies within ~10s. No
   restart.
 
@@ -880,11 +885,14 @@ text: "fut bid" and "spot ask" are different widths, so as free text the
 two legs' prices never lined up with each other. 0.74rem -> 0.8rem, one
 shared `renderTouches` for all three places that draw them.
 
-Each row also carries THAT LEG's own bid-ask width (`±0.34`), because a
-touch alone does not say how far the other side of the leg is — a price
-you can fill at is only as good as the book behind it. The two widths
-SUM to the gap between the two executable spreads (0.34 + 0.13 = 0.47),
-so the table checks against the note beneath it on sight. And the rows
+Each leg's bid-ask width is stated ONCE, on the note, not inside both
+tables (operator, 2026-08-24: "Leg A and Leg B Bid Ask table looks very
+bad"). A width is a property of the BOOK, not of the direction, so it is
+identical under short and long — printing it in both tables put the same
+four numbers on screen twice and squeezed three columns into a
+half-width cell. On the note the two widths sit beside the round turn
+they sum to (`Leg A ±0.13 · Leg B ±0.34 = 0.47 apart`), which is what
+makes the line checkable at a glance. And the rows
 say **Leg A / Leg B**, not spot / fut (operator, 2026-08-24): the
 config, the sizing card and the Settings page all speak in legs, and
 only this table did not.

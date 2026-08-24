@@ -2367,19 +2367,29 @@ def test_the_touches_are_named_by_leg_not_by_instrument(client):
     page = client.get('/').get_data(as_text=True)
     assert "'Leg B bid'" in page and "'Leg A ask'" in page
     assert "'Leg B ask'" in page and "'Leg A bid'" in page
-    assert 'sell Leg B / buy Leg A' in page
+    assert 'sell Leg B / buy Leg A' in page.replace('\n', ' ') or \
+        'Leg A ±' in page
     # The old wording is gone from the rendered rows.
     assert "'fut bid'" not in page and "'spot ask'" not in page
 
 
-def test_each_touch_carries_its_own_leg_width(client):
-    """A touch alone does not say how far the other side of that leg
-    is, and the two widths must sum to the gap between the executable
-    spreads — which is what makes the table checkable against the note
-    beneath it."""
+def test_the_leg_widths_are_stated_once_beside_the_round_turn(client):
+    """Each leg's bid-ask is a property of the BOOK, not of the
+    direction, so it is identical under short and long. Printing it
+    inside both tables put the same four numbers on screen twice and
+    left three cramped columns in a half-width cell (operator,
+    2026-08-24: "Leg A and Leg B Bid Ask table looks very bad").
+
+    Stated once on the note instead, next to the round turn the two
+    widths sum to — which is what makes the line checkable at a glance.
+    """
     page = client.get('/').get_data(as_text=True)
     assert 'data.futures_ask - data.futures_bid' in page
     assert 'data.spot_ask - data.spot_bid' in page
+    assert "'Leg A ±'" in page
+    assert 'one round turn of bid-ask' in page
+    # The touch tables are back to two columns.
+    assert 'rows.forEach(([label, value]) => {' in page
 
 
 # ---------------------------------------------------------------------------

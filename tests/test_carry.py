@@ -693,3 +693,25 @@ def test_flipping_the_sign_turns_the_fabricated_net_into_the_real_one(coord):
     assert right['net_usd'] == pytest.approx(
         wrong['net_usd'] - 2 * abs(wrong['carry_usd']))
     assert right['net_usd'] < wrong['net_usd']
+
+
+def test_the_fix_carries_the_asset_it_belongs_to(coord):
+    """apply_ui_config skips the whole asset block when `asset` is
+    missing, so a correction posted without it reports success and
+    writes nothing. The engine supplies it rather than the browser
+    guessing from whatever it has cached."""
+    asset = coord.config.ASSETS['GOLD']
+    asset['futures_expiry'] = datetime.now() + timedelta(days=89)
+    asset['swap_spot_long_per_lot'] = +58.0
+    asset['swap_futures_short_per_lot'] = 0.0
+    fix = coord._carry_block('GOLD', GOLD_MD, 1.16)['warning_fix']
+    assert fix['asset'] == 'GOLD'
+
+
+def test_a_correction_without_the_asset_writes_nothing():
+    """Pins the silent no-op the asset key exists to prevent."""
+    from statarb import webapi
+    raw = {'assets': {'GOLD': {'name': 'GOLD',
+                               'swap_spot_long_per_lot': 58.0}}}
+    out, _, _ = webapi.apply_ui_config(raw, {'swap_spot_long_per_lot': -58.0})
+    assert out['assets']['GOLD']['swap_spot_long_per_lot'] == 58.0

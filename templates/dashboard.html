@@ -443,8 +443,8 @@
                                      labels are different widths, so as free
                                      text the prices never lined up with the
                                      other leg's. -->
-                                <table class="mt-1 mx-auto" id="short-spread-legs"
-                                       style="font-size: 0.8rem; line-height: 1.35;"><tbody></tbody></table>
+                                <table class="mt-1 w-100" id="short-spread-legs"
+                                       style="font-size: 0.75rem; line-height: 1.5;"><tbody></tbody></table>
                             </div>
                             <div id="long-spread-cell" style="display:none;"
                                  title="LONG the spread: buy Leg B (futures) at its ASK, sell Leg A (spot) at its BID.">
@@ -452,8 +452,8 @@
                                      id="long-spread"
                                      style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
                                 <div class="metric-label">Long</div>
-                                <table class="mt-1 mx-auto" id="long-spread-legs"
-                                       style="font-size: 0.8rem; line-height: 1.35;"><tbody></tbody></table>
+                                <table class="mt-1 w-100" id="long-spread-legs"
+                                       style="font-size: 0.75rem; line-height: 1.5;"><tbody></tbody></table>
                             </div>
                             <!-- The MID spread was removed here (operator,
                                  2026-08-24: "Remove this number. It doesn't
@@ -1187,8 +1187,8 @@
                     <span class="fw-bold font-monospace" id="manual-current-spread"
                           style="font-size: 1rem;">&mdash;</span>
                 </div>
-                <table class="ms-auto mb-2" id="manual-spread-legs"
-                       style="font-size: 0.8rem; line-height: 1.35;"><tbody></tbody></table>
+                <table class="w-100 mb-2" id="manual-spread-legs"
+                       style="font-size: 0.75rem; line-height: 1.5;"><tbody></tbody></table>
                 <div class="row g-1 mb-2">
                     <div class="col-7">
                         <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>
@@ -1799,13 +1799,9 @@
             const body = legs.tBodies[0];
             if (body) body.innerHTML = '';
             if (value != null) {
-                const mB = (x.futAsk != null && x.futBid != null)
-                    ? x.futAsk - x.futBid : null;
-                const mA = (x.spotAsk != null && x.spotBid != null)
-                    ? x.spotAsk - x.spotBid : null;
                 renderTouches('manual-spread-legs', short
-                    ? [['Leg B bid', x.futBid, mB], ['Leg A ask', x.spotAsk, mA]]
-                    : [['Leg B ask', x.futAsk, mB], ['Leg A bid', x.spotBid, mA]]);
+                    ? [['Leg B bid', x.futBid], ['Leg A ask', x.spotAsk]]
+                    : [['Leg B ask', x.futAsk], ['Leg A bid', x.spotBid]]);
             }
         }
     }
@@ -2935,7 +2931,21 @@
                     ev.preventDefault();
                     a.textContent = 'saving…';
                     try {
-                        const body = {asset: window.__manualAsset || undefined};
+                        // The asset comes from the ENGINE's own fix
+                        // payload. apply_ui_config skips the asset
+                        // block entirely when `asset` is absent, so a
+                        // POST without it reports success and writes
+                        // nothing at all.
+                        if (!fix.asset) {
+                            showDialog('The engine did not say which pair '
+                                       + 'this swap belongs to — set it on '
+                                       + 'the Settings page instead.',
+                                       {title: 'Could not set the swap',
+                                        variant: 'danger'});
+                            a.textContent = 'set it to ' + fix.value.toFixed(2);
+                            return;
+                        }
+                        const body = {asset: fix.asset};
                         body[fix.field] = fix.value;
                         const r = await fetch('/api/config', {
                             method: 'POST',
@@ -3265,20 +3275,16 @@
         if (!el) return;
         const body = el.tBodies[0] || el.appendChild(document.createElement('tbody'));
         body.innerHTML = '';
-        rows.forEach(([label, value, width]) => {
+        rows.forEach(([label, value]) => {
             const tr = body.insertRow();
             const l = tr.insertCell();
-            l.className = 'text-secondary pe-2';
+            l.className = 'text-secondary';
+            l.style.whiteSpace = 'nowrap';
             l.textContent = label;
             const v = tr.insertCell();
             v.className = 'text-end font-monospace';
+            v.style.paddingLeft = '0.6rem';
             v.textContent = value == null ? '—' : Number(value).toFixed(2);
-            const w = tr.insertCell();
-            w.className = 'text-end text-secondary font-monospace ps-2';
-            w.style.fontSize = '0.85em';
-            w.title = "This leg's own bid-ask width.";
-            w.textContent = width == null || !isFinite(width)
-                ? '' : '±' + Number(width).toFixed(2);
         });
     }
 
@@ -3427,21 +3433,28 @@
                     short: sh, long: lg,
                     futBid: data.futures_bid, futAsk: data.futures_ask,
                     spotBid: data.spot_bid, spotAsk: data.spot_ask};
+                renderTouches('short-spread-legs',
+                              [['Leg B bid', data.futures_bid],
+                               ['Leg A ask', data.spot_ask]]);
+                renderTouches('long-spread-legs',
+                              [['Leg B ask', data.futures_ask],
+                               ['Leg A bid', data.spot_bid]]);
+                const cost = data.spread_cost;
                 const wB = (data.futures_ask != null && data.futures_bid != null)
                     ? data.futures_ask - data.futures_bid : null;
                 const wA = (data.spot_ask != null && data.spot_bid != null)
                     ? data.spot_ask - data.spot_bid : null;
-                renderTouches('short-spread-legs',
-                              [['Leg B bid', data.futures_bid, wB],
-                               ['Leg A ask', data.spot_ask, wA]]);
-                renderTouches('long-spread-legs',
-                              [['Leg B ask', data.futures_ask, wB],
-                               ['Leg A bid', data.spot_bid, wA]]);
-                const cost = data.spread_cost;
+                // Each leg's own bid-ask, stated ONCE — it is a property
+                // of the book, not of the direction, so it was the same
+                // four numbers printed twice inside the two tables. Here
+                // the two widths sit next to the round turn they sum to,
+                // which is what makes the line checkable.
+                const widths = (wA != null && wB != null)
+                    ? 'Leg A ±' + wA.toFixed(2) + ' · Leg B ±' + wB.toFixed(2)
+                      + ' = ' : '';
                 document.getElementById('exec-spread-note').textContent =
                     cost == null ? ''
-                    : 'sell Leg B / buy Leg A vs buy Leg B / sell Leg A — '
-                      + fmt(cost) + ' apart, one round turn of bid-ask';
+                    : widths + fmt(cost) + ' apart — one round turn of bid-ask';
                 execRow.style.display = '';
                 if (execRow2) execRow2.style.display = '';
             } else {

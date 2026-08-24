@@ -2299,7 +2299,15 @@ class Coordinator:
         credited = carry.credited_long_leg(block.get('per_leg'))
         if credited:
             block['warning'] = credited
-            block['warning_fix'] = carry.credit_fix(block.get('per_leg'))
+            fix = carry.credit_fix(block.get('per_leg'))
+            if fix:
+                # The asset the correction belongs to, from the engine
+                # rather than from whatever the browser happens to have
+                # cached. apply_ui_config skips the whole asset block
+                # when `asset` is missing, so a fix posted without it
+                # would report success and write nothing.
+                fix['asset'] = asset_key
+            block['warning_fix'] = fix
         block['leg_b_lots'] = plan.get('leg_b_lots')
         block['leg_b_contract'] = plan.get('leg_b_contract')
         block['pair_type'] = md.get('pair_type')
