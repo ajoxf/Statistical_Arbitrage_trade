@@ -756,6 +756,15 @@ text: "fut bid" and "spot ask" are different widths, so as free text the
 two legs' prices never lined up with each other. 0.74rem -> 0.8rem, one
 shared `renderTouches` for all three places that draw them.
 
+Each row also carries THAT LEG's own bid-ask width (`±0.34`), because a
+touch alone does not say how far the other side of the leg is — a price
+you can fill at is only as good as the book behind it. The two widths
+SUM to the gap between the two executable spreads (0.34 + 0.13 = 0.47),
+so the table checks against the note beneath it on sight. And the rows
+say **Leg A / Leg B**, not spot / fut (operator, 2026-08-24): the
+config, the sizing card and the Settings page all speak in legs, and
+only this table did not.
+
 ## Crisp like a trading platform (2026-08-24, operator)
 
 Four passes over the same two cards, each one the same fault: the

@@ -461,7 +461,7 @@
                                 <div class="metric-label">Z-Score</div>
                             </div>
                             <div id="short-spread-cell" style="display:none;"
-                                 title="SHORT the spread: sell futures at the BID, buy spot at the ASK.">
+                                 title="SHORT the spread: sell Leg B (futures) at its BID, buy Leg A (spot) at its ASK.">
                                 <div class="price-down fw-bold font-monospace"
                                      id="short-spread"
                                      style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
@@ -476,7 +476,7 @@
                                        style="font-size: 0.8rem; line-height: 1.35;"><tbody></tbody></table>
                             </div>
                             <div id="long-spread-cell" style="display:none;"
-                                 title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
+                                 title="LONG the spread: buy Leg B (futures) at its ASK, sell Leg A (spot) at its BID.">
                                 <div class="price-up fw-bold font-monospace"
                                      id="long-spread"
                                      style="font-size: 1.5rem; line-height: 1.15;">&mdash;</div>
@@ -1774,9 +1774,13 @@
             const body = legs.tBodies[0];
             if (body) body.innerHTML = '';
             if (value != null) {
+                const mB = (x.futAsk != null && x.futBid != null)
+                    ? x.futAsk - x.futBid : null;
+                const mA = (x.spotAsk != null && x.spotBid != null)
+                    ? x.spotAsk - x.spotBid : null;
                 renderTouches('manual-spread-legs', short
-                    ? [['fut bid', x.futBid], ['spot ask', x.spotAsk]]
-                    : [['fut ask', x.futAsk], ['spot bid', x.spotBid]]);
+                    ? [['Leg B bid', x.futBid, mB], ['Leg A ask', x.spotAsk, mA]]
+                    : [['Leg B ask', x.futAsk, mB], ['Leg A bid', x.spotBid, mA]]);
             }
         }
     }
@@ -3101,15 +3105,18 @@
         return 6;
     }
 
-    // Label left, price right, in a table so the two legs' prices line
-    // up with each other. textContent throughout — these are broker
+    // Label, the touch, and that leg's own bid-ask width — in a table
+    // so the two legs line up with each other. The width is the third
+    // column because the touch alone does not say how far the other
+    // side of that leg is: a spread you can fill at is only as good as
+    // the book behind it. textContent throughout; these are broker
     // figures, not markup.
     function renderTouches(id, rows) {
         const el = document.getElementById(id);
         if (!el) return;
         const body = el.tBodies[0] || el.appendChild(document.createElement('tbody'));
         body.innerHTML = '';
-        rows.forEach(([label, value]) => {
+        rows.forEach(([label, value, width]) => {
             const tr = body.insertRow();
             const l = tr.insertCell();
             l.className = 'text-secondary pe-2';
@@ -3117,6 +3124,12 @@
             const v = tr.insertCell();
             v.className = 'text-end font-monospace';
             v.textContent = value == null ? '—' : Number(value).toFixed(2);
+            const w = tr.insertCell();
+            w.className = 'text-end text-secondary font-monospace ps-2';
+            w.style.fontSize = '0.85em';
+            w.title = "This leg's own bid-ask width.";
+            w.textContent = width == null || !isFinite(width)
+                ? '' : '±' + Number(width).toFixed(2);
         });
     }
 
@@ -3265,16 +3278,20 @@
                     short: sh, long: lg,
                     futBid: data.futures_bid, futAsk: data.futures_ask,
                     spotBid: data.spot_bid, spotAsk: data.spot_ask};
+                const wB = (data.futures_ask != null && data.futures_bid != null)
+                    ? data.futures_ask - data.futures_bid : null;
+                const wA = (data.spot_ask != null && data.spot_bid != null)
+                    ? data.spot_ask - data.spot_bid : null;
                 renderTouches('short-spread-legs',
-                              [['fut bid', data.futures_bid],
-                               ['spot ask', data.spot_ask]]);
+                              [['Leg B bid', data.futures_bid, wB],
+                               ['Leg A ask', data.spot_ask, wA]]);
                 renderTouches('long-spread-legs',
-                              [['fut ask', data.futures_ask],
-                               ['spot bid', data.spot_bid]]);
+                              [['Leg B ask', data.futures_ask, wB],
+                               ['Leg A bid', data.spot_bid, wA]]);
                 const cost = data.spread_cost;
                 document.getElementById('exec-spread-note').textContent =
                     cost == null ? ''
-                    : 'sell fut / buy spot vs buy fut / sell spot — '
+                    : 'sell Leg B / buy Leg A vs buy Leg B / sell Leg A — '
                       + fmt(cost) + ' apart, one round turn of bid-ask';
                 execRow.style.display = '';
                 if (execRow2) execRow2.style.display = '';

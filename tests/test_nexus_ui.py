@@ -2358,3 +2358,25 @@ def test_the_template_tags_balance(name):
     parser.feed(src)
     assert not parser.bad, f'{name}: stray closing tags at {parser.bad[:3]}'
     assert not parser.stack, f'{name}: unclosed tags at {parser.stack[:3]}'
+
+
+def test_the_touches_are_named_by_leg_not_by_instrument(client):
+    """Operator, 2026-08-24: "Instead of Fut and Spot - say Leg A and
+    Leg B." The config, the sizing card and the Settings page all speak
+    in legs; only this table said "fut" and "spot"."""
+    page = client.get('/').get_data(as_text=True)
+    assert "'Leg B bid'" in page and "'Leg A ask'" in page
+    assert "'Leg B ask'" in page and "'Leg A bid'" in page
+    assert 'sell Leg B / buy Leg A' in page
+    # The old wording is gone from the rendered rows.
+    assert "'fut bid'" not in page and "'spot ask'" not in page
+
+
+def test_each_touch_carries_its_own_leg_width(client):
+    """A touch alone does not say how far the other side of that leg
+    is, and the two widths must sum to the gap between the executable
+    spreads — which is what makes the table checkable against the note
+    beneath it."""
+    page = client.get('/').get_data(as_text=True)
+    assert 'data.futures_ask - data.futures_bid' in page
+    assert 'data.spot_ask - data.spot_bid' in page
