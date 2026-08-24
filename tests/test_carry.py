@@ -625,3 +625,71 @@ def test_the_coordinator_falls_back_to_it_when_there_is_no_fair_value(coord):
     asset['swap_futures_short_per_lot'] = 0.0
     block = coord._carry_block('GOLD', dict(GOLD_MD, fair_value=None), 1.0)
     assert block['warning'] and 'CREDIT' in block['warning']
+
+
+# --- the correction, offered as one click -------------------------------
+# Operator, 2026-08-24, third time round: "The net should be around $8
+# and not $216. Swap needs to be negative." The warning alone was not
+# enough — fixing it meant leaving the dashboard, finding one of four
+# swap boxes on another page and retyping the number with a minus.
+
+def test_the_fix_names_the_exact_field_and_value():
+    fix = carry.credit_fix([
+        {'symbol': 'XAUUSD', 'side': 'L', 'role': 'spot',
+         'per_lot_night': 58.0}])
+    assert fix == {'field': 'swap_spot_long_per_lot', 'value': -58.0,
+                   'symbol': 'XAUUSD'}
+
+
+def test_the_fix_targets_the_leg_and_side_actually_in_force():
+    fix = carry.credit_fix([
+        {'symbol': 'GCZ6', 'side': 'L', 'role': 'futures',
+         'per_lot_night': 2.5}])
+    assert fix['field'] == 'swap_futures_long_per_lot'
+    assert fix['value'] == -2.5
+
+
+def test_there_is_no_fix_when_nothing_is_provably_wrong():
+    assert carry.credit_fix([
+        {'symbol': 'X', 'side': 'L', 'role': 'spot',
+         'per_lot_night': -58.0}]) is None
+    # A credited SHORT leg is ordinary financing, not an error.
+    assert carry.credit_fix([
+        {'symbol': 'X', 'side': 'S', 'role': 'spot',
+         'per_lot_night': 58.0}]) is None
+
+
+def test_the_specific_diagnosis_wins_over_the_general_one(coord):
+    """`sanity` only knows two estimates disagree; the credited-leg
+    check knows WHICH input is wrong and can correct it. That is the one
+    the operator gets."""
+    asset = coord.config.ASSETS['GOLD']
+    asset['futures_expiry'] = datetime.now() + timedelta(days=89)
+    asset['swap_spot_long_per_lot'] = +58.0
+    asset['swap_futures_short_per_lot'] = 0.0
+    block = coord._carry_block('GOLD', dict(GOLD_MD, fair_value=48.55), 1.16)
+    assert 'CREDIT' in block['warning']
+    assert block['warning_fix']['field'] == 'swap_spot_long_per_lot'
+    assert block['warning_fix']['value'] == -58.0
+
+
+def test_flipping_the_sign_turns_the_fabricated_net_into_the_real_one(coord):
+    """+$214 was never there. The basis IS the financing, so capturing
+    it barely beats paying it."""
+    asset = coord.config.ASSETS['GOLD']
+    asset['futures_expiry'] = datetime.now() + timedelta(days=89)
+    asset['swap_futures_short_per_lot'] = 0.0
+
+    asset['swap_spot_long_per_lot'] = +58.0
+    wrong = coord._carry_block('GOLD', GOLD_MD, 1.16)
+    asset['swap_spot_long_per_lot'] = -58.0
+    right = coord._carry_block('GOLD', GOLD_MD, 1.16)
+
+    assert right['warning'] is None
+    assert wrong['carry_usd'] > 0          # credited — the fabrication
+    assert right['carry_usd'] < 0          # charged — the reality
+    # The whole difference is twice the carry: it was ADDED to the
+    # convergence when it should have been SUBTRACTED from it.
+    assert right['net_usd'] == pytest.approx(
+        wrong['net_usd'] - 2 * abs(wrong['carry_usd']))
+    assert right['net_usd'] < wrong['net_usd']

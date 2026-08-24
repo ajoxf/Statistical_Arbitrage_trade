@@ -771,6 +771,38 @@ this pair moves in a session. The number is honest; whether it is
 reachable is the operator's call, and the break-even line beside it is
 the one that is always attainable.
 
+## A warning nobody can act on is not a fix (2026-08-24, operator)
+
+Third time round on the same card: "The net should be around $8 and not
+$216. Swap needs to be negative."
+
+The engine was right every time — `+58.00` was entered where `-58.00`
+belonged, the warning was on the screen, and the net it produced was a
+fabrication. What was missing was any way to ACT on the diagnosis
+without leaving the dashboard, opening Settings, finding the right one
+of four swap boxes and retyping the number with a minus in front.
+
+- **`carry.credit_fix` names the exact field and value**
+  (`swap_spot_long_per_lot` = -58.00), and the warning renders it as a
+  one-click "set it to -58.00" that POSTs to `/api/config`.
+- **Still a click.** A sign the engine flipped by itself is a sign
+  nobody would ever notice was wrong — and the whole reason this module
+  refuses to guess at swap units is that a silently-corrected input is
+  worse than a refused one.
+- **The specific diagnosis now runs FIRST.** `sanity` only knows that
+  two estimates disagree, not which to trust; the credited-long-leg
+  check knows exactly which input is wrong and can therefore offer the
+  correction. The operator spent hours looking at the general message.
+- The partial POST is safe because `apply_ui_config` iterates the
+  payload's own keys — regression-tested that symbols, contract size
+  and the other legs survive the write.
+- The swap is a `CARRY_ASSET_KEY`, so it hot-applies within ~10s. No
+  restart.
+
+The arithmetic of the mistake, worth keeping: the whole error is TWICE
+the carry, because a charge added instead of subtracted moves the net by
+2x. That is why $8 read as $216.
+
 ## Which spread each decision reads (2026-08-24, operator)
 
 Operator: "will the algo know which Bid and ask to take into

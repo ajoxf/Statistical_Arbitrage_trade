@@ -2918,6 +2918,48 @@
             // worth reading. Say that instead of the conclusion.
             gapNote.className = 'mt-1 text-warning';
             gapNote.textContent = '⚠ ' + carry.warning;
+            // When the engine can name the ONE input that is wrong, it
+            // offers the correction here. Still a click — a sign the
+            // engine flipped by itself is a sign nobody would ever
+            // notice was wrong — but the operator should not have to
+            // leave the card, find one of four boxes on another page
+            // and retype the number to fix something the card has
+            // already diagnosed.
+            const fix = carry.warning_fix;
+            if (fix && fix.field) {
+                const a = document.createElement('a');
+                a.href = '#';
+                a.className = 'ms-1 text-warning fw-semibold';
+                a.textContent = 'set it to ' + fix.value.toFixed(2);
+                a.onclick = async function (ev) {
+                    ev.preventDefault();
+                    a.textContent = 'saving…';
+                    try {
+                        const body = {asset: window.__manualAsset || undefined};
+                        body[fix.field] = fix.value;
+                        const r = await fetch('/api/config', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body)});
+                        const out = await r.json();
+                        if (!r.ok || out.success === false) {
+                            showDialog(out.error || 'The save was refused.',
+                                       {title: 'Could not set the swap',
+                                        variant: 'danger'});
+                            a.textContent = 'set it to ' + fix.value.toFixed(2);
+                        } else {
+                            showToast('Swap set to ' + fix.value.toFixed(2)
+                                      + ' for ' + (fix.symbol || 'the leg'),
+                                      'success');
+                        }
+                    } catch (e) {
+                        showDialog(String(e), {title: 'Could not set the swap',
+                                               variant: 'danger'});
+                        a.textContent = 'set it to ' + fix.value.toFixed(2);
+                    }
+                };
+                gapNote.appendChild(a);
+            }
             // The EDGE cell is a NUMBER column. Putting "CHECK SWAP" in
             // it read as "EDGE: CHECK SWAP", which is not a reading of
             // anything. An unmeasurable figure is a dash; the warning

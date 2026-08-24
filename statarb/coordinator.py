@@ -2271,6 +2271,7 @@ class Coordinator:
             # card can render a terminal-style row and keep the full
             # derivation in the tooltip.
             leg_labels.append({'symbol': spec.get('symbol') or role,
+                               'role': role,
                                'side': 'L' if long_side else 'S'})
             legs.append((per_night, lots,
                          f"{spec.get('symbol') or role} "
@@ -2289,11 +2290,16 @@ class Coordinator:
         # = 2 UNITS of the underlying, and the swap is charged once.
         for entry, label in zip(block.get('per_leg') or [], leg_labels):
             entry.update(label)
-        # The fair-value cross-check above needs a fair value, and a
-        # RELATED pair has none — so an inverted swap sign sailed
-        # through on those. This one needs no second estimate.
-        if not block.get('warning'):
-            block['warning'] = carry.credited_long_leg(block.get('per_leg'))
+        # A credited LONG leg is checked FIRST. It names the one input
+        # that is wrong and can offer the correction; the fair-value
+        # cross-check only knows that two estimates disagree, not which
+        # of them to trust. A specific diagnosis beats a general one —
+        # and the general one is all the operator saw for hours while
+        # the card kept reporting a fabricated +$214 net.
+        credited = carry.credited_long_leg(block.get('per_leg'))
+        if credited:
+            block['warning'] = credited
+            block['warning_fix'] = carry.credit_fix(block.get('per_leg'))
         block['leg_b_lots'] = plan.get('leg_b_lots')
         block['leg_b_contract'] = plan.get('leg_b_contract')
         block['pair_type'] = md.get('pair_type')

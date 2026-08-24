@@ -177,6 +177,35 @@ def sanity(carry_spread, fair_value):
     return None
 
 
+def _credited_long(per_leg):
+    """The first LONG leg showing a credit, or None."""
+    for leg in per_leg or ():
+        rate = leg.get('per_lot_night')
+        if leg.get('side') == 'L' and rate is not None and rate > 0:
+            return leg
+    return None
+
+
+def credit_fix(per_leg):
+    """The exact correction for a credited long leg, or None.
+
+    The warning alone has not been enough: the operator has to leave the
+    dashboard, find the right one of four swap boxes on another page and
+    retype the number with a minus in front. Naming the field and the
+    value lets the card offer the correction as one click — still an
+    explicit action, never applied behind them, because a sign the
+    engine flipped by itself is a sign nobody would ever notice was
+    wrong.
+    """
+    leg = _credited_long(per_leg)
+    if not leg or not leg.get('role') or not leg.get('side'):
+        return None
+    side = 'long' if leg['side'] == 'L' else 'short'
+    return {'field': f"swap_{leg['role']}_{side}_per_lot",
+            'value': -abs(float(leg['per_lot_night'])),
+            'symbol': leg.get('symbol')}
+
+
 def credited_long_leg(per_leg):
     """Flag a leg you are LONG that is showing a CREDIT, or None.
 
@@ -197,9 +226,10 @@ def credited_long_leg(per_leg):
     say so, because the alternative is a fabricated edge that looks like
     the best trade on the screen.
     """
-    for leg in per_leg or ():
-        rate = leg.get('per_lot_night')
-        if leg.get('side') == 'L' and rate is not None and rate > 0:
+    leg = _credited_long(per_leg)
+    if leg:
+        rate = leg['per_lot_night']
+        if True:
             return (f"{leg.get('symbol') or 'Leg A'} is the leg you would "
                     f"be LONG and its swap is a CREDIT ({rate:+.2f} a "
                     f"night). A long leg is normally charged — check the "
