@@ -23,6 +23,35 @@ from datetime import datetime
 from .fairvalue import fair_value_block
 
 
+def executable_spread(market_data, signal_type, closing=False):
+    """The spread THIS action can actually be done at.
+
+    Operator, 2026-08-24: "If the signal is short Spread - the relevant
+    spread should be used for the calculations."
+
+    A short-spread position SELLS the spread to get in and BUYS it back
+    to get out, so the same position reads a different touch at each
+    end. Getting that backwards is worse than using the mid: it reports
+    the favourable side at both ends and makes every trade look like it
+    cleared its costs.
+
+        SELL_BASIS  entering -> short_spread   exiting -> long_spread
+        BUY_BASIS   entering -> long_spread    exiting -> short_spread
+
+    Falls back to the mid when the touches are not in the snapshot,
+    which keeps older callers and replayed rows working — a missing
+    touch is not a reason to refuse to price a level.
+    """
+    if not market_data:
+        return None
+    selling = (getattr(signal_type, 'value', signal_type) == 'SELL_BASIS')
+    if closing:
+        selling = not selling
+    key = 'short_spread' if selling else 'long_spread'
+    value = market_data.get(key)
+    return market_data.get('spread') if value is None else value
+
+
 def compute_market_data(asset_cfg, spot_tick, futures_tick,
                         hedge_ratio=1.0):
     """Build the market-data snapshot from two ticks.
@@ -51,6 +80,27 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick,
     spread = futures_price - beta * spot_price
     actual_basis = futures_price - spot_price      # raw, for reference
 
+    # The two EXECUTABLE spreads (operator, 2026-08-24). The mid spread
+    # above is a midpoint of two midpoints — nobody can trade it. Each
+    # direction crosses a different pair of touches:
+    #
+    #   SHORT the spread = SELL futures, BUY spot
+    #                    -> you are hit on the futures BID and lifted on
+    #                       the spot ASK, so it is the WORSE (lower) one
+    #   LONG the spread  = BUY futures, SELL spot
+    #                    -> futures ASK and spot BID, the HIGHER one
+    #
+    # By construction short <= mid <= long, and the gap between them is
+    # exactly one round turn of both legs' bid-ask in spread units:
+    #   long - short = (fut_ask - fut_bid) + beta x (spot_ask - spot_bid)
+    # which is the same quantity costs.round_trip_cost charges in
+    # dollars. They are two views of one cost, NOT two costs — see
+    # `spread_cost` below and the note in costs.py.
+    fut_bid = futures_tick.bid * multiplier
+    fut_ask = futures_tick.ask * multiplier
+    short_spread = fut_bid - beta * spot_tick.ask
+    long_spread = fut_ask - beta * spot_tick.bid
+
     # Expiry is OPTIONAL and no longer touches the spread — it is kept
     # only so the operator can see how far out the contract is and be
     # warned when it has rolled.
@@ -73,6 +123,11 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick,
         'futures_spread': (futures_tick.ask - futures_tick.bid) * 100,
         'spread_unit': '¢',
         'spread': spread,
+        # What each direction can actually be done at, right now.
+        'short_spread': short_spread,
+        'long_spread': long_spread,
+        # One round turn of both legs' bid-ask, in spread units.
+        'spread_cost': long_spread - short_spread,
         'actual_basis': actual_basis,
         'hedge_ratio': beta,
         'basis_pct': (actual_basis / spot_price * 100) if spot_price else 0.0,

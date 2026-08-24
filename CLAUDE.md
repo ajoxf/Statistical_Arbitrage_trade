@@ -576,6 +576,52 @@ be checked against anything. `fair_spread` keeps its two-tuple
 signature — 14 call sites unpack it — so `_derive` is the shared
 implementation rather than a second copy of the carry maths.
 
+## The two spreads you can actually trade (2026-08-24, operator)
+
+Operator: "Short Spread - Sell Future and Buy Spot - The spread should
+be calculated using (Bid - Future) and (Ask - Spot). Long Spread - Buy
+Future and Sell Spot ... The relevant spread prices should also be used
+in the Algo."
+
+The headline spread is a midpoint of two midpoints and nobody fills
+there. `marketdata` now also publishes:
+
+    short_spread = fut_bid - beta x spot_ask     sell fut, buy spot
+    long_spread  = fut_ask - beta x spot_bid     buy fut, sell spot
+
+By construction `short <= mid <= long`, and the gap between them is
+`spread_cost` — exactly one round turn of both legs' bid-ask, in spread
+units.
+
+- **`marketdata.executable_spread(md, signal_type, closing=False)` is
+  the single rule.** A position reads a DIFFERENT touch at each end of
+  its life, because it comes out the opposite way it went in: SELL_BASIS
+  enters on the short spread and exits on the long. Reading the
+  favourable side at both ends would make every trade look like it
+  cleared its costs — worse than using the mid, not better.
+- **Wired into the two places that compare a spread to a LEVEL:** the
+  armed manual trigger (`_check_manual_arm`) and the exit ladder's
+  manual stop/target (`Coordinator._exit_reason` passes `closing=True`).
+  Arming a short at 59.00 and firing when the MID touched 59.00 fired
+  early, on a level the market never offered, and filled lower by the
+  full bid-ask.
+- **The z-score series stays on MIDS and must.** mu/sigma/z need one
+  continuous series; a series that flips definition with the direction
+  under consideration is discontinuous, and its sigma is inflated by the
+  bid-ask. `series_key` and every warm-start row assume the mid too.
+- **The bid-ask is charged ONCE.** `costs.round_trip_cost` already
+  charges both legs' spreads in dollars, and `long - short` is the same
+  quantity in spread units — two views of one cost, not two costs. So
+  the executable spreads are used to decide WHETHER a level has been
+  reached, never added on top of the cost model. Regression-tested: a
+  round trip at the executable prices with nothing moving loses exactly
+  `spread_cost`, no more.
+- A snapshot with no touches falls back to the mid, so replayed rows and
+  older callers keep working.
+
+Dashboard: both are shown under the spread, labelled by the trade each
+one is, with the gap stated as the round turn it is.
+
 ## "Why is the fair spread wrong?" and "why is the stop $4.77?"
 
 Two readings on one card (operator, 2026-08-24), neither of them a

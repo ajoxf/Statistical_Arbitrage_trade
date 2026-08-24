@@ -28,6 +28,7 @@ from . import carry
 from . import costs as costs_mod
 from . import fairvalue
 from . import hedgeratio
+from . import marketdata
 from .marketdata import compute_market_data
 from .models import Position, SignalType, Trade, OrderSide
 from .notify import TelegramNotifier
@@ -941,7 +942,13 @@ class Coordinator:
             return self.exit_ladder.evaluate(
                 position, position.exit_plan, z,
                 position.unrealized_pnl, age,
-                spread=market_data.get('spread'))
+                # The spread this position can be CLOSED at. A short
+                # spread is bought back, so it exits on the long
+                # (higher) side — reading the mid puts every manual
+                # stop and target half a round turn away from where
+                # the market would actually fill it.
+                spread=marketdata.executable_spread(
+                    market_data, position.signal_type, closing=True))
         # Legacy premium-based paths
         hit, action = self.risk_manager.check_position_risk(
             position, market_data['basis_pct'])
@@ -1873,18 +1880,25 @@ class Coordinator:
             return
         if self.position_manager.get_positions_for_asset(asset_key):
             return                       # already in the trade
-        spread = market_data.get('spread')
+        direction = order.get('direction', '')
+        # The EXECUTABLE spread for the direction being entered, not the
+        # mid. Arming a short at 59.00 and firing when the MID touches
+        # 59.00 fills at the short spread — which is lower by both legs'
+        # bid-ask — so the operator never got the level they asked for.
+        # It also fires early by that same amount, on a level the market
+        # never actually offered.
+        spread = marketdata.executable_spread(market_data, direction)
         entry = order.get('entry_spread')
         if spread is None or entry is None:
             return
-        direction = order.get('direction', '')
         # SELL_BASIS profits as the spread falls -> arm above the level
         reached = (spread >= float(entry) if direction == 'SELL_BASIS'
                    else spread <= float(entry))
         if not reached:
             return
-        logging.warning("Manual trade TRIGGERED: spread %.4f reached %.4f",
-                        spread, float(entry))
+        logging.warning("Manual trade TRIGGERED: %s spread %.4f reached "
+                        "%.4f (mid %.4f)", direction, spread, float(entry),
+                        market_data.get('spread') or 0.0)
         self.manual_order = None
         self._manual_open(asset_key, direction, order.get('lots'),
                           exit_spread=order.get('exit_spread'),
@@ -2352,6 +2366,10 @@ class Coordinator:
                            else 'TRENDING'),
                 'basis': md['actual_basis'],
                 'spread': md['spread'],
+                # What each direction can actually be done at.
+                'short_spread': md.get('short_spread'),
+                'long_spread': md.get('long_spread'),
+                'spread_cost': md.get('spread_cost'),
                 'hedge_ratio': md.get('hedge_ratio', 1.0),
                 'spread_formula': md.get('spread_formula'),
                 # Reference only — see fairvalue.py.

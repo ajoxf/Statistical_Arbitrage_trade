@@ -454,6 +454,29 @@
                         <div class="text-secondary mt-1" style="font-size: 0.6rem; display:none;"
                              id="spread-breakdown"
                              title="What the engine z-scores: Leg B (futures) minus the hedge ratio times Leg A (spot)."></div>
+                        <!-- The two spreads you can actually trade. The
+                             big number above is a midpoint of two
+                             midpoints and nobody fills there; each
+                             direction crosses a different pair of
+                             touches, and the gap between these two IS
+                             the round-turn bid-ask. -->
+                        <div class="mt-1" id="exec-spread-row" style="display:none;">
+                            <div class="d-flex justify-content-center gap-3"
+                                 style="font-size: 0.66rem;">
+                                <span title="SHORT the spread: sell futures at the BID, buy spot at the ASK.">
+                                    <span class="text-secondary">short</span>
+                                    <span class="price-down fw-semibold font-monospace"
+                                          id="short-spread">&mdash;</span>
+                                </span>
+                                <span title="LONG the spread: buy futures at the ASK, sell spot at the BID.">
+                                    <span class="text-secondary">long</span>
+                                    <span class="price-up fw-semibold font-monospace"
+                                          id="long-spread">&mdash;</span>
+                                </span>
+                            </div>
+                            <div class="text-secondary" id="exec-spread-note"
+                                 style="font-size: 0.58rem;"></div>
+                        </div>
                         <div class="mt-1" style="display:none;" id="fair-value-row"
                              title="Theoretical value of the spread from cost of carry. REFERENCE ONLY — the signal is the z-score on the spread and never reads this. A large gap usually means the contract month, multiplier or contract size is wrong, not that the trade is good.">
                             <div>
@@ -3269,6 +3292,27 @@
                 spreadBreak.style.display = '';
             } else {
                 spreadBreak.style.display = 'none';
+            }
+        }
+
+        // The two executable spreads. Both are always shown, whichever
+        // way a position happens to be facing — the pair of them IS the
+        // cost, and hiding the side you are not trading hides half of
+        // that. The mid above sits between them by construction.
+        const execRow = document.getElementById('exec-spread-row');
+        if (execRow) {
+            const sh = data.short_spread, lg = data.long_spread;
+            if (sh != null && lg != null) {
+                document.getElementById('short-spread').textContent = fmt(sh);
+                document.getElementById('long-spread').textContent = fmt(lg);
+                const cost = data.spread_cost;
+                document.getElementById('exec-spread-note').textContent =
+                    cost == null ? ''
+                    : 'sell fut / buy spot vs buy fut / sell spot — '
+                      + fmt(cost) + ' apart, one round turn of bid-ask';
+                execRow.style.display = '';
+            } else {
+                execRow.style.display = 'none';
             }
         }
 

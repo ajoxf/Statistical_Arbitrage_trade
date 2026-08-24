@@ -615,6 +615,11 @@ def status_to_ui(status, config_raw):
             'edge_cost_in_sigmas': first.get('edge_cost_in_sigmas'),
             'edge_reachable': first.get('edge_reachable'),
             'edge_entry_ceiling': first.get('edge_entry_ceiling'),
+            # The two spreads that can actually be traded, and the
+            # round-turn bid-ask between them.
+            'short_spread': first.get('short_spread'),
+            'long_spread': first.get('long_spread'),
+            'spread_cost': first.get('spread_cost'),
             'carry': first.get('carry'),
             'round_trip_cost_bps': first.get('rt_cost_bps'),
             'rt_cost_per_lot': first.get('rt_cost_per_lot'),
