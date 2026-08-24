@@ -1931,6 +1931,7 @@
     socket.on('signal', function(data) {
         updateSignal(data);
         updateCharts(data);
+        if (typeof renderManualSpread === 'function') renderManualSpread();
         lastUpdateTime = Date.now();
     });
 
@@ -3243,12 +3244,6 @@
                     short: sh, long: lg,
                     futBid: data.futures_bid, futAsk: data.futures_ask,
                     spotBid: data.spot_bid, spotAsk: data.spot_ask};
-                // Re-render the manual panel HERE. Its own poll runs at
-                // 3s, ten times slower than this one, so the price the
-                // operator arms against lagged the card beside it —
-                // and that panel is the one that places the order.
-                if (typeof renderManualSpread === 'function')
-                    renderManualSpread();
                 const shortLegs = document.getElementById('short-spread-legs');
                 const longLegs = document.getElementById('long-spread-legs');
                 if (shortLegs) {
@@ -3275,6 +3270,14 @@
                 if (execRow2) execRow2.style.display = 'none';
             }
         }
+
+        // Re-render the manual panel's price on EVERY tick, OUTSIDE the
+        // branch above — its own poll runs at 3s, ten times slower than
+        // this handler, and that panel is the one that places orders.
+        // Unconditional on purpose: if the touches go missing for a tick
+        // the price must fall back to the mid straight away rather than
+        // freeze on the last executable figure it saw.
+        if (typeof renderManualSpread === 'function') renderManualSpread();
 
         const meanEl = document.getElementById('spread-mean');
         if (meanEl) {

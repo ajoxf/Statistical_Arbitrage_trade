@@ -2302,8 +2302,11 @@ def test_the_manual_price_is_driven_by_the_fast_loop(client):
     lagged the card it is read against — and that panel is the one that
     places the order. updateSignal now re-renders it on every tick."""
     page = client.get('/').get_data(as_text=True)
-    fast = page.index('window.__execSpreads = {')
-    call = page.index('renderManualSpread();', fast)
-    # The re-render sits inside the fast handler, right after the
-    # touches it reads are refreshed.
-    assert call - fast < 600, 'renderManualSpread not on the fast path'
+    # Driven from the socket handler, which is the live path...
+    socket_handler = page.index("socket.on('signal'")
+    assert 'renderManualSpread' in page[socket_handler:socket_handler + 400]
+    # ...and from inside updateSignal, which is the polling fallback's
+    # path and also where the touches it reads are refreshed.
+    body = page[page.index('function updateSignal(data) {'):]
+    body = body[:body.index('\n    function ')]
+    assert 'renderManualSpread();' in body
