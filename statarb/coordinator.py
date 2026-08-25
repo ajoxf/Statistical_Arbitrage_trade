@@ -384,7 +384,35 @@ class Coordinator:
             except (KeyError, ValueError) as e:
                 logging.error("Could not recover position state: %s", e)
                 continue
+            self._backfill_mark_fees(position)
             self.position_manager.restore_position(position)
+
+    def _backfill_mark_fees(self, position):
+        """Give a plan written before the fee split its `mark_fees_usd`.
+
+        `exits.mark_fees` falls back to the whole round trip when the key
+        is absent, which is the safe default for an unknown plan — but a
+        position recovered across THIS upgrade is not unknown: it is now
+        marked at the closing touch, so the crossing is in the mark and
+        charging it again would understate the net by a full round turn.
+        Commissions need only the lots and the config, so the real figure
+        is recoverable here; without it a legacy position would sit under
+        a take-profit it has to clear twice.
+        """
+        plan = position.exit_plan or {}
+        if not plan or plan.get('mark_fees_usd') is not None:
+            return
+        lots_a = plan.get('lots') or position.spot_trade.lot_size or 0.0
+        lots_b = plan.get('leg_b_lots') or position.futures_trade.lot_size \
+            or lots_a
+        plan['mark_fees_usd'] = (
+            self.config.COSTS.get('COMMISSION_PER_LOT_SPOT', 0.0) * lots_a
+            + self.config.COSTS.get('COMMISSION_PER_LOT_FUT', 0.0) * lots_b)
+        logging.info(
+            "%s: plan predates the fee split — commission of $%.2f "
+            "restated as the fees still outstanding (the crossing is now "
+            "in the mark, was $%.2f of round trip)", position.position_id,
+            plan['mark_fees_usd'], plan.get('rt_cost_usd') or 0.0)
 
     def _setup_symbols(self):
         for asset_key, asset_cfg in self.config.ASSETS.items():

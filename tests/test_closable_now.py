@@ -294,3 +294,39 @@ def test_a_signal_trade_keeps_the_engines_risk_figures():
     p = plan(source='SIGNAL')
     levels = ExitLadder.spread_levels(p, FILL, K, SignalType.SELL_BASIS)
     assert levels['sl'] == pytest.approx(FILL + 7.05 / K)   # 58.505
+
+
+# --- a position recovered across the upgrade --------------------------
+
+def test_a_recovered_legacy_plan_gets_its_commission_restated():
+    """`mark_fees` falls back to the whole round trip for an unknown
+    plan, which is right in general and wrong for a position carried
+    across THIS change: it is now marked at the closing touch, so the
+    crossing is in the mark and charging it again would take a full
+    round turn twice. Commissions need only the lots and the config."""
+    from types import SimpleNamespace
+
+    pos = position()
+    pos.exit_plan = {'rt_cost_usd': 1.20, 'lots': 0.02,
+                     'leg_b_lots': 0.02, 'tp_usd': 2.11}
+    coord = SimpleNamespace(
+        config=SimpleNamespace(COSTS={'COMMISSION_PER_LOT_SPOT': 3.0,
+                                      'COMMISSION_PER_LOT_FUT': 5.0}))
+    Coordinator._backfill_mark_fees(coord, pos)
+
+    assert pos.exit_plan['mark_fees_usd'] == pytest.approx(0.16)
+    assert mark_fees(pos.exit_plan) == pytest.approx(0.16)
+    # ...and the full round trip is left alone: it prices a trade that
+    # has not happened yet, and the audit reads it.
+    assert pos.exit_plan['rt_cost_usd'] == 1.20
+
+
+def test_a_plan_that_already_has_it_is_not_touched():
+    from types import SimpleNamespace
+
+    pos = position()
+    pos.exit_plan = plan(mark_fees_usd=0.08)
+    coord = SimpleNamespace(
+        config=SimpleNamespace(COSTS={'COMMISSION_PER_LOT_SPOT': 3.0}))
+    Coordinator._backfill_mark_fees(coord, pos)
+    assert pos.exit_plan['mark_fees_usd'] == 0.08
