@@ -134,6 +134,59 @@ class ExitLadder:
                   if contract_b else lots)
         return contract_b, lots_b
 
+    def _choose_stop(self, tp, lots, capital):
+        """The TIGHTER of every armed stop form, and WHICH one bound.
+
+        Three knobs in three different units resolve to one dollar
+        figure, and "why is the stop $4.77" (operator, 2026-08-24) is
+        not answerable from the number alone.
+
+        Note RR is a REWARD ratio: below 1 the stop is WIDER than the
+        target, so the target is what sets the risk.
+        """
+        exits = self.config.EXITS
+        candidates = [
+            (exits.get('STOP_USD_PER_LOT', 0) * lots,
+             f"STOP_USD_PER_LOT ${exits.get('STOP_USD_PER_LOT', 0):g} "
+             f"x {lots:g} lots"),
+        ]
+        if exits.get('STOP_CAPITAL_PCT', 0) > 0 and capital:
+            candidates.append(
+                (exits['STOP_CAPITAL_PCT'] / 100 * capital,
+                 f"STOP_CAPITAL_PCT {exits['STOP_CAPITAL_PCT']:g}% of "
+                 f"${capital:,.0f}"))
+        rr = exits.get('RR', 0)
+        if tp and rr > 0:
+            candidates.append(
+                (tp / rr, f"target ${tp:,.2f} / RR {rr:g}"))
+        armed = [c for c in candidates if c[0] > 0]
+        return min(armed) if armed else (0.0, 'no stop armed')
+
+    def reprice_target(self, plan, target_usd):
+        """Restate the dollar target once the FILL is known, and
+        everything derived from it.
+
+        `build_plan` runs BEFORE the order exists, so a manual target
+        can only be measured from the mid — while `tp_usd` is compared
+        against P&L, which is measured from the executed prices. The
+        gap is the entry crossing plus slippage, and it does not stop
+        at the target: with TP/RR armed the STOP is `tp / RR`, so at
+        RR 0.3 an overstated target widens the risk by more than three
+        times the overstatement.
+        """
+        if target_usd is None or not plan.get('lots'):
+            return plan
+        plan['tp_usd'] = target_usd
+        plan['stop_usd'], plan['stop_source'] = self._choose_stop(
+            target_usd, plan['lots'], plan.get('capital_at_risk'))
+        tp, stop = plan['tp_usd'], plan['stop_usd']
+        plan['breakeven_win_rate'] = (stop / (tp + stop)
+                                      if tp and stop and (tp + stop) else None)
+        plan['expectancy'] = expectancy.trade_expectancy(
+            tp, stop, plan.get('rt_cost_usd', 0.0), plan.get('entry_z'),
+            plan.get('entry_sigma'), plan.get('spread_units'))
+        return plan
+
     def build_plan(self, lots, contract_size, entry_z, sigma, half_life_sec,
                    market_data, manual_target_usd=None, asset_cfg=None):
         """Compute the frozen exit levels. Returns None when the trade
@@ -202,26 +255,7 @@ class ExitLadder:
                 logging.info("Exit plan not viable: %s", self.last_refusal)
                 return None
 
-        # Stop: the TIGHTER of every armed form. Which one BOUND is
-        # carried out with it — three knobs in three different units
-        # resolve to one dollar figure, and "why is the stop $4.77"
-        # (operator, 2026-08-24) is not answerable from the number.
-        candidates = [
-            (exits.get('STOP_USD_PER_LOT', 0) * lots,
-             f"STOP_USD_PER_LOT ${exits.get('STOP_USD_PER_LOT', 0):g} "
-             f"x {lots:g} lots"),
-        ]
-        if exits.get('STOP_CAPITAL_PCT', 0) > 0 and capital:
-            candidates.append(
-                (exits['STOP_CAPITAL_PCT'] / 100 * capital,
-                 f"STOP_CAPITAL_PCT {exits['STOP_CAPITAL_PCT']:g}% of "
-                 f"${capital:,.0f}"))
-        rr = exits.get('RR', 0)
-        if tp and rr > 0:
-            candidates.append(
-                (tp / rr, f"target ${tp:,.2f} / RR {rr:g}"))
-        armed = [c for c in candidates if c[0] > 0]
-        stop, stop_source = min(armed) if armed else (0.0, 'no stop armed')
+        stop, stop_source = self._choose_stop(tp, lots, capital)
 
         if half_life_sec:
             max_hold = exits.get('MAX_HOLD_HALF_LIVES', 4) * half_life_sec
@@ -254,6 +288,7 @@ class ExitLadder:
             'entry_z': entry_z,
             'entry_sigma': sigma,
             'rt_cost_usd': rt_cost,
+            'lots': lots,
             # Dollars per 1.00 of spread, leg B's units. Published so
             # the levels, the manual target and the slippage report all
             # translate spread<->dollars with the SAME multiplier the
@@ -450,8 +485,26 @@ class ExitLadder:
                 and net_pnl >= plan['tp_usd']:
             return 'TAKE_PROFIT'
 
-        # 3. Reversion exit — gate floor decays with age (deadlock fix)
-        if self._reversion_home(
+        # 3. Reversion exit — gate floor decays with age (deadlock fix).
+        #
+        # Skipped entirely when the gate was ALREADY satisfied at entry.
+        # It asks "has the spread come home", and a spread that never
+        # left cannot come home — the test is vacuous, and its
+        # max-hold release below then closes the trade at ANY P&L, so
+        # a vacuous gate becomes an unconditional timed exit at a loss.
+        #
+        # A SIGNAL entry cannot reach this: the entry gates guarantee
+        # |z| >= ENTRY_Z and ENTRY_Z > EXIT_Z. A MANUAL entry skips
+        # those gates by design, so it is routinely placed at z ~ 0 —
+        # live 2026-08-25, four hand-placed trades all closed at about
+        # -$2 with no profit and no stop hit, which is this.
+        #
+        # The trade still always has an exit (the completeness rule):
+        # the dollar stop, the operator's own stop and target, MAX_HOLD
+        # on a profit, the hard TIME_STOP and the overnight rule are
+        # all untouched. Only the reversion opinion is withheld, and it
+        # is withheld precisely where it has no information.
+        if not plan.get('entry_home') and self._reversion_home(
                 plan, z, mid_spread if mid_spread is not None else spread,
                 position.signal_type):
             if net_pnl is None:

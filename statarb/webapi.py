@@ -319,6 +319,33 @@ def apply_ui_config(raw, payload):
     return raw, env_updates, notes
 
 
+def position_type(row):
+    """SHORT / LONG for a recorded trade — read, not inferred.
+
+    SELL_BASIS sells the spread (short: entered high, exited low) and
+    BUY_BASIS buys it. Both sites here used to derive this from the sign
+    of `entry_z`, which is wrong twice over: a MANUAL trade has no z
+    requirement at all — the operator picks the direction — and
+    `(None or 0) > 0` is False, so every trade without a recorded z
+    rendered LONG whatever it was. Live 2026-08-25: four short-spread
+    trades, all four badged LONG, three of them showing "Z 0.0".
+
+    Rows written before `signal_type` existed fall back to the z sign,
+    which IS the right inference for a signal entry. With neither, the
+    answer is None and the UI shows a dash — an unknown direction must
+    not render as a confident one.
+    """
+    signal = (row.get('signal_type') or '').upper()
+    if signal == 'SELL_BASIS':
+        return 'SHORT'
+    if signal == 'BUY_BASIS':
+        return 'LONG'
+    entry_z = row.get('entry_z')
+    if entry_z:
+        return 'SHORT' if entry_z > 0 else 'LONG'
+    return None
+
+
 def trade_to_ui(row):
     """trade_review row -> the W3 journal/trade shape the UI renders."""
     pnl = row.get('realized_pnl')
@@ -328,8 +355,7 @@ def trade_to_ui(row):
     return {
         'id': row.get('position_id'),
         'asset': row.get('asset'),
-        'position_type': ('SHORT' if (row.get('entry_z') or 0) > 0
-                          else 'LONG'),
+        'position_type': position_type(row),
         'entry_time': row.get('opened'),
         'exit_time': row.get('closed'),
         'entry_zscore': row.get('entry_z'),
@@ -497,8 +523,7 @@ def excursion_row(row):
     mfe_usd = max(peak or 0.0, 0.0)
     return {
         'id': row.get('position_id'), 'trade_id': row.get('position_id'),
-        'position_type': ('SHORT' if (row.get('entry_z') or 0) > 0
-                          else 'LONG'),
+        'position_type': position_type(row),
         'exit_reason': row.get('exit_reason'),
         'mae_usd': mae_usd, 'mfe_usd': mfe_usd,
         'mae_pct': (100 * mae_usd / notional) if notional else None,

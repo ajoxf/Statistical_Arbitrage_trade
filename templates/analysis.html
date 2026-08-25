@@ -301,7 +301,7 @@
                             {% for t in dd_trades %}
                             <tr>
                                 <td>{{ t.id }}</td>
-                                <td><span class="badge {% if t.position_type == 'LONG' %}bg-success{% else %}bg-danger{% endif %}">{{ t.position_type }}</span></td>
+                                <td>{% if t.position_type %}<span class="badge {% if t.position_type == 'LONG' %}bg-success{% else %}bg-danger{% endif %}">{{ t.position_type }}</span>{% else %}<span class="text-secondary" title="Direction not recorded for this trade, and no z-score to infer one from.">&mdash;</span>{% endif %}</td>
                                 <td class="text-secondary">{{ t.exit_reason or '—' }}</td>
                                 <td class="text-end">{{ ('%.1f' % t.utilization_pct) ~ '%' if t.utilization_pct is not none else '—' }}</td>
                                 <td class="text-end {% if t.mae_usd > 0 %}price-down{% endif %}">-${{ '%.2f' % t.mae_usd }}</td>
@@ -553,12 +553,19 @@
 
             data.trades.forEach(trade => {
                 const pnlClass = trade.pnl_usd > 0 ? 'price-up' : trade.pnl_usd < 0 ? 'price-down' : '';
-                // Δ Spread captured, signed to the trade's direction: LONG profits
-                // when the spread falls (dfav = -1), SHORT when it rises (dfav = +1).
+                // Δ Spread captured, signed to the trade's direction.
+                // SHORT (SELL_BASIS) sells the spread and buys it back,
+                // so it profits when the spread FALLS (dfav = -1); LONG
+                // is the mirror (+1). This was the other way round, so
+                // every captured figure in the journal carried the
+                // wrong SIGN — a profitable short read as a loss. The
+                // convention is ExitLadder.spread_levels' own `d`, and
+                // it is why a short's card says "profit ↓".
+                // An unknown direction cannot be signed at all.
                 const hasExit = trade.exit_spread !== null && trade.exit_spread !== undefined && !trade.is_open;
                 let deltaCell = '<td>-</td>';
-                if (hasExit) {
-                    const dfav = trade.position_type === 'LONG' ? -1 : 1;
+                if (hasExit && trade.position_type) {
+                    const dfav = trade.position_type === 'LONG' ? 1 : -1;
                     const captured = dfav * ((trade.exit_spread || 0) - (trade.entry_spread || 0));
                     const dCls = captured > 0 ? 'price-up' : captured < 0 ? 'price-down' : '';
                     deltaCell = `<td class="${dCls}">${captured >= 0 ? '+' : ''}${captured.toFixed(2)}</td>`;
@@ -580,7 +587,7 @@
                     <td>${trade.entry_time ? new Date(trade.entry_time).toLocaleString() : '-'}</td>
                     <td>${trade.exit_time ? new Date(trade.exit_time).toLocaleString() : '-'}</td>
                     <td>${trade.asset}</td>
-                    <td><span class="badge ${trade.position_type === 'LONG' ? 'badge-long' : 'badge-short'}">${trade.position_type}</span></td>
+                    <td>${trade.position_type ? `<span class="badge ${trade.position_type === 'LONG' ? 'badge-long' : 'badge-short'}">${trade.position_type}</span>` : '<span class="text-secondary">&mdash;</span>'}</td>
                     <td>${(trade.entry_zscore || 0).toFixed(4)}</td>
                     <td>${trade.exit_zscore ? trade.exit_zscore.toFixed(4) : '-'}</td>
                     <td>${fmtSpread(trade.entry_spread)}</td>
@@ -800,12 +807,15 @@
             tbody.insertBefore(tr, tbody.firstChild);
         }
         const sideCls = row.position_type === 'LONG' ? 'bg-success' : 'bg-danger';
+        const sideBadge = row.position_type
+            ? '<span class="badge ' + sideCls + '">' + row.position_type + '</span> '
+            : '<span class="text-secondary">&mdash;</span> ';
         const maeCls = (row.mae_usd > 0) ? 'price-down' : '';
         const pnlCls = (row.pnl_usd >= 0) ? 'price-up' : 'price-down';
         const mins = (v) => (v === null || v === undefined) ? '—' : Math.round(v) + 'm';
         tr.innerHTML =
             '<td>' + row.id + '</td>'
-          + '<td><span class="badge ' + sideCls + '">' + row.position_type + '</span> '
+          + '<td>' + sideBadge
           + '<span class="badge bg-primary" title="Currently open — live, updates on a poll">LIVE</span></td>'
           + '<td class="text-secondary">OPEN</td>'
           + '<td class="text-end">' + _ddNum(row.utilization_pct, 1, '%') + '</td>'

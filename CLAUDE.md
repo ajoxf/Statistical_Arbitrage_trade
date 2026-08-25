@@ -1067,6 +1067,91 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## A direction is a fact, not a statistic (2026-08-25, operator)
+
+"You have shorted the spread. High to Low. Why is it showing as 'long'
+... Can you thoroughly check the logic?" Four short-spread trades, all
+four badged LONG, three of them showing "Z 0.0" beside the wrong badge.
+
+**The direction was never RECORDED.** `trade_review` had no column for
+it, so both UI mappers inferred it:
+
+    'position_type': 'SHORT' if (row.get('entry_z') or 0) > 0 else 'LONG'
+
+Wrong twice over. A MANUAL trade has no z requirement at all — the
+operator picks the direction — and `(None or 0) > 0` is False, so every
+trade without a recorded z rendered **LONG whatever it was**. Now
+`trade_review.signal_type` is written at close and `webapi.position_type`
+READS it; a row predating the column still falls back to the z sign,
+which is the right inference for a SIGNAL entry (|z| >= ENTRY_Z, and the
+direction follows its sign); with neither it returns None and every
+badge site renders a dash. **An unknown direction must not render as a
+confident one** — that was the whole fault.
+
+Checking it "thoroughly" turned up three more:
+
+- **The Δ-captured column had the sign inverted.** analysis.html read
+  `dfav = position_type === 'LONG' ? -1 : 1`, and the convention is the
+  opposite: SHORT (SELL_BASIS) sells the spread and profits as it FALLS
+  (`d = -1`), LONG is the mirror. It is `ExitLadder.spread_levels`' own
+  `d`, and it is why a short's card says "profit ↓". Every captured
+  figure in the journal carried the wrong sign — **a profitable short
+  read as a loss.**
+- **Recent Trades' "Leg A" and "Leg B" columns could never show
+  anything.** `trade_to_ui` publishes no per-leg prices and
+  `trade_review` stores none, so `formatPrice(undefined)` printed "-" on
+  every row ever rendered. They are now **Spread** (opened -> closed,
+  which is the pair's own price and IS stored) and **Exit** (the reason,
+  which was published and unused). That column is what answers "why did
+  this close where it did" — the operator could not have diagnosed the
+  next fault without it.
+- **A reversion gate that was already home AT ENTRY.** See below.
+
+## The gate that had nowhere to come home from (2026-08-25, operator)
+
+"The trade is exiting without a profit and before a Stop loss."
+
+`_reversion_home` asks whether the spread has come home — `|z| <=
+EXIT_Z`. A **SIGNAL** entry cannot start there, because the entry gates
+guarantee `|z| >= ENTRY_Z` and ENTRY_Z (3.0) > EXIT_Z (1.0). A
+**MANUAL** entry skips those gates by design and is routinely placed at
+z ~ 0, which is already inside the band.
+
+So the gate was satisfied from the first tick, and it never measured
+anything. That would be merely useless if the block below it were not:
+
+    if age_sec >= 2 * max_hold:
+        return 'REVERSION_EXIT'        # ANY P&L
+
+which is the 2026-08-07 deadlock fix, and correct for a trade whose
+reversion edge really is spent. On a vacuous gate it degrades into an
+**unconditional timed exit at whatever loss the trade happens to
+carry** — no profit, no stop hit. Four hand-placed trades, four losses
+of about $2, which is roughly one round trip.
+
+`plan['entry_home']` is frozen at entry (against the same `entry_mu` the
+gate is measured on) and the whole reversion block is skipped when it is
+set. The exit-path completeness rule still holds and is regression-
+tested: the dollar stop, the operator's own stop and target, MAX_HOLD on
+a profit, the hard TIME_STOP and the overnight rule are all untouched.
+Only the reversion OPINION is withheld, and only where it has no
+information.
+
+Two anchor faults in the same block, the sequel to "The Wanted value
+looks incorrect":
+
+- **`manual_target_usd` was measured from the MID.** `build_plan` runs
+  before the order exists, so at that point the mid is all there is —
+  but `tp_usd` is compared against P&L, and P&L is measured from the
+  FILL. `ExitLadder.reprice_target` restates it once the fill is known.
+- **And the STOP is derived from it.** With TP/RR armed,
+  `stop = tp / RR`, so at RR 0.3 a target overstated by the entry
+  crossing widens the risk by **more than three times** the
+  overstatement. Re-pricing therefore re-runs the whole stop choice —
+  `_choose_stop` is now one method shared by both paths, rather than
+  the selection existing once inside `build_plan` and being impossible
+  to redo.
+
 ## One multiplier, everywhere (2026-08-25, operator)
 
 "Yes, fix the leg B multiplier." The last holdouts from the sizing

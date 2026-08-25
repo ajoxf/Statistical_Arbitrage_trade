@@ -150,7 +150,17 @@ class DataLogger:
                                  ('exit_cross_usd', 'REAL'),
                                  ('exit_slip_spread', 'REAL'),
                                  ('exit_slip_usd', 'REAL'),
-                                 ('slip_usd', 'REAL')]:
+                                 ('slip_usd', 'REAL'),
+                                 # WHICH WAY the trade went. It was never
+                                 # recorded, so the UI inferred it from
+                                 # the sign of entry_z — and a manual
+                                 # trade has no z, so `(None or 0) > 0`
+                                 # made every one of them read LONG
+                                 # whatever it actually was (operator,
+                                 # 2026-08-25: four shorts, all badged
+                                 # LONG). A direction is a fact about
+                                 # the order, not a statistic to infer.
+                                 ('signal_type', 'TEXT')]:
             try:
                 cursor.execute(f'ALTER TABLE trade_review '
                                f'ADD COLUMN {column} {col_type}')
@@ -370,6 +380,8 @@ class DataLogger:
         values = {
             'position_id': position.position_id,
             'asset': position.asset,
+            'signal_type': getattr(position.signal_type, 'value',
+                                   position.signal_type),
             'entry_z': plan.get('entry_z'),
             'exit_z': exit_z,
             'entry_sigma': plan.get('entry_sigma'),

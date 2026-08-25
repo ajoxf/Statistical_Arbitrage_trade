@@ -1062,14 +1062,22 @@
                                 <th>Time</th>
                                 <th>Type</th>
                                 <th>Z</th>
-                                <th>Leg A</th>
-                                <th>Leg B</th>
+                                <!-- Leg A / Leg B were per-leg PRICES, and
+                                     trade_review has never stored them, so
+                                     both columns rendered "-" on every row
+                                     ever. It does store the spread the trade
+                                     opened and closed at, which is the pair's
+                                     own price, and the exit reason — which is
+                                     the column that answers "why did this
+                                     close where it did". -->
+                                <th title="The spread this pair opened at, and closed at.">Spread</th>
+                                <th title="Which rung of the exit ladder fired.">Exit</th>
                                 <th>P&L</th>
                             </tr>
                         </thead>
                         <tbody id="trades-table">
                             <tr>
-                                <td colspan="6" class="text-center text-secondary">No trades</td>
+                                <td colspan="7" class="text-center text-secondary">No trades</td>
                             </tr>
                         </tbody>
                     </table>
@@ -4759,15 +4767,13 @@ function updateFilterStatus(elementId, passed, value) {
         row.dataset.tradeId = (trade.id != null) ? trade.id : '';
         const pnlClass = trade.pnl_usd > 0 ? 'price-up' : trade.pnl_usd < 0 ? 'price-down' : '';
 
-        // Format prices - show entry price, and if closed show "entry → exit"
-        const formatPrice = (price) => price ? '$' + price.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0}) : '-';
-
-        let spotDisplay = formatPrice(trade.entry_spot_price);
-        let futDisplay = formatPrice(trade.entry_futures_price);
-
-        if (!trade.is_open && trade.exit_spot_price) {
-            spotDisplay = `${formatPrice(trade.entry_spot_price)}<br><span class="text-secondary">→${formatPrice(trade.exit_spot_price)}</span>`;
-            futDisplay = `${formatPrice(trade.entry_futures_price)}<br><span class="text-secondary">→${formatPrice(trade.exit_futures_price)}</span>`;
+        // The pair's own price: the spread it opened at, and where it
+        // closed. Shown at 2dp like every other spread on the page.
+        const fmtSpread = (v) => (v === null || v === undefined)
+            ? '-' : Number(v).toFixed(2);
+        let spreadDisplay = fmtSpread(trade.entry_spread);
+        if (!trade.is_open && trade.exit_spread != null) {
+            spreadDisplay += `<br><span class="text-secondary">→${fmtSpread(trade.exit_spread)}</span>`;
         }
 
         const delBtn = (trade.id != null)
@@ -4776,10 +4782,12 @@ function updateFilterStatus(elementId, passed, value) {
 
         row.innerHTML = `
             <td>${trade.entry_time ? new Date(trade.entry_time).toLocaleTimeString() : '-'}</td>
-            <td><span class="badge ${trade.position_type === 'LONG' ? 'badge-long' : 'badge-short'}" style="font-size:0.6rem;">${trade.position_type}</span></td>
+            <td>${trade.position_type
+                ? `<span class="badge ${trade.position_type === 'LONG' ? 'badge-long' : 'badge-short'}" style="font-size:0.6rem;">${trade.position_type}</span>`
+                : '<span class="text-secondary" title="This trade predates the direction being recorded, and it carried no z-score to infer one from.">&mdash;</span>'}</td>
             <td>${(trade.entry_zscore || 0).toFixed(1)}</td>
-            <td style="font-size:0.65rem;">${spotDisplay}</td>
-            <td style="font-size:0.65rem;">${futDisplay}</td>
+            <td style="font-size:0.65rem;">${spreadDisplay}</td>
+            <td style="font-size:0.62rem;" class="text-secondary">${trade.exit_reason || '—'}</td>
             <td class="${pnlClass}" title="${trade.is_open ? '' : `notional ${(trade.pnl_percent || 0).toFixed(2)}% / capital ${(trade.pnl_pct_on_capital || 0).toFixed(2)}% on $${(trade.capital_locked_usd || 0).toFixed(0)}`}">
                 ${trade.is_open ? '-' : '$' + (trade.pnl_usd || 0).toFixed(2)}${delBtn}
                 ${trade.is_open ? '' : `<br><span style="font-size:0.6rem;" class="text-secondary">${(trade.pnl_pct_on_capital || 0).toFixed(2)}%</span>`}
@@ -5519,7 +5527,7 @@ function updateFilterStatus(elementId, passed, value) {
             if (data.success) {
                 showToast('Cleared ' + data.deleted + ' trades', 'success');
                 const tbody = document.getElementById('trades-table');
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary">No trades</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
             } else {
                 showToast('Failed to clear trades', 'danger');
             }
@@ -5541,7 +5549,7 @@ function updateFilterStatus(elementId, passed, value) {
                 if (row) row.remove();
                 const tbody = document.getElementById('trades-table');
                 if (tbody && tbody.children.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary">No trades</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
                 }
             } else {
                 showToast(data.error || 'Delete failed', 'danger');
@@ -5698,7 +5706,7 @@ function updateFilterStatus(elementId, passed, value) {
                 const d = data.deleted;
                 showToast(`Reset: ${d.trades} trades, ${d.sd_touches} SD touches (spread preserved)`, 'success');
                 const tbody = document.getElementById('trades-table');
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary">No trades</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
                 fetch('/api/engine/status').then(r => r.json()).then(d => updateSignal(d.signal));
             } else {
                 showToast('Reset failed', 'danger');
@@ -5723,7 +5731,7 @@ function updateFilterStatus(elementId, passed, value) {
                 const d = data.deleted;
                 showToast(`Reset: ${d.trades} trades, ${d.sd_touches} SD, ${d.spread_history} spreads`, 'success');
                 const tbody = document.getElementById('trades-table');
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary">No trades</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
                 zscoreHistory = [];
                 spreadHistory = [];
                 zscoreChart.data.datasets[0].data = [];

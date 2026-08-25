@@ -390,13 +390,24 @@ def test_the_operators_target_is_handed_to_the_exit_ladder(coordinator):
     coordinator.active_assets['GOLD']['last_data'] = market(20.0)
     arm(coordinator, direction='SELL_BASIS', lots=1.0, exit_spread=15.0)
 
-    # 5.0 spread units x 1 lot x 100 contract = $500
+    # build_plan runs BEFORE the order exists, so all it can measure is
+    # the distance from the MID: 5.0 spread units x 100 = $500.
     assert seen['manual_target_usd'] == pytest.approx(500.0)
     position = next(iter(
         coordinator.position_manager.get_active_positions().values()))
     assert position.exit_plan['manual_exit_spread'] == 15.0
-    assert position.exit_plan['tp_usd'] == pytest.approx(500.0)
     assert coordinator.manual_note['ok'] is True
+
+    # ...and once the fill is known it is RE-PRICED from there, because
+    # tp_usd is compared against P&L and P&L is measured from the
+    # executed prices. The short filled at 19.90, not the 20.00 mid, so
+    # its target is worth $490 — the $10 difference is the entry
+    # crossing, and counting it as profit is how a target that reads as
+    # reached books less than it promised.
+    fill = position.exit_plan['fill_spread']
+    assert fill == pytest.approx(19.90)
+    assert position.exit_plan['tp_usd'] == pytest.approx(
+        (fill - 15.0) * 100)
 
 
 def test_a_signal_entry_hands_over_no_manual_target(coordinator):

@@ -1217,6 +1217,14 @@ class Coordinator:
             # SPREAD levels for the in-position card
             plan['entry_mu'] = stats.mu if stats else None
             plan['entry_spread'] = market_data['spread']
+            # Was the reversion gate ALREADY home the moment we entered?
+            # If so it can never report a reversion, and its max-hold
+            # release would just close the trade at whatever P&L it
+            # happens to have. Frozen here, with the mu it is measured
+            # against, rather than re-derived every tick.
+            plan['entry_home'] = self.exit_ladder._reversion_home(
+                plan, plan.get('entry_z'), market_data['spread'],
+                signal_type)
             # The SPREAD levels are anchored on what we FILLED at, not
             # on the mid the decision was taken at.
             #
@@ -1232,6 +1240,19 @@ class Coordinator:
             # and entry_mu are measured on.
             anchor, fill_spread = self.levels_anchor(position, market_data)
             plan['fill_spread'] = fill_spread
+            # Re-price the operator's target off the FILL. build_plan
+            # runs before the order exists, so it could only measure
+            # from the mid — but `tp_usd` is compared against P&L, and
+            # P&L is measured from the executed prices. The gap is the
+            # entry crossing plus slippage, and it propagates: with
+            # TP/RR armed the STOP is derived from this number, so a
+            # target overstated by the crossing widens the stop by
+            # crossing/RR (at RR 0.3, by more than three times it).
+            if plan.get('manual_exit_spread') is not None \
+                    and fill_spread is not None and plan.get('spread_units'):
+                plan['tp_usd'] = (abs(fill_spread
+                                      - float(plan['manual_exit_spread']))
+                                  * plan['spread_units'])
             plan['levels'] = self.exit_ladder.spread_levels(
                 plan, anchor, plan.get('spread_units')
                 or spot_trade.lot_size * contract_size, signal_type)
