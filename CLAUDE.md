@@ -1051,6 +1051,22 @@ pushing the label around.
 The CSS lives in dashboard.html's own style block rather than coming
 from the CDN, for the same reason `price-up` does.
 
+**Card padding** came down at the same time ("Reduce the whitespace in
+the cards"): `.card-body` from Bootstrap's 1rem to `0.5rem 0.7rem`,
+`.card-header` to `0.35rem 0.7rem`, and `.card.mb-3` from 1rem to
+0.6rem. base.html loads AFTER Bootstrap at equal specificity, so it
+wins — measured 16px -> 11.2px horizontal. It does NOT override the
+vertical padding where a `py-1` / `py-2` utility is present, because
+those carry `!important`; at 4-8px those were already tight, so the
+result is one consistent horizontal value and the existing vertical
+ones.
+
+Worth keeping about the Chromium driver: verifying this needed the
+injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
+`<link>` before base.html's `<style>`. Appending them reversed the
+cascade and reported 16px — the opposite of the truth, and it would
+have "proved" the change did nothing.
+
 ## Crisp like a trading platform (2026-08-24, operator)
 
 Four passes over the same two cards, each one the same fault: the

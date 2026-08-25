@@ -2583,3 +2583,20 @@ def test_the_grid_styling_is_not_on_the_spans_the_js_recolours(client):
         i = page.index('id="%s"' % pid)
         # the enclosing element is the styled wrapper
         assert 'class="pv"' in page[max(0, i - 120):i], pid
+
+
+def test_the_cards_are_tighter_than_bootstrap_default(client):
+    """Operator, 2026-08-24: "Reduce the whitespace in the cards."
+    Bootstrap's .card-body is 1rem all round, which on a screen that is
+    a dense grid of readings is a visible fraction of every small card.
+
+    Note what this does and does not change: base.html loads AFTER
+    Bootstrap at equal specificity, so it wins on the horizontal
+    padding (1rem -> 0.7rem) and on the header. It does NOT override the
+    vertical padding where a py-1 / py-2 utility is present, because
+    those carry !important — and at 4-8px those are already tight.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert 'padding: 0.5rem 0.7rem;' in page       # .card-body
+    assert 'padding: 0.35rem 0.7rem;' in page      # .card-header
+    assert '.card.mb-3 { margin-bottom: 0.6rem; }' in page

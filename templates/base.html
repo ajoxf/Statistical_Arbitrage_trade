@@ -79,11 +79,27 @@
             border-bottom: 1px solid var(--border-color);
             font-weight: 600;
             color: var(--text-primary);
+            padding: 0.35rem 0.7rem;
         }
 
         .card-body {
             color: var(--text-primary);
+            /* Tighter than Bootstrap's 1rem (operator, 2026-08-24:
+               "Reduce the whitespace in the cards"). This screen is a
+               dense grid of readings, not a page of prose, and at 1rem
+               the padding was a visible fraction of every small card.
+
+               Deliberately overrides the py-1 / py-2 utilities dotted
+               through the templates: this block is loaded AFTER
+               Bootstrap and has equal specificity, so it wins — which
+               is the point. One consistent value beats a dozen
+               per-card guesses. */
+            padding: 0.5rem 0.7rem;
         }
+
+        /* The gap BETWEEN cards, same reasoning. mb-3 is 1rem, which
+           on a column of six cards is six lines of nothing. */
+        .card.mb-3 { margin-bottom: 0.6rem; }
 
         .form-control, .form-select {
             background-color: var(--bg-primary);
