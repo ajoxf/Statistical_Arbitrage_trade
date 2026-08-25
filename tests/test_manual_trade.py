@@ -507,3 +507,35 @@ def test_the_stop_is_re_derived_when_the_target_is_re_priced(coordinator):
     assert plan['breakeven_win_rate'] is None
     # The stop-to-target relationship itself is unchanged and still
     # tested — on `reprice_target` directly, in test_manual_is_manual.
+
+
+def test_the_exit_is_recorded_at_the_executable_spread(coordinator):
+    """Recent Trades shows "entry spread -> exit spread", and the two
+    were not the same quantity: entry is the FILL, exit was
+    `market_data['spread']` — the MID. Live 2026-08-25 a manual short
+    read 56.73 -> 55.83, a FALL of 0.90 which is the profitable
+    direction for a short, beside a P&L of -$6.10.
+
+    The exit is now the spread the position can actually be CLOSED at,
+    so the two columns are on one basis and their difference is the
+    trade's own move.
+    """
+    recorded = {}
+    coordinator.data_logger.log_trade_review = (
+        lambda position, **kw: recorded.update(kw))
+
+    def book(mid):
+        md = dict(market(mid))
+        md['short_spread'] = mid - 0.30
+        md['long_spread'] = mid + 0.30
+        return md
+
+    coordinator.active_assets['GOLD']['last_data'] = book(22.0)
+    arm(coordinator, direction='SELL_BASIS', lots=1.0, exit_spread=19.0)
+    assert coordinator.position_manager.get_active_positions()
+
+    # A short is bought back on the LONG side, so at a mid of 18.5 the
+    # closing spread is 18.8 — and that is what has to be recorded.
+    coordinator.process_asset('GOLD', book(18.5))
+    assert recorded.get('exit_spread') == pytest.approx(18.8)
+    assert recorded['exit_spread'] != pytest.approx(18.5)

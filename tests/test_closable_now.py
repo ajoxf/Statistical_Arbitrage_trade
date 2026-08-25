@@ -330,3 +330,16 @@ def test_a_plan_that_already_has_it_is_not_touched():
         config=SimpleNamespace(COSTS={'COMMISSION_PER_LOT_SPOT': 3.0}))
     Coordinator._backfill_mark_fees(coord, pos)
     assert pos.exit_plan['mark_fees_usd'] == 0.08
+
+
+# --- what the journal records the exit at -----------------------------
+
+def test_the_journal_columns_now_reconcile_with_the_pnl():
+    """(entry - exit) x k x d is the gross the trade booked, once both
+    columns are on the executable basis."""
+    entry_fill, k = FILL, K
+    exit_spread = marketdata.executable_spread(
+        MD, SignalType.SELL_BASIS, closing=True)
+    d = -1.0
+    assert d * (exit_spread - entry_fill) * k == pytest.approx(
+        mark(position()))

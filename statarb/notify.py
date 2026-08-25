@@ -376,7 +376,13 @@ class TelegramNotifier:
             rows.append(R("Fut Entry", f"${fut.executed_price:,.2f}"))
         if position.exit_fut_price:
             rows.append(R("Fut Exit", f"${position.exit_fut_price:,.2f}"))
-        entry_spread = plan.get('entry_spread')
+        # The FILL, so it is on the same basis as the exit spread
+        # beside it and the change between them is the money. Falls
+        # back to the decision mid for a plan that could not measure a
+        # fill; `entry_spread` alone is the STATISTICAL anchor.
+        entry_spread = plan.get('fill_spread')
+        if entry_spread is None:
+            entry_spread = plan.get('entry_spread')
         entry_z = plan.get('entry_z')
         if entry_spread is not None:
             z_note = f"  (Z: {entry_z:+.4f})" if entry_z is not None else ""

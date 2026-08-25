@@ -888,8 +888,18 @@ class Coordinator:
 
             reason = self._exit_reason(position, z, market_data)
             if reason and self._close_is_due(position):
+                # The spread this exit is RECORDED at must be the one
+                # it can be done at, and on the same basis as the entry
+                # the journal shows beside it — which is the FILL. It
+                # was the mid, so the Recent Trades "Spread" column
+                # compared a fill against a midpoint and its difference
+                # was not the trade's move (operator, 2026-08-25: a
+                # short shown 56.73 -> 55.83, a fall of 0.90, closing at
+                # a LOSS).
                 self._close(position_id, position, reason, contract_size, z,
-                            spread=market_data.get('spread'),
+                            spread=marketdata.executable_spread(
+                                market_data, position.signal_type,
+                                closing=True),
                             market_data=market_data)
 
         # -- entries (only while the algo is enabled; exits above
