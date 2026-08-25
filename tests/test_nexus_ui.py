@@ -1429,21 +1429,66 @@ def test_the_analysis_chart_is_guarded_too(client):
 def test_the_position_card_shows_all_three_prices(client):
     """Owner: "what your signal wanted to enter at and what the orders
     got placed at on MT5" — visible while the trade is still open, not
-    only in the post-mortem."""
+    only in the post-mortem. All three are columns now."""
     page = client.get('/').get_data(as_text=True)
-    assert 'id="position-slippage-row"' in page
-    assert 'wanted <span' in page and 'quoted <span' in page
-    assert 'crossing ' in page and 'slippage ' in page
+    assert 'id="position-slippage-table"' in page
+    for column in ('>Mid<', '>Best<', '>Filled<', '>Crossing<',
+                   '>Slippage<'):
+        assert column in page, column
+
+
+def test_wanted_is_gone_from_the_entry_cost_row(client):
+    """Operator, 2026-08-25: "Something is still wrong with wanted."
+
+    It was the MID, and no seller of the spread could ever have been
+    filled there — the best available was the touch beside it. Calling
+    a midpoint "wanted" reads as a level the engine aimed at and
+    missed, when half a bid-ask is simply what a midpoint IS. The
+    number is still shown, under a heading that says what it is.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert 'wanted <span' not in page
+    assert "'wanted " not in page
+    assert 'decision_spread' in page      # still published and shown
 
 
 def test_the_card_keeps_crossing_and_slippage_apart(client):
     """One combined figure would make a wide spread look like bad
     execution and a fast market look like a wide spread."""
     page = client.get('/').get_data(as_text=True)
-    tip = page.split('id="position-slippage-row"', 1)[1][:1200]
-    assert 'CROSSING is mid-to-touch' in tip
-    assert 'SLIPPAGE is touch-to-fill' in tip
-    assert 'price improvement' in tip
+    # The table's own tooltip, and the per-column ones built in the JS.
+    tip = page.split('id="position-slippage-table"', 1)[1][:1200]
+    assert 'already in the cost model' in tip
+    assert 'best-to-fill: the surprise' in tip
+    assert 'Mid to touch' in page
+    assert 'Touch to fill: the surprise' in page
+    assert 'price improvement' in page
+
+
+def test_the_frozen_geometry_is_a_table(client):
+    """Operator, 2026-08-25: "Make this into a Table with rows and
+    columns. Add a light coloured border to all the cells. The column
+    headings could be TP, SL etc and values in the rows."
+
+    Each level is a COLUMN and each reading of it a ROW, so the spread
+    and the money it is worth sit one under the other. As three lines
+    of `A 1 . B 2 . C 3` the pairs were only findable by counting
+    separators.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert 'id="position-levels-table"' in page
+    assert '.lvl-table {' in page
+    # Every cell bordered, and the CSS is local so a blocked CDN cannot
+    # take the grid away — the same rule .pos-grid follows.
+    css = page[page.index('.lvl-table th, .lvl-table td {'):]
+    css = css[:css.index('}')]
+    assert 'border: 1px solid' in css
+    # The headings are built from the level keys.
+    assert "{key: 'BE'" in page and "{key: 'TP'" in page \
+        and "{key: 'SL'" in page
+    # ...and both rows are driven by ONE column list, so they cannot
+    # disagree about which columns exist.
+    assert page.count('_levelCols') >= 4
 
 
 def test_the_analysis_page_has_the_execution_quality_card(client):
@@ -2684,3 +2729,25 @@ def test_the_cards_are_tighter_than_bootstrap_default(client):
     assert 'padding: 0.5rem 0.7rem;' in page       # .card-body
     assert 'padding: 0.35rem 0.7rem;' in page      # .card-header
     assert '.card.mb-3 { margin-bottom: 0.6rem; }' in page
+
+
+def test_the_manual_entry_box_tracks_the_live_price(client):
+    """Operator, 2026-08-25: "instead of 'blank' constantly update with
+    the live price."
+
+    As the PLACEHOLDER, not the value. A real value in that field means
+    ARM AT THIS LEVEL, and the point of leaving it blank is to fire at
+    the next poll — so filling it in would silently turn "go now" into
+    "wait for a level", which on a spread that has already ticked away
+    may never trigger. `use live` copies it in when that IS what the
+    operator wants.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert "entryEl.placeholder = window.__manualSpread == null" in page
+    assert 'function useLiveEntry' in page
+    assert 'id="manual-entry-use-live"' in page
+    # Blank must still mean now: nothing may assign to the field's
+    # VALUE except the explicit use-live click.
+    body = page[page.index('function renderManualSpread'):]
+    body = body[:body.index('function useLiveEntry')]
+    assert 'entryEl.value' not in body

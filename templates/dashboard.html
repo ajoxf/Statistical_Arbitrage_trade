@@ -54,6 +54,52 @@
     }
     .pos-line .pk { color: var(--text-secondary, #6c757d); white-space: nowrap; }
 
+    /* The frozen geometry, as an actual table (operator, 2026-08-25:
+       "Make this into a Table with rows and columns. Add a light
+       coloured border to all the cells. The column headings could be
+       TP, SL etc and values in the rows").
+
+       Each LEVEL is a column and each way of reading it is a row, so
+       the spread value and the money it is worth sit one above the
+       other under the same heading — which is how they are read. As
+       three lines of `A 1 . B 2 . C 3` the pairs were only findable by
+       counting separators. Local CSS, like .pos-grid, so a blocked CDN
+       cannot turn it back into a run of text. */
+    .lvl-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.74rem;
+        table-layout: fixed;
+    }
+    .lvl-table th, .lvl-table td {
+        border: 1px solid var(--border-color, #dee2e6);
+        padding: 2px 6px;
+        text-align: right;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .lvl-table th {
+        color: var(--text-secondary, #6c757d);
+        font-weight: 600;
+        font-size: 0.62rem;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+    }
+    /* The row label: left-aligned and sized to the widest of them, so
+       the figure columns all start at the same place in both tables. */
+    .lvl-table th.lvl-k, .lvl-table td.lvl-k {
+        text-align: left;
+        width: 5.6rem;
+        color: var(--text-secondary, #6c757d);
+        text-transform: none;
+        letter-spacing: 0;
+        font-weight: 400;
+    }
+    .lvl-table td:not(.lvl-k) {
+        font-family: 'Monaco', 'Menlo', monospace;
+    }
+
     /* The manual-trade fields, as ONE grid rather than four
        stacked Bootstrap rows. Twelve tracks divide evenly by 2 AND by
        3, so a 2-up row and a 3-up row share the same outer edges — the
@@ -676,26 +722,23 @@
                          figures, so they get a full-width row of their own
                          rather than being crammed into half a column. -->
                     <div class="pos-wide mt-2 pt-2">
-                        <div class="pos-line" id="position-levels-row" style="display:none;"
-                             title="Absolute spread values where this trade breaks even, releases a reversion exit, takes profit and stops out — the same maths the exit overrides fire on. These do NOT drift with the rolling mean.">
-                            <span class="pk">Levels</span>
-                            <span id="position-levels" class="font-monospace">-</span>
-                        </div>
-                        <div class="pos-line" id="position-levels-usd-row" style="display:none;"
-                             title="Net P&L at each level: BE = $0.00 (all fees paid), EX = the profit-gate floor, TP = the profit target. SL is the GROSS spread move that trips the stop.">
-                            <span class="pk">Level P&amp;L</span>
-                            <span id="position-levels-usd" class="font-monospace">-</span>
-                        </div>
+                        <table class="lvl-table mb-2" id="position-levels-table" style="display:none;"
+                               title="Where this trade breaks even, releases a reversion exit, takes profit and stops out — as an absolute SPREAD and as the money it is worth. Frozen at entry from the actual fill, so they do NOT drift with the rolling mean.">
+                            <thead><tr id="position-levels-head"></tr></thead>
+                            <tbody id="position-levels-body"></tbody>
+                        </table>
+                        <div id="position-levels-hand" class="text-secondary mb-2"
+                             style="font-size:0.6rem; display:none;"></div>
                         <div class="pos-line" id="position-ev-row" style="display:none;"
                              title="What this trade was worth GOING IN, from the levels frozen at entry: EV = p x TP − (1−p) x (STOP + fees). p is the chance of reaching the target before the stop for a mean-reverting spread; the reversion SPEED cancels out. The baseline beside it is the same trade on a spread that does NOT revert, which is always worth exactly minus the round trip. It does not model the clock.">
                             <span class="pk">Expected value</span>
                             <span id="position-ev" class="font-monospace">-</span>
                         </div>
-                        <div class="pos-line" id="position-slippage-row" style="display:none;"
-                             title="What the signal saw versus what MT5 gave us. CROSSING is mid-to-touch: quoted before you trade and already in the cost model. SLIPPAGE is touch-to-fill: the market moving between the decision and the fill. Negative slippage is price improvement, which limit orders do produce.">
-                            <span class="pk">Entry cost</span>
-                            <span id="position-slippage" class="font-monospace">-</span>
-                        </div>
+                        <table class="lvl-table" id="position-slippage-table" style="display:none;"
+                               title="Decision to fill. MID is the midpoint the statistics are measured on — nobody trades there. BEST is the touch this direction could actually have been done at, and the gap between them is half the bid-ask, already in the cost model. SLIPPAGE is best-to-fill: the surprise. Negative slippage is price improvement, which limit orders do produce.">
+                            <thead><tr id="position-slippage-head"></tr></thead>
+                            <tbody id="position-slippage-body"></tbody>
+                        </table>
                     </div>
 
                     <!-- P&L progress gauge: left=stop, centre=breakeven, right=target -->
@@ -1316,9 +1359,18 @@
                                title="Leave blank to trade whatever the engine would size — the same plan the Position Sizing card shows, honouring your sizing mode, the volume step and each leg's minimum. A number typed here is used exactly as typed; MAX_LOT_SIZE still applies.">
                     </div>
                     <div class="mt-entry">
-                        <label>Entry <span class="text-secondary">(blank=now)</span></label>
+                        <!-- "(blank=now)" is gone: the placeholder now
+                             SHOWS the live price blank fires at, which
+                             says it better, and the label has to stay
+                             on one line beside "use live". -->
+                        <label>Entry<a
+                               href="#" id="manual-entry-use-live" class="ms-1"
+                               style="font-size:0.55rem; visibility:hidden;"
+                               title="Copy the live executable spread into this box, then nudge it."
+                               onclick="event.preventDefault(); useLiveEntry();">use live</a></label>
                         <input type="number" class="form-control form-control-sm" id="manual-entry-spread" step="0.0001"
-                               oninput="updateManualHints()">
+                               oninput="updateManualHints()"
+                               title="The spread to ARM at. Left blank it fires at the next poll, and the placeholder tracks the live executable price for the direction selected so you can see what that means. Click Use live to copy it in and nudge it.">
                     </div>
                     <div class="mt-tp">
                         <!-- The % box sits directly AFTER the words, not
@@ -1910,6 +1962,34 @@
                        ['Leg A bid', x.spotBid, 'bid']]);
             }
         }
+
+        // The Entry box tracks the live price (operator, 2026-08-25:
+        // "instead of 'blank' constantly update with the live price").
+        //
+        // As the PLACEHOLDER, not the value. A real value in this field
+        // means ARM AT THIS LEVEL, and the whole point of leaving it
+        // blank is to fire at the next poll — so filling it in would
+        // silently turn "go now" into "wait for a level", which on a
+        // spread that has already ticked away may never trigger. The
+        // placeholder shows the number, updates on every tick, and
+        // Activate still means now. "Use live" copies it in to nudge.
+        const entryEl = document.getElementById('manual-entry-spread');
+        if (entryEl) {
+            entryEl.placeholder = window.__manualSpread == null
+                ? 'now' : Number(window.__manualSpread).toFixed(4);
+        }
+        const useLive = document.getElementById('manual-entry-use-live');
+        if (useLive) {
+            useLive.style.visibility = (window.__manualSpread == null)
+                ? 'hidden' : 'visible';
+        }
+    }
+
+    function useLiveEntry() {
+        const entryEl = document.getElementById('manual-entry-spread');
+        if (!entryEl || window.__manualSpread == null) return;
+        entryEl.value = Number(window.__manualSpread).toFixed(4);
+        updateManualHints();
     }
 
     // Break-even and a suggested target, in SPREAD, for the direction
@@ -4328,65 +4408,113 @@ function updateFilterStatus(elementId, passed, value) {
 
                 // Absolute BE/TP/SL spread levels — drift-free trade geometry
                 // (the in-trade z-score moves with the rolling mean; these don't).
-                const levelsRow = document.getElementById('position-levels-row');
-                const levelsEl  = document.getElementById('position-levels');
+                // One LEVEL per column, one reading per row, so the
+                // spread and the money it is worth sit under the same
+                // heading (operator, 2026-08-25). `_levelCols` is built
+                // here and consumed by the P&L row below — one list, so
+                // the two rows cannot disagree about which columns exist.
+                const levelsTable = document.getElementById('position-levels-table');
+                const levelsHead  = document.getElementById('position-levels-head');
+                const levelsBody  = document.getElementById('position-levels-body');
                 const lv = t.spread_levels;
-                if (levelsRow && levelsEl && lv && lv.break_even != null) {
+                let _levelCols = [];
+                if (levelsTable && levelsHead && levelsBody
+                        && lv && lv.break_even != null) {
                     const fmt = x => (x == null) ? 'off' : parseFloat(x).toFixed(2);
                     const arrow = lv.favorable === 'down' ? '↓' : '↑';
-                    // EX = where a reversion EXIT actually releases (BE + profit
-                    // gate). Only shown when a gate floor pushes it past BE.
+                    // EX = where a reversion EXIT actually releases (BE +
+                    // profit gate). Only a column when a gate floor
+                    // pushes it past BE.
                     const hasGate = lv.gate_release != null &&
                         Math.abs(parseFloat(lv.gate_release) - parseFloat(lv.break_even)) > 0.005;
                     // A hand-set level looks wrong beside the engine's
-                    // ladder unless it says whose it is.
+                    // ladder unless it says whose it is — but a badge
+                    // inside the cell crowds the number it is about, so
+                    // the mark goes on the HEADING.
                     const byHand = which => which
-                        ? ' <span class="badge bg-secondary" style="font-size:0.55rem;">set by hand</span>'
+                        ? '<span title="Set by hand on the Manual Spread'
+                          + ' Trade panel, not derived by the engine.">*</span>'
                         : '';
-                    levelsEl.innerHTML =
-                        'BE <span class="text-info">' + fmt(lv.break_even) + '</span>' +
-                        (hasGate ? ' · EX <span class="text-warning">' + fmt(lv.gate_release) + '</span>' : '') +
-                        ' · TP <span class="text-success">' + fmt(lv.take_profit) + '</span>' +
-                        byHand(lv.manual_take_profit != null &&
-                               Number(lv.manual_take_profit) === Number(lv.take_profit)) +
-                        ' · SL <span class="text-danger">' + fmt(lv.stop) + '</span>' +
-                        byHand(lv.manual_stop != null &&
-                               Number(lv.manual_stop) === Number(lv.stop)) +
-                        ' <span class="text-secondary">(profit ' + arrow + ')</span>';
-                    levelsRow.style.display = '';
-                } else if (levelsRow) {
-                    levelsRow.style.display = 'none';
+                    _levelCols = [
+                        {key: 'BE', spread: lv.break_even, cls: 'text-info'},
+                    ];
+                    if (hasGate) _levelCols.push(
+                        {key: 'EX', spread: lv.gate_release, cls: 'text-warning'});
+                    _levelCols.push(
+                        {key: 'TP', spread: lv.take_profit, cls: 'text-success',
+                         hand: lv.manual_take_profit != null &&
+                               Number(lv.manual_take_profit) === Number(lv.take_profit)},
+                        {key: 'SL', spread: lv.stop, cls: 'text-danger',
+                         hand: lv.manual_stop != null &&
+                               Number(lv.manual_stop) === Number(lv.stop)});
+
+                    const anyHand = _levelCols.some(c => c.hand);
+                    levelsHead.innerHTML = '<th class="lvl-k">Level</th>'
+                        + _levelCols.map(c => '<th>' + c.key + byHand(c.hand)
+                            + '</th>').join('');
+                    levelsBody.innerHTML =
+                        '<tr><td class="lvl-k">Spread <span class="text-secondary">('
+                        + arrow + ')</span></td>'
+                        + _levelCols.map(c => '<td class="' + c.cls + '">'
+                            + fmt(c.spread) + '</td>').join('')
+                        + '</tr>';
+                    const handNote = document.getElementById('position-levels-hand');
+                    if (handNote) {
+                        handNote.textContent = anyHand
+                            ? '* set by hand, not derived by the engine' : '';
+                        handNote.style.display = anyHand ? '' : 'none';
+                    }
+                    levelsTable.style.display = '';
+                } else if (levelsTable) {
+                    levelsTable.style.display = 'none';
                 }
 
                 // Entry cost: what the signal wanted vs what MT5 gave
                 // us. Crossing and slippage stay separate — a wide
                 // spread and a bad fill are different problems with
                 // different fixes.
-                const slipRow = document.getElementById('position-slippage-row');
-                const slipEl  = document.getElementById('position-slippage');
+                // "wanted" is RETIRED (operator, 2026-08-25: "Something
+                // is still wrong with wanted"). It was the MID, and no
+                // seller of the spread could ever have been filled
+                // there — the best available was the touch beside it.
+                // Calling the midpoint "wanted" reads as a level the
+                // engine aimed at and missed, when half a bid-ask is
+                // simply what a midpoint is. The columns now say what
+                // each number IS.
+                const slipTable = document.getElementById('position-slippage-table');
+                const slipHead  = document.getElementById('position-slippage-head');
+                const slipBody  = document.getElementById('position-slippage-body');
                 const sl = t.entry_slippage;
-                if (slipRow && slipEl && sl && sl.executed_spread != null) {
+                if (slipTable && slipHead && slipBody
+                        && sl && sl.executed_spread != null) {
                     const f4 = x => x == null ? '—' : parseFloat(x).toFixed(4);
                     const money = sl.slippage_usd;
                     const slipClass = (sl.slippage_spread || 0) > 0
                         ? 'text-danger' : 'text-success';
-                    slipEl.innerHTML =
-                        'wanted <span class="text-info">' + f4(sl.decision_spread)
-                        + '</span> · quoted <span class="text-warning">'
-                        + f4(sl.quoted_spread) + '</span> · filled '
-                        + '<span class="text-info">' + f4(sl.executed_spread)
-                        + '</span> &nbsp;|&nbsp; crossing '
-                        + f4(sl.crossing_spread) + ' + slippage '
-                        + '<span class="' + slipClass + '">'
-                        + (sl.slippage_spread >= 0 ? '+' : '')
-                        + f4(sl.slippage_spread) + '</span>'
-                        + (money == null ? '' :
-                           ' <span class="' + slipClass + '">('
-                           + (money >= 0 ? '-$' : '+$')
-                           + Math.abs(money).toFixed(2) + ')</span>');
-                    slipRow.style.display = '';
-                } else if (slipRow) {
-                    slipRow.style.display = 'none';
+                    const signed = x => (x == null ? '—'
+                        : (x >= 0 ? '+' : '') + parseFloat(x).toFixed(4));
+                    slipHead.innerHTML =
+                        '<th class="lvl-k">Entry</th>'
+                        + '<th title="The midpoint of both books. The z-score, the edge filter and the exit ladder are all measured on it — and nobody fills there.">Mid</th>'
+                        + '<th title="The best price this direction could actually have been done at: the touch. Half a bid-ask below the mid for a seller, above it for a buyer.">Best</th>'
+                        + '<th title="What MT5 gave us.">Filled</th>'
+                        + '<th title="Mid to touch. Quoted before you trade and already charged by the cost model — nothing has gone wrong when you pay it.">Crossing</th>'
+                        + '<th title="Touch to fill: the surprise. Negative is price improvement, which limit orders do produce.">Slippage</th>';
+                    slipBody.innerHTML = '<tr>'
+                        + '<td class="lvl-k">Spread</td>'
+                        + '<td class="text-secondary">' + f4(sl.decision_spread) + '</td>'
+                        + '<td class="text-warning">' + f4(sl.quoted_spread) + '</td>'
+                        + '<td class="text-info">' + f4(sl.executed_spread) + '</td>'
+                        + '<td>' + signed(sl.crossing_spread) + '</td>'
+                        + '<td class="' + slipClass + '">'
+                        + signed(sl.slippage_spread)
+                        + (money == null ? '' : ' <span class="text-secondary">('
+                           + (money >= 0 ? '−$' : '+$')
+                           + Math.abs(money).toFixed(2) + ')</span>')
+                        + '</td></tr>';
+                    slipTable.style.display = '';
+                } else if (slipTable) {
+                    slipTable.style.display = 'none';
                 }
 
                 // Target & Stop levels
@@ -4462,24 +4590,28 @@ function updateFilterStatus(elementId, passed, value) {
 
                 // Level P&L row — the net dollar value each spread level equals,
                 // aligned under the Levels row (BE is $0 by definition).
-                const usdRow = document.getElementById('position-levels-usd-row');
-                const usdEl  = document.getElementById('position-levels-usd');
-                if (usdRow && usdEl && lv && lv.break_even != null) {
-                    const gateUsd = t.exit_gate_floor_usd != null ? parseFloat(t.exit_gate_floor_usd) : null;
-                    const parts = ['BE <span class="text-info">$0.00</span>'];
-                    if (gateUsd != null && gateUsd > 0.005) {
-                        parts.push('EX <span class="text-warning">+$' + gateUsd.toFixed(2) + '</span>');
-                    }
-                    parts.push('TP ' + (targetUsd > 0
-                        ? '<span class="text-success">+$' + targetUsd.toFixed(2) + '</span>'
-                        : '<span class="text-secondary">off</span>'));
-                    parts.push('SL ' + (stopUsd > 0
-                        ? '<span class="text-danger">−$' + stopUsd.toFixed(2) + ' gross</span>'
-                        : '<span class="text-secondary">off</span>'));
-                    usdEl.innerHTML = parts.join(' · ');
-                    usdRow.style.display = '';
-                } else if (usdRow) {
-                    usdRow.style.display = 'none';
+                if (levelsBody && _levelCols.length) {
+                    const gateUsd = t.exit_gate_floor_usd != null
+                        ? parseFloat(t.exit_gate_floor_usd) : null;
+                    const money = {
+                        BE: '<span class="text-info">$0.00</span>',
+                        EX: gateUsd != null
+                            ? '<span class="text-warning">+$' + gateUsd.toFixed(2) + '</span>'
+                            : '<span class="text-secondary">—</span>',
+                        TP: targetUsd > 0
+                            ? '<span class="text-success">+$' + targetUsd.toFixed(2) + '</span>'
+                            : '<span class="text-secondary">off</span>',
+                        // The stop fires on GROSS: a stop is a spread
+                        // distance, not a fee.
+                        SL: stopUsd > 0
+                            ? '<span class="text-danger">−$' + stopUsd.toFixed(2) + '</span>'
+                            : '<span class="text-secondary">off</span>',
+                    };
+                    levelsBody.insertAdjacentHTML('beforeend',
+                        '<tr><td class="lvl-k">P&amp;L <span class="text-secondary">'
+                        + '(SL gross)</span></td>'
+                        + _levelCols.map(c => '<td>' + (money[c.key] || '—')
+                            + '</td>').join('') + '</tr>');
                 }
 
                 // Store entry time for age ticker

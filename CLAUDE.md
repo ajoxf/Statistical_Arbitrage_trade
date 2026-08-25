@@ -1067,6 +1067,67 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## "wanted" was a price nobody could trade at (2026-08-25, operator)
+
+"Something is still wrong with wanted." It was, and the arithmetic was
+not the part. On a SHORT the row read:
+
+    wanted 56.2400 · quoted 55.9300 · filled 55.8000
+
+56.24 is the MID. **No seller of the spread could ever have been filled
+there** — the best available was 55.93, the touch beside it, and the
+0.31 "crossing" is not a level the engine aimed at and missed: it is
+half a bid-ask, which is simply what a midpoint IS. The word promised a
+goal the number never was. Same family as the bare `x 2` and the bare
+fair value: the figures were right and the label made them unreadable.
+
+The columns now say what each number is — **MID / BEST / FILLED /
+CROSSING / SLIPPAGE** — and the mid's heading states in its tooltip that
+the statistics are measured on it and nobody fills there.
+
+## The frozen geometry, as a table (2026-08-25, operator)
+
+"Make this into a Table with rows and columns. Add a light coloured
+border to all the cells. The column headings could be TP, SL etc and
+values in the rows."
+
+Each LEVEL is a column and each reading of it a row, so the spread and
+the money it is worth sit one under the other under the same heading —
+which is how they are read. As three lines of `BE 55.18 · EX 55.68 · TP
+54.73 · SL 60.82` over `BE $0.00 · TP +$2.13 · SL -$10.04` the pairs
+were only findable by counting separators, and the P&L row was missing
+EX entirely so the counting did not even work.
+
+- **One column list drives both rows** (`_levelCols`), so they cannot
+  disagree about which columns exist. EX only appears when a gate floor
+  actually pushes it past BE.
+- **The hand-set marker moved to the HEADING** (`TP*` with a note under
+  the table). A badge inside the cell crowded the number it was about.
+- `.lvl-table` is local CSS, like `.pos-grid`: a blocked CDN must not
+  take the borders and the alignment away.
+
+Verified in Chromium: 5 columns x 2 rows on the levels table, 6 x 1 on
+the entry cost, every cell `1px solid`, and every row carrying exactly
+as many cells as there are headings.
+
+## The Entry box shows the live price (2026-08-25, operator)
+
+"Instead of 'blank' constantly update with the live price."
+
+As the **placeholder**, not the value. A real value in that field means
+ARM AT THIS LEVEL, and the whole point of leaving it blank is to fire at
+the next poll — so filling it in would silently turn "go now" into "wait
+for a level", which on a spread that has already ticked away may never
+trigger. The placeholder shows the live executable spread for the
+direction selected, updates on every tick, and Activate still means now.
+A **use live** link copies it into the box for nudging, which is the
+case where arming at that number IS what was wanted.
+
+`(blank=now)` came off the label at the same time — the placeholder says
+it better, and the label has to stay on one line beside the link. It
+wrapped onto two the moment the link went in, which is the fault the
+operator had just called out on Take Profit.
+
 ## A direction is a fact, not a statistic (2026-08-25, operator)
 
 "You have shorted the spread. High to Low. Why is it showing as 'long'
