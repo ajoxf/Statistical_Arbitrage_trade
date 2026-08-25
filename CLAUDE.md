@@ -1067,6 +1067,52 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## One multiplier, everywhere (2026-08-25, operator)
+
+"Yes, fix the leg B multiplier." The last holdouts from the sizing
+derivation: `ExitLadder` and `slippage.py` still turned a spread move
+into dollars with LEG A's `lots x contract_size`.
+
+`k = L_B x C_B` — leg B's quantity — because the hedge is sized so that
+`L_A x C_A = beta x L_B x C_B`. The two agree only at beta 1 with equal
+contract sizes, which is the one configuration this has ever run in;
+away from there every figure was out by exactly 1/beta:
+
+- the sigma take-profit (`f x |z| x sigma x k`) and the full-reversion
+  veto that can BLOCK an entry;
+- the BE/EX/TP/SL spread levels, so the displayed stop named a level
+  the dollar stop would not fire at;
+- a manual target's dollar value, which the viability test measures;
+- the entry-cost row's dollars.
+
+`_capital_at_risk` was wrong in a second way — it priced BOTH legs'
+notionals off leg A's units, so with different contract sizes the
+margin (and therefore every %-of-capital target and stop) was off even
+at beta 1. Each leg now uses its own.
+
+Two things worth keeping:
+
+- **`build_plan` publishes the `k` it used** (`spread_units`, plus
+  `leg_b_lots` / `contract_b`), and the levels, the manual target and
+  the slippage report all read it. Four places each deriving their own
+  multiplier is how they drifted apart in the first place.
+- **`slippage.spread_units` uses the lots that actually FILLED**, not
+  the lots requested — a partial hedge is a smaller pair. It falls back
+  to leg A when the asset declares no `fut_lot_size` (the common case,
+  and the old behaviour exactly) and when leg B did not fill at all,
+  because a zero there would price the whole entry cost at nothing.
+
+`_hedge_units` also takes the asset being traded now. It used to scan
+for the first ENABLED asset, which is the right answer only while one
+pair is configured.
+
+Pinned by the strong form rather than by restating the formula: move
+one leg, add the two legs' P&L the way `positions.update_position_pnl`
+does, and the pair must be down exactly `stop_usd` at the displayed
+stop — checked by moving leg A and leg B separately, at beta 2 with
+100/50 contract sizes. Ten of the thirteen new tests fail against the
+old code.
+
 ## "The Wanted value looks incorrect" (2026-08-25, operator)
 
 One reading on the in-position card:
@@ -2006,10 +2052,9 @@ parameterised over four contract pairs x four betas — it fails under
 the old rule for every case except the gold one.
 
 The same `k = L_B * C_B` is what turns a spread move into dollars.
-`costs.expected_capture` was CORRECTED 2026-08-11 (below); ExitLadder
-and slippage.py still use leg A's units (`spot_lots x contract`) —
-equal at beta 1 with equal contracts, off by 1/beta otherwise, and
-still outstanding.
+`costs.expected_capture` was corrected 2026-08-11 (below) and
+**ExitLadder and slippage.py were the other half, corrected 2026-08-25**
+(see "One multiplier, everywhere").
 
 **The edge filter measured capture on the wrong leg** (2026-08-11,
 operator: "Why is the Edge so low?"). On GER40/EU50 at beta 0.2483 the

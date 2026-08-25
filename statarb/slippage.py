@@ -37,6 +37,32 @@ fills, so the sign is kept rather than taken in absolute value.
 from .models import OrderSide, SignalType
 
 
+def spread_units(config, asset_key, spot_trade, futures_trade):
+    """Dollars per 1.00 of spread, for pricing this pair's report.
+
+    LEG B's quantity, from the lots that actually FILLED. The spread is
+    `futures - beta * spot`, so the pair's dollar cost is
+    `fut_slip x units_b + spot_slip x units_a`; the hedge is sized so
+    `units_a = beta x units_b`, which collapses that to
+    `spread_slip x units_b` exactly. Leg A's units were used here, and
+    they agree only at beta 1 with equal contract sizes — the one
+    configuration this has ever run in. Away from there every dollar
+    figure on the entry-cost row was out by 1/beta.
+
+    Falls back to leg A when the asset declares no separate futures
+    contract size, which is the common case and the old behaviour.
+    """
+    if config is None:
+        return 0.0
+    asset = (getattr(config, 'ASSETS', None) or {}).get(asset_key) or {}
+    contract_a = float(asset.get('lot_size', 0.0) or 0.0)
+    contract_b = float(asset.get('fut_lot_size') or contract_a or 0.0)
+    lots_b = getattr(futures_trade, 'lot_size', None)
+    if not lots_b or not contract_b:
+        return (getattr(spot_trade, 'lot_size', 0.0) or 0.0) * contract_a
+    return lots_b * contract_b
+
+
 def touch(bid, ask, side):
     """The price we must actually pay/receive to trade NOW."""
     if bid is None or ask is None:

@@ -68,15 +68,14 @@ class PaperExecutor:
 
     def _slippage(self, asset_key, signal_type, closing, spot_trade,
                   futures_trade, reference):
-        contract = 0.0
         beta = 1.0
+        units = 0.0
         if self.config is not None:
-            contract = float((self.config.ASSETS.get(asset_key) or {})
-                             .get('lot_size', 0.0) or 0.0)
             beta = self.config.TRADING.get('HEDGE_RATIO', 1.0)
+            units = slippage.spread_units(self.config, asset_key,
+                                          spot_trade, futures_trade)
         report = slippage.build(
-            signal_type, closing, beta,
-            (spot_trade.lot_size or 0.0) * contract,
+            signal_type, closing, beta, units,
             spot_trade.side, futures_trade.side, reference,
             spot_trade.executed_price, futures_trade.executed_price,
             spot_trade.symbol, futures_trade.symbol)
@@ -1148,18 +1147,25 @@ class Coordinator:
             # operator's (2026-08-07: a hand-placed trade with a 2.12
             # spread target — $212 against $59 of cost — was refused
             # because a full reversion of the CURRENT z was worth $15).
+            asset_cfg = self.config.ASSETS.get(asset_key) or {}
             manual_target = None
             if manual and exit_spread is not None \
                     and market_data.get('spread') is not None:
+                # In LEG B's units, the same multiplier the plan and the
+                # levels use. Leg A's is right only at beta 1 with equal
+                # contract sizes.
+                contract_b, lots_b = self.exit_ladder._hedge_units(
+                    lots, contract_size, asset_cfg)
                 manual_target = (abs(market_data['spread']
                                      - float(exit_spread))
-                                 * lots * contract_size)
+                                 * (sizing.spread_units(lots_b, contract_b)
+                                    or lots * contract_size))
             plan = self.exit_ladder.build_plan(
                 lots, contract_size,
                 stats.z if warm else None,
                 stats.sigma if warm else None,
                 stats.half_life_sec if stats else None, market_data,
-                manual_target_usd=manual_target)
+                manual_target_usd=manual_target, asset_cfg=asset_cfg)
             if plan is None:
                 self._plan_refusal = self.exit_ladder.last_refusal
                 return None
@@ -1227,8 +1233,8 @@ class Coordinator:
             anchor, fill_spread = self.levels_anchor(position, market_data)
             plan['fill_spread'] = fill_spread
             plan['levels'] = self.exit_ladder.spread_levels(
-                plan, anchor,
-                spot_trade.lot_size * contract_size, signal_type)
+                plan, anchor, plan.get('spread_units')
+                or spot_trade.lot_size * contract_size, signal_type)
         position.exit_plan = plan
         self.data_logger.save_position_state(position)
         self.risk_manager.record_trade(asset_key, lots=spot_trade.lot_size)

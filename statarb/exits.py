@@ -33,6 +33,7 @@ import logging
 
 from . import costs as costs_mod
 from . import expectancy
+from . import sizing
 from .models import SignalType
 
 
@@ -83,35 +84,50 @@ class ExitLadder:
 
     # ------------------------------------------------------------------
 
-    def _capital_at_risk(self, lots, contract_size, market_data):
+    def _capital_at_risk(self, lots, contract_size, market_data,
+                         units_b=None):
         """Margin the pair ties up: each leg's notional over THAT
         account's leverage, plus an m2m buffer. The two accounts can be
         levered differently (100x spot, 500x futures), so the legs are
         divided separately; SPOT/FUT_LEVERAGE fall back to the single
         LEVERAGE knob. None when no leverage is set at all — the
-        %-capital forms are then disabled."""
+        %-capital forms are then disabled.
+
+        `units_b` is leg B's own quantity (`L_B x C_B`). It defaults to
+        leg A's, which is right only at beta 1 with equal contract
+        sizes — the one configuration this has ever run in.
+        """
         exits = self.config.EXITS
         shared = exits.get('LEVERAGE', 0) or 0
         spot_lev = exits.get('SPOT_LEVERAGE', 0) or shared
         fut_lev = exits.get('FUT_LEVERAGE', 0) or shared
         if not (spot_lev and fut_lev):
             return None
-        oz = lots * contract_size
-        margin = (market_data['spot_price'] * oz / spot_lev
-                  + market_data['futures_price'] * oz / fut_lev)
+        units_a = lots * contract_size
+        if not units_b:
+            units_b = units_a
+        margin = (market_data['spot_price'] * units_a / spot_lev
+                  + market_data['futures_price'] * units_b / fut_lev)
         buffer = 1 + exits.get('M2M_BUFFER_PCT', 0) / 100
         return margin * buffer
 
-    def _hedge_units(self, lots, contract_size):
-        """(contract size, lots) for Leg B, from the ASSET config.
+    def _hedge_units(self, lots, contract_size, asset_cfg=None):
+        """(contract size, lots) for Leg B.
 
         The ladder is handed only Leg A's size, but the round trip pays
-        Leg B's bid-ask on Leg B's units. Falls back to Leg A's when
-        the asset has no separate futures contract size — which is the
-        common case and exactly the old behaviour.
+        Leg B's bid-ask on Leg B's units, and a spread move is worth
+        `L_B x C_B` per point. Falls back to Leg A's contract size when
+        the asset has no separate futures one — the common case, and
+        exactly the old behaviour.
+
+        `asset_cfg` is the asset actually being traded. Without it this
+        scans for the first ENABLED asset, which is the right answer
+        only while one pair is configured.
         """
-        asset = next((a for a in self.config.ASSETS.values()
-                      if a.get('enabled', True)), {})
+        asset = asset_cfg
+        if asset is None:
+            asset = next((a for a in self.config.ASSETS.values()
+                          if a.get('enabled', True)), {})
         contract_b = asset.get('fut_lot_size') or contract_size
         beta = self.config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0
         lots_b = (lots * contract_size / (beta * contract_b)
@@ -119,7 +135,7 @@ class ExitLadder:
         return contract_b, lots_b
 
     def build_plan(self, lots, contract_size, entry_z, sigma, half_life_sec,
-                   market_data, manual_target_usd=None):
+                   market_data, manual_target_usd=None, asset_cfg=None):
         """Compute the frozen exit levels. Returns None when the trade
         can never win (cost floor above plausible full reversion) —
         the entry must then be blocked, and `last_refusal` says why.
@@ -132,22 +148,31 @@ class ExitLadder:
         """
         self.last_refusal = None
         exits = self.config.EXITS
-        oz = lots * contract_size
-        capital = self._capital_at_risk(lots, contract_size, market_data)
+
+        # Leg B is priced in its own units. Derived here rather than
+        # passed in so every caller of build_plan gets it right.
+        contract_b, lots_b = self._hedge_units(lots, contract_size, asset_cfg)
+        # `k` — dollars per 1.00 of spread. From the hedge derivation
+        # (L_A x C_A = beta x L_B x C_B) the pair's P&L for a spread
+        # move is leg B's quantity, NOT leg A's. They coincide only at
+        # beta 1 with equal contract sizes, which is the one setup this
+        # has been run in; away from there every figure below was out
+        # by exactly 1/beta. `costs.expected_capture` was corrected to
+        # leg B on 2026-08-11 and this was the other half.
+        k = sizing.spread_units(lots_b, contract_b) or (lots * contract_size)
+        capital = self._capital_at_risk(lots, contract_size, market_data,
+                                        units_b=k)
 
         # Take-profit precedence: sigma-fraction > %-capital > fixed $
         tp = None
         if exits.get('USE_SIGMA_TARGET', True) and sigma and entry_z:
             tp = self.config.COSTS['TARGET_FRACTION'] * abs(entry_z) \
-                * sigma * oz
+                * sigma * k
         elif exits.get('TP_CAPITAL_PCT', 0) > 0 and capital:
             tp = exits['TP_CAPITAL_PCT'] / 100 * capital
         elif exits.get('TP_USD_PER_LOT', 0) > 0:
             tp = exits['TP_USD_PER_LOT'] * lots
 
-        # Leg B is priced in its own units. Derived here rather than
-        # passed in so every caller of build_plan gets it right.
-        contract_b, lots_b = self._hedge_units(lots, contract_size)
         rt_cost = costs_mod.round_trip_cost(
             market_data, lots, contract_size, self.config.COSTS,
             lots_b=lots_b, contract_b=contract_b)
@@ -167,7 +192,7 @@ class ExitLadder:
         elif tp is not None:
             floor = exits.get('COST_FLOOR_MULT', 1.0) * rt_cost
             tp = max(tp, floor)
-            plausible = abs(entry_z or 0) * (sigma or 0) * oz
+            plausible = abs(entry_z or 0) * (sigma or 0) * k
             if plausible > 0 and tp > plausible:
                 self.last_refusal = (
                     f"a full reversion of the current z is only worth "
@@ -219,7 +244,7 @@ class ExitLadder:
         # instead of leaving the operator to do it. Reference only — no
         # gate reads it (see EV_MIN_USD below for the opt-in one).
         expectancy_block = expectancy.trade_expectancy(
-            tp, stop, rt_cost, entry_z, sigma, oz)
+            tp, stop, rt_cost, entry_z, sigma, k)
 
         plan = {
             'tp_usd': tp,
@@ -229,6 +254,13 @@ class ExitLadder:
             'entry_z': entry_z,
             'entry_sigma': sigma,
             'rt_cost_usd': rt_cost,
+            # Dollars per 1.00 of spread, leg B's units. Published so
+            # the levels, the manual target and the slippage report all
+            # translate spread<->dollars with the SAME multiplier the
+            # plan itself was built on, rather than each deriving one.
+            'spread_units': k,
+            'leg_b_lots': lots_b,
+            'contract_b': contract_b,
             'capital_at_risk': capital,
             'half_life_sec': half_life_sec,
             'expectancy': expectancy_block,

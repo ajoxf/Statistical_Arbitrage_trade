@@ -417,12 +417,11 @@ class PairExecutor:
         market_data snapshot the DECISION was made on — not a fresh
         tick, which would measure only the last few milliseconds and
         miss the poll interval entirely."""
-        contract = float((self.config.ASSETS.get(asset_key) or {})
-                         .get('lot_size', 0.0) or 0.0)
         report = slippage.build(
             signal_type, closing,
             self.config.TRADING.get('HEDGE_RATIO', 1.0),
-            (spot_trade.lot_size or 0.0) * contract,
+            slippage.spread_units(self.config, asset_key, spot_trade,
+                                  futures_trade),
             spot_side, futures_side, reference,
             spot_trade.executed_price, futures_trade.executed_price,
             spot_trade.symbol, futures_trade.symbol)
