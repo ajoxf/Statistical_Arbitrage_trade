@@ -668,8 +668,10 @@
                     <div class="pos-grid">
                         <div class="pk">Entry Z</div>
                         <div class="pv"><span id="position-entry-z">-</span></div>
-                        <div class="pk">P&amp;L</div>
+                        <div class="pk" title="Marked at the MID of both books, which is the basis the whole dollar ladder uses. A short is bought back on the LONG side, so what you would actually book is the figure beneath — they differ by the exit half of the bid-ask.">P&amp;L</div>
                         <div class="pv"><span id="position-pnl">-</span></div>
+                        <div class="pk" title="What closing right now would actually book: a short is bought back at the LONG spread, a long is sold at the SHORT spread. This is the money you can take; the mark above is at the mid.">Close now</div>
+                        <div class="pv"><span id="position-pnl-now">-</span></div>
 
                         <div class="pk">Leg A entry</div>
                         <div class="pv"><span id="position-entry-spot">-</span><span
@@ -2244,6 +2246,17 @@
         if (data.position_pnl != null && currentOpenTrade) {
             currentOpenTrade.unrealized_pnl = data.position_pnl;
             renderPositionPnl(parseFloat(data.position_pnl));
+            // The tick carries only the mid mark, so the exit-side
+            // figure is recomputed here from the touches — otherwise it
+            // would freeze between polls while the row above it ticks.
+            const fill = currentOpenTrade.entry_slippage
+                && currentOpenTrade.entry_slippage.executed_spread;
+            const k = currentOpenTrade.spread_units;
+            const x = window.__execSpreads || {};
+            const short = currentOpenTrade.position_type === 'SHORT';
+            const out = short ? x.long : x.short;   // closed the other way
+            renderClosableNow(
+                (fill != null && k && out != null) ? (fill - out) * k : null);
         }
         lastUpdateTime = Date.now();
         // Feed just arrived — reset tick age display immediately
@@ -4372,6 +4385,24 @@ function updateFilterStatus(elementId, passed, value) {
     // Render the open position's net P&L to the card + top bar. Shared by
     // updatePosition() (trade/poll events) and the per-tick socket handler, so
     // the P&L tracks the spread on every tick instead of lagging it.
+    // What closing RIGHT NOW would book. The mark above is at the MID;
+    // a short is bought back on the LONG side, so the two differ by the
+    // exit half of the bid-ask — and only this one is money you can
+    // take. Operator, 2026-08-25: "How is the trade showing a profit if
+    // the price (Long Spread) is more than the BE Price?"
+    // Hidden, never zeroed, when it cannot be measured.
+    function renderClosableNow(pnl) {
+        const el = document.getElementById('position-pnl-now');
+        if (!el) return;
+        if (pnl == null || isNaN(pnl)) {
+            el.textContent = '—';
+            el.className = 'text-secondary';
+            return;
+        }
+        el.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+        el.className = pnl >= 0 ? 'price-up' : 'price-down';
+    }
+
     function renderPositionPnl(pnl) {
         const pnlEl = document.getElementById('position-pnl');
         if (!pnlEl) return;
@@ -4431,6 +4462,8 @@ function updateFilterStatus(elementId, passed, value) {
 
                 const netPnl = t.unrealized_pnl != null ? parseFloat(t.unrealized_pnl) : null;
                 renderPositionPnl(netPnl);
+                renderClosableNow(t.pnl_if_closed_now != null
+                    ? parseFloat(t.pnl_if_closed_now) : null);
 
                 const spotEntryEl = document.getElementById('position-entry-spot');
                 if (spotEntryEl) spotEntryEl.textContent = t.entry_spot_price ? '$' + parseFloat(t.entry_spot_price).toFixed(2) : '-';

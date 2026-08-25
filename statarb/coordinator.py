@@ -1246,6 +1246,16 @@ class Coordinator:
             # and entry_mu are measured on.
             anchor, fill_spread = self.levels_anchor(position, market_data)
             plan['fill_spread'] = fill_spread
+            # A MANUAL trade is governed by the card, so the card must
+            # not display levels that cannot fire. Since this morning
+            # the engine's dollar stop, reversion gate, max-hold and
+            # time stop are all off for one — and the in-position card
+            # was still drawing the engine's SL and the "stop from
+            # target / RR" line beside it. Live 2026-08-25: a manual
+            # short with an EMPTY Stop Loss box showed a stop at 58.50.
+            # A stop that will never fire is worse than no stop shown.
+            if (plan.get('source') or '').upper() == 'MANUAL':
+                self._restate_manual_risk(plan, fill_spread)
             # Re-price the operator's target off the FILL. build_plan
             # runs before the order exists, so it could only measure
             # from the mid — but `tp_usd` is compared against P&L, and
@@ -1357,6 +1367,17 @@ class Coordinator:
                 'unrealized_pnl': position.unrealized_pnl,
                 'net_pnl': (position.unrealized_pnl
                             - plan.get('rt_cost_usd', 0.0)),
+                # What closing right now would actually book. The mark
+                # above is at the MID; a short is bought back on the
+                # LONG side, so the two differ by half a round turn and
+                # only this one is money you can take.
+                # k, so the browser can recompute the exit-side figure
+                # between polls instead of freezing it.
+                'spread_units': plan.get('spread_units'),
+                'pnl_if_closed_now': self.realisable_pnl(
+                    position, plan,
+                    (self.active_assets.get(position.asset) or {})
+                    .get('last_data') or {}),
                 'age': f"{age.total_seconds() / 3600:.1f}h",
                 'age_sec': age.total_seconds(),
                 'entry_spot': position.spot_trade.executed_price,
@@ -3230,6 +3251,66 @@ class Coordinator:
             if not leg.ping():
                 leg.close()
                 leg.connect()
+
+    @staticmethod
+    def realisable_pnl(position, plan, market_data):
+        """What closing RIGHT NOW would actually book.
+
+        `unrealized_pnl` is marked at the MID, which is the convention
+        the whole dollar ladder is built on — but a short is bought
+        back at the LONG spread, so the mid mark is better than the
+        exit by half a round turn. Live 2026-08-25 a short filled at
+        54.98 showed +$0.02 against a long spread of 55.27, where
+        closing books -$0.58: "How is the trade showing a profit if the
+        price (Long Spread) is more than the BE Price?"
+
+        Both numbers are true about different things; only this one is
+        money you can take, so it belongs on the card beside the other.
+        None when the fill or the touches are not known — an
+        unmeasurable figure must not render as zero.
+        """
+        fill = (plan or {}).get('fill_spread')
+        units = (plan or {}).get('spread_units')
+        if fill is None or not units:
+            return None
+        exit_spread = marketdata.executable_spread(
+            market_data, position.signal_type, closing=True)
+        if exit_spread is None:
+            return None
+        # A SHORT sold the spread and buys it back, so it profits as the
+        # spread FALLS; a LONG is the mirror. Same `d` as
+        # ExitLadder.spread_levels — getting it backwards would report
+        # every long's loss as a gain.
+        d = -1.0 if position.signal_type == SignalType.SELL_BASIS else 1.0
+        return d * (exit_spread - fill) * units
+
+    @staticmethod
+    def _restate_manual_risk(plan, fill_spread):
+        """Replace the engine's risk figures with the operator's own.
+
+        `stop_usd` drives the SL level on the card, the Target/Stop row
+        and `breakeven_win_rate`. On a manual trade the engine's stop
+        does not fire, so all three must describe the operator's Stop
+        Loss — or say there is none.
+
+        The gate floor goes to zero for the same reason: EX is where a
+        REVERSION exit releases, and a manual trade has no reversion
+        rung, so the column must not appear.
+        """
+        plan['gate_floor_usd'] = 0.0
+        level = plan.get('manual_stop_spread')
+        units = plan.get('spread_units')
+        if level is not None and fill_spread is not None and units:
+            plan['stop_usd'] = abs(fill_spread - float(level)) * units
+            plan['stop_source'] = f"your Stop Loss at {float(level):g}"
+        else:
+            plan['stop_usd'] = 0.0
+            plan['stop_source'] = ('no Stop Loss set — only your target, '
+                                   'the overnight rule or you can close this')
+        tp, stop = plan.get('tp_usd'), plan['stop_usd']
+        plan['breakeven_win_rate'] = (stop / (tp + stop)
+                                      if tp and stop and (tp + stop) else None)
+        return plan
 
     @staticmethod
     def levels_anchor(position, market_data):

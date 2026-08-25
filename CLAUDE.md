@@ -1067,6 +1067,47 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## "Why is it in profit above break-even?" (2026-08-25, operator)
+
+A short filled at 54.98, long spread 55.27, break-even 54.38, and the
+card reading **P&L +$0.02**. The operator: "How is the trade showing a
+profit if the price (Long Spread) is more than the BE Price?"
+
+It was not in profit. Two faults behind one reading.
+
+**The P&L is marked at the MID.** `update_position_pnl` marks against
+`market_data['spot_price']` / `['futures_price']`, both midpoints — the
+basis the whole dollar ladder is built on, and the basis the engine's
+DOLLAR_STOP fires from. But a short is bought back on the LONG side:
+
+    mid mark      (54.98 - 54.97) x 2 = +$0.02
+    close now     (54.98 - 55.27) x 2 = -$0.58
+    gap           half the round turn, 0.30 x 2 = $0.60
+
+Both are true about different things and only one is money you can
+take, so `Coordinator.realisable_pnl` publishes the second and the card
+shows it as **Close now** under the P&L. The mid mark stays as the
+engine's internal basis: changing it would move when the dollar stop
+fires on every signal trade, which is a bigger decision than a display.
+Note this also means our P&L and MT5's own differ by that half turn —
+MT5 marks each leg at its closing touch.
+
+`realisable_pnl` signs by direction (`d = -1` for SELL_BASIS, the same
+`d` as `spread_levels`). The first cut did not, and the test written
+alongside it caught a LONG's loss being reported as a gain.
+
+**And the card was still drawing the ENGINE's risk on a MANUAL trade.**
+Since that morning the engine's stop, gate, max-hold and time stop are
+off for a hand-placed trade — but `spread_levels` still read
+`plan['stop_usd']` and `gate_floor_usd`, so the card showed SL 58.50,
+an EX column and "stop from target $2.11 / RR 0.3" on a position whose
+Stop Loss box was EMPTY. **A stop that will never fire is worse than no
+stop shown.** `Coordinator._restate_manual_risk` replaces those with
+the operator's own before the levels are built: their Stop Loss priced
+from the fill, or `stop_usd = 0` and "no Stop Loss set" when there is
+none; `gate_floor_usd = 0` so the EX column disappears;
+`breakeven_win_rate` None when there is no stop to compute it from.
+
 ## The two books (2026-08-25, operator)
 
 "Stop manual trades feeding the breakers and streak reducer. We should

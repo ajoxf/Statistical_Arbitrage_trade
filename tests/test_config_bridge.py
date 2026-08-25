@@ -93,9 +93,13 @@ def test_manual_spread_trade_via_control_file(tmp_path, monkeypatch,
     position = next(iter(active.values()))
     assert position.signal_type.value == 'SELL_BASIS'
     assert position.spot_trade.lot_size == 1.0
-    # Exit plan attached even without warm stats (fixed stop armed)
-    assert position.exit_plan['stop_usd'] > 0
+    # An exit plan is attached even without warm stats...
     assert position.exit_plan['source'] == 'MANUAL'
+    # ...but no Stop Loss was named on the card, and since 2026-08-25 a
+    # manual trade is governed by the card alone — so there is NO stop,
+    # and the plan says so rather than showing the engine's.
+    assert position.exit_plan['stop_usd'] == 0.0
+    assert 'no Stop Loss set' in position.exit_plan['stop_source']
 
     # Same command ts again -> no duplicate position
     coordinator._control_mtime = 0
