@@ -210,3 +210,34 @@ def test_the_coordinator_freezes_whether_the_gate_started_home():
     outside = ladder._reversion_home({'entry_mu': None}, 3.2, 55.0,
                                      SignalType.SELL_BASIS)
     assert inside is True and outside is False
+
+
+# --- the z fallback is not sound for a MANUAL row ---------------------
+
+def test_a_manual_row_with_no_recorded_direction_shows_a_dash():
+    """The z-sign fallback assumes the entry gates chose the direction,
+    which is true for a SIGNAL entry (|z| >= ENTRY_Z, sign decides) and
+    false for a hand-placed one — the operator picks. Live 2026-08-25:
+    a manual row badged SHORT at "Z 2.0" whose spread fell 0.90 (the
+    profitable direction for a short) booked -$6.10, which reconciles
+    exactly as a LONG."""
+    assert webapi.position_type(
+        {'source': 'MANUAL', 'entry_z': 2.0}) is None
+    assert webapi.position_type(
+        {'source': 'MANUAL', 'entry_z': -2.0}) is None
+
+
+def test_a_manual_row_that_recorded_its_direction_is_believed():
+    assert webapi.position_type(
+        {'source': 'MANUAL', 'entry_z': 2.0,
+         'signal_type': 'BUY_BASIS'}) == 'LONG'
+    assert webapi.position_type(
+        {'source': 'MANUAL', 'entry_z': -2.0,
+         'signal_type': 'SELL_BASIS'}) == 'SHORT'
+
+
+def test_a_signal_row_keeps_the_fallback():
+    """It IS the right inference there, and old rows depend on it."""
+    assert webapi.position_type({'entry_z': 2.0}) == 'SHORT'
+    assert webapi.position_type(
+        {'source': 'SIGNAL', 'entry_z': -2.0}) == 'LONG'

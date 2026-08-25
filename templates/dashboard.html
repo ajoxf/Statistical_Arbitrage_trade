@@ -4621,13 +4621,40 @@ function updateFilterStatus(elementId, passed, value) {
                            ? 'text-warning' : 'text-secondary');
                 }
 
-                if (pnlBarRow && pnlBar && pnlZeroMark && targetUsd > 0 && stopUsd > 0 && pnl !== null) {
-                    const span    = targetUsd + stopUsd;
-                    const zeroPct = stopUsd / span * 100;
-                    const pnlPct  = Math.max(0, Math.min(100, (pnl + stopUsd) / span * 100));
+                // Where this trade sits between its stop and its target,
+                // with the tick marking break-even.
+                //
+                // It used to require BOTH, so it vanished the moment a
+                // manual trade with no Stop Loss stopped being given the
+                // engine's phantom RR one (operator, 2026-08-25: "The in
+                // position PnL progress bar is missing. Entered a Manual
+                // trade with 'Always' setup"). A missing level is not a
+                // reason to withhold the bar — it only means there is no
+                // measured distance on that side, so the OTHER level
+                // sets the scale for both and the bar reads "how far
+                // from break-even, in target-widths". The tooltip says
+                // which of the two is a real level and which is scale.
+                const upScale   = targetUsd > 0 ? targetUsd : stopUsd;
+                const downScale = stopUsd   > 0 ? stopUsd   : targetUsd;
+                if (pnlBarRow && pnlBar && pnlZeroMark
+                        && upScale > 0 && downScale > 0 && pnl !== null) {
+                    const span    = upScale + downScale;
+                    const zeroPct = downScale / span * 100;
+                    const pnlPct  = Math.max(0, Math.min(100, (pnl + downScale) / span * 100));
                     pnlZeroMark.style.left      = zeroPct.toFixed(1) + '%';
                     pnlBar.style.width           = pnlPct.toFixed(1) + '%';
                     pnlBar.style.backgroundColor = pnl >= 0 ? '#198754' : '#dc3545';
+                    pnlBarRow.title = (targetUsd > 0 && stopUsd > 0)
+                        ? 'P&L between the stop (-$' + stopUsd.toFixed(2)
+                          + ') and the target (+$' + targetUsd.toFixed(2)
+                          + '); the tick is break-even.'
+                        : (targetUsd > 0
+                           ? 'P&L against the +$' + targetUsd.toFixed(2)
+                             + ' target. No stop is set, so the same width'
+                             + ' scales the losing side — it is not a stop.'
+                           : 'P&L against the -$' + stopUsd.toFixed(2)
+                             + ' stop. No target is set, so the same width'
+                             + ' scales the winning side.');
                     pnlBarRow.style.display = '';
                 } else if (pnlBarRow) {
                     pnlBarRow.style.display = 'none';

@@ -2766,3 +2766,23 @@ def test_the_manual_entry_box_prefills_with_the_live_price(client):
     # ...and "clear" is there, because an empty box is still how you say
     # "go now" rather than "wait for this level".
     assert 'id="manual-entry-clear"' in page
+
+
+def test_the_pnl_bar_survives_a_trade_with_only_one_level(client):
+    """Operator, 2026-08-25: "The in position PnL progress bar is
+    missing. Entered a Manual trade with 'Always' setup."
+
+    It required BOTH a target and a stop, so it vanished the moment a
+    manual trade with an empty Stop Loss box stopped being handed the
+    engine's phantom RR stop. A missing level is not a reason to
+    withhold the bar — the level that DOES exist sets the scale for
+    both sides, and the tooltip says which side is a real level.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert 'const upScale   = targetUsd > 0 ? targetUsd : stopUsd;' in page
+    assert 'const downScale = stopUsd   > 0 ? stopUsd   : targetUsd;' in page
+    # The old guard is gone — it is what hid the bar.
+    assert 'targetUsd > 0 && stopUsd > 0 && pnl !== null' not in page
+    assert 'upScale > 0 && downScale > 0 && pnl !== null' in page
+    # A mirrored scale must never be read as a stop that will fire.
+    assert 'it is not a stop' in page

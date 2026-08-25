@@ -351,8 +351,15 @@ def position_type(row):
         return 'SHORT'
     if signal == 'BUY_BASIS':
         return 'LONG'
+    # The z fallback is only sound for a SIGNAL entry, where the gates
+    # guarantee |z| >= ENTRY_Z and the direction follows its sign. A
+    # MANUAL entry has no z requirement at all — the operator picks the
+    # direction — so a hand-placed long at z = +2.0 reads as SHORT.
+    # Live 2026-08-25: a manual row badged SHORT whose spread fell 0.90
+    # (the profitable direction for a short) booked -$6.10, which
+    # reconciles exactly as a LONG.
     entry_z = row.get('entry_z')
-    if entry_z:
+    if entry_z and trade_source(row) != 'MANUAL':
         return 'SHORT' if entry_z > 0 else 'LONG'
     return None
 
