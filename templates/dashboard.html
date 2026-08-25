@@ -3593,8 +3593,15 @@
 
         // Position Δ Spread — how far the spread has moved since entry, colored
         // by whether that move is favorable for the current direction.
-        //   LONG  profits when spread falls → favorable when Δ < 0
-        //   SHORT profits when spread rises → favorable when Δ > 0
+        //   SHORT (SELL_BASIS) sold the spread → profits when it FALLS
+        //   LONG  (BUY_BASIS)  is the mirror   → profits when it RISES
+        // This read the other way round until 2026-08-25, so a profitable
+        // short's Δ rendered red and a losing one green. It is the engine's
+        // own `d` (-1 for SELL_BASIS) and the same inversion that was found
+        // in the Analysis journal's Δ-captured column the same day — so the
+        // direction now comes from the engine's published `favorable`
+        // ('down'/'up', from ExitLadder.spread_levels) wherever it is
+        // available, rather than from a second copy of the rule here.
         // Live-updates every tick (data.spread) without needing a new payload.
         const deltaEl = document.getElementById('position-spread-delta');
         if (deltaEl) {
@@ -3603,8 +3610,11 @@
                 const delta = spread - es;
                 const sign = delta >= 0 ? '+' : '';
                 deltaEl.textContent = sign + delta.toFixed(2);
-                const favorable = (currentPosition.type === 'LONG' && delta < 0)
-                               || (currentPosition.type === 'SHORT' && delta > 0);
+                const lv = (currentOpenTrade || {}).spread_levels || {};
+                const wantsDown = lv.favorable
+                    ? lv.favorable === 'down'
+                    : currentPosition.type === 'SHORT';
+                const favorable = wantsDown ? delta < 0 : delta > 0;
                 deltaEl.className = (delta === 0) ? '' : (favorable ? 'price-up' : 'price-down');
             } else {
                 deltaEl.textContent = '-';
@@ -4677,7 +4687,15 @@ function updateFilterStatus(elementId, passed, value) {
                 }
 
                 // Store entry time for age ticker
-                _positionEntryTime = t.entry_time ? new Date(t.entry_time + 'Z') : null;
+                // From the AGE, not from a timestamp. `entry_time` was
+                // never published for an open position, so Age and
+                // Remaining read "-" for the life of every trade — and
+                // the engine stamps entry_time with datetime.now(), a
+                // LOCAL time that appending 'Z' would misread by the
+                // box's UTC offset. age_seconds needs neither.
+                _positionEntryTime = (t.age_seconds != null)
+                    ? new Date(Date.now() - parseFloat(t.age_seconds) * 1000)
+                    : (t.entry_time ? new Date(t.entry_time + 'Z') : null);
 
                 // Max Hold display
                 const mhRow  = document.getElementById('position-max-hold-row');

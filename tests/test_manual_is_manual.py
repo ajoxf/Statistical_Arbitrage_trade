@@ -201,3 +201,45 @@ def test_a_manual_entry_is_never_vetoed(config):
     assert ladder.build_plan(0.02, 100, 3.0, 0.001, 600, market) is None
     assert ladder.build_plan(0.02, 100, 3.0, 0.001, 600, market,
                              manual=True) is not None
+
+
+# --- the card shows only what can fire (2026-08-25, second sighting) ---
+
+def test_reprice_does_not_put_the_rr_stop_back_on_a_manual_trade():
+    """Live card: a hand-set target of $1.89 rendered "SL 58.53 /
+    -$6.30 / stop from target $1.89 / RR 0.3 / needs 77% of trades to
+    win" on a trade whose Stop Loss box was empty.
+
+    `_restate_manual_risk` had run — and then `reprice_target` re-ran
+    `_choose_stop`, which re-derived tp/RR and undid it. Order matters:
+    the operator's risk is restated LAST.
+    """
+    from statarb.coordinator import Coordinator
+    from statarb.exits import ExitLadder
+
+    fill, k = 55.38, 2.0
+    plan = {'source': 'MANUAL', 'lots': 0.02, 'spread_units': k,
+            'manual_exit_spread': 54.435, 'rt_cost_usd': 1.24,
+            'capital_at_risk': 1000.0, 'entry_z': 1.276,
+            'entry_sigma': 0.2, 'tp_usd': 1.89, 'stop_usd': 6.30,
+            'stop_source': 'target $1.89 / RR 0.3'}
+
+    cfg = type('C', (), {'EXITS': {'RR': 0.3, 'STOP_USD_PER_LOT': 0.0,
+                                   'STOP_CAPITAL_PCT': 0.0}})()
+    ladder = ExitLadder(cfg)
+    ladder.reprice_target(plan, abs(fill - 54.435) * k)
+    # The engine's RR stop is what it derives...
+    assert plan['stop_usd'] == pytest.approx(1.89 / 0.3, abs=0.01)
+
+    # ...and the operator's empty Stop Loss box is what governs.
+    Coordinator._restate_manual_risk(plan, fill)
+    assert plan['stop_usd'] == 0.0
+    assert 'RR' not in plan['stop_source']
+    assert plan['breakeven_win_rate'] is None
+    # The EV was priced off that stop too; with none armed it says so
+    # rather than standing on a barrier that cannot be reached.
+    assert plan['expectancy']['ev_usd'] is None
+    assert 'no dollar stop' in plan['expectancy']['reason']
+
+    levels = ExitLadder.spread_levels(plan, fill, k, SignalType.SELL_BASIS)
+    assert levels['sl'] is None or levels['sl'] == pytest.approx(fill)

@@ -493,10 +493,17 @@ def test_the_stop_is_re_derived_when_the_target_is_re_priced(coordinator):
     ).exit_plan
     # The target is measured from the FILL (19.90), not the 20.00 mid.
     assert plan['tp_usd'] == pytest.approx((19.90 - 15.0) * 100)
-    # ...and the stop follows it, rather than the mid-anchored figure.
-    assert plan['stop_usd'] == pytest.approx(plan['tp_usd'] / 0.3)
-    # The source names the target actually in force, so the two rows on
-    # the card can never disagree about which trade this is.
-    assert f"${plan['tp_usd']:,.2f}" in plan['stop_source']
-    assert plan['breakeven_win_rate'] == pytest.approx(
-        plan['stop_usd'] / (plan['tp_usd'] + plan['stop_usd']))
+    # ...and the RR stop it derives is then REPLACED by the operator's,
+    # which here is none at all — the Stop Loss box was empty.
+    #
+    # This assertion used to read `stop_usd == tp_usd / 0.3`, because
+    # `_restate_manual_risk` ran BEFORE `reprice_target` and the reprice
+    # put the engine's stop straight back. The ladder was warning "MANUAL
+    # trade has NO STOP LOSS" in the same breath as the plan carrying a
+    # $1,633 one. Live 2026-08-25 the card showed SL 58.53 / -$6.30 /
+    # "needs 77% of trades to win" on exactly that.
+    assert plan['stop_usd'] == 0.0
+    assert 'RR' not in plan['stop_source']
+    assert plan['breakeven_win_rate'] is None
+    # The stop-to-target relationship itself is unchanged and still
+    # tested — on `reprice_target` directly, in test_manual_is_manual.

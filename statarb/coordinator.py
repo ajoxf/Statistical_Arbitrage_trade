@@ -27,6 +27,7 @@ from .exits import ExitLadder, mark_fees, outcome_tag, overnight_exit
 from .legs import LocalLeg, RemoteLeg
 from . import carry
 from . import costs as costs_mod
+from . import expectancy
 from . import fairvalue
 from . import hedgeratio
 from . import marketdata
@@ -1282,16 +1283,6 @@ class Coordinator:
             # and entry_mu are measured on.
             anchor, fill_spread = self.levels_anchor(position, market_data)
             plan['fill_spread'] = fill_spread
-            # A MANUAL trade is governed by the card, so the card must
-            # not display levels that cannot fire. Since this morning
-            # the engine's dollar stop, reversion gate, max-hold and
-            # time stop are all off for one — and the in-position card
-            # was still drawing the engine's SL and the "stop from
-            # target / RR" line beside it. Live 2026-08-25: a manual
-            # short with an EMPTY Stop Loss box showed a stop at 58.50.
-            # A stop that will never fire is worse than no stop shown.
-            if (plan.get('source') or '').upper() == 'MANUAL':
-                self._restate_manual_risk(plan, fill_spread)
             # Re-price the operator's target off the FILL. build_plan
             # runs before the order exists, so it could only measure
             # from the mid — but `tp_usd` is compared against P&L, and
@@ -1314,6 +1305,24 @@ class Coordinator:
                     plan, abs(fill_spread
                               - float(plan['manual_exit_spread']))
                     * plan['spread_units'])
+            # A MANUAL trade is governed by the card, so the card must
+            # not display levels that cannot fire. The engine's dollar
+            # stop, reversion gate, max-hold and time stop are all off
+            # for one — and the in-position card was still drawing the
+            # engine's SL and the "stop from target / RR" line beside
+            # it. Live 2026-08-25: a manual short with an EMPTY Stop
+            # Loss box showed a stop at 58.50. A stop that will never
+            # fire is worse than no stop shown.
+            #
+            # AFTER reprice_target, which re-runs `_choose_stop` and
+            # would put the RR-derived stop straight back. Live
+            # 2026-08-25 (second sighting, same card): a hand-set
+            # target of $1.89 rendered "SL 58.53 / -$6.30 / stop from
+            # target $1.89 / RR 0.3 / needs 77% of trades to win" on a
+            # trade whose Stop Loss box was empty and whose only exits
+            # were that target and the operator.
+            if (plan.get('source') or '').upper() == 'MANUAL':
+                self._restate_manual_risk(plan, fill_spread)
             plan['levels'] = self.exit_ladder.spread_levels(
                 plan, anchor, plan.get('spread_units')
                 or spot_trade.lot_size * contract_size, signal_type)
@@ -1421,7 +1430,14 @@ class Coordinator:
                 'rt_cost_usd': plan.get('rt_cost_usd'),
                 'gate_floor_usd': plan.get('gate_floor_usd'),
                 'expectancy': plan.get('expectancy'),
-                'max_hold_sec': plan.get('max_hold_sec'),
+                # A MANUAL trade has no max-hold and no time stop, so
+                # the card must not show a clock counting down beside
+                # it. Same rule as the stop and the gate release: only
+                # what can actually fire is displayed. The plan keeps
+                # the value — the shadow tracker's horizon reads it.
+                'max_hold_sec': (
+                    None if (plan.get('source') or '').upper() == 'MANUAL'
+                    else plan.get('max_hold_sec')),
                 'half_life_min': ((plan.get('half_life_sec') or 0) / 60
                                   or None),
                 'notional': ((position.spot_trade.executed_price or 0)
@@ -3309,6 +3325,14 @@ class Coordinator:
         tp, stop = plan.get('tp_usd'), plan['stop_usd']
         plan['breakeven_win_rate'] = (stop / (tp + stop)
                                       if tp and stop and (tp + stop) else None)
+        # The EV block is priced off the stop too — its loss leg is
+        # `stop + cost`. Recomputed here rather than left as the
+        # engine's, because an EV standing on a barrier that cannot be
+        # reached is not a smaller EV, it is a different trade. With no
+        # stop it reports "no dollar stop is armed" and the row hides.
+        plan['expectancy'] = expectancy.trade_expectancy(
+            tp, stop, plan.get('rt_cost_usd', 0.0), plan.get('entry_z'),
+            plan.get('entry_sigma'), plan.get('spread_units'))
         return plan
 
     @staticmethod
