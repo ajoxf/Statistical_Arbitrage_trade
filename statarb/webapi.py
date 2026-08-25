@@ -852,11 +852,11 @@ def status_to_ui(status, config_raw):
             'entry_futures_price': open_position.get('entry_fut'),
             'entry_spread': levels.get('entry_spread'),
             'entry_zscore': open_position.get('entry_z'),
+            # Marked at the touches this position would CLOSE at, so
+            # this IS the money you can take, not a midpoint of it.
             'unrealized_pnl': open_position.get('unrealized_pnl'),
             'pnl_usd': open_position.get('net_pnl'),
-            # Money you can actually take right now, vs the mid mark
-            # above it. They differ by the exit half of the bid-ask.
-            'pnl_if_closed_now': open_position.get('pnl_if_closed_now'),
+            'mark_fees_usd': open_position.get('mark_fees_usd'),
             'spread_units': open_position.get('spread_units'),
             'peak_net_usd': open_position.get('peak_pnl'),
             'trough_net_usd': open_position.get('trough_pnl'),

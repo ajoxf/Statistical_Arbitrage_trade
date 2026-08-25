@@ -23,6 +23,8 @@ import threading
 import urllib.parse
 import urllib.request
 
+from .exits import mark_fees
+
 
 def _http_transport(url, payload, timeout=10):
     data = urllib.parse.urlencode(payload).encode('utf-8')
@@ -273,6 +275,9 @@ class TelegramNotifier:
         if spread is None:
             spread = market_data.get('spread',
                                      market_data.get('actual_basis'))
+        # The whole round trip: nothing has been crossed yet, so this
+        # is a forecast of both crossings plus commission. The EXIT
+        # message below charges only what is not already in the fills.
         fees = plan.get('rt_cost_usd', 0.0)
 
         rows = [
@@ -339,7 +344,7 @@ class TelegramNotifier:
         spot, fut = position.spot_trade, position.futures_trade
         R = self._row
         gross = position.realized_pnl or 0.0
-        fees = plan.get('rt_cost_usd', 0.0)
+        fees = mark_fees(plan)
         net = gross - fees
         oz = spot.lot_size * contract_size
         notional = ((spot.executed_price or 0)
@@ -387,7 +392,8 @@ class TelegramNotifier:
         rows += self._slippage_rows(position.exit_slippage)
         rows += ["",
                  R("Gross PnL", f"${gross:+,.2f}"),
-                 R("Est. Fees", f"-${fees:,.2f}  (round-trip)"),
+                 R("Fees", f"-${fees:,.2f}  (commission; both "
+                           f"crossings are in the fills above)"),
                  R("Net PnL", f"${net:+,.2f}  ({net_pct:+.3f}%)")]
 
         # What the round trip cost to EXECUTE, against what the model

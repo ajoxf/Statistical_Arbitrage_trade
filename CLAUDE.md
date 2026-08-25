@@ -1085,16 +1085,13 @@ DOLLAR_STOP fires from. But a short is bought back on the LONG side:
     gap           half the round turn, 0.30 x 2 = $0.60
 
 Both are true about different things and only one is money you can
-take, so `Coordinator.realisable_pnl` publishes the second and the card
-shows it as **Close now** under the P&L. The mid mark stays as the
-engine's internal basis: changing it would move when the dollar stop
-fires on every signal trade, which is a bigger decision than a display.
-Note this also means our P&L and MT5's own differ by that half turn —
-MT5 marks each leg at its closing touch.
-
-`realisable_pnl` signs by direction (`d = -1` for SELL_BASIS, the same
-`d` as `spread_levels`). The first cut did not, and the test written
-alongside it caught a LONG's loss being reported as a gain.
+take. The first answer put the second on the card as a **Close now**
+row and left the mark alone, on the grounds that moving it changes when
+the dollar stop fires on every signal trade. The operator settled it:
+**"Do not use Mid. I would like the exact - Bid and Ask Price and the
+right Bid and Ask values should be taken."** So the mark moved, the
+extra row is gone, and the P&L on the card IS what closing books. See
+the section below.
 
 **And the card was still drawing the ENGINE's risk on a MANUAL trade.**
 Since that morning the engine's stop, gate, max-hold and time stop are
@@ -1107,6 +1104,75 @@ the operator's own before the levels are built: their Stop Loss priced
 from the fill, or `stop_usd = 0` and "no Stop Loss set" when there is
 none; `gate_floor_usd = 0` so the EX column disappears;
 `breakeven_win_rate` None when there is no stop to compute it from.
+
+## "Do not use Mid" — the mark, and the fees that survive it
+
+The mark. `marketdata.closing_prices(md, signal_type)` returns the two
+touches this position would actually be CLOSED at — a long spot leg at
+the BID, a short futures leg at the ASK, and the mirror for BUY_BASIS —
+and `update_position_pnl` marks each leg there. `fut - beta x spot` of
+that pair IS `executable_spread(closing=True)`, pinned by a test, so
+the P&L and the levels it is compared against can never be quoted on
+different bases again.
+
+What that changes, stated plainly because it is real money:
+
+- **The dollar stop, the take-profit, the peak/trough distribution and
+  the reversion gate's net check all act on the true figure now.** A
+  stop fires when the position really is that far down, not when its
+  midpoint is — half a round turn earlier in effect.
+- **A position shows a loss the instant it opens**, equal to one round
+  turn of both legs' bid-ask. That is correct: it is what closing
+  immediately would cost, and it was always there — it was just being
+  half-hidden by the mid and half-charged again as a fee.
+- **Our P&L now agrees with MT5's own**, which marks each leg at its
+  closing touch. They used to differ by that half turn.
+
+**The fees, which is the half that is easy to miss.** NET was
+`gross - rt_cost_usd`, and `rt_cost_usd` charges the whole round turn
+of crossing. A mark taken at the closing touch on a position entered at
+a real fill has ALREADY paid both crossings — they are in the two
+prices — so subtracting the round turn again is the bid-ask twice.
+`costs.cost_parts` splits it and `exits.mark_fees(plan)` returns the
+part that is NOT in the mark: **commissions, and nothing else.**
+
+This was already half-wrong before the mark moved. The entry fill is a
+real fill, so a mid-marked gross carried the entry crossing, and
+`gross - rt_cost` over-charged by the exit half — it never showed as an
+error because every figure on the card agreed with every other figure
+on the card. The same lesson as the levels: **internal consistency is
+not correctness.**
+
+`rt_cost_usd` is unchanged and still the full round trip. It prices a
+trade that has NOT happened yet — the edge filter, the expected value,
+the pre-trade cost card, the Telegram ENTRY message and the
+modelled-vs-realised audit all want both crossings. Only a mark that
+already contains them uses `mark_fees`.
+
+- **BE moved with it.** `spread_levels` reads `mark_fees`, so break-even
+  is now the fill less commission, read against the CLOSING side of the
+  book — which is exactly what the operator was doing when they compared
+  a long spread of 55.27 to a break-even of 54.38 and got the wrong
+  answer. Both are on one basis now, and the test asserts that reaching
+  BE books zero.
+- **`mark_fees` falls back to `rt_cost_usd`** for a plan built before
+  the split — the conservative direction, and the old behaviour exactly.
+  It is also scaled with the other dollar keys on a partial fill.
+- **The shadow tracker marks the same way** (its `market_data` argument
+  is new): a what-if-held verdict taken at the mid would credit the
+  hold with half a round turn it could never have collected.
+- **The statistics did NOT move and must not.** z, sigma, `entry_mu`,
+  the warm-start window and `_log_quote` are all on the MID. A series
+  that flips definition with the direction under consideration is
+  discontinuous, and its sigma carries the jump as noise. The rule
+  stands: a price someone NAMED is compared against what the market
+  offers; a STATISTIC is compared against the series it was measured on.
+
+Also closed here, the last holdout of "one multiplier, everywhere":
+`update_position_pnl`, `realized_pnl_from_fills` and `close_position`
+take an optional `contract_b`, so leg B is priced in ITS OWN units.
+They defaulted to leg A's, which is exact only when the legs share a
+contract size. The coordinator passes `fut_lot_size`.
 
 ## The two books (2026-08-25, operator)
 

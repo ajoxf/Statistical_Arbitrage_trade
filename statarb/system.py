@@ -10,6 +10,7 @@ import pytz
 from .broker import BrokerSession
 from .database import DataLogger
 from .execution import OrderManager
+from . import marketdata
 from .marketdata import compute_market_data
 from .models import SignalType, TradingSession
 from .performance import PerformanceTracker
@@ -168,10 +169,14 @@ class AlgorithmicTradingSystem:
             contract_size = self.config.ASSETS[asset_key]['lot_size']
 
             for position_id, position in list(active_positions.items()):
+                # The touches this position would CLOSE at, never the
+                # mids — see positions.update_position_pnl.
+                mark_spot, mark_fut = marketdata.closing_prices(
+                    market_data, position.signal_type)
                 self.position_manager.update_position_pnl(
                     position_id,
-                    market_data['spot_price'],
-                    market_data['futures_price'],
+                    mark_spot,
+                    mark_fut,
                     market_data['basis_pct'],
                     contract_size=contract_size,
                 )

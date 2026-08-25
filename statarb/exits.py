@@ -37,6 +37,30 @@ from . import sizing
 from .models import SignalType
 
 
+def mark_fees(plan):
+    """What still has to come off a FILL-marked P&L to make it NET.
+
+    Commissions, and nothing else. The bid-ask is already in the two
+    prices: the position went on at a real fill and is marked at the
+    price it would come off at, so both crossings have been paid in the
+    mark. `rt_cost_usd` charges the whole round turn, which is the right
+    figure for the edge filter and the expected value — they compare a
+    trade that has not happened yet — and charging it again against a
+    mark that contains it is the bid-ask twice.
+
+    That was already half-wrong before the mark moved off the mid
+    (2026-08-25): the entry fill carried the entry crossing, so
+    `gross - rt_cost` over-charged by the exit half. It just never
+    showed as an error, because everything on the card was consistent
+    with everything else on the card.
+
+    Falls back to `rt_cost_usd` for a plan built before the split — the
+    conservative direction, and the old behaviour exactly.
+    """
+    fees = (plan or {}).get('mark_fees_usd')
+    return (plan or {}).get('rt_cost_usd', 0.0) if fees is None else fees
+
+
 def overnight_exit(mode, net_pnl, now, close_hour, close_minute):
     """Overnight handling for manual trades: ALLOW keeps the position
     (and pays the swap), EXIT_IF_PROFIT flattens only in profit,
@@ -227,9 +251,13 @@ class ExitLadder:
         elif exits.get('TP_USD_PER_LOT', 0) > 0:
             tp = exits['TP_USD_PER_LOT'] * lots
 
-        rt_cost = costs_mod.round_trip_cost(
+        # Split, because only the commissions are still outstanding once
+        # the position is marked at the price it would close at — the
+        # crossing is in that mark already. See `mark_fees`.
+        crossing, commission = costs_mod.cost_parts(
             market_data, lots, contract_size, self.config.COSTS,
             lots_b=lots_b, contract_b=contract_b)
+        rt_cost = crossing + commission
 
         if manual_target_usd is not None:
             # The operator's level IS the plan. Their target still has
@@ -296,6 +324,8 @@ class ExitLadder:
             'entry_z': entry_z,
             'entry_sigma': sigma,
             'rt_cost_usd': rt_cost,
+            # The part of it that is NOT already in an exit-side mark.
+            'mark_fees_usd': commission,
             'lots': lots,
             # Stamped HERE, not by the caller afterwards: `evaluate`
             # reads it to decide whether the card or the engine governs
@@ -413,11 +443,19 @@ class ExitLadder:
         """Translate the dollar ladder into absolute SPREAD levels for
         display (the in-position card): BE = entry cost-adjusted, EX =
         gate release, TP, SL. d = -1 when profit needs the spread to
-        FALL (SELL_BASIS), +1 when it needs it to rise."""
+        FALL (SELL_BASIS), +1 when it needs it to rise.
+
+        These are levels for the CLOSING side of the book — the long
+        spread for a short, the short spread for a long — because that
+        is what the P&L they translate is marked against. Read against
+        the mid they would each be half a round turn out, which is the
+        gap the operator saw when a short's break-even at 54.38 sat
+        below a long spread of 55.27 on a card reporting a profit.
+        """
         if not oz:
             return None
         d = -1.0 if signal_type == SignalType.SELL_BASIS else 1.0
-        fees = plan.get('rt_cost_usd', 0.0)
+        fees = mark_fees(plan)
         sl = (entry_spread - d * plan['stop_usd'] / oz
               if plan.get('stop_usd') else None)
         tp = (entry_spread + d * (plan['tp_usd'] + fees) / oz
@@ -523,14 +561,16 @@ class ExitLadder:
         what the reversion gate reads; it falls back to `spread`, so
         callers that pass one spread keep their old behaviour.
 
-        gross_pnl is the mark-to-market price move. Profit decisions
-        act on NET = gross - round-trip costs (break-even aware: the
-        TP is 'profit on top of break-even'); the dollar stop acts on
-        GROSS so 'stop' means spread distance, not fees."""
+        gross_pnl is the position marked at the prices it would CLOSE
+        at, so it already carries both legs' bid-ask. Profit decisions
+        act on NET = gross - the fees that are NOT in that mark, i.e.
+        commissions (break-even aware: the TP is 'profit on top of
+        break-even'); the dollar stop acts on GROSS so 'stop' means
+        spread distance, not fees."""
         exits = self.config.EXITS
         cfg = self.config.SIGNALS
         max_hold = plan['max_hold_sec']
-        fees = plan.get('rt_cost_usd', 0.0)
+        fees = mark_fees(plan)
         net_pnl = gross_pnl - fees if gross_pnl is not None else None
 
         # A MANUAL trade is governed by the Manual Trade Card and by

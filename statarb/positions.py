@@ -34,11 +34,35 @@ class PositionManager:
 
     def update_position_pnl(self, position_id, current_spot_price,
                             current_futures_price, current_premium,
-                            contract_size=1.0):
-        """Mark position to market.
+                            contract_size=1.0, contract_b=None):
+        """Mark position to market, at the price each leg would CLOSE at.
+
+        The two prices MUST be the exit-side touches — a long spot leg
+        at the BID, a short futures leg at the ASK, and the mirror for
+        BUY_BASIS. `marketdata.closing_prices` picks them; callers must
+        not pass mids.
+
+        Operator, 2026-08-25, on a short filled at 54.98 with the long
+        spread at 55.27 and the card reading +$0.02: "How is the trade
+        showing a profit if the price (Long Spread) is more than the BE
+        Price?" It was not in profit. Marked at the two MIDS it read
+        +$0.02; bought back where it actually would be, it books -$0.58.
+        Both numbers are true about different things and only one of
+        them is money, and this is the figure the dollar stop, the
+        take-profit and the peak/trough distribution all act on — so it
+        has to be the one you can take. It also makes our P&L agree with
+        MT5's own, which marks each leg at its closing touch.
+
+        The statistics are the opposite case and stay on the MID: z,
+        sigma and `entry_mu` are one continuous series, and a series
+        that flips definition with the direction under consideration is
+        discontinuous.
 
         contract_size converts lots to units (e.g. 100 oz/lot for gold);
         the legacy code omitted it and understated P&L by that factor.
+        `contract_b` is leg B's own contract size and defaults to leg
+        A's — the last holdout of the one-multiplier rule, and the two
+        differ the moment the legs are different instruments.
         """
         if position_id not in self.positions:
             return
@@ -47,7 +71,8 @@ class PositionManager:
         position.current_premium = current_premium
 
         spot_units = position.spot_trade.lot_size * contract_size
-        fut_units = position.futures_trade.lot_size * contract_size
+        fut_units = position.futures_trade.lot_size * (
+            contract_size if contract_b is None else contract_b)
 
         if position.signal_type == SignalType.SELL_BASIS:
             # Long spot, short futures
@@ -75,7 +100,7 @@ class PositionManager:
 
     @staticmethod
     def realized_pnl_from_fills(position, close_spot, close_futures,
-                                contract_size=1.0):
+                                contract_size=1.0, contract_b=None):
         """Per-leg P&L from actual entry and exit fills — matches the
         broker to the cent. Falls back to the last mark when a close
         price is missing."""
@@ -87,7 +112,8 @@ class PositionManager:
             return position.unrealized_pnl
 
         spot_units = position.spot_trade.lot_size * contract_size
-        fut_units = position.futures_trade.lot_size * contract_size
+        fut_units = position.futures_trade.lot_size * (
+            contract_size if contract_b is None else contract_b)
 
         if position.signal_type == SignalType.SELL_BASIS:
             # Long spot, short futures
@@ -97,7 +123,7 @@ class PositionManager:
             + (exit_fut - entry_fut) * fut_units
 
     def close_position(self, position_id, close_reason, order_manager,
-                       contract_size=1.0, reference=None):
+                       contract_size=1.0, reference=None, contract_b=None):
         if position_id not in self.positions:
             return False
 
@@ -122,7 +148,8 @@ class PositionManager:
                 position.close_time = datetime.now()
                 position.close_reason = close_reason
                 position.realized_pnl = self.realized_pnl_from_fills(
-                    position, close_spot, close_futures, contract_size)
+                    position, close_spot, close_futures, contract_size,
+                    contract_b)
                 position.unrealized_pnl = 0.0
                 position.exit_spot_price = close_spot.executed_price
                 position.exit_fut_price = close_futures.executed_price

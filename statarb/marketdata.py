@@ -52,6 +52,38 @@ def executable_spread(market_data, signal_type, closing=False):
     return market_data.get('spread') if value is None else value
 
 
+def closing_prices(market_data, signal_type):
+    """The two touches this position would actually be CLOSED at.
+
+    Operator, 2026-08-25: "Do not use Mid. I would like the exact - Bid
+    and Ask Price and the right Bid and Ask values should be taken."
+
+    `executable_spread` above answers the same question for the SPREAD;
+    this answers it per LEG, because the position's P&L is marked leg by
+    leg. The two agree by construction — `futures - beta x spot` of the
+    pair below IS the closing executable spread — and a test pins that,
+    since a mark that disagreed with the level it is compared against is
+    the fault this replaced.
+
+        SELL_BASIS   long spot, short futures
+                     -> close by SELLING spot (hit the BID) and BUYING
+                        futures (lift the ASK)
+        BUY_BASIS    the mirror: spot ASK, futures BID
+
+    Falls back to each leg's mid when the touch is absent, so replayed
+    rows and older snapshots still price.
+    """
+    if not market_data:
+        return None, None
+    selling = (getattr(signal_type, 'value', signal_type) == 'SELL_BASIS')
+    spot_key, fut_key = (('spot_bid', 'futures_ask') if selling
+                         else ('spot_ask', 'futures_bid'))
+    spot = market_data.get(spot_key)
+    fut = market_data.get(fut_key)
+    return (market_data.get('spot_price') if spot is None else spot,
+            market_data.get('futures_price') if fut is None else fut)
+
+
 def compute_market_data(asset_cfg, spot_tick, futures_tick,
                         hedge_ratio=1.0):
     """Build the market-data snapshot from two ticks.

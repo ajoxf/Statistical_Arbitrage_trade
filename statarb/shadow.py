@@ -16,6 +16,8 @@ orders, ever.
 import logging
 import time as time_mod
 
+from . import marketdata
+from .exits import mark_fees
 from .models import SignalType
 
 
@@ -40,7 +42,9 @@ class ShadowTracker:
             'spot_lots': position.spot_trade.lot_size,
             'fut_lots': position.futures_trade.lot_size,
             'contract_size': contract_size,
-            'fees': plan.get('rt_cost_usd', 0.0),
+            # Commissions only: the crossing is already in the mark
+            # below, which reads the closing side of the book.
+            'fees': mark_fees(plan),
             'tp_usd': plan.get('tp_usd'),
             'exit_pnl': position.realized_pnl,
             'exit_reason': position.close_reason,
@@ -53,20 +57,29 @@ class ShadowTracker:
                      position.position_id,
                      self.active[-1]['horizon_sec'] / 60)
 
-    def update(self, asset, spot_price, futures_price):
+    def update(self, asset, spot_price, futures_price, market_data=None):
         now = self.clock()
         finished = []
         for shadow in self.active:
             if shadow['asset'] != asset:
                 continue
+            # Marked where the position would actually have been closed,
+            # the same basis the live P&L uses — a what-if-held verdict
+            # taken at the mid would credit the hold with half a round
+            # turn it could never have collected. Falls back to the
+            # prices passed in when there is no snapshot.
+            mark_spot, mark_fut = spot_price, futures_price
+            if market_data:
+                mark_spot, mark_fut = marketdata.closing_prices(
+                    market_data, shadow['signal_type'])
             oz_spot = shadow['spot_lots'] * shadow['contract_size']
             oz_fut = shadow['fut_lots'] * shadow['contract_size']
             if shadow['signal_type'] == SignalType.SELL_BASIS:
-                gross = (spot_price - shadow['entry_spot']) * oz_spot \
-                    + (shadow['entry_fut'] - futures_price) * oz_fut
+                gross = (mark_spot - shadow['entry_spot']) * oz_spot \
+                    + (shadow['entry_fut'] - mark_fut) * oz_fut
             else:
-                gross = (shadow['entry_spot'] - spot_price) * oz_spot \
-                    + (futures_price - shadow['entry_fut']) * oz_fut
+                gross = (shadow['entry_spot'] - mark_spot) * oz_spot \
+                    + (mark_fut - shadow['entry_fut']) * oz_fut
             net = gross - shadow['fees']
             shadow['net'] = net
             minutes = (now - shadow['started']) / 60

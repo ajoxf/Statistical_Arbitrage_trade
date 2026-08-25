@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from .broker import BrokerSession
 from .config import AlgoTradingConfig
 from .database import DataLogger
-from .exits import ExitLadder, outcome_tag, overnight_exit
+from .exits import ExitLadder, mark_fees, outcome_tag, overnight_exit
 from .legs import LocalLeg, RemoteLeg
 from . import carry
 from . import costs as costs_mod
@@ -816,6 +816,8 @@ class Coordinator:
 
     def process_asset(self, asset_key, market_data):
         contract_size = self.config.ASSETS[asset_key]['lot_size']
+        contract_b = float(self.config.ASSETS[asset_key].get('fut_lot_size')
+                           or contract_size)
         stats = self.stats.get(asset_key)
         z = None
         if stats is not None:
@@ -826,7 +828,8 @@ class Coordinator:
 
         self._detect_sd_touches(asset_key, z, market_data['spread'])
         self.shadow.update(asset_key, market_data['spot_price'],
-                           market_data['futures_price'])
+                           market_data['futures_price'],
+                           market_data=market_data)
         # An armed Manual Spread Trade watches the spread on every
         # tick, independently of the algo switch.
         self._check_manual_arm(asset_key, market_data)
@@ -844,11 +847,15 @@ class Coordinator:
                     else min(position.z_min, z)
                 position.z_max = z if position.z_max is None \
                     else max(position.z_max, z)
+            # Marked at the touches this position would CLOSE at, never
+            # at the mids (operator, 2026-08-25: "Do not use Mid. I
+            # would like the exact - Bid and Ask Price").
+            mark_spot, mark_fut = marketdata.closing_prices(
+                market_data, position.signal_type)
             self.position_manager.update_position_pnl(
-                position_id, market_data['spot_price'],
-                market_data['futures_price'],
+                position_id, mark_spot, mark_fut,
                 market_data['basis_pct'],
-                contract_size=contract_size)
+                contract_size=contract_size, contract_b=contract_b)
 
             reason = self._exit_reason(position, z, market_data)
             if reason and self._close_is_due(position):
@@ -933,7 +940,7 @@ class Coordinator:
         # ladder so the session cutoff is never missed.
         overnight = overnight_exit(
             plan.get('overnight_mode'),
-            position.unrealized_pnl - plan.get('rt_cost_usd', 0.0),
+            position.unrealized_pnl - mark_fees(plan),
             datetime.now(),
             self.config.MANUAL.get('OVERNIGHT_CLOSE_HOUR', 16),
             self.config.MANUAL.get('OVERNIGHT_CLOSE_MINUTE', 55))
@@ -1215,7 +1222,8 @@ class Coordinator:
         if plan and spot_trade.lot_size and lots:
             # Rescale dollar levels if we filled less than requested
             scale = spot_trade.lot_size / lots
-            for key in ('tp_usd', 'stop_usd', 'rt_cost_usd'):
+            for key in ('tp_usd', 'stop_usd', 'rt_cost_usd',
+                        'mark_fees_usd'):
                 if plan.get(key):
                     plan[key] *= scale
             # Freeze the display/exit anchors: entry spread, the mean
@@ -1307,7 +1315,9 @@ class Coordinator:
                 .get('last_data')
         closed = self.position_manager.close_position(
             position_id, reason, self.executor, contract_size=contract,
-            reference=market_data)
+            reference=market_data,
+            contract_b=float(self.config.ASSETS.get(position.asset, {})
+                             .get('fut_lot_size') or contract))
         if not closed:
             return
         self.performance_tracker.update_with_closed_position(position)
@@ -1364,20 +1374,13 @@ class Coordinator:
                 'signal_type': position.signal_type.value,
                 'lots': position.spot_trade.lot_size,
                 'entry_premium': position.entry_premium,
+                # Marked at the touches this position would CLOSE at, so
+                # it IS what closing now books — no second "closable"
+                # figure beside it any more.
                 'unrealized_pnl': position.unrealized_pnl,
-                'net_pnl': (position.unrealized_pnl
-                            - plan.get('rt_cost_usd', 0.0)),
-                # What closing right now would actually book. The mark
-                # above is at the MID; a short is bought back on the
-                # LONG side, so the two differ by half a round turn and
-                # only this one is money you can take.
-                # k, so the browser can recompute the exit-side figure
-                # between polls instead of freezing it.
+                'net_pnl': (position.unrealized_pnl - mark_fees(plan)),
+                'mark_fees_usd': plan.get('mark_fees_usd'),
                 'spread_units': plan.get('spread_units'),
-                'pnl_if_closed_now': self.realisable_pnl(
-                    position, plan,
-                    (self.active_assets.get(position.asset) or {})
-                    .get('last_data') or {}),
                 'age': f"{age.total_seconds() / 3600:.1f}h",
                 'age_sec': age.total_seconds(),
                 'entry_spot': position.spot_trade.executed_price,
@@ -3251,38 +3254,6 @@ class Coordinator:
             if not leg.ping():
                 leg.close()
                 leg.connect()
-
-    @staticmethod
-    def realisable_pnl(position, plan, market_data):
-        """What closing RIGHT NOW would actually book.
-
-        `unrealized_pnl` is marked at the MID, which is the convention
-        the whole dollar ladder is built on — but a short is bought
-        back at the LONG spread, so the mid mark is better than the
-        exit by half a round turn. Live 2026-08-25 a short filled at
-        54.98 showed +$0.02 against a long spread of 55.27, where
-        closing books -$0.58: "How is the trade showing a profit if the
-        price (Long Spread) is more than the BE Price?"
-
-        Both numbers are true about different things; only this one is
-        money you can take, so it belongs on the card beside the other.
-        None when the fill or the touches are not known — an
-        unmeasurable figure must not render as zero.
-        """
-        fill = (plan or {}).get('fill_spread')
-        units = (plan or {}).get('spread_units')
-        if fill is None or not units:
-            return None
-        exit_spread = marketdata.executable_spread(
-            market_data, position.signal_type, closing=True)
-        if exit_spread is None:
-            return None
-        # A SHORT sold the spread and buys it back, so it profits as the
-        # spread FALLS; a LONG is the mirror. Same `d` as
-        # ExitLadder.spread_levels — getting it backwards would report
-        # every long's loss as a gain.
-        d = -1.0 if position.signal_type == SignalType.SELL_BASIS else 1.0
-        return d * (exit_spread - fill) * units
 
     @staticmethod
     def _restate_manual_risk(plan, fill_spread):

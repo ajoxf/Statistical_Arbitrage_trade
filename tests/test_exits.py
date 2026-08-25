@@ -1,9 +1,14 @@
 """Exit ladder: frozen dollar levels, BE-aware net targets, priority
 order, gating rules, spread levels, exit modes, time stops.
 
-Plans in these tests carry rt_cost_usd = $3,000 (the 0.30 spread on
-both legs at 50 lots), so NET = GROSS - 3000: a take-profit of
-$15,000 net requires $18,000 gross — "profit on top of break-even".
+Plans here carry a round trip of $4,000: $3,000 of CROSSING (the 0.30
+spread on both legs at 50 lots) plus $1,000 of COMMISSION ($10/lot each
+side of 50 lots). Only the commission comes off the mark, because the
+position is marked at the price it would actually close at and both
+crossings are already in those two prices — so NET = GROSS - 1,000 and
+a $15,000 net target needs $16,000 gross. `rt_cost_usd` keeps the full
+$4,000: the edge filter and the expected value are pricing a trade that
+has not happened yet.
 """
 
 import pytest
@@ -11,7 +16,10 @@ import pytest
 from statarb.exits import ExitLadder, outcome_tag
 from statarb.models import Position, SignalType, Trade, OrderSide
 
-FEES = 3000.0    # round-trip cost baked into plans built from market_data()
+CROSSING = 3000.0    # 0.30 on both legs at 50 lots x 100 units
+COMMISSION = 1000.0  # $10/lot per leg x 50 lots
+FEES = CROSSING + COMMISSION     # plan['rt_cost_usd']
+MARK_FEES = COMMISSION           # what still comes off an exit-side mark
 
 
 def market_data(spread_dollars=0.30):
@@ -31,7 +39,9 @@ def make_position(signal_type=SignalType.SELL_BASIS):
 def exit_config(config):
     config.SIGNALS.update({'EXIT_Z': 0.5, 'STOP_Z': 4.0,
                            'EXIT_MODE': 'zscore'})
-    config.COSTS.update({'TARGET_FRACTION': 0.5, 'SPREAD_COST_FACTOR': 1.0})
+    config.COSTS.update({'TARGET_FRACTION': 0.5, 'SPREAD_COST_FACTOR': 1.0,
+                         'COMMISSION_PER_LOT_SPOT': 10.0,
+                         'COMMISSION_PER_LOT_FUT': 10.0})
     config.EXITS.update({
         'USE_SIGMA_TARGET': True, 'COST_FLOOR_MULT': 1.2,
         'STOP_USD_PER_LOT': 30.0, 'RR': 0.3, 'GATE_FLOOR_USD': 0.0,
@@ -95,7 +105,7 @@ def test_dollar_stop_fires_first_on_gross_and_ungated(exit_config):
     assert ladder.evaluate(position, plan, z=0.1, gross_pnl=-2000,
                            age_sec=10) == 'DOLLAR_STOP'
     # Stop means SPREAD distance: gross -1400 is inside the line even
-    # though net (-4400) is far past it
+    # though net (-2400) is past it
     assert ladder.evaluate(position, plan, z=2.0, gross_pnl=-1400,
                            age_sec=10) is None
 
@@ -103,11 +113,11 @@ def test_dollar_stop_fires_first_on_gross_and_ungated(exit_config):
 def test_take_profit_is_profit_on_top_of_breakeven(exit_config):
     ladder, plan = build(exit_config)
     position = make_position()
-    # Gross $15.5k = net $12.5k < target $15k -> HOLD
+    # Gross $15.5k = net $14.5k < target $15k -> HOLD
     assert ladder.evaluate(position, plan, z=2.5, gross_pnl=15500,
                            age_sec=10) is None
-    # Gross $18.1k = net $15.1k >= target -> TP (z still far from home)
-    assert ladder.evaluate(position, plan, z=2.5, gross_pnl=18100,
+    # Gross $16.1k = net $15.1k >= target -> TP (z still far from home)
+    assert ladder.evaluate(position, plan, z=2.5, gross_pnl=16100,
                            age_sec=10) == 'TAKE_PROFIT'
 
 
@@ -115,10 +125,10 @@ def test_reversion_exit_gated_at_breakeven(exit_config):
     ladder, plan = build(exit_config)
     position = make_position()
     # z home but gross below break-even (net < 0) -> HOLD
-    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES - 100,
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=MARK_FEES - 100,
                            age_sec=10) is None
     # At/above break-even -> exit
-    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES + 50,
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=MARK_FEES + 50,
                            age_sec=10) == 'REVERSION_EXIT'
 
 
@@ -135,16 +145,16 @@ def test_gate_floor_decays_with_age_deadlock_fix(exit_config):
     max_hold = plan['max_hold_sec']
 
     # Young, z home, net +$20 (< $50 floor) -> gate HOLDS
-    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES + 20,
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=MARK_FEES + 20,
                            age_sec=60) is None
     # Past 1x max-hold the floor decays to break-even: +$20 net releases
-    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES + 20,
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=MARK_FEES + 20,
                            age_sec=max_hold + 1) == 'REVERSION_EXIT'
     # A net loser still holds between 1x and 2x
-    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES - 20,
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=MARK_FEES - 20,
                            age_sec=max_hold + 1) is None
     # Past 2x the gate releases entirely
-    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=FEES - 20,
+    assert ladder.evaluate(position, plan, z=0.2, gross_pnl=MARK_FEES - 20,
                            age_sec=2 * max_hold + 1) == 'REVERSION_EXIT'
 
 
@@ -152,10 +162,10 @@ def test_max_hold_only_walks_away_with_net_profit(exit_config):
     ladder, plan = build(exit_config)
     position = make_position()
     age = plan['max_hold_sec'] + 1
-    # Gross +$2.9k is a NET loser -> hold (z=2.6: no suppression)
-    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=FEES - 100,
+    # Gross +$900 is a NET loser -> hold (z=2.6: no suppression)
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=MARK_FEES - 100,
                            age_sec=age) is None
-    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=FEES + 100,
+    assert ladder.evaluate(position, plan, z=2.6, gross_pnl=MARK_FEES + 100,
                            age_sec=age) == 'MAX_HOLD'
 
 
@@ -163,11 +173,11 @@ def test_max_hold_suppressed_while_travelling_toward_tp(exit_config):
     ladder, plan = build(exit_config, entry_z=3.0)
     position = make_position()
     age = plan['max_hold_sec'] + 1
-    assert ladder.evaluate(position, plan, z=1.2, gross_pnl=FEES + 100,
+    assert ladder.evaluate(position, plan, z=1.2, gross_pnl=MARK_FEES + 100,
                            age_sec=age) is None       # 60% home + TP set
     plan_no_tp = dict(plan, tp_usd=None)
     assert ladder.evaluate(position, plan_no_tp, z=1.2,
-                           gross_pnl=FEES + 100, age_sec=age) == 'MAX_HOLD'
+                           gross_pnl=MARK_FEES + 100, age_sec=age) == 'MAX_HOLD'
 
 
 def test_hard_time_stop_multiple_of_max_hold(exit_config):
@@ -235,7 +245,7 @@ def test_spread_mode_exits_on_mean_cross_not_z(exit_config):
     ladder, plan = build(exit_config)
     plan['entry_mu'] = 15.0                      # mean frozen at entry
     sell = make_position(SignalType.SELL_BASIS)  # entered with S above mu
-    gross = FEES + 100                           # net-positive, gate passes
+    gross = MARK_FEES + 100                           # net-positive, gate passes
 
     # z still far, but spread crossed the frozen mean -> exit
     assert ladder.evaluate(sell, plan, z=2.0, gross_pnl=gross,
@@ -250,7 +260,7 @@ def test_hybrid_mode_takes_either_signal(exit_config):
     ladder, plan = build(exit_config)
     plan['entry_mu'] = 15.0
     sell = make_position(SignalType.SELL_BASIS)
-    gross = FEES + 100
+    gross = MARK_FEES + 100
     assert ladder.evaluate(sell, plan, z=0.1, gross_pnl=gross,
                            age_sec=10, spread=16.0) == 'REVERSION_EXIT'
     assert ladder.evaluate(sell, plan, z=2.0, gross_pnl=gross,
@@ -268,8 +278,8 @@ def test_spread_levels_sell_basis(exit_config):
                                       signal_type=SignalType.SELL_BASIS)
     # Profit needs the spread to FALL: BE below entry by fees/oz
     assert levels['favorable'] == 'down'
-    assert levels['be'] == pytest.approx(20.0 - FEES / 5000)      # 19.40
-    assert levels['tp'] == pytest.approx(20.0 - 18000 / 5000)     # 16.40
+    assert levels['be'] == pytest.approx(20.0 - MARK_FEES / 5000)   # 19.80
+    assert levels['tp'] == pytest.approx(20.0 - 16000 / 5000)     # 16.80
     assert levels['sl'] == pytest.approx(20.0 + 1500 / 5000)      # 20.30
     assert levels['ex'] == pytest.approx(levels['be'])            # floor 0
 
@@ -279,8 +289,8 @@ def test_spread_levels_buy_basis_mirrored(exit_config):
     levels = ExitLadder.spread_levels(plan, entry_spread=-10.0, oz=5000,
                                       signal_type=SignalType.BUY_BASIS)
     assert levels['favorable'] == 'up'
-    assert levels['be'] == pytest.approx(-10.0 + FEES / 5000)
-    assert levels['tp'] == pytest.approx(-10.0 + 18000 / 5000)
+    assert levels['be'] == pytest.approx(-10.0 + MARK_FEES / 5000)
+    assert levels['tp'] == pytest.approx(-10.0 + 16000 / 5000)
     assert levels['sl'] == pytest.approx(-10.0 - 1500 / 5000)
 
 

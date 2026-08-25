@@ -8,6 +8,44 @@ cost model silently blocks every good trade).
 """
 
 
+def cost_parts(market_data, lots, contract_size, costs_cfg,
+               lots_b=None, contract_b=None):
+    """(crossing, commissions) — the round trip, split by WHO charges it.
+
+    They are summed by `round_trip_cost` and are the same model; the
+    split matters because only one of them is still outstanding once a
+    position is marked at the price it would actually close at.
+
+    - **crossing** is the bid-ask both legs pay, in at one side and out
+      at the other. A position entered at its real fill and marked at
+      the exit-side touch has ALREADY paid all of it — it is in the
+      two prices. Subtracting it again from that mark charges the
+      spread twice.
+    - **commissions** are the broker's, per lot per leg, and are never
+      in a price. They are what remains to subtract.
+
+    Before the mark moved off the mid (2026-08-25) the mark carried the
+    ENTRY half only, so `gross - round_trip_cost` was already
+    over-charging by the exit half; on the exit-side mark it would be a
+    whole round turn. See `exits.mark_fees`.
+    """
+    units_a = lots * contract_size
+    units_b = (lots if lots_b is None else lots_b) * \
+        (contract_size if contract_b is None else contract_b)
+    spot_spread = market_data['spot_ask'] - market_data['spot_bid']
+    fut_spread = market_data['futures_ask'] - market_data['futures_bid']
+    # Crossing pays the spread once per round trip per leg (in at one
+    # side, out at the other); factor <1 models limit fills
+    crossing = (spot_spread * units_a + fut_spread * units_b) \
+        * costs_cfg.get('SPREAD_COST_FACTOR', 1.0)
+    # Commission is quoted per LOT of the leg it belongs to.
+    commissions = (
+        costs_cfg.get('COMMISSION_PER_LOT_SPOT', 0.0) * lots
+        + costs_cfg.get('COMMISSION_PER_LOT_FUT', 0.0)
+        * (lots if lots_b is None else lots_b))
+    return crossing, commissions
+
+
 def round_trip_cost(market_data, lots, contract_size, costs_cfg,
                     lots_b=None, contract_b=None):
     """Dollars to open AND close both legs.
@@ -25,21 +63,8 @@ def round_trip_cost(market_data, lots, contract_size, costs_cfg,
     `lots_b` / `contract_b` default to leg A's, so a caller that has
     only one size gets exactly the old behaviour.
     """
-    units_a = lots * contract_size
-    units_b = (lots if lots_b is None else lots_b) * \
-        (contract_size if contract_b is None else contract_b)
-    spot_spread = market_data['spot_ask'] - market_data['spot_bid']
-    fut_spread = market_data['futures_ask'] - market_data['futures_bid']
-    # Crossing pays the spread once per round trip per leg (in at one
-    # side, out at the other); factor <1 models limit fills
-    spread_cost = (spot_spread * units_a + fut_spread * units_b) \
-        * costs_cfg.get('SPREAD_COST_FACTOR', 1.0)
-    # Commission is quoted per LOT of the leg it belongs to.
-    commissions = (
-        costs_cfg.get('COMMISSION_PER_LOT_SPOT', 0.0) * lots
-        + costs_cfg.get('COMMISSION_PER_LOT_FUT', 0.0)
-        * (lots if lots_b is None else lots_b))
-    return spread_cost + commissions
+    return sum(cost_parts(market_data, lots, contract_size, costs_cfg,
+                          lots_b, contract_b))
 
 
 def expected_capture(z, sigma, lots, contract_size, costs_cfg,
