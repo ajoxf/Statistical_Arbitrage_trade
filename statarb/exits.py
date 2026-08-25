@@ -188,7 +188,8 @@ class ExitLadder:
         return plan
 
     def build_plan(self, lots, contract_size, entry_z, sigma, half_life_sec,
-                   market_data, manual_target_usd=None, asset_cfg=None):
+                   market_data, manual_target_usd=None, asset_cfg=None,
+                   manual=False):
         """Compute the frozen exit levels. Returns None when the trade
         can never win (cost floor above plausible full reversion) —
         the entry must then be blocked, and `last_refusal` says why.
@@ -246,7 +247,14 @@ class ExitLadder:
             floor = exits.get('COST_FLOOR_MULT', 1.0) * rt_cost
             tp = max(tp, floor)
             plausible = abs(entry_z or 0) * (sigma or 0) * k
-            if plausible > 0 and tp > plausible:
+            # A MANUAL entry is never vetoed. The viability test asks
+            # whether a SIGNAL-derived target can clear the round trip,
+            # which is the edge filter's last line and right for a trade
+            # the strategy chose. Refusing a hand-placed one is the
+            # engine overruling the trader.
+            if manual:
+                pass
+            elif plausible > 0 and tp > plausible:
                 self.last_refusal = (
                     f"a full reversion of the current z is only worth "
                     f"${plausible:,.0f}, and the round trip costs "
@@ -289,6 +297,11 @@ class ExitLadder:
             'entry_sigma': sigma,
             'rt_cost_usd': rt_cost,
             'lots': lots,
+            # Stamped HERE, not by the caller afterwards: `evaluate`
+            # reads it to decide whether the card or the engine governs
+            # this trade, and a plan that reached the ladder unstamped
+            # would be managed by the algo.
+            'source': 'MANUAL' if manual else 'SIGNAL',
             # Dollars per 1.00 of spread, leg B's units. Published so
             # the levels, the manual target and the slippage report all
             # translate spread<->dollars with the SAME multiplier the
@@ -331,7 +344,21 @@ class ExitLadder:
             logging.info("Exit plan not viable: %s", self.last_refusal)
             return None
         # Print the RESOLVED levels, not the configs — a cost floor can
-        # silently pin a %-target higher at the operating size
+        # silently pin a %-target higher at the operating size.
+        #
+        # A MANUAL trade is governed by the card alone, so printing the
+        # engine's ladder beside it would name clocks and stops that
+        # will never fire — which is how POS_0003's "time_stop=15min"
+        # read as a considered decision.
+        if manual:
+            # The card's own levels are stamped by the caller, AFTER
+            # this returns, so the summary is logged there —
+            # `describe_manual_plan` below. What matters here is that
+            # the RESOLVED / RISK / VALUE lines are NOT printed: they
+            # describe machinery that will not run on this trade, and
+            # printing "time_stop=15min" beside a hand-placed order is
+            # how POS_0003's clock read as a considered decision.
+            return plan
         logging.info("Exit plan (RESOLVED): TP=$%s STOP=$%.0f gate=$%.0f "
                      "max_hold=%.0fmin time_stop=%.0fmin (cost $%.0f%s)",
                      f"{tp:.0f}" if tp else "off", stop,
@@ -353,6 +380,31 @@ class ExitLadder:
         logging.info("Exit plan (VALUE): %s",
                      expectancy.summarise(expectancy_block))
         return plan
+
+    @staticmethod
+    def describe_manual_plan(plan):
+        """One line for a hand-placed trade: what will close it.
+
+        Logged once the caller has stamped the card's own levels onto
+        the plan. It names the ONLY things that can now close the
+        position, because the engine's stop, take-profit, reversion
+        gate, max-hold and time stop are all off for a manual trade.
+        """
+        target = plan.get('manual_exit_spread')
+        stop = plan.get('manual_stop_spread')
+        logging.info(
+            "Exit plan (MANUAL): the Manual Trade Card governs this trade "
+            "— target %s, stop %s, overnight %s. The engine's own stop, "
+            "take-profit, reversion gate, max-hold and time stop do NOT "
+            "apply.",
+            f"{target:g}" if target is not None else "none",
+            f"{stop:g}" if stop is not None else "NONE",
+            plan.get('overnight_mode') or 'ALLOW')
+        if stop is None:
+            logging.warning(
+                "MANUAL trade has NO STOP LOSS. Nothing will close this "
+                "position except your take-profit, the overnight rule, or "
+                "you closing it by hand.")
 
     # ------------------------------------------------------------------
 
@@ -429,6 +481,37 @@ class ExitLadder:
             return z_home or spread_home
         return z_home
 
+    @staticmethod
+    def _manual_level_hit(signal_type, spread, level, is_stop):
+        """Has the spread reached one of the operator's own levels?
+
+        A short-spread position loses as the spread RISES, so its stop
+        sits above entry and its target below; a long is the mirror.
+        `spread` is the executable CLOSING side — the price the position
+        can actually be bought back or sold at — because these are
+        prices the operator named, not statistics.
+        """
+        if level is None or spread is None:
+            return False
+        short = signal_type == SignalType.SELL_BASIS
+        rising = short if is_stop else not short
+        return spread >= level if rising else spread <= level
+
+    def _manual_exit(self, position, plan, spread):
+        """The Manual Trade Card, and nothing else.
+
+        Stop first: a stop the operator set by hand is the one
+        instruction nothing may outrank, and if both levels are
+        reachable in the same tick the stop wins.
+        """
+        if self._manual_level_hit(position.signal_type, spread,
+                                  plan.get('manual_stop_spread'), True):
+            return 'MANUAL_STOP'
+        if self._manual_level_hit(position.signal_type, spread,
+                                  plan.get('manual_exit_spread'), False):
+            return 'MANUAL_TARGET'
+        return None
+
     def evaluate(self, position, plan, z, gross_pnl, age_sec, spread=None,
                  mid_spread=None):
         """Return an exit reason string, or None to keep holding.
@@ -449,6 +532,33 @@ class ExitLadder:
         max_hold = plan['max_hold_sec']
         fees = plan.get('rt_cost_usd', 0.0)
         net_pnl = gross_pnl - fees if gross_pnl is not None else None
+
+        # A MANUAL trade is governed by the Manual Trade Card and by
+        # NOTHING ELSE (operator, 2026-08-25: "When I take a manual
+        # trade, ignore all the Algo Logic. Only focus on the items in
+        # the Manual Trade Card. This is Manual trading by a trader and
+        # will not conflict with the Algo Logic").
+        #
+        # So: the operator's Stop Loss, their Take Profit, their
+        # Overnight rule (applied by the caller, before this), and the
+        # Close button. The engine's dollar stop, sigma take-profit,
+        # reversion gate, max-hold, hard time stop and z-stop are all
+        # SIGNAL machinery — they exist to manage a trade the strategy
+        # chose, on a thesis the strategy formed, and a hand-placed
+        # trade has neither.
+        #
+        # This is what closed POS_0003: TIME_STOP at 15 minutes, which
+        # is 3 x a 5-minute floor on a max-hold derived from an 8-second
+        # half-life fitted to tick noise. Nothing about that number came
+        # from the trader or from the market.
+        #
+        # THE CONSEQUENCE, stated plainly because it is real: a manual
+        # trade with the Stop Loss box left empty now has NO STOP. It
+        # runs until the target, the overnight rule, or the operator
+        # closes it. That is the instruction — a trader's stop is the
+        # trader's — and the panel says so.
+        if (plan.get('source') or '').upper() == 'MANUAL':
+            return self._manual_exit(position, plan, spread)
 
         # 1. Manual trade: the operator named a stop SPREAD when they
         # placed it. Checked FIRST — a stop the operator set by hand is

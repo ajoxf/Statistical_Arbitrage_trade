@@ -1165,7 +1165,8 @@ class Coordinator:
                 stats.z if warm else None,
                 stats.sigma if warm else None,
                 stats.half_life_sec if stats else None, market_data,
-                manual_target_usd=manual_target, asset_cfg=asset_cfg)
+                manual_target_usd=manual_target, asset_cfg=asset_cfg,
+                manual=manual)
             if plan is None:
                 self._plan_refusal = self.exit_ladder.last_refusal
                 return None
@@ -1178,6 +1179,8 @@ class Coordinator:
                 if stop_spread is not None:
                     plan['manual_stop_spread'] = float(stop_spread)
                 plan['overnight_mode'] = overnight or 'ALLOW'
+                # Logged HERE, where the card's levels are known.
+                self.exit_ladder.describe_manual_plan(plan)
 
         asset = self.active_assets[asset_key]
         success, spot_trade, futures_trade = \

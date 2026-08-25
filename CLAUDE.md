@@ -1067,6 +1067,60 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## A manual trade obeys the card, and nothing else (2026-08-25)
+
+Operator: "When I take a manual trade, ignore all the Algo Logic. Only
+focus on the items in the Manual Trade Card. This is Manual trading by
+a trader and will not conflict with the Algo Logic."
+
+The trade that prompted it, POS_0003, closed on **TIME_STOP at 15
+minutes 1 second**. That number is:
+
+    AR(1) half-life fitted on ~0.6s quotes      8.0s   (tick noise)
+    max_hold = MAX_HOLD_HALF_LIVES(4) x 8s      32s    -> under the floor
+    MIN_MAX_HOLD_SEC                            300s   -> what applied
+    HARD_TIME_STOP_MULT(3) x 300s               900s   = 15 min
+
+Not one part of it came from the trader or from the market. The engine
+had also warned at entry that the target sat "PAST the mean, so it
+needs an overshoot rather than a reversion; expect the clock to close
+this trade" — and then the clock did.
+
+So `plan['source'] == 'MANUAL'` now short-circuits `evaluate` to
+`_manual_exit`, which reads exactly two things: the operator's Stop
+Loss and their Take Profit, stop first. The Overnight rule is applied
+by `_exit_reason` before the ladder and is also on the card; MANUAL_CLOSE
+and the reconciler are outside the ladder entirely. **Off for a manual
+trade: DOLLAR_STOP, TAKE_PROFIT, REVERSION_EXIT, MAX_HOLD, TIME_STOP,
+HARD_MAX_HOLD_MIN and Z_STOP** — all of it strategy machinery for
+managing a trade the strategy chose, on a thesis a hand-placed trade
+does not have.
+
+- **`build_plan` never vetoes a manual entry.** The viability test asks
+  whether a SIGNAL-derived target clears the round trip; refusing a
+  hand-placed trade on it is the engine overruling the trader. It bites
+  exactly when no take-profit is set, which is when a refusal is least
+  expected.
+- **The source is stamped INSIDE `build_plan`**, not by the caller
+  afterwards. `evaluate` reads it to decide who governs the trade, and
+  a plan that reached the ladder unstamped would be run by the algo.
+- **An unstamped plan is treated as a SIGNAL** — fail safe. The failure
+  mode of a missing stamp must be a managed position, not an unmanaged
+  one.
+- **The RESOLVED / RISK / VALUE log lines are suppressed** for a manual
+  trade and replaced by `describe_manual_plan`, which names the only
+  things that can close it. Printing "time_stop=15min" beside a
+  hand-placed order is how that clock read as a considered decision.
+
+**The price of this, stated everywhere it applies: a manual trade with
+the Stop Loss box empty has NO STOP.** It runs until the target, the
+overnight rule, or the operator. That is the instruction — a trader's
+stop is the trader's — and it is not left implicit: the engine logs a
+WARNING at entry, the hint line under the fields turns amber and says
+it, the card's footer no longer claims the engine's dollar stop is
+armed alongside, and a test asserts a manual trade $10,000 down after a
+day is still open.
+
 ## "wanted" was a price nobody could trade at (2026-08-25, operator)
 
 "Something is still wrong with wanted." It was, and the arithmetic was

@@ -1417,12 +1417,15 @@
                 <div class="text-secondary mt-2" id="manual-trade-info" style="font-size:0.65rem;"></div>
                 <div class="text-secondary mt-2" style="font-size:0.62rem;">
                     <i class="bi bi-exclamation-triangle text-warning me-1"></i>
-                    A manual trade <strong>ignores the Start/Stop switch</strong> —
-                    an armed order fires even while the algo is stopped.
-                    It skips the signal gates (z, trend, cooldown, edge filter)
-                    but never the risk limits or circuit breakers. The engine's
-                    own dollar stop stays armed alongside your Stop Loss;
-                    whichever the spread reaches first closes the trade.
+                    A manual trade is governed by <strong>this card and
+                    nothing else</strong>. It ignores the Start/Stop switch, so
+                    an armed order fires even while the algo is stopped, and it
+                    skips every piece of the strategy's own logic &mdash; the
+                    signal gates, the engine's dollar stop and take-profit, the
+                    reversion gate, max-hold and the time stop. Only your
+                    Take&nbsp;Profit, your Stop&nbsp;Loss, the Overnight rule
+                    and the Close button can close it. Account-level risk
+                    limits and circuit breakers still apply to opening one.
                 </div>
             </div>
         </div>
@@ -2099,17 +2102,29 @@
             hint.textContent = err;
             return;
         }
-        hint.className = 'mb-2 text-secondary';
         const anchor = f.entry != null
             ? `entry ${f.entry}`
             : (window.__manualSpread != null
                 ? `the live spread ${Number(window.__manualSpread).toFixed(4)}`
                 : 'entry');
-        hint.textContent =
+        const geometry =
             `${down ? 'Short' : 'Long'} spread: profits as the spread `
             + `${down ? 'falls' : 'rises'}. Take profit `
             + `${down ? 'below' : 'above'} ${anchor}, stop `
             + `${down ? 'above' : 'below'} it.`;
+        // A manual trade is governed by this card alone, so an empty
+        // Stop Loss is not "the engine will cover it" any more — it is
+        // NO STOP. Amber, not red: it is a legitimate choice for a
+        // trader watching the screen, and it must be a CHOICE.
+        if (f.stop == null) {
+            hint.className = 'mb-2 text-warning';
+            hint.textContent = geometry
+                + ' No Stop Loss set — nothing will close this trade but'
+                + ' your target, the overnight rule, or you.';
+            return;
+        }
+        hint.className = 'mb-2 text-secondary';
+        hint.textContent = geometry;
     }
 
     async function activateManualTrade() {
