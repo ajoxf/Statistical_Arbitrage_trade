@@ -40,9 +40,17 @@ def test_the_recorded_direction_beats_the_z_sign():
 @pytest.mark.parametrize('entry_z', [0.0, None])
 def test_no_z_no_longer_means_long(entry_z):
     """The exact bug: `(None or 0) > 0` is False, so every trade
-    without a z rendered LONG whatever it actually was."""
-    assert webapi.position_type(
-        {'signal_type': 'SELL_BASIS', 'entry_z': entry_z}) == 'SHORT'
+    without a z rendered LONG whatever it actually was.
+
+    Asserted through `trade_to_ui` and `excursion_row`, which both
+    exist on either side of the fix, so this fails on the ANSWER
+    against the old code rather than on a helper that did not
+    exist yet."""
+    row = {'signal_type': 'SELL_BASIS', 'entry_z': entry_z,
+           'position_id': 'P1'}
+    assert webapi.position_type(row) == 'SHORT'
+    assert webapi.trade_to_ui(row)['position_type'] == 'SHORT'
+    assert webapi.excursion_row(row)['position_type'] == 'SHORT'
 
 
 def test_old_rows_still_infer_from_the_z_sign():
@@ -60,6 +68,10 @@ def test_an_unknown_direction_is_none_not_a_guess(row):
     the UI can show a dash — an unknown direction must not render as a
     confident one, which is the whole fault."""
     assert webapi.position_type(row) is None
+    # ...and through the mapper the UI actually calls, which used
+    # to answer 'LONG' here with total confidence.
+    assert webapi.trade_to_ui(dict(row, position_id='P1'))[
+        'position_type'] is None
 
 
 def test_both_journal_shapes_use_it():

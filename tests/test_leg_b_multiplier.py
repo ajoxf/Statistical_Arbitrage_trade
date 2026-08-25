@@ -68,12 +68,15 @@ def test_the_setup_is_actually_the_broken_case():
 # --- the plan ------------------------------------------------------------
 
 def test_the_sigma_target_is_priced_on_leg_b(ladder):
+    """No `asset_cfg` kwarg on purpose: this must run against the OLD
+    code too, so that it fails on the ANSWER rather than on the
+    signature. Old: f x |z| x sigma x (lots x contract_A) = $30.
+    Correct: the same form on leg B's units = $15."""
     plan = ladder.build_plan(LOTS_A, CONTRACT_A, entry_z=3.0, sigma=0.20,
-                             half_life_sec=600, market_data=MARKET,
-                             asset_cfg=ladder.config.ASSETS['GOLD'])
-    assert plan['spread_units'] == pytest.approx(expected_k())
-    # f x |z| x sigma x k, the same form costs.expected_capture uses.
+                             half_life_sec=600, market_data=MARKET)
     assert plan['tp_usd'] == pytest.approx(0.5 * 3.0 * 0.20 * expected_k())
+    assert plan['tp_usd'] != pytest.approx(
+        0.5 * 3.0 * 0.20 * LOTS_A * CONTRACT_A)
 
 
 def test_the_plan_publishes_the_multiplier_it_used(ladder):
@@ -130,6 +133,21 @@ def test_the_same_level_is_reached_by_moving_leg_a(ladder):
     assert pnl == pytest.approx(-plan['stop_usd'])
 
 
+def test_the_target_level_sits_a_sigma_target_away(ladder):
+    """The distance from entry to the TP, in SPREAD, must be
+    `f x |z| x sigma` plus the round trip — a statement about the
+    spread that does not mention lots at all. Priced on leg A the
+    target sat twice as far out as the sigma it claims to be."""
+    plan = ladder.build_plan(LOTS_A, CONTRACT_A, 3.0, 0.20, 600, MARKET)
+    k = expected_k()
+    fill_spread = MARKET['futures_price'] - BETA * MARKET['spot_price']
+    levels = ExitLadder.spread_levels(plan, fill_spread, k,
+                                      SignalType.SELL_BASIS)
+    distance = fill_spread - levels['tp']       # a short profits DOWN
+    assert distance == pytest.approx(
+        0.5 * 3.0 * 0.20 + plan['rt_cost_usd'] / k)
+
+
 def test_the_target_level_makes_exactly_the_target(ladder):
     plan = ladder.build_plan(LOTS_A, CONTRACT_A, 3.0, 0.20, 600, MARKET,
                              asset_cfg=ladder.config.ASSETS['GOLD'])
@@ -154,9 +172,11 @@ def test_each_leg_s_margin_uses_its_own_units(ladder):
                                 'M2M_BUFFER_PCT': 0.0})
     lots_b = sizing.hedge_lots(LOTS_A, CONTRACT_A, CONTRACT_B, BETA)
     units_a, units_b = LOTS_A * CONTRACT_A, lots_b * CONTRACT_B
-    capital = ladder._capital_at_risk(LOTS_A, CONTRACT_A, MARKET,
-                                      units_b=units_b)
-    assert capital == pytest.approx(
+    # Through build_plan, so this runs on the old code and fails on
+    # the number: it priced BOTH legs' notionals off leg A's units, so
+    # the margin was wrong even at beta 1 with different contracts.
+    plan = ladder.build_plan(LOTS_A, CONTRACT_A, 3.0, 0.20, 600, MARKET)
+    assert plan['capital_at_risk'] == pytest.approx(
         MARKET['spot_price'] * units_a / 100.0
         + MARKET['futures_price'] * units_b / 500.0)
 
@@ -246,3 +266,40 @@ def test_the_dollar_slippage_is_the_spread_slippage_times_leg_b(config):
     fut_slip = 2049.0 - fut_fill             # sold below the bid
     assert report['slippage_usd'] == pytest.approx(
         fut_slip * units_b + spot_slip * units_a)
+
+
+def test_the_executor_prices_slippage_on_leg_b(config):
+    """Through PaperExecutor._slippage, which exists on both sides of
+    the fix, so this fails on the DOLLARS rather than on a missing
+    helper. The old code passed `spot_lots x contract_A` (100 units);
+    leg B carries 50, so every dollar figure on the entry-cost row was
+    exactly 1/beta out.
+    """
+    from statarb.coordinator import PaperExecutor
+    from statarb.models import OrderSide, Trade
+
+    config.TRADING['HEDGE_RATIO'] = BETA
+    config.ASSETS.clear()
+    config.ASSETS['GOLD'] = {'name': 'GOLD', 'enabled': True,
+                             'lot_size': CONTRACT_A,
+                             'fut_lot_size': CONTRACT_B}
+    executor = PaperExecutor(None, None, config=config)
+
+    lots_b = sizing.hedge_lots(LOTS_A, CONTRACT_A, CONTRACT_B, BETA)
+    spot = Trade('A', OrderSide.BUY, LOTS_A)
+    fut = Trade('B', OrderSide.SELL, lots_b)
+    spot.executed_price, fut.executed_price = 1000.5, 2049.5
+
+    report = executor._slippage(
+        'GOLD', SignalType.SELL_BASIS, False, spot, fut,
+        {'spot_bid': 999.0, 'spot_ask': 1000.0,
+         'futures_bid': 2050.0, 'futures_ask': 2051.0})
+
+    spot_slip = 1000.5 - 1000.0          # paid above the ask
+    fut_slip = 2050.0 - 2049.5           # sold below the bid
+    units_a, units_b = LOTS_A * CONTRACT_A, lots_b * CONTRACT_B
+    assert report['slippage_usd'] == pytest.approx(
+        fut_slip * units_b + spot_slip * units_a)
+    # ...and NOT the old answer, which weighed the spread by leg A.
+    assert report['slippage_usd'] != pytest.approx(
+        report['slippage_spread'] * units_a)

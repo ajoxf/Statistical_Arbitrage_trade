@@ -5703,8 +5703,12 @@ function updateFilterStatus(elementId, passed, value) {
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                const d = data.deleted;
-                showToast(`Reset: ${d.trades} trades, ${d.sd_touches} SD touches (spread preserved)`, 'success');
+                // `|| {}` and `?? 0`: the server did not send `deleted`
+                // at all, so this threw and the operator saw a bare
+                // TypeError instead of a result. A count of 0 is a real
+                // answer and must render as one.
+                const d = data.deleted || {};
+                showToast(`Reset: ${d.trades ?? 0} trades, ${d.sd_touches ?? 0} SD touches (spread preserved)`, 'success');
                 const tbody = document.getElementById('trades-table');
                 tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
                 fetch('/api/engine/status').then(r => r.json()).then(d => updateSignal(d.signal));
@@ -5728,8 +5732,8 @@ function updateFilterStatus(elementId, passed, value) {
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                const d = data.deleted;
-                showToast(`Reset: ${d.trades} trades, ${d.sd_touches} SD, ${d.spread_history} spreads`, 'success');
+                const d = data.deleted || {};
+                showToast(`Reset: ${d.trades ?? 0} trades, ${d.sd_touches ?? 0} SD, ${d.spread_history ?? 0} spreads`, 'success');
                 const tbody = document.getElementById('trades-table');
                 tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
                 zscoreHistory = [];

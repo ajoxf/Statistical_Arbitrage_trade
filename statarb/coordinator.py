@@ -1248,11 +1248,20 @@ class Coordinator:
             # TP/RR armed the STOP is derived from this number, so a
             # target overstated by the crossing widens the stop by
             # crossing/RR (at RR 0.3, by more than three times it).
+            #
+            # Through reprice_target, NOT by assigning tp_usd here:
+            # with TP/RR armed the stop is `tp / RR`, so re-pricing the
+            # target and leaving the stop alone leaves the two quoting
+            # different trades. Live 2026-08-25 the card read
+            # "Target +$2.13" beside "stop from target $3.01 / RR 0.3"
+            # — a $10.04 stop derived from a target that no longer
+            # existed, where the re-derived one is $7.10.
             if plan.get('manual_exit_spread') is not None \
                     and fill_spread is not None and plan.get('spread_units'):
-                plan['tp_usd'] = (abs(fill_spread
-                                      - float(plan['manual_exit_spread']))
-                                  * plan['spread_units'])
+                self.exit_ladder.reprice_target(
+                    plan, abs(fill_spread
+                              - float(plan['manual_exit_spread']))
+                    * plan['spread_units'])
             plan['levels'] = self.exit_ladder.spread_levels(
                 plan, anchor, plan.get('spread_units')
                 or spot_trade.lot_size * contract_size, signal_type)

@@ -1465,29 +1465,45 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
     # -- maintenance / data --
 
-    @app.route('/api/trades/clear', methods=['POST'])
-    def api_trades_clear():
+    def _delete_rows(tables):
+        """DELETE each table and report how many rows went.
+
+        The counts are the point. Both reset buttons name what they
+        removed ("X trades, Y SD touches"), and the browser reads them
+        off a `deleted` dict the server never sent — so every reset
+        ended in `TypeError: Cannot read properties of undefined
+        (reading 'trades')` and the operator could not tell whether
+        anything had been deleted at all.
+        """
+        deleted = {}
         conn = sqlite3.connect(db_path)
-        for table in ('trade_review', 'trades', 'positions',
-                      'shadow_trades'):
+        for table in tables:
             try:
-                conn.execute(f"DELETE FROM {table}")
+                deleted[table] = conn.execute(
+                    f"DELETE FROM {table}").rowcount
             except sqlite3.OperationalError:
-                pass
+                deleted[table] = 0      # table not created yet
         conn.commit()
         conn.close()
-        return jsonify({'success': True})
+        return deleted
+
+    # The SD distribution IS the "SD analysis" the button offers to
+    # reset, and it was not in this list — so it survived every reset
+    # while the toast claimed it had gone.
+    _TRADE_TABLES = ('trade_review', 'trades', 'positions',
+                     'shadow_trades', 'sd_touches')
+
+    @app.route('/api/trades/clear', methods=['POST'])
+    def api_trades_clear():
+        return jsonify({'success': True,
+                        'deleted': _delete_rows(_TRADE_TABLES)})
 
     @app.route('/api/spread-history/clear', methods=['POST'])
     def api_spread_clear():
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("DELETE FROM market_data")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
-        conn.close()
-        return jsonify({'success': True})
+        deleted = _delete_rows(('market_data',))
+        return jsonify({'success': True,
+                        'deleted': {'spread_history':
+                                    deleted.get('market_data', 0)}})
 
     @app.route('/api/reset-trades', methods=['POST'])
     def api_reset_trades():
@@ -1495,9 +1511,10 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
 
     @app.route('/api/reset-all', methods=['POST'])
     def api_reset_all():
-        api_trades_clear()
-        api_spread_clear()
-        return jsonify({'success': True})
+        deleted = _delete_rows(_TRADE_TABLES)
+        deleted['spread_history'] = _delete_rows(
+            ('market_data',)).get('market_data', 0)
+        return jsonify({'success': True, 'deleted': deleted})
 
     @app.route('/api/untracked')
     def api_untracked():

@@ -423,3 +423,31 @@ def test_a_signal_entry_hands_over_no_manual_target(coordinator):
     coordinator._open_position('GOLD', SignalType.SELL_BASIS, 1.0,
                                market(20.0), coordinator.stats['GOLD'], 100)
     assert seen['target'] is None
+
+
+def test_the_stop_is_re_derived_when_the_target_is_re_priced(coordinator):
+    """Re-pricing the target off the FILL and leaving the stop alone
+    leaves the two quoting different trades.
+
+    With TP/RR armed the stop IS `tp / RR`, so the stop must be
+    recomputed from the re-priced target. Live 2026-08-25 the card read
+    "Target +$2.13" beside "stop from target $3.01 / RR 0.3" — a $10.04
+    stop derived from a target that no longer existed.
+    """
+    coordinator.config.EXITS.update({'RR': 0.3, 'STOP_USD_PER_LOT': 0.0,
+                                     'STOP_CAPITAL_PCT': 0.0})
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    arm(coordinator, direction='SELL_BASIS', lots=1.0, exit_spread=15.0)
+
+    plan = next(iter(
+        coordinator.position_manager.get_active_positions().values())
+    ).exit_plan
+    # The target is measured from the FILL (19.90), not the 20.00 mid.
+    assert plan['tp_usd'] == pytest.approx((19.90 - 15.0) * 100)
+    # ...and the stop follows it, rather than the mid-anchored figure.
+    assert plan['stop_usd'] == pytest.approx(plan['tp_usd'] / 0.3)
+    # The source names the target actually in force, so the two rows on
+    # the card can never disagree about which trade this is.
+    assert f"${plan['tp_usd']:,.2f}" in plan['stop_source']
+    assert plan['breakeven_win_rate'] == pytest.approx(
+        plan['stop_usd'] / (plan['tp_usd'] + plan['stop_usd']))
