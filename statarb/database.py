@@ -160,7 +160,13 @@ class DataLogger:
                                  # 2026-08-25: four shorts, all badged
                                  # LONG). A direction is a fact about
                                  # the order, not a statistic to infer.
-                                 ('signal_type', 'TEXT')]:
+                                 ('signal_type', 'TEXT'),
+                                 # MANUAL or SIGNAL. Who placed it —
+                                 # the trader or the strategy. They are
+                                 # governed by different rules and
+                                 # scored separately, so the two books
+                                 # have to be separable in the record.
+                                 ('source', 'TEXT')]:
             try:
                 cursor.execute(f'ALTER TABLE trade_review '
                                f'ADD COLUMN {column} {col_type}')
@@ -382,6 +388,7 @@ class DataLogger:
             'asset': position.asset,
             'signal_type': getattr(position.signal_type, 'value',
                                    position.signal_type),
+            'source': (position.exit_plan or {}).get('source') or 'SIGNAL',
             'entry_z': plan.get('entry_z'),
             'exit_z': exit_z,
             'entry_sigma': plan.get('entry_sigma'),

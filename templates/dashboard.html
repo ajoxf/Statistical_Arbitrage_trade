@@ -1103,6 +1103,7 @@
                         <thead class="sticky-top" style="background: var(--bg-secondary);">
                             <tr>
                                 <th>Time</th>
+                                <th title="Who placed it. A MANUAL trade is governed by the Manual Trade Card alone — the engine's exits, stops and circuit breakers do not apply to it, and its P&L does not feed them.">By</th>
                                 <th>Type</th>
                                 <th>Z</th>
                                 <!-- Leg A / Leg B were per-leg PRICES, and
@@ -1120,7 +1121,7 @@
                         </thead>
                         <tbody id="trades-table">
                             <tr>
-                                <td colspan="7" class="text-center text-secondary">No trades</td>
+                                <td colspan="8" class="text-center text-secondary">No trades</td>
                             </tr>
                         </tbody>
                     </table>
@@ -4975,6 +4976,9 @@ function updateFilterStatus(elementId, passed, value) {
 
         row.innerHTML = `
             <td>${trade.entry_time ? new Date(trade.entry_time).toLocaleTimeString() : '-'}</td>
+            <td>${trade.source === 'MANUAL'
+                ? '<span class="badge bg-warning text-dark" style="font-size:0.55rem;" title="Placed by hand. Governed by the Manual Trade Card only.">MANUAL</span>'
+                : '<span class="badge bg-secondary" style="font-size:0.55rem;" title="Placed by the strategy.">ALGO</span>'}</td>
             <td>${trade.position_type
                 ? `<span class="badge ${trade.position_type === 'LONG' ? 'badge-long' : 'badge-short'}" style="font-size:0.6rem;">${trade.position_type}</span>`
                 : '<span class="text-secondary" title="This trade predates the direction being recorded, and it carried no z-score to infer one from.">&mdash;</span>'}</td>
@@ -5720,7 +5724,7 @@ function updateFilterStatus(elementId, passed, value) {
             if (data.success) {
                 showToast('Cleared ' + data.deleted + ' trades', 'success');
                 const tbody = document.getElementById('trades-table');
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-secondary">No trades</td></tr>';
             } else {
                 showToast('Failed to clear trades', 'danger');
             }
@@ -5742,7 +5746,7 @@ function updateFilterStatus(elementId, passed, value) {
                 if (row) row.remove();
                 const tbody = document.getElementById('trades-table');
                 if (tbody && tbody.children.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-secondary">No trades</td></tr>';
                 }
             } else {
                 showToast(data.error || 'Delete failed', 'danger');
@@ -5903,7 +5907,7 @@ function updateFilterStatus(elementId, passed, value) {
                 const d = data.deleted || {};
                 showToast(`Reset: ${d.trades ?? 0} trades, ${d.sd_touches ?? 0} SD touches (spread preserved)`, 'success');
                 const tbody = document.getElementById('trades-table');
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-secondary">No trades</td></tr>';
                 fetch('/api/engine/status').then(r => r.json()).then(d => updateSignal(d.signal));
             } else {
                 showToast('Reset failed', 'danger');
@@ -5928,7 +5932,7 @@ function updateFilterStatus(elementId, passed, value) {
                 const d = data.deleted || {};
                 showToast(`Reset: ${d.trades ?? 0} trades, ${d.sd_touches ?? 0} SD, ${d.spread_history ?? 0} spreads`, 'success');
                 const tbody = document.getElementById('trades-table');
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary">No trades</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-secondary">No trades</td></tr>';
                 zscoreHistory = [];
                 spreadHistory = [];
                 zscoreChart.data.datasets[0].data = [];

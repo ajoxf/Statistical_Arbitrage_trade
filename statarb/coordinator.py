@@ -197,6 +197,7 @@ class Coordinator:
         self.notifier = TelegramNotifier(config)
         self.notifier.command_handler = self._telegram_command
         self._was_halted = False
+        self._last_cost_error = None
         self.status_path = 'runtime_status.json'
         self._accounts_cache = None    # (accounts, equity) — see
         self._accounts_at = 0.0        # _account_snapshot
@@ -1272,7 +1273,8 @@ class Coordinator:
                 or spot_trade.lot_size * contract_size, signal_type)
         position.exit_plan = plan
         self.data_logger.save_position_state(position)
-        self.risk_manager.record_trade(asset_key, lots=spot_trade.lot_size)
+        self.risk_manager.record_trade(asset_key, lots=spot_trade.lot_size,
+                                       manual=manual)
         self.notifier.notify_trade_opened(
             position, market_data,
             z=stats.z if stats and stats.warm else None,
@@ -1299,7 +1301,9 @@ class Coordinator:
         if not closed:
             return
         self.performance_tracker.update_with_closed_position(position)
-        self.risk_manager.on_position_closed(position.realized_pnl)
+        self.risk_manager.on_position_closed(
+            position.realized_pnl,
+            manual=(position.exit_plan or {}).get('source') == 'MANUAL')
         self.z_gen.notify_close(position.asset, reason,
                                 position.signal_type)
         tag = outcome_tag(reason, position.z_reverted)
@@ -2160,8 +2164,22 @@ class Coordinator:
                 self.config.COSTS,
                 lots_b=size.get('leg_b_lots'),
                 contract_b=size.get('leg_b_contract'))
-        except Exception:
+        except Exception as e:
+            # Never silent. The cost model reads `spot_bid`/`spot_ask`
+            # and `futures_bid`/`futures_ask` straight out of the
+            # snapshot; a renamed or missing key would blank the whole
+            # Filters card with no explanation, and the operator would
+            # be looking at a card with no edge numbers wondering why.
+            # (The coordinator's PUBLISHED asset block calls them
+            # fut_bid/fut_ask — handing that dict here is exactly the
+            # mistake this catches.)
+            if self._last_cost_error != str(e):
+                self._last_cost_error = str(e)
+                logging.error("Edge/cost block unavailable for %s: %s — "
+                              "the Filters card will show no numbers",
+                              asset_key, e)
             return block
+        self._last_cost_error = None
 
         # Per leg, in ITS OWN lots — the same split round_trip_cost
         # uses. A combined "x lots" figure is meaningless once the two

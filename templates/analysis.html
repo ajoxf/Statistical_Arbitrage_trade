@@ -27,6 +27,38 @@
     <strong>Profit Factor &gt; 1</strong>.
 </div>
 
+<!-- Two books, scored apart (operator, 2026-08-25: "We should be able
+     to easily distinguish 'Manual' and 'Algo' based trades ... Manual
+     Trades PnL and all Analysis should be recorded somewhere").
+
+     A manual trade is governed by the Manual Trade Card alone and its
+     P&L never reaches the engine's breakers, so pooling the two scores
+     neither. The tiles below are still the COMBINED book — this row is
+     the split, and the journal's By column tags every row. -->
+{% if by_source and by_source.manual.total_trades %}
+<div class="row g-2 mb-2">
+    {% for key, label, hint in [
+        ('algo', 'Algo', 'Placed by the strategy and managed by its exit ladder. These are the trades that score the system.'),
+        ('manual', 'Manual', 'Placed by hand. Governed by the Manual Trade Card only — no engine stop, no time stop, and its P&L does not feed the circuit breakers.')] %}
+    {% set b = by_source[key] %}
+    <div class="col-md-6">
+        <div class="card h-100"><div class="card-body metric-card" title="{{ hint }}">
+            <div class="d-flex justify-content-between align-items-baseline">
+                <span class="badge {{ 'bg-warning text-dark' if key == 'manual' else 'bg-secondary' }}">{{ label }}</span>
+                <span class="metric-value {% if b.total_pnl >= 0 %}price-up{% else %}price-down{% endif %}">${{ '%.2f' % b.total_pnl }}</span>
+            </div>
+            <div class="metric-note">
+                {{ b.total_trades }} trade{{ '' if b.total_trades == 1 else 's' }} ·
+                {{ '%.0f' % b.win_rate }}% win ·
+                avg ${{ '%.2f' % b.avg_pnl }} ·
+                PF {{ '%.2f' % b.profit_factor if b.profit_factor is not none else '—' }}
+            </div>
+        </div></div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
 <!-- Row 1 — Outcomes -->
 <div class="row g-2 mb-2">
     <div class="col-md-2 col-6">
@@ -413,6 +445,7 @@
                                 <th title="When the trade was opened (local time).">Entry Time</th>
                                 <th title="When the trade was closed. Blank = still open.">Exit Time</th>
                                 <th title="The traded pair, e.g. ETH/BTC (spot leg / futures leg).">Asset</th>
+                                <th title="Who placed it. A MANUAL trade is governed by the Manual Trade Card alone — the engine's exits, stops and circuit breakers never applied to it, and its P&L never fed them.">By</th>
                                 <th title="LONG = long the spot leg, short the futures leg (profits when the spread falls). SHORT = the mirror (profits when the spread rises).">Type</th>
                                 <th title="Rolling z-score at entry = (spread − mean) ÷ σ. Bigger |z| = a more stretched divergence.">Entry Z</th>
                                 <th title="Rolling z-score at exit. NOTE: z drifts during the hold as the rolling mean moves — it can read near 0 while the position is still down. P&L, not this, is the truth.">Exit Z</th>
@@ -587,6 +620,9 @@
                     <td>${trade.entry_time ? new Date(trade.entry_time).toLocaleString() : '-'}</td>
                     <td>${trade.exit_time ? new Date(trade.exit_time).toLocaleString() : '-'}</td>
                     <td>${trade.asset}</td>
+                    <td>${trade.source === 'MANUAL'
+                        ? '<span class="badge bg-warning text-dark" title="Placed by hand — governed by the Manual Trade Card only.">MANUAL</span>'
+                        : '<span class="badge bg-secondary">ALGO</span>'}</td>
                     <td>${trade.position_type ? `<span class="badge ${trade.position_type === 'LONG' ? 'badge-long' : 'badge-short'}">${trade.position_type}</span>` : '<span class="text-secondary">&mdash;</span>'}</td>
                     <td>${(trade.entry_zscore || 0).toFixed(4)}</td>
                     <td>${trade.exit_zscore ? trade.exit_zscore.toFixed(4) : '-'}</td>

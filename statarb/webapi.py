@@ -319,6 +319,17 @@ def apply_ui_config(raw, payload):
     return raw, env_updates, notes
 
 
+def trade_source(row):
+    """MANUAL or SIGNAL — who placed this trade.
+
+    Rows written before the column existed report SIGNAL, which is what
+    the engine did with them at the time: they were managed by the full
+    exit ladder and they fed the breakers. Calling them 'unknown' would
+    be more precise and less true.
+    """
+    return (row.get('source') or 'SIGNAL').upper()
+
+
 def position_type(row):
     """SHORT / LONG for a recorded trade — read, not inferred.
 
@@ -356,6 +367,9 @@ def trade_to_ui(row):
         'id': row.get('position_id'),
         'asset': row.get('asset'),
         'position_type': position_type(row),
+        # MANUAL or SIGNAL — the two are governed by different rules
+        # and have to be scoreable apart.
+        'source': trade_source(row),
         'entry_time': row.get('opened'),
         'exit_time': row.get('closed'),
         'entry_zscore': row.get('entry_z'),
@@ -393,6 +407,27 @@ def trade_to_ui(row):
     }
 
 
+def statistics_by_source(rows):
+    """The same aggregate, split MANUAL vs ALGO, plus the combined one.
+
+    They are two different strategies run by two different decision
+    makers under two different sets of rules — a manual trade is
+    governed by the Manual Trade Card and never touches the engine's
+    exits or breakers. Pooling their P&L scores neither.
+
+    Returns {'all': ..., 'algo': ..., 'manual': ...}; each is a full
+    `statistics_from_rows` block, so a caller can render any of them
+    with the same template.
+    """
+    manual = [r for r in rows if trade_source(r) == 'MANUAL']
+    algo = [r for r in rows if trade_source(r) != 'MANUAL']
+    return {
+        'all': statistics_from_rows(rows),
+        'algo': statistics_from_rows(algo),
+        'manual': statistics_from_rows(manual),
+    }
+
+
 def statistics_from_rows(rows):
     """Aggregate stats block for the analysis page tiles."""
     pnls = [r['realized_pnl'] for r in rows
@@ -400,7 +435,7 @@ def statistics_from_rows(rows):
     if not pnls:
         return {'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
                 'win_rate': 0, 'total_pnl': 0, 'avg_pnl': 0, 'avg_win': 0,
-                'avg_loss': 0, 'reward_risk': 0, 'profit_factor': 0,
+                'avg_loss': 0, 'reward_risk': 0, 'profit_factor': None,
                 'breakeven_wr': 0, 'expectancy_r': 0, 'max_drawdown': 0,
                 'max_drawdown_pct': 0, 'current_drawdown': 0,
                 'current_drawdown_pct': 0, 'p70_peak': 0,
@@ -435,7 +470,12 @@ def statistics_from_rows(rows):
         'total_pnl': total, 'avg_pnl': total / len(pnls),
         'expectancy': total / len(pnls),
         'avg_win': avg_win, 'avg_loss': avg_loss, 'reward_risk': rr,
-        'profit_factor': (gross_win / gross_loss) if gross_loss else 0.0,
+        # None, not 0.0, when there are no losses. Gross win / gross
+        # loss is UNDEFINED there, and 0.0 is the worst possible value
+        # — a book of nothing but winners rendered a red "0.00", which
+        # reads as bleeding. The template already prints "—" for None.
+        # (Only losses is a real 0: gross_win is genuinely zero.)
+        'profit_factor': (gross_win / gross_loss) if gross_loss else None,
         'breakeven_wr': (100 / (1 + rr)) if rr else 0.0,
         'expectancy_r': ((total / len(pnls)) / abs(avg_loss))
                         if avg_loss else 0.0,
@@ -524,6 +564,7 @@ def excursion_row(row):
     return {
         'id': row.get('position_id'), 'trade_id': row.get('position_id'),
         'position_type': position_type(row),
+        'source': trade_source(row),
         'exit_reason': row.get('exit_reason'),
         'mae_usd': mae_usd, 'mfe_usd': mfe_usd,
         'mae_pct': (100 * mae_usd / notional) if notional else None,

@@ -1067,6 +1067,92 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## The two books (2026-08-25, operator)
+
+"Stop manual trades feeding the breakers and streak reducer. We should
+be able to easily distinguish 'Manual' and 'Algo' based trades. Manual
+Trades PnL and all Analysis should be recorded somewhere."
+
+The last half of the manual/algo separation. A hand-placed trade was
+already governed by different rules; it was still DRIVING the algo's
+governor, so four manual losses would pause the algo and shrink its
+clip — the same conflict, in the other direction.
+
+- **`on_position_closed(pnl, manual=True)`** books to
+  `manual_realized_pnl` / `manual_trades_today` and returns. It never
+  touches `consecutive_losses` or `daily_realized_pnl`, so it can reach
+  neither `halted()` nor `size_multiplier()`. `total_realized_pnl` adds
+  the two back up, because the account has one balance.
+- **`record_trade(..., manual=True)` records nothing.** `daily_trades`
+  feeds MAX_DAILY_TRADES and the lots-today figure, and
+  `last_signal_time` drives the entry COOLDOWN — a hand-placed trade
+  must not put the algo on one.
+- **Both books roll over together** at the day boundary.
+
+Distinguishing them: `trade_review.source` is written at close from
+`plan['source']`, `webapi.trade_source` reads it, and both journal
+mappers publish it. A row predating the column reports SIGNAL — which
+is what the engine actually did with it: managed by the full ladder,
+feeding the breakers. Calling it "unknown" would be more precise and
+less true. The dashboard's Recent Trades and the Analysis journal both
+carry a **By** column badged MANUAL / ALGO.
+
+Recording the analysis: everything already in `trade_review` — peak and
+trough with their minutes, the outcome tag, the frozen levels, the
+slippage split — is written for a manual trade exactly as for a signal
+one. `webapi.statistics_by_source` returns `{all, algo, manual}`, each
+a full stats block, and the Analysis page shows the two side by side
+above the combined tiles.
+
+**A book with no losses now reports profit factor None, not 0.0.** It
+is gross win / gross loss and undefined there, and 0.0 is the WORST
+possible value — a manual book of nothing but winners rendered a red
+"0.00". The split made small books common enough for that to show.
+
+## The edge filter, audited (2026-08-25, operator)
+
+"Thoroughly check all the Edge Filter ... Make sure the Algo takes the
+Short Spread - the right Bid and Ask values. Confirm thoroughly."
+
+Audited end to end and it is correct. What was verified, at beta 2 with
+100/50 contract sizes (at beta 1 with equal contracts several WRONG
+formulas give the right answer):
+
+- **The round trip is what a real round trip pays.** Summed leg by leg
+  against each leg's mid — sell fut at the BID and buy spot at the ASK
+  going in, the mirror coming out — it equals the model to the cent,
+  and it is IDENTICAL for a long. Direction-independent by
+  construction, which is right: you cross the same two books either
+  way, just in the other order.
+- **It equals `(long_spread - short_spread) x k`**, the same quantity
+  in spread units, and `md['spread_cost'] x k` as well. Three
+  derivations agreeing.
+- **The bid-ask is charged ONCE.** Enter at the short spread, exit at
+  the long, nothing moves: the pair is down exactly the modelled round
+  trip, no more.
+- **Capture is a MID move and that is why the comparison is sound.** A
+  short banks `d x k` LESS one round turn, and the round turn IS the
+  cost the filter charges — pinned by moving the book and checking the
+  realised P&L equals `capture - cost`.
+- Each leg on its own units; commission per lot on its own lots;
+  `SPREAD_COST_FACTOR` scaling only the crossing.
+- It reads the raw touches, NOT `spot_spread`/`futures_spread`, which
+  are the bid-ask **x100** for display and would overstate the cost
+  a hundredfold.
+- **`edge_z_needed` is the exact boundary** — probed either side of it
+  — and `edge_cost_in_sigmas x sigma x k` is the cost back again.
+- **The Filters card agrees with the live gate**, and its per-leg parts
+  sum to the published total. The card recomputes that breakdown
+  locally while the total comes from `round_trip_cost`, so the two
+  implementations are pinned together.
+
+One thing fixed: `_sizing_and_cost` swallowed any exception and
+returned a card with no cost numbers. The cost model reads
+`futures_bid`/`futures_ask` while the coordinator's PUBLISHED asset
+block calls them `fut_bid`/`fut_ask` — that rename has already caused
+one live fault — so handing it the wrong dict blanked the whole Filters
+card silently. It now logs the missing key, deduped.
+
 ## A manual trade obeys the card, and nothing else (2026-08-25)
 
 Operator: "When I take a manual trade, ignore all the Algo Logic. Only

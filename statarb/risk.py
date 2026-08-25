@@ -12,9 +12,14 @@ class RiskManager:
         self.config = config
         self.daily_trades = deque(maxlen=1000)   # (timestamp, asset, lots)
         self.last_signal_time = {}
-        # Circuit breakers
+        # Circuit breakers. These count the ALGO's book only — see
+        # on_position_closed.
         self.consecutive_losses = 0
         self.daily_realized_pnl = 0.0
+        # The trader's own book, kept separately so it is still
+        # REPORTED without ever reaching a breaker.
+        self.manual_realized_pnl = 0.0
+        self.manual_trades_today = 0
         self._breaker_date = datetime.now().date()
         self.accounts = {}          # name -> account_info from each leg
         self._margin_warned = False
@@ -98,16 +103,39 @@ class RiskManager:
             self._breaker_date = today
             self.daily_realized_pnl = 0.0
             self.consecutive_losses = 0
+            self.manual_realized_pnl = 0.0
+            self.manual_trades_today = 0
             logging.info("Risk breakers reset for new day")
 
-    def on_position_closed(self, pnl):
-        """Feed every realized close (including untracked cleanups)."""
+    def on_position_closed(self, pnl, manual=False):
+        """Feed every realized close (including untracked cleanups).
+
+        A MANUAL close is booked to its own running total and NOTHING
+        else (operator, 2026-08-25: "stop manual trades feeding the
+        breakers and streak reducer"). Otherwise the two books fight:
+        a trader taking four hand-placed losses would trip the algo's
+        loss-streak breaker and shrink its clip, which is exactly the
+        conflict the manual/algo separation exists to remove.
+
+        The money is still counted — `manual_realized_pnl` — so the
+        day's P&L can be reported in full. It just never reaches
+        `halted()` or `size_multiplier()`.
+        """
         self._roll_breaker_date()
+        if manual:
+            self.manual_realized_pnl += pnl
+            self.manual_trades_today += 1
+            return
         self.daily_realized_pnl += pnl
         if pnl < 0:
             self.consecutive_losses += 1
         else:
             self.consecutive_losses = 0
+
+    @property
+    def total_realized_pnl(self):
+        """Both books. What actually left or entered the account today."""
+        return self.daily_realized_pnl + self.manual_realized_pnl
 
     def size_multiplier(self):
         """Clip-size multiplier: loss-streak reducer and, when the
@@ -172,7 +200,16 @@ class RiskManager:
 
         return True, "OK"
 
-    def record_trade(self, asset, lots=0.0):
+    def record_trade(self, asset, lots=0.0, manual=False):
+        """Book an entry against the day's throughput.
+
+        A MANUAL entry is not recorded here at all: `daily_trades`
+        feeds MAX_DAILY_TRADES and the lots-today figure the algo
+        governs itself with, and `last_signal_time` drives the entry
+        COOLDOWN — a hand-placed trade must not put the algo on one.
+        """
+        if manual:
+            return
         self.daily_trades.append((datetime.now(), asset, lots))
         self.last_signal_time[asset] = datetime.now()
 

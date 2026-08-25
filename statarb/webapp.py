@@ -355,6 +355,12 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                      "LIMIT 500")
         stats = webapi.statistics_from_rows(rows)
         stats['breakeven_win_rate'] = stats['breakeven_wr']
+        # The two books, scored apart. A manual trade is governed by
+        # the Manual Trade Card and never touches the engine's exits or
+        # breakers, so pooling their P&L scores neither.
+        by_source = webapi.statistics_by_source(rows)
+        for block in by_source.values():
+            block['breakeven_win_rate'] = block['breakeven_wr']
         shadow_rows = query("SELECT * FROM shadow_trades "
                             "ORDER BY completed DESC LIMIT 50")
         touches = query("SELECT * FROM sd_touches "
@@ -366,6 +372,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             journal=[webapi.trade_to_ui(r) for r in rows],
             dd_trades=[webapi.excursion_row(r) for r in rows],
             sd_touches=touches,
+            by_source=by_source,
             shadow={'count': len(shadow_rows), 'recent': shadow_rows},
             drawdown=webapi.drawdown_block(rows),
             slippage=webapi.slippage_block(rows),
