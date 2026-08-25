@@ -1426,42 +1426,54 @@ def test_the_analysis_chart_is_guarded_too(client):
 
 # --- slippage on the pages (2026-08-07) -----------------------------------
 
-def test_the_position_card_shows_all_three_prices(client):
+def test_the_entry_cost_row_is_expected_filled_slipped(client):
     """Owner: "what your signal wanted to enter at and what the orders
     got placed at on MT5" — visible while the trade is still open, not
-    only in the post-mortem. All three are columns now."""
+    only in the post-mortem."""
     page = client.get('/').get_data(as_text=True)
     assert 'id="position-slippage-table"' in page
-    for column in ('>Mid<', '>Best<', '>Filled<', '>Crossing<',
-                   '>Slippage<'):
+    for column in ('>Expected<', '>Filled<', '>Slippage<'):
         assert column in page, column
 
 
-def test_wanted_is_gone_from_the_entry_cost_row(client):
-    """Operator, 2026-08-25: "Something is still wrong with wanted."
+def test_the_mid_is_not_the_entry_reference(client):
+    """Operator, 2026-08-25: "Something is still wrong with wanted" and
+    then "Mid is not required. Instead this should be the price you
+    expected ... when 'Activate Trade' was clicked".
 
-    It was the MID, and no seller of the spread could ever have been
-    filled there — the best available was the touch beside it. Calling
-    a midpoint "wanted" reads as a level the engine aimed at and
-    missed, when half a bid-ask is simply what a midpoint IS. The
-    number is still shown, under a heading that says what it is.
+    The mid was never available to either side, so quoting it as the
+    reference made half a bid-ask look like a miss. EXPECTED is the
+    executable touch at the moment the order was decided. CROSSING went
+    with the mid: mid-to-touch means nothing once the mid is not shown.
     """
     page = client.get('/').get_data(as_text=True)
     assert 'wanted <span' not in page
-    assert "'wanted " not in page
-    assert 'decision_spread' in page      # still published and shown
+    assert '>Mid<' not in page
+    assert '>Crossing<' not in page
+    # The touch is what the column renders...
+    body = page[page.index('slipBody.innerHTML'):]
+    body = body[:body.index('slipTable.style.display')]
+    assert 'sl.quoted_spread' in body
+    assert 'sl.decision_spread' not in body
+    # ...and the mid is still MEASURED and recorded, because the
+    # statistics are taken on it and the modelled-vs-realised tile
+    # scores against it. It is only off this table.
+    from statarb import slippage
+    report = slippage.pair_report(
+        'SELL_BASIS', False, 1.0, 2.0,
+        {'mid': 4640.0, 'quote': 4641.0, 'fill': 4641.2},
+        {'mid': 4696.0, 'quote': 4695.0, 'fill': 4694.8})
+    assert report['decision_spread'] == pytest.approx(56.0)
+    assert report['crossing_spread'] is not None
 
 
-def test_the_card_keeps_crossing_and_slippage_apart(client):
-    """One combined figure would make a wide spread look like bad
-    execution and a fast market look like a wide spread."""
+def test_the_expected_price_is_the_executable_touch(client):
+    """Not the mid, and the tooltip says which — that is the whole
+    point of the column."""
     page = client.get('/').get_data(as_text=True)
-    # The table's own tooltip, and the per-column ones built in the JS.
     tip = page.split('id="position-slippage-table"', 1)[1][:1200]
-    assert 'already in the cost model' in tip
-    assert 'best-to-fill: the surprise' in tip
-    assert 'Mid to touch' in page
-    assert 'Touch to fill: the surprise' in page
+    assert 'when Activate was clicked' in tip
+    assert 'expected-to-fill: the surprise' in tip
     assert 'price improvement' in page
 
 
@@ -2731,23 +2743,26 @@ def test_the_cards_are_tighter_than_bootstrap_default(client):
     assert '.card.mb-3 { margin-bottom: 0.6rem; }' in page
 
 
-def test_the_manual_entry_box_tracks_the_live_price(client):
-    """Operator, 2026-08-25: "instead of 'blank' constantly update with
-    the live price."
+def test_the_manual_entry_box_prefills_with_the_live_price(client):
+    """Operator, 2026-08-25: "make it pre-fill with the live price."
 
-    As the PLACEHOLDER, not the value. A real value in that field means
-    ARM AT THIS LEVEL, and the point of leaving it blank is to fire at
-    the next poll — so filling it in would silently turn "go now" into
-    "wait for a level", which on a spread that has already ticked away
-    may never trigger. `use live` copies it in when that IS what the
-    operator wants.
+    The VALUE, so Activate arms at that number. Two things have to hold
+    for that to be usable: the sync must stop the moment the operator
+    takes the field (a value rewriting itself under someone typing a
+    level is worse than useless on the panel that places orders), and
+    an empty box must still mean fire at the next poll.
     """
     page = client.get('/').get_data(as_text=True)
-    assert "entryEl.placeholder = window.__manualSpread == null" in page
-    assert 'function useLiveEntry' in page
-    assert 'id="manual-entry-use-live"' in page
-    # Blank must still mean now: nothing may assign to the field's
-    # VALUE except the explicit use-live click.
-    body = page[page.index('function renderManualSpread'):]
-    body = body[:body.index('function useLiveEntry')]
-    assert 'entryEl.value' not in body
+    assert "entryEl.value = window.__manualSpread == null" in page
+    assert '!window.__manualEntryTouched' in page
+    assert 'function manualEntryTouched' in page
+    assert 'function clearManualEntry' in page
+    # Typing or focusing stops it.
+    assert 'oninput="manualEntryTouched()"' in page
+    assert 'onfocus="manualEntryTouched()"' in page
+    # A direction change is a fresh decision — the other side is a
+    # different price, so the box goes back to tracking.
+    assert 'resumeManualEntryTracking()' in page
+    # ...and "clear" is there, because an empty box is still how you say
+    # "go now" rather than "wait for this level".
+    assert 'id="manual-entry-clear"' in page

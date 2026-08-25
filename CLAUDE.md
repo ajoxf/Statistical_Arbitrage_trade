@@ -1081,9 +1081,26 @@ half a bid-ask, which is simply what a midpoint IS. The word promised a
 goal the number never was. Same family as the bare `x 2` and the bare
 fair value: the figures were right and the label made them unreadable.
 
-The columns now say what each number is — **MID / BEST / FILLED /
-CROSSING / SLIPPAGE** — and the mid's heading states in its tooltip that
-the statistics are measured on it and nobody fills there.
+First pass renamed the columns MID / BEST / FILLED / CROSSING /
+SLIPPAGE. The operator's answer: **"Mid is not required. Instead this
+should be the price you expected — for a Short Spread, the price
+expected when 'Activate Trade' was clicked."** Right, and it settles
+what the reference should have been all along:
+
+    Entry   EXPECTED 55.9300 · FILLED 55.8000 · SLIPPAGE +0.1300
+
+- **EXPECTED is the executable touch at the moment the order was
+  decided** — the short spread for a short, the long spread for a long.
+  That is the number that was on the screen when Activate was clicked,
+  so "did I get what I expected?" is answerable by subtracting two
+  figures on one row.
+- **CROSSING went with the mid.** Mid-to-touch has no meaning once the
+  mid is not shown, and the bid-ask width is already stated under the
+  spread cards ("Leg A ±0.17 · Leg B ±0.40 = 0.57 apart").
+- The mid is still MEASURED, still what mu/sigma/z are taken on, and
+  still stored in `trade_review` for the modelled-vs-realised tile. It
+  is only off this table — pinned by a test, because deleting the
+  computation would take that tile with it.
 
 ## The frozen geometry, as a table (2026-08-25, operator)
 
@@ -1114,19 +1131,29 @@ as many cells as there are headings.
 
 "Instead of 'blank' constantly update with the live price."
 
-As the **placeholder**, not the value. A real value in that field means
-ARM AT THIS LEVEL, and the whole point of leaving it blank is to fire at
-the next poll — so filling it in would silently turn "go now" into "wait
-for a level", which on a spread that has already ticked away may never
-trigger. The placeholder shows the live executable spread for the
-direction selected, updates on every tick, and Activate still means now.
-A **use live** link copies it into the box for nudging, which is the
-case where arming at that number IS what was wanted.
+Shipped first as a placeholder, on the reasoning that a real value
+turns Activate from "go now" into "go at this number" — which for a
+short is only reached again if the spread comes back UP to it. Put to
+the operator, who chose the **value**: "make it pre-fill with the live
+price."
 
-`(blank=now)` came off the label at the same time — the placeholder says
-it better, and the label has to stay on one line beside the link. It
-wrapped onto two the moment the link went in, which is the fault the
-operator had just called out on Take Profit.
+So it pre-fills, and the two things that make that safe are:
+
+- **The sync stops dead the moment the field is taken** (`oninput` and
+  `onfocus`). A value rewriting itself under someone typing a level is
+  worse than useless on the one panel that places orders.
+- **An empty box still means fire at the next poll**, and `clear` is one
+  click away. Changing DIRECTION resumes tracking, because the other
+  side is a different price and that is a fresh decision.
+
+Verified in Chromium: pre-filled at the live short spread, a typed
+99.1234 survives several ticks, `clear` sticks, and switching to long
+re-tracks at the long spread.
+
+`(blank=now)` came off the label — the box now shows the number rather
+than describing it, and the label has to stay on one line beside the
+link. It wrapped onto two the moment the link went in, which is the
+fault the operator had just called out on Take Profit.
 
 ## A direction is a fact, not a statistic (2026-08-25, operator)
 

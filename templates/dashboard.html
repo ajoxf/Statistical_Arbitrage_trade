@@ -735,7 +735,7 @@
                             <span id="position-ev" class="font-monospace">-</span>
                         </div>
                         <table class="lvl-table" id="position-slippage-table" style="display:none;"
-                               title="Decision to fill. MID is the midpoint the statistics are measured on — nobody trades there. BEST is the touch this direction could actually have been done at, and the gap between them is half the bid-ask, already in the cost model. SLIPPAGE is best-to-fill: the surprise. Negative slippage is price improvement, which limit orders do produce.">
+                               title="Decision to fill. EXPECTED is the price this direction could actually have been done at when the order was decided — what was on the screen when Activate was clicked. SLIPPAGE is expected-to-fill: the surprise, and the only part of the entry cost that was not knowable in advance. Negative slippage is price improvement, which limit orders do produce.">
                             <thead><tr id="position-slippage-head"></tr></thead>
                             <tbody id="position-slippage-body"></tbody>
                         </table>
@@ -1346,7 +1346,7 @@
                 <div class="mt-grid mb-1">
                     <div class="mt-2up">
                         <label>Direction</label>
-                        <select class="form-select form-select-sm" id="manual-trade-direction" onchange="updateManualHints()">
+                        <select class="form-select form-select-sm" id="manual-trade-direction" onchange="resumeManualEntryTracking(); updateManualHints();">
                             <option value="SELL_BASIS">Short Spread</option>
                             <option value="BUY_BASIS">Long Spread</option>
                         </select>
@@ -1359,18 +1359,18 @@
                                title="Leave blank to trade whatever the engine would size — the same plan the Position Sizing card shows, honouring your sizing mode, the volume step and each leg's minimum. A number typed here is used exactly as typed; MAX_LOT_SIZE still applies.">
                     </div>
                     <div class="mt-entry">
-                        <!-- "(blank=now)" is gone: the placeholder now
-                             SHOWS the live price blank fires at, which
-                             says it better, and the label has to stay
-                             on one line beside "use live". -->
-                        <label>Entry<a
-                               href="#" id="manual-entry-use-live" class="ms-1"
-                               style="font-size:0.55rem; visibility:hidden;"
-                               title="Copy the live executable spread into this box, then nudge it."
-                               onclick="event.preventDefault(); useLiveEntry();">use live</a></label>
+                        <!-- PRE-FILLED with the live executable price
+                             (operator, 2026-08-25: "make it pre-fill with
+                             the live price"). "clear" empties it, and an
+                             empty box still means fire at the next poll. -->
+                        <label>Entry <a
+                               href="#" id="manual-entry-clear" class="ms-1"
+                               style="font-size:0.55rem;"
+                               title="Empty the box. An empty Entry fires at the next poll instead of waiting for a level."
+                               onclick="event.preventDefault(); clearManualEntry();">clear</a></label>
                         <input type="number" class="form-control form-control-sm" id="manual-entry-spread" step="0.0001"
-                               oninput="updateManualHints()"
-                               title="The spread to ARM at. Left blank it fires at the next poll, and the placeholder tracks the live executable price for the direction selected so you can see what that means. Click Use live to copy it in and nudge it.">
+                               oninput="manualEntryTouched()" onfocus="manualEntryTouched()"
+                               title="The spread to ARM at. It tracks the live executable price for the direction selected until you type in it — after that it is yours and stops moving. Empty the box (clear) to fire at the next poll instead of waiting for a level.">
                     </div>
                     <div class="mt-tp">
                         <!-- The % box sits directly AFTER the words, not
@@ -1973,23 +1973,55 @@
         // spread that has already ticked away may never trigger. The
         // placeholder shows the number, updates on every tick, and
         // Activate still means now. "Use live" copies it in to nudge.
+        // The Entry box carries the LIVE executable price for the
+        // direction selected (operator, 2026-08-25: "make it pre-fill
+        // with the live price").
+        //
+        // Only while the operator has not taken the field. A value that
+        // kept re-writing itself under someone typing a level would be
+        // unusable, and worse than unusable on the one panel that
+        // places orders — so the first keystroke or focus stops the
+        // sync, and it stays stopped until the box is cleared or the
+        // direction changes.
+        //
+        // What it MEANS is unchanged: a value here ARMS at that level
+        // and fires when the market reaches it; an empty box fires at
+        // the next poll. Pre-filling therefore turns Activate from "go
+        // now" into "go at this number", which for a short is only
+        // reached again if the spread comes back UP to it. `clear` is
+        // one click away and the hint below spells out which of the two
+        // is armed.
         const entryEl = document.getElementById('manual-entry-spread');
-        if (entryEl) {
-            entryEl.placeholder = window.__manualSpread == null
-                ? 'now' : Number(window.__manualSpread).toFixed(4);
-        }
-        const useLive = document.getElementById('manual-entry-use-live');
-        if (useLive) {
-            useLive.style.visibility = (window.__manualSpread == null)
-                ? 'hidden' : 'visible';
+        if (entryEl && !window.__manualEntryTouched) {
+            entryEl.value = window.__manualSpread == null
+                ? '' : Number(window.__manualSpread).toFixed(4);
         }
     }
 
-    function useLiveEntry() {
-        const entryEl = document.getElementById('manual-entry-spread');
-        if (!entryEl || window.__manualSpread == null) return;
-        entryEl.value = Number(window.__manualSpread).toFixed(4);
+    // The operator has taken the Entry box: stop overwriting it.
+    function manualEntryTouched() {
+        window.__manualEntryTouched = true;
         updateManualHints();
+    }
+
+    // ...and hand it back. An empty Entry means fire at the next poll,
+    // so clearing also resumes the live sync — which would immediately
+    // refill it, so the flag has to be released only on the NEXT tick.
+    // Simpler and honest: clearing leaves it empty and stops tracking
+    // until the direction changes or a trade is armed.
+    function clearManualEntry() {
+        const entryEl = document.getElementById('manual-entry-spread');
+        if (!entryEl) return;
+        window.__manualEntryTouched = true;
+        entryEl.value = '';
+        updateManualHints();
+    }
+
+    // A direction change is a fresh decision: the price for the other
+    // side is a different number, so the box goes back to tracking.
+    function resumeManualEntryTracking() {
+        window.__manualEntryTouched = false;
+        renderManualSpread();
     }
 
     // Break-even and a suggested target, in SPREAD, for the direction
@@ -4493,19 +4525,33 @@ function updateFilterStatus(elementId, passed, value) {
                         ? 'text-danger' : 'text-success';
                     const signed = x => (x == null ? '—'
                         : (x >= 0 ? '+' : '') + parseFloat(x).toFixed(4));
+                    // EXPECTED, FILLED, SLIPPAGE. The mid is GONE
+                    // (operator, 2026-08-25: "Mid is not required.
+                    // Instead this should be the price you expected").
+                    //
+                    // The price you expected is the executable touch at
+                    // the moment the order was decided — the short
+                    // spread for a short, the long spread for a long —
+                    // which is what was on the screen when Activate was
+                    // clicked. The midpoint was never available to
+                    // either side, so quoting it as the reference made
+                    // half a bid-ask look like a miss. Its partner
+                    // column CROSSING went with it: mid-to-touch has no
+                    // meaning once the mid is not shown, and the bid-ask
+                    // width is already stated under the spread cards.
+                    //
+                    // The mid is still recorded and still what the
+                    // statistics are measured on — it is only off this
+                    // table.
                     slipHead.innerHTML =
                         '<th class="lvl-k">Entry</th>'
-                        + '<th title="The midpoint of both books. The z-score, the edge filter and the exit ladder are all measured on it — and nobody fills there.">Mid</th>'
-                        + '<th title="The best price this direction could actually have been done at: the touch. Half a bid-ask below the mid for a seller, above it for a buyer.">Best</th>'
+                        + '<th title="The price this direction could actually have been done at when the order was decided — the short spread for a short, the long spread for a long. What was on the screen when Activate was clicked.">Expected</th>'
                         + '<th title="What MT5 gave us.">Filled</th>'
-                        + '<th title="Mid to touch. Quoted before you trade and already charged by the cost model — nothing has gone wrong when you pay it.">Crossing</th>'
-                        + '<th title="Touch to fill: the surprise. Negative is price improvement, which limit orders do produce.">Slippage</th>';
+                        + '<th title="Expected to filled: the surprise. Negative is price improvement, which limit orders do produce.">Slippage</th>';
                     slipBody.innerHTML = '<tr>'
                         + '<td class="lvl-k">Spread</td>'
-                        + '<td class="text-secondary">' + f4(sl.decision_spread) + '</td>'
                         + '<td class="text-warning">' + f4(sl.quoted_spread) + '</td>'
                         + '<td class="text-info">' + f4(sl.executed_spread) + '</td>'
-                        + '<td>' + signed(sl.crossing_spread) + '</td>'
                         + '<td class="' + slipClass + '">'
                         + signed(sl.slippage_spread)
                         + (money == null ? '' : ' <span class="text-secondary">('
