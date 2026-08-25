@@ -2555,3 +2555,31 @@ def test_the_manual_panel_touches_sit_in_a_grid_row(client):
     for other in ('short-spread-legs', 'long-spread-legs'):
         j = page.index('id="%s"' % other)
         assert 'row' in page[page.rindex('<div', 0, j):page.index('>', j) + 1]
+
+
+def test_the_open_trade_is_a_real_grid(client):
+    """Operator, 2026-08-24: "should be stacked as rows and columns and
+    very easy to read like a trading terminal." It was inline
+    label:value pairs, so every value started wherever its label
+    happened to end and nothing lined up down the card."""
+    page = client.get('/').get_data(as_text=True)
+    assert '.pos-grid {' in page
+    assert 'grid-template-columns: max-content 1fr max-content 1fr;' in page
+    # Optional sections join the PARENT grid rather than nesting their
+    # own, which is what keeps every column on one edge.
+    assert '.pos-grid .pw { display: contents; }' in page
+    # ...and each one starts a fresh row, so Target and Stop stay a pair.
+    assert '.pos-grid .pw > .pk:first-child { grid-column-start: 1; }' in page
+
+
+def test_the_grid_styling_is_not_on_the_spans_the_js_recolours(client):
+    """updatePosition reassigns className on position-pnl,
+    position-spread-delta, position-target and position-stop. Styling
+    the span itself would be wiped on the first tick; it goes on a
+    wrapper instead."""
+    page = client.get('/').get_data(as_text=True)
+    for pid in ('position-pnl', 'position-spread-delta',
+                'position-target', 'position-stop'):
+        i = page.index('id="%s"' % pid)
+        # the enclosing element is the styled wrapper
+        assert 'class="pv"' in page[max(0, i - 120):i], pid

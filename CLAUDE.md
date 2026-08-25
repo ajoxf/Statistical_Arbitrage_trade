@@ -1011,6 +1011,46 @@ say **Leg A / Leg B**, not spot / fut (operator, 2026-08-24): the
 config, the sizing card and the Settings page all speak in legs, and
 only this table did not.
 
+## The open-trade card, as an actual grid (2026-08-24, operator)
+
+"This has to be more structured and well aligned. Should be stacked as
+rows and columns and very easy to read like a trading terminal."
+
+It was inline `label: value` pairs inside Bootstrap columns, so every
+value started wherever its label happened to end and nothing lined up
+down the card. Now a CSS grid —
+`grid-template-columns: max-content 1fr max-content 1fr` — which sizes
+the columns to the widest LABEL and then holds that width for every
+row. Measured in Chromium: every value right-aligns to one of exactly
+two edges (446px / 892px) and every label to one of two (8px / 461px).
+
+Three things that were not obvious:
+
+- **The value styling sits on a WRAPPER, not on the span.** `updatePosition`
+  reassigns `className` on `position-pnl`, `position-spread-delta`,
+  `position-target` and `position-stop` to colour them, which would wipe
+  any class put on the span itself. The monospace and right-alignment go
+  on an enclosing `.pv`; the colour class still lands on the span.
+- **Optional sections use `display: contents`, not a nested grid.** A
+  nested `.pos-grid` sizes its own columns and lands a few pixels off
+  the rows above it (438 / 447 / 464 against the parent's 446) — which
+  is precisely the fault being fixed. `contents` makes the children join
+  the PARENT grid. Toggling `style.display` between `'none'` and `''`
+  still works, because `''` reverts to `contents`.
+- **Each optional group starts a fresh row**
+  (`.pw > .pk:first-child { grid-column-start: 1 }`). Without it the
+  cells flow into whatever space is left, which split Target and Stop
+  across two rows — they are a pair and have to read as one.
+
+The four wide readings (Levels, Level P&L, Expected value, Entry cost)
+are one label and a run of figures, so they get their own full-width
+`.pos-line` grid with a fixed 7.5rem label column: they line up with
+each other, and the figures wrap inside their own cell instead of
+pushing the label around.
+
+The CSS lives in dashboard.html's own style block rather than coming
+from the CDN, for the same reason `price-up` does.
+
 ## Crisp like a trading platform (2026-08-24, operator)
 
 Four passes over the same two cards, each one the same fault: the

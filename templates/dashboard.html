@@ -3,6 +3,58 @@
 {% block title %}Dashboard - Nexus{% endblock %}
 
 {% block content %}
+<style>
+    /* The open-trade grid. CSS grid rather than the Bootstrap one,
+       because the columns must size to the widest LABEL and then hold
+       that width down the whole card — a column of numbers is only
+       scannable if it starts in the same place every row. Defined here
+       rather than pulled from a CDN, so the alignment survives the
+       blocked-CDN failure this app has already had. */
+    .pos-grid {
+        display: grid;
+        grid-template-columns: max-content 1fr max-content 1fr;
+        column-gap: 0.9rem;
+        row-gap: 0.1rem;
+        align-items: baseline;
+        font-size: 0.78rem;
+        line-height: 1.5;
+    }
+    .pos-grid .pk { color: var(--text-secondary, #6c757d); white-space: nowrap; }
+    .pos-grid .pv {
+        font-family: 'Monaco', 'Menlo', monospace;
+        text-align: right;
+        white-space: nowrap;
+    }
+    /* A block that spans the full grid and carries its own sub-grid, so
+       optional sections can be shown and hidden as a unit without
+       breaking the alignment of the rows around them. */
+    /* display:contents, NOT a span: the children then join the PARENT
+       grid and share its column tracks, so an optional section lines up
+       with the fixed rows above it. A nested grid sizes its own columns
+       and lands a few pixels off, which is the whole thing this card
+       was failing at. Toggling style.display between 'none' and ''
+       still works — '' reverts to contents. */
+    .pos-grid .pw { display: contents; }
+    .pos-grid .pw > #position-stop-basis { grid-column: 1 / -1; }
+    /* Each optional group starts a FRESH row. With display:contents its
+       cells otherwise flow into whatever space is left, which split
+       Target and Stop across two rows — they are a pair and have to be
+       read as one. */
+    .pos-grid .pw > .pk:first-child { grid-column-start: 1; }
+    .pos-wide { border-top: 1px solid var(--border-color); font-size: 0.75rem; }
+    /* One label and a run of figures: the label gets a fixed column so
+       these line up with each other, and the figures wrap inside their
+       own cell instead of pushing the label around. */
+    .pos-line {
+        display: grid;
+        grid-template-columns: 7.5rem 1fr;
+        column-gap: 0.9rem;
+        align-items: baseline;
+        line-height: 1.5;
+    }
+    .pos-line .pk { color: var(--text-secondary, #6c757d); white-space: nowrap; }
+</style>
+
 <!-- Top Account Bar - Full Width -->
 <div class="card mb-3 account-card" id="account-card">
     <div class="card-body py-2">
@@ -492,126 +544,101 @@
                 </div>
                 <div class="text-secondary text-center mt-2" id="exec-spread-note"
                      style="font-size: 0.65rem;"></div>
-                <div id="position-details" class="mt-1 pt-1" style="display: none; border-top: 1px solid var(--border-color); font-size: 0.78rem; line-height: 1.45;">
-                    <div class="row g-0">
-                        <div class="col-6">
-                            <span class="text-secondary">Entry Z:</span>
-                            <span id="position-entry-z">-</span>
+                <!-- The open trade as a real GRID (operator, 2026-08-24:
+                     "should be stacked as rows and columns and very easy
+                     to read like a trading terminal"). It was inline
+                     label:value pairs inside Bootstrap columns, so every
+                     value started wherever its label happened to end and
+                     nothing lined up down the card.
+
+                     CSS grid, not the Bootstrap grid, because the
+                     columns must size to the widest LABEL and then stay
+                     put — that is what makes a column of numbers
+                     scannable. The value styling sits on a WRAPPER: the
+                     JS reassigns className on several of these spans to
+                     colour them, which would wipe any class put on the
+                     span itself. -->
+                <div id="position-details" class="mt-1 pt-2"
+                     style="display: none; border-top: 1px solid var(--border-color);">
+                    <div class="pos-grid">
+                        <div class="pk">Entry Z</div>
+                        <div class="pv"><span id="position-entry-z">-</span></div>
+                        <div class="pk">P&amp;L</div>
+                        <div class="pv"><span id="position-pnl">-</span></div>
+
+                        <div class="pk">Leg A entry</div>
+                        <div class="pv"><span id="position-entry-spot">-</span><span
+                             id="position-leg-a-chg" class="ms-1" style="font-size: 0.72rem;"
+                             title="Leg A price change since entry — green when the move helps this leg's side"></span></div>
+                        <div class="pk">Leg B entry</div>
+                        <div class="pv"><span id="position-entry-futures">-</span><span
+                             id="position-leg-b-chg" class="ms-1" style="font-size: 0.72rem;"
+                             title="Leg B price change since entry — green when the move helps this leg's side"></span></div>
+
+                        <div class="pk" title="Spread at entry (futures − β × spot, from actual fills).">Entry spread</div>
+                        <div class="pv"><span id="position-entry-spread">-</span></div>
+                        <div class="pk" title="Spread now − Entry Spread. For a LONG, profit when this is NEGATIVE. For a SHORT, profit when POSITIVE.">&Delta; spread</div>
+                        <div class="pv"><span id="position-spread-delta">-</span></div>
+
+                        <div class="pk">Size</div>
+                        <div class="pv"><span id="position-notional">-</span></div>
+                        <div class="pk">Age</div>
+                        <div class="pv"><span id="position-age">-</span></div>
+
+                        <div class="pw" id="position-max-hold-row" style="display:none;">
+                            <div class="pk" title="Maximum hold time — the trade exits automatically when reached, regardless of signal.">Max hold</div>
+                            <div class="pv"><span id="position-max-hold">-</span></div>
+                            <div class="pk">Remaining</div>
+                            <div class="pv"><span id="position-max-hold-remaining" class="text-warning">-</span></div>
                         </div>
-                        <div class="col-6">
-                            <span class="text-secondary">P&L:</span>
-                            <span id="position-pnl">-</span>
+
+                        <div class="pw" id="position-halflife-row" style="display:none;"
+                             title="Mean-reversion timescale (Ornstein-Uhlenbeck half-life) and how many half-lives this trade has been open. age ÷ half-life well above 1 while still losing = the expected reversion window has passed. ∞ = the spread is not mean-reverting right now.">
+                            <div class="pk">Half-life</div>
+                            <div class="pv"><span id="position-halflife">-</span><span
+                                 id="position-halflife-ratio" class="ms-1"></span></div>
+                        </div>
+
+                        <div class="pw" id="position-targets-row" style="display:none;">
+                            <div class="pk" title="Profit target: exit when net P&L reaches this level.">Target</div>
+                            <div class="pv"><span id="position-target" class="price-up fw-semibold">-</span></div>
+                            <div class="pk" title="Dollar stop: force-exit if net P&L falls to this level.">Stop</div>
+                            <div class="pv"><span id="position-stop" class="price-down fw-semibold">-</span></div>
+                            <!-- Which knob set the stop, and what the geometry
+                                 demands. Three settings in three units resolve
+                                 to one dollar figure, so "why is the stop
+                                 $4.77" is not answerable from the number. -->
+                            <div id="position-stop-basis" class="text-secondary"
+                                 style="font-size: 0.62rem;"></div>
                         </div>
                     </div>
-                    <div class="row g-0">
-                        <div class="col-6">
-                            <span class="text-secondary">Leg A Entry:</span>
-                            <span id="position-entry-spot">-</span>
-                            <span id="position-leg-a-chg" class="ms-1" style="font-size: 0.72rem;"
-                                  title="Leg A price change since entry — green when the move helps this leg's side"></span>
-                        </div>
-                        <div class="col-6">
-                            <span class="text-secondary">Leg B Entry:</span>
-                            <span id="position-entry-futures">-</span>
-                            <span id="position-leg-b-chg" class="ms-1" style="font-size: 0.72rem;"
-                                  title="Leg B price change since entry — green when the move helps this leg's side"></span>
-                        </div>
-                    </div>
-                    <div class="row g-0">
-                        <div class="col-6">
-                            <span class="text-secondary"
-                                  title="Spread at entry (futures − β × spot, from actual fills). The exit target is when this drifts toward zero.">
-                                Entry Spread:
-                            </span>
-                            <span id="position-entry-spread">-</span>
-                        </div>
-                        <div class="col-6">
-                            <span class="text-secondary"
-                                  title="Spread now − Entry Spread. For a LONG, profit when this is NEGATIVE (spread fell). For a SHORT, profit when POSITIVE.">
-                                Δ Spread:
-                            </span>
-                            <span id="position-spread-delta">-</span>
-                        </div>
-                    </div>
-                    <div class="row g-0" id="position-levels-row" style="display:none;">
-                        <div class="col-12" style="font-size: 0.75rem;"
-                             title="Absolute spread values where this trade breaks even (covers all fees), releases a reversion exit (EX = BE + profit gate, shown when a gate is set), takes profit, and stops out — same math the exit overrides fire on. These levels do NOT drift with the rolling mean, unlike the in-trade z-score. Watch the live spread against them.">
-                            <span class="text-secondary">Levels:</span>
+
+                    <!-- The wide readings: each is one label and a run of
+                         figures, so they get a full-width row of their own
+                         rather than being crammed into half a column. -->
+                    <div class="pos-wide mt-2 pt-2">
+                        <div class="pos-line" id="position-levels-row" style="display:none;"
+                             title="Absolute spread values where this trade breaks even, releases a reversion exit, takes profit and stops out — the same maths the exit overrides fire on. These do NOT drift with the rolling mean.">
+                            <span class="pk">Levels</span>
                             <span id="position-levels" class="font-monospace">-</span>
                         </div>
-                    </div>
-                    <div class="row g-0" id="position-levels-usd-row" style="display:none;">
-                        <div class="col-12" style="font-size: 0.75rem;"
-                             title="Net P&L at each level: BE = $0.00 (all fees paid), EX = the profit-gate floor, TP = the profit target. SL is quoted as the GROSS spread move that trips the stop — net there ≈ −(stop + fees).">
-                            <span class="text-secondary">Level P&L:</span>
+                        <div class="pos-line" id="position-levels-usd-row" style="display:none;"
+                             title="Net P&L at each level: BE = $0.00 (all fees paid), EX = the profit-gate floor, TP = the profit target. SL is the GROSS spread move that trips the stop.">
+                            <span class="pk">Level P&amp;L</span>
                             <span id="position-levels-usd" class="font-monospace">-</span>
                         </div>
-                    </div>
-                    <div class="row g-0" id="position-ev-row" style="display:none;">
-                        <div class="col-12" style="font-size: 0.75rem;"
-                             title="What this trade was worth GOING IN, from the levels frozen at entry: EV = p x TP − (1−p) x (STOP + fees). A win banks the target NET; a loss books the stop GROSS, so the round trip is paid on the way out of a loser too and sits on the loss side. p is the chance of reaching the target before the stop for a mean-reverting (Ornstein-Uhlenbeck) spread, computed from the z-distance to each level — the reversion SPEED cancels out, so this does not depend on the AR(1) half-life. The baseline beside it is the same trade on a spread that does NOT revert, which is always worth exactly minus the round trip: every dollar of edge here comes from reversion. It does not model the clock — MAX_HOLD, the time stop and the reversion gate can all close a trade that reached neither level.">
-                            <span class="text-secondary">Expected value:</span>
+                        <div class="pos-line" id="position-ev-row" style="display:none;"
+                             title="What this trade was worth GOING IN, from the levels frozen at entry: EV = p x TP − (1−p) x (STOP + fees). p is the chance of reaching the target before the stop for a mean-reverting spread; the reversion SPEED cancels out. The baseline beside it is the same trade on a spread that does NOT revert, which is always worth exactly minus the round trip. It does not model the clock.">
+                            <span class="pk">Expected value</span>
                             <span id="position-ev" class="font-monospace">-</span>
                         </div>
-                    </div>
-                    <div class="row g-0" id="position-slippage-row" style="display:none;">
-                        <div class="col-12" style="font-size: 0.75rem;"
-                             title="What the signal saw versus what MT5 gave us, split into two costs that behave differently. CROSSING is mid-to-touch: quoted on the screen before you trade and already in the cost model — paying it is normal. SLIPPAGE is touch-to-fill: the market moving between the decision and the fill, or the broker filling away from its own quote. A negative slippage is price improvement, which limit orders do produce.">
-                            <span class="text-secondary">Entry cost:</span>
+                        <div class="pos-line" id="position-slippage-row" style="display:none;"
+                             title="What the signal saw versus what MT5 gave us. CROSSING is mid-to-touch: quoted before you trade and already in the cost model. SLIPPAGE is touch-to-fill: the market moving between the decision and the fill. Negative slippage is price improvement, which limit orders do produce.">
+                            <span class="pk">Entry cost</span>
                             <span id="position-slippage" class="font-monospace">-</span>
                         </div>
                     </div>
-                    <div class="row">
-                        <div class="col-6">
-                            <span class="text-secondary">Age:</span>
-                            <span id="position-age" class="font-monospace">-</span>
-                        </div>
-                        <div class="col-6">
-                            <span class="text-secondary">Size:</span>
-                            <span id="position-notional">-</span>
-                        </div>
-                    </div>
-                    <div class="row" id="position-max-hold-row" style="display:none;">
-                        <div class="col-6">
-                            <span class="text-secondary"
-                                  title="Maximum hold time — trade exits automatically when reached regardless of signal">Max Hold:</span>
-                            <span id="position-max-hold" class="font-monospace">-</span>
-                        </div>
-                        <div class="col-6">
-                            <span class="text-secondary">Remaining:</span>
-                            <span id="position-max-hold-remaining" class="font-monospace text-warning">-</span>
-                        </div>
-                    </div>
-                    <div class="row" id="position-halflife-row" style="display:none;">
-                        <div class="col-12" style="font-size: 0.78rem;"
-                             title="Mean-reversion timescale (Ornstein-Uhlenbeck half-life) and how many half-lives this trade has been open. age ÷ half-life well above 1 while still losing = the expected reversion window has passed → likely a regime break, not a temporary stretch (be patient below ~2×, suspect a trend shift above ~3×). ∞ = the spread is not mean-reverting right now.">
-                            <span class="text-secondary">Half-life:</span>
-                            <span id="position-halflife" class="font-monospace">-</span>
-                            <span id="position-halflife-ratio" class="font-monospace"></span>
-                        </div>
-                    </div>
-                    <div class="row g-0" id="position-targets-row" style="display:none;">
-                        <div class="col-6">
-                            <span class="text-secondary"
-                                  title="Profit target: exit when net P&L reaches this level">Target:</span>
-                            <span id="position-target" class="price-up fw-semibold">-</span>
-                        </div>
-                        <div class="col-6">
-                            <span class="text-secondary"
-                                  title="Dollar stop: force-exit if net P&L falls to this level">Stop:</span>
-                            <span id="position-stop" class="price-down fw-semibold">-</span>
-                        </div>
-                        <!-- Which knob set the stop, and what the
-                             geometry demands. Three settings in three
-                             units resolve to one dollar figure, so "why
-                             is the stop $4.77" is not answerable from
-                             the number — and a stop wider than the
-                             target is a win rate nobody chose on
-                             purpose. -->
-                        <div class="col-12 text-secondary mt-1"
-                             id="position-stop-basis"
-                             style="font-size: 0.62rem;"></div>
-                    </div>
+
                     <!-- P&L progress gauge: left=stop, centre=breakeven, right=target -->
                     <div id="position-pnl-bar-row" style="display:none; padding: 2px 0 4px 0;">
                         <div style="position:relative; height:7px; border-radius:4px; background:rgba(255,255,255,0.08); overflow:hidden;">
