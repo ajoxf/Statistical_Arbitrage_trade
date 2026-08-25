@@ -1112,8 +1112,24 @@ does not have.
   things that can close it. Printing "time_stop=15min" beside a
   hand-placed order is how that clock read as a considered decision.
 
-**The price of this, stated everywhere it applies: a manual trade with
-the Stop Loss box empty has NO STOP.** It runs until the target, the
+**Risk limits are off too** (operator, same day: "Yes, turn off risk
+limits for manual trades too"). The circuit breaker, `MAX_LOT_SIZE`,
+`MAX_POSITIONS_PER_ASSET` and the loss-streak/margin size reducers no
+longer gate or shrink a hand-placed trade. Same argument: they are the
+strategy's governor, there to stop the ALGO trading itself into trouble
+unattended, which is not what a trader placing one order by hand is
+doing. Every bypass is LOGGED at WARNING beside the trade that used it —
+a limit that was overridden has to appear in the record — and a blank
+Lots box now means the engine's SIZING with `size_multiplier=1.0`,
+since the reducers are themselves a risk response.
+
+Still standing, because none of them is a risk policy: the level
+geometry check (a stop on the winning side fires the moment the trade
+goes right — that is a typo, not a risk appetite), `_precheck_pair`'s
+symbol minimums, and the broker's own rejection.
+
+**The price of all this, stated everywhere it applies: a manual trade
+with the Stop Loss box empty has NO STOP.** It runs until the target, the
 overnight rule, or the operator. That is the instruction — a trader's
 stop is the trader's — and it is not left implicit: the engine logs a
 WARNING at entry, the hint line under the fields turns amber and says

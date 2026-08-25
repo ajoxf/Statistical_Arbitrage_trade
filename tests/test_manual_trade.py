@@ -92,9 +92,15 @@ def test_manual_stop_outranks_the_manual_target(config):
                            age_sec=60, spread=23.5) == 'MANUAL_STOP'
 
 
-def test_engine_dollar_stop_still_armed_beside_a_manual_stop(config):
-    """A manual stop does not disarm the engine's own — whichever is
-    reached first closes the trade."""
+def test_a_signal_plan_keeps_the_engine_stop_beside_a_manual_level(config):
+    """A plan carrying `manual_stop_spread` but NOT stamped MANUAL is a
+    signal trade, and keeps the engine's dollar stop.
+
+    Since 2026-08-25 a trade stamped MANUAL is governed by the card
+    alone — see tests/test_manual_is_manual.py. This is the fail-safe
+    side of that: the source decides, and an unstamped plan is managed
+    by the engine rather than left to run.
+    """
     ladder = ExitLadder(config)
     short = make_position(SignalType.SELL_BASIS)
     p = plan(manual_stop_spread=99.0)          # far away, never hit
@@ -297,11 +303,54 @@ def test_fire_now_checks_levels_against_the_live_spread(coordinator):
 
 def test_a_refusal_reaches_the_ui_not_just_the_log(coordinator):
     """Every rejection path used to end in logging.warning and nothing
-    else — the operator pressed Activate and saw nothing happen."""
-    coordinator.config.RISK_LIMITS['MAX_LOT_SIZE'] = 0.5
-    arm(coordinator, direction='SELL_BASIS', lots=5.0)
+    else — the operator pressed Activate and saw nothing happen.
+
+    The example used to be MAX_LOT_SIZE; risk limits no longer gate a
+    manual trade, so this uses a refusal that still exists — a stop on
+    the WINNING side, which would fire the moment the trade went right.
+    """
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    arm(coordinator, direction='SELL_BASIS', lots=1.0, stop_spread=19.0)
     assert coordinator.manual_note['ok'] is False
-    assert 'MAX_LOT_SIZE' in coordinator.manual_note['text']
+    assert 'Stop loss' in coordinator.manual_note['text']
+
+
+def test_risk_limits_do_not_refuse_a_manual_trade(coordinator):
+    """Operator, 2026-08-25: "turn off risk limits for manual trades
+    too." MAX_LOT_SIZE, MAX_POSITIONS_PER_ASSET and the circuit breaker
+    are the strategy's governor — they exist to stop the ALGO trading
+    itself into trouble unattended, which is not what a trader placing
+    one order by hand is doing.
+    """
+    coordinator.config.RISK_LIMITS['MAX_LOT_SIZE'] = 0.5
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    arm(coordinator, direction='SELL_BASIS', lots=5.0)
+    assert coordinator.manual_note['ok'] is True
+    position = next(iter(
+        coordinator.position_manager.get_active_positions().values()))
+    assert position.spot_trade.lot_size == pytest.approx(5.0)
+
+
+def test_a_tripped_circuit_breaker_does_not_refuse_a_manual_trade(
+        coordinator):
+    coordinator.risk_manager.halted = lambda: (True, 'daily loss limit')
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    arm(coordinator, direction='SELL_BASIS', lots=1.0)
+    assert coordinator.manual_note['ok'] is True
+
+
+def test_the_bypass_is_logged_not_silent(coordinator, caplog):
+    """A limit that was bypassed has to appear in the record beside the
+    trade that bypassed it."""
+    import logging as _logging
+    coordinator.config.RISK_LIMITS['MAX_LOT_SIZE'] = 0.5
+    coordinator.risk_manager.halted = lambda: (True, 'daily loss limit')
+    coordinator.active_assets['GOLD']['last_data'] = market(20.0)
+    with caplog.at_level(_logging.WARNING):
+        arm(coordinator, direction='SELL_BASIS', lots=5.0)
+    text = caplog.text
+    assert 'circuit breaker is ON' in text
+    assert 'MAX_LOT_SIZE' in text
 
 
 def test_a_successful_manual_trade_reports_itself(coordinator):

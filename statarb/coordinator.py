@@ -1081,7 +1081,8 @@ class Coordinator:
             self._meta_cache[key] = meta if (meta and meta.get('ok')) else None
         return self._meta_cache[key]
 
-    def _sizing_plan(self, asset_key, market_data=None):
+    def _sizing_plan(self, asset_key, market_data=None,
+                     size_multiplier=None):
         """Resolve this entry's lots for BOTH legs.
 
         In 'notional' mode the operator sets the money per leg on the
@@ -1104,7 +1105,8 @@ class Coordinator:
             self.config, contract_a, contract_b,
             market_data.get('spot_price'), market_data.get('futures_price'),
             meta_a=meta_a, meta_b=meta_b,
-            size_multiplier=self.risk_manager.size_multiplier())
+            size_multiplier=(self.risk_manager.size_multiplier()
+                             if size_multiplier is None else size_multiplier))
 
     def _clip_lots(self, asset_key=None, market_data=None):
         """Leg A lots for the next entry."""
@@ -2000,9 +2002,22 @@ class Coordinator:
             return self._manual_reject(f"direction {direction} is not a "
                                        f"spread trade")
 
+        # RISK LIMITS ARE OFF FOR A MANUAL TRADE (operator, 2026-08-25:
+        # "turn off risk limits for manual trades too").
+        #
+        # The circuit breaker, MAX_LOT_SIZE and MAX_POSITIONS_PER_ASSET
+        # are the strategy's own governor: they exist to stop the ALGO
+        # trading itself into trouble unattended. A trader placing a
+        # single order by hand, watching the screen, is the thing they
+        # were protecting against the absence of.
+        #
+        # Logged, never silent. A limit that was bypassed has to appear
+        # in the record beside the trade that bypassed it.
         halted, why = self.risk_manager.halted()
         if halted:
-            return self._manual_reject(f"circuit breaker ({why})")
+            logging.warning(
+                "MANUAL trade placed while the circuit breaker is ON (%s) "
+                "— risk limits do not gate manual trades", why)
 
         # Market data first, because the size depends on it.
         market_data = self.get_market_data(asset_key) \
@@ -2031,7 +2046,11 @@ class Coordinator:
         # nothing. This is the one part of the old `lots or CLIP_LOTS`
         # that was right.
         if not lots:
-            plan = self._sizing_plan(asset_key, market_data)
+            # "blank = engine size" means the engine's SIZING, not its
+            # risk response: the loss-streak and margin reducers are
+            # risk limits, and those are off for a manual trade.
+            plan = self._sizing_plan(asset_key, market_data,
+                                     size_multiplier=1.0)
             lots = plan.get('leg_a_lots') or 0.0
             if plan.get('reason') or lots <= 0:
                 return self._manual_reject(
@@ -2039,13 +2058,23 @@ class Coordinator:
                     or 'sizing resolved to 0 lots — set a lot size on the '
                        'panel, or raise the notional per leg')
         lots = float(lots)
-        if lots > self.config.RISK_LIMITS['MAX_LOT_SIZE']:
-            return self._manual_reject(
-                f"{lots:g} lots exceeds MAX_LOT_SIZE "
-                f"{self.config.RISK_LIMITS['MAX_LOT_SIZE']:g}")
+        # Both of these are RISK LIMITS and both are off here — see the
+        # note above. They are still reported, because an order ten
+        # times the configured cap is worth seeing in the log even when
+        # it is allowed, and because MAX_LOT_SIZE was the only thing
+        # that caught the 50-lot blank box on 2026-08-24.
+        cap = self.config.RISK_LIMITS['MAX_LOT_SIZE']
+        if cap and lots > cap:
+            logging.warning(
+                "MANUAL trade of %g lots is over MAX_LOT_SIZE %g — placing "
+                "it anyway; risk limits do not gate manual trades", lots, cap)
         active = self.position_manager.get_positions_for_asset(asset_key)
-        if len(active) >= self.config.RISK_LIMITS['MAX_POSITIONS_PER_ASSET']:
-            return self._manual_reject("max positions per asset reached")
+        max_positions = self.config.RISK_LIMITS['MAX_POSITIONS_PER_ASSET']
+        if max_positions and len(active) >= max_positions:
+            logging.warning(
+                "MANUAL trade opens position %d on %s against "
+                "MAX_POSITIONS_PER_ASSET %d — placing it anyway",
+                len(active) + 1, asset_key, max_positions)
 
         # Levels are checked against the price we are actually filling
         # at, not the level that armed the order — the spread has moved

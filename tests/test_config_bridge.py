@@ -102,16 +102,21 @@ def test_manual_spread_trade_via_control_file(tmp_path, monkeypatch,
     coordinator._read_control()
     assert len(coordinator.position_manager.get_active_positions()) == 1
 
-    # Circuit breaker blocks manual trades too
+    # A tripped circuit breaker does NOT block a manual trade
+    # (operator, 2026-08-25: "turn off risk limits for manual trades
+    # too"). The breaker is the strategy's governor — it stops the ALGO
+    # trading itself into trouble unattended, which is not what a
+    # trader placing one order by hand is doing.
     config.RISK_LIMITS['LOSS_STREAK_PAUSE'] = 1
     coordinator.risk_manager.on_position_closed(-100)
+    assert coordinator.risk_manager.halted()[0] is True
     control.write_text(json.dumps({
         'algo_enabled': True,
         'open': {'asset': 'GOLD', 'direction': 'BUY_BASIS',
                  'lots': 1.0, 'ts': 200.0}}))
     os.utime(control, (time.time() + 10, time.time() + 10))
     coordinator._read_control()
-    assert len(coordinator.position_manager.get_active_positions()) == 1
+    assert len(coordinator.position_manager.get_active_positions()) == 2
 
 
 def test_startup_does_not_replay_one_shot_commands(tmp_path, monkeypatch,

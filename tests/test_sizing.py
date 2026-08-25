@@ -1011,12 +1011,26 @@ def test_zero_lots_means_blank_not_an_order_for_nothing(coord):
     assert placed['lots'] > 0
 
 
-def test_a_manual_trade_is_still_capped_by_max_lot_size(coord):
-    coord.get_market_data = lambda key: gold_md()
-    coord.config.RISK_LIMITS['MAX_LOT_SIZE'] = 0.001
-    assert coord._manual_open('GOLD', 'SELL_BASIS', lots=5.0) is None
-    assert 'MAX_LOT_SIZE' in coord.manual_note['text']
+def test_max_lot_size_no_longer_caps_a_manual_trade(coord):
+    """Operator, 2026-08-25: "turn off risk limits for manual trades
+    too."
 
+    MAX_LOT_SIZE is the strategy's governor. It used to be the only
+    thing standing between a blank Lots box and 50 lots of gold — that
+    hole is closed a better way now (a blank box means the sizing plan),
+    so the cap can be what it was meant to be: a limit on the ALGO.
+
+    It is still LOGGED when a manual trade goes past it, because an
+    order ten times the configured cap is worth seeing in the record
+    even when it is allowed.
+    """
+    placed = _manual_ready(coord)
+    coord.config.RISK_LIMITS['MAX_LOT_SIZE'] = 0.001
+    coord._manual_open('GOLD', 'SELL_BASIS', lots=5.0)
+    # It reached the entry path unclamped and unrefused. (_manual_ready
+    # stubs _open_position, so manual_note reports a non-execution here
+    # by construction — the subject of this test is the lots.)
+    assert placed['lots'] == pytest.approx(5.0)
 
 def test_a_manual_trade_reports_a_sizing_refusal_rather_than_guessing(coord):
     """Under the minimum notional the plan refuses with a reason. Falling
