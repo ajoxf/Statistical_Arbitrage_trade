@@ -2268,6 +2268,21 @@ def test_the_manual_panel_shows_the_executable_spread(client):
     assert 'fill here' not in page
 
 
+def test_the_shutdown_setting_has_a_control(client):
+    """Shutting down with a position open asks first (operator,
+    2026-08-25), and the operator can change that answer to always or
+    never. A knob with no control is how COMMISSION_PER_LOT_* sat at
+    zero for months — so pin both halves: the page must POST the field
+    and must READ IT BACK on reload.
+    """
+    page = client.get('/settings').get_data(as_text=True)
+    for field in ('close_on_shutdown', 'shutdown_prompt_sec'):
+        assert f'id="{field}"' in page, field
+        assert f'{field}: ' in page, f'{field} is never posted'
+        assert f"getElementById('{field}').value = config." in page, (
+            f'{field} is never read back')
+
+
 def test_the_manual_fields_are_one_grid(client):
     """Operator, 2026-08-25: "Make all the boxes in a grid with minimum
     whitespace."

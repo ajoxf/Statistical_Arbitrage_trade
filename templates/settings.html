@@ -436,6 +436,29 @@
                             actually see. Applies without a restart.</small>
                         </div>
                         <div class="col-md-4">
+                            <label class="form-label">On Shutdown, With a Position Open</label>
+                            <select class="form-select" id="close_on_shutdown" name="close_on_shutdown">
+                                <option value="ask" {% if config.close_on_shutdown == 'ask' %}selected{% endif %}>Ask me in the console</option>
+                                <option value="never" {% if config.close_on_shutdown == 'never' %}selected{% endif %}>Leave it open</option>
+                                <option value="always" {% if config.close_on_shutdown == 'always' %}selected{% endif %}>Close it at market</option>
+                            </select>
+                            <small class="text-secondary">Stopping the engine used to close every live
+                            position at market, so restarting to change a setting paid a round trip
+                            you never asked for. <strong>Ask</strong> prints the position in the console
+                            and waits. An unanswered prompt leaves it open &mdash; closing cannot be
+                            undone, and a position left open is picked back up from the database on
+                            the next start. Nothing manages it while the engine is down.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Shutdown Prompt Wait (seconds)</label>
+                            <input type="number" class="form-control" id="shutdown_prompt_sec"
+                                   name="shutdown_prompt_sec" value="{{ config.shutdown_prompt_sec }}"
+                                   step="5" min="0" max="600">
+                            <small class="text-secondary">How long that question waits for an answer
+                            before leaving the position open. The launcher gives the engine this long
+                            plus 30s before it stops it, so the answer has room to be acted on.</small>
+                        </div>
+                        <div class="col-md-4">
                             <label class="form-label">Stats Update Interval (seconds)</label>
                             <select class="form-select" id="stats_update_interval" name="stats_update_interval">
                                 <option value="0" {% if config.stats_update_interval == 0 %}selected{% endif %}>Every tick (real-time)</option>
@@ -2077,6 +2100,8 @@
             min_sigma: parseFloat(document.getElementById('min_sigma').value),
             max_abs_z: parseFloat(document.getElementById('max_abs_z').value),
             poll_interval_sec: parseFloat(document.getElementById('poll_interval_sec').value),
+            close_on_shutdown: document.getElementById('close_on_shutdown').value,
+            shutdown_prompt_sec: parseFloat(document.getElementById('shutdown_prompt_sec').value),
             pair_type: document.getElementById('pair_type').value,
             carry_rate_pct: parseFloat(document.getElementById('carry_rate_pct').value),
             // Sent as the raw trimmed string, never parseFloat: an empty
@@ -2394,6 +2419,8 @@
                 document.getElementById('min_sigma').value = config.min_sigma;
                 document.getElementById('max_abs_z').value = config.max_abs_z;
                 document.getElementById('poll_interval_sec').value = config.poll_interval_sec;
+                document.getElementById('close_on_shutdown').value = config.close_on_shutdown || 'ask';
+                document.getElementById('shutdown_prompt_sec').value = config.shutdown_prompt_sec;
                 document.getElementById('pair_type').value = config.pair_type || 'SPOT_FUTURE';
                 document.getElementById('carry_rate_pct').value = config.carry_rate_pct;
                 // `?? ''` and not `|| ''`: a swap of 0 is a real override

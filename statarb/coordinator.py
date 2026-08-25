@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -3129,17 +3130,140 @@ class Coordinator:
                 leg.close()
                 leg.connect()
 
-    def stop(self):
+    @staticmethod
+    def describe_open_position(position_id, position):
+        """One line an operator can decide on without opening the
+        dashboard: which pair, which way, how big, and what it is worth
+        right now."""
+        side = getattr(position.signal_type, 'value',
+                       position.signal_type) or '?'
+        pnl = getattr(position, 'unrealized_pnl', None)
+        money = '—' if pnl is None else f"${pnl:+,.2f}"
+        return (f"  {position_id}  {position.asset}  {side}  "
+                f"{position.lots:g} lots  P&L {money}")
+
+    def _ask_close_on_shutdown(self, active):
+        """Before shutting down, ask whether an open position should be
+        closed (operator, 2026-08-25). It used to close unconditionally,
+        so restarting to change a setting liquidated a live trade at
+        market and paid the round trip for it.
+
+        Returns True to close, False to leave the book alone. An
+        unanswered prompt is False, and deliberately so: closing is
+        irreversible, while a position left open is recovered from
+        `position_state` on the next start and goes straight back under
+        the exit ladder. The window where it is unmanaged is the window
+        the process is down — which is exactly the window a hard kill
+        (Task Manager, power loss, the launcher's terminate) already
+        leaves it in today.
+        """
+        mode = str(self.config.TRADING.get(
+            'CLOSE_ON_SHUTDOWN', 'ask')).strip().lower()
+        if mode == 'always':
+            return True
+        if mode == 'never':
+            logging.warning("CLOSE_ON_SHUTDOWN=never — leaving the book "
+                            "as it is")
+            return False
+        if mode != 'ask':
+            logging.warning("CLOSE_ON_SHUTDOWN=%r is not one of "
+                            "ask/always/never — treating it as 'ask'", mode)
+
+        one = len(active) == 1
+        lines = [self.describe_open_position(pid, pos)
+                 for pid, pos in active.items()]
+        banner = ("\n" + "=" * 62
+                  + f"\n  SHUTTING DOWN with {len(active)} OPEN "
+                    f"{'POSITION' if one else 'POSITIONS'}\n"
+                  + "\n".join(lines)
+                  + "\n\n  y  close "
+                  + ('it' if one else 'them') + " now, at market"
+                  + "\n  N  leave " + ('it' if one else 'them')
+                  + " open at the broker — no engine, no stop,"
+                    "\n     until you start up again (recovered on the "
+                    "next start)\n"
+                  + "=" * 62)
+        print(banner, flush=True)
+        for line in banner.strip().splitlines():
+            logging.warning("%s", line)
+
+        timeout = float(self.config.TRADING.get('SHUTDOWN_PROMPT_SEC', 30.0))
+        question = ("  Close the position? [y/N]: " if one else
+                    f"  Close all {len(active)} positions? [y/N]: ")
+        answer = self._prompt_line(question, timeout)
+        if answer is None:
+            logging.warning("No answer (no console, or %.0fs elapsed) — "
+                            "LEAVING the position(s) open", timeout)
+            return False
+        return answer.strip().lower() in ('y', 'yes')
+
+    @staticmethod
+    def _prompt_line(prompt, timeout):
+        """Read one line from the console, or None if there is nobody
+        there. Returns None immediately when stdin is not interactive —
+        under the launcher, under a service manager or in a test there
+        is no operator to answer, and blocking would hang the shutdown.
+
+        The read runs on a DAEMON thread so an unanswered prompt cannot
+        hold the process open past this function.
+        """
+        try:
+            if not sys.stdin or not sys.stdin.isatty():
+                return None
+        except (AttributeError, ValueError):
+            return None
+
+        box = []
+
+        def _read():
+            try:
+                box.append(sys.stdin.readline())
+            except Exception:
+                pass
+
+        try:
+            print(prompt, end='', flush=True)
+        except Exception:
+            return None
+        reader = threading.Thread(target=_read, daemon=True)
+        reader.start()
+        try:
+            reader.join(max(timeout, 0.0))
+        except KeyboardInterrupt:
+            # A second Ctrl+C while the prompt is up means "just go" —
+            # and "just go" is the same answer as leaving it open.
+            return None
+        return box[0] if box else None
+
+    def stop(self, close_positions=None):
+        # Idempotent: run() calls this on KeyboardInterrupt and main()
+        # catches one too. Asking the operator twice about the same
+        # position — and acting on the second answer — is not a thing
+        # this should ever do.
+        if getattr(self, '_stopped', False):
+            return
+        self._stopped = True
         self.is_running = False
         active = self.position_manager.get_active_positions()
         if active and self.trading_mode == "LIVE":
-            logging.info("Closing %d active positions on shutdown",
-                         len(active))
-            for position_id, position in list(active.items()):
-                contract = self.config.ASSETS.get(
-                    position.asset, {}).get('lot_size', 1.0)
-                self._close(position_id, position, "SYSTEM_SHUTDOWN",
-                            contract, None)
+            if close_positions is None:
+                close_positions = self._ask_close_on_shutdown(active)
+            if close_positions:
+                logging.info("Closing %d active positions on shutdown",
+                             len(active))
+                for position_id, position in list(active.items()):
+                    contract = self.config.ASSETS.get(
+                        position.asset, {}).get('lot_size', 1.0)
+                    self._close(position_id, position, "SYSTEM_SHUTDOWN",
+                                contract, None)
+            else:
+                logging.warning(
+                    "LEAVING %d position(s) OPEN at the broker. Nothing is "
+                    "managing them until you start up again — no dollar "
+                    "stop, no time stop, no reconciliation:", len(active))
+                for position_id, position in active.items():
+                    logging.warning("%s", self.describe_open_position(
+                        position_id, position))
 
         for leg in self._each_leg():
             leg.close()

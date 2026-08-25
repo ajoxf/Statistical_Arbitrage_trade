@@ -25,7 +25,9 @@
     "SLICE_LOTS": 0.0,
     "DAILY_LOT_TARGET": 0.0,
     "HEDGE_RATIO": 1.0,
-    "POLL_INTERVAL_SEC": 0.3
+    "POLL_INTERVAL_SEC": 0.3,
+    "CLOSE_ON_SHUTDOWN": "ask",
+    "SHUTDOWN_PROMPT_SEC": 30.0
   },
   "signal_thresholds": {
     "PREMIUM_ENTRY": 20.0,

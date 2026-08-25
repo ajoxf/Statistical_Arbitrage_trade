@@ -97,6 +97,8 @@ FIELD_MAP = {
     'hedge_mode': ('TRADING', 'HEDGE_MODE'),
     'daily_lot_target': ('TRADING', 'DAILY_LOT_TARGET'),
     'poll_interval_sec': ('TRADING', 'POLL_INTERVAL_SEC'),
+    'close_on_shutdown': ('TRADING', 'CLOSE_ON_SHUTDOWN'),
+    'shutdown_prompt_sec': ('TRADING', 'SHUTDOWN_PROMPT_SEC'),
 
     # Execution
     'entry_execution_mode': ('EXECUTION', 'ENTRY_STYLE'),
@@ -143,7 +145,8 @@ SECTION_JSON_KEY = {
 
 # Values the UI sends uppercase but the engine stores lowercase
 LOWERCASE_FIELDS = {'entry_execution_mode', 'exit_signal_mode',
-                    'on_timeout', 'allowed_directions'}
+                    'on_timeout', 'allowed_directions',
+                    'close_on_shutdown'}
 BOOL_FIELDS = {'z_stop_exit_enabled', 'trend_direction_filter',
                'use_sigma_target', 'use_z_signals', 'telegram_enabled',
                'telegram_notify_trades', 'telegram_notify_errors',

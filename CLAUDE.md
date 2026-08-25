@@ -1067,6 +1067,67 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## Shutting down asks before it closes anything (2026-08-25, operator)
+
+Operator: "Before shutting down - if there is an active position - Ask
+'Do you want to close it?' If yes, close it. If no, keep the position
+running."
+
+`Coordinator.stop()` closed every active LIVE position at market,
+tagged `SYSTEM_SHUTDOWN`, unconditionally. So restarting to change a
+setting liquidated a live trade and paid the round trip for it, with
+nothing asked and nothing to decline. It now prints the position and
+waits:
+
+```
+==============================================================
+  SHUTTING DOWN with 1 OPEN POSITION
+  POS_0001  GOLD  SELL_BASIS  0.05 lots  P&L $-1.06
+
+  y  close it now, at market
+  N  leave it open at the broker — no engine, no stop,
+     until you start up again (recovered on the next start)
+==============================================================
+  Close the position? [y/N]:
+```
+
+- **An unanswered prompt means NO.** Closing at market is irreversible;
+  a position left open is read back from `position_state` on the next
+  start and goes straight under the exit ladder again. The window where
+  it is unmanaged is the window the process is down — which is exactly
+  the window a hard kill already leaves it in. So the default cannot be
+  the destructive one. No tty (a service, a test), the timeout, or a
+  second Ctrl+C all resolve the same way, and the reader runs on a
+  DAEMON thread so an unanswered prompt cannot hold the process open.
+- **The prompt NAMES the position** — pair, direction, lots, live P&L.
+  The operator answering this cannot go and look it up; the dashboard is
+  already coming down.
+- **`TRADING.CLOSE_ON_SHUTDOWN`** is `ask` (default) / `always` (the old
+  behaviour, verbatim) / `never`. Anything unrecognised falls back to
+  `ask`, because the failure mode of a typo must not be silently
+  liquidating the book. Both it and `SHUTDOWN_PROMPT_SEC` are in
+  `HOT_TRADING_KEYS` and on the Settings page — a knob with no control
+  is how `COMMISSION_PER_LOT_*` sat at zero for months, and a *shutdown*
+  setting that needs a restart to change is a particularly silly one.
+- **`stop()` is idempotent.** `run()` calls it on KeyboardInterrupt and
+  `main()` catches one too; asking twice, and acting on the second
+  answer, is not a thing this should ever do.
+- **The launcher had to stop killing the child first.** `Child.stop()`
+  went straight to `terminate()` — on Windows `TerminateProcess`, which
+  nothing can catch — so the prompt would have been killed before it
+  could be answered. Children share this console, so a Ctrl+C has
+  already reached them and they are running their own shutdown: the
+  launcher now WAITS for the child to exit and only terminates one that
+  does not go. The coordinator's window is `SHUTDOWN_PROMPT_SEC + 30`
+  (`start.shutdown_grace`, reading the same key the coordinator waits
+  on) so the answer has room to be acted on; leg runners keep a short 5s.
+
+Paper is never asked — those positions are not at a broker.
+
+Worth knowing, and unchanged: closing the console window with the X, or
+killing from Task Manager, runs none of this. The position stays open
+and restart recovery is what picks it up.
+
 ## The manual panel, on one grid (2026-08-25, operator)
 
 "Can you make this better with the spread in the centre and Bid and Ask

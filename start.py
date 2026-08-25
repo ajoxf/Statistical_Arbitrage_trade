@@ -140,12 +140,16 @@ def wait_for_leg_runners(raw_config, timeout=45.0):
 
 
 class Child:
-    def __init__(self, name, cmd):
+    def __init__(self, name, cmd, grace=5):
         self.name = name
         self.cmd = cmd
         self.proc = None
         self.backoff = 2
         self.restarts = 0
+        # How long to let this child finish on its own before killing
+        # it. The coordinator needs the longer window: it asks the
+        # operator whether to close an open position.
+        self.grace = grace
 
     def spawn(self):
         print(f"[launcher] starting {self.name}: {' '.join(self.cmd)}")
@@ -155,12 +159,42 @@ class Child:
         return self.proc is not None and self.proc.poll() is None
 
     def stop(self):
-        if self.alive():
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        """Let the child EXIT before killing it.
+
+        Children share this console, so a Ctrl+C here already reached
+        them and they are running their own shutdown. terminate() used
+        to land immediately on top of that — on Windows it is
+        TerminateProcess, which nothing can catch — so the coordinator's
+        "close the open position?" prompt would be killed before it
+        could be answered, and, worse, before the answer could be acted
+        on. Only a child that does NOT go on its own gets terminated.
+        """
+        if not self.alive():
+            return
+        try:
+            self.proc.wait(timeout=self.grace)
+            return
+        except subprocess.TimeoutExpired:
+            print(f"[launcher] {self.name} did not exit in "
+                  f"{self.grace}s — stopping it")
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+
+def shutdown_grace(raw):
+    """The coordinator's shutdown prompt has to fit inside the window
+    the launcher gives it, or the question is asked and then killed
+    mid-answer. Read the SAME key the coordinator waits on, plus a
+    margin for the closes that a "yes" then has to place."""
+    try:
+        wait = float((raw.get('trading') or {}).get(
+            'SHUTDOWN_PROMPT_SEC', 30.0))
+    except (TypeError, ValueError):
+        wait = 30.0
+    return max(wait, 0.0) + 30.0
 
 
 MAX_RESTARTS = 5
@@ -270,7 +304,8 @@ def main():
     if mode == 'live':
         coordinator_cmd.append('--yes')
         print("[launcher] LIVE MODE — set via the web UI settings")
-    children.append(Child("coordinator", coordinator_cmd))
+    children.append(Child("coordinator", coordinator_cmd,
+                          grace=shutdown_grace(raw)))
 
     stop_event = threading.Event()
     try:
@@ -298,7 +333,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        print("[launcher] shutting down...")
+        print("[launcher] shutting down — the coordinator may ask about "
+              "an open position, answer it in this window")
         stop_event.set()
         for child in reversed(children):   # coordinator first
             child.stop()

@@ -293,6 +293,18 @@ class AlgoTradingConfig:
             # 300ms refresh. Safe to run this fast since SpreadStats
             # dedups by quote_id — extra polls no longer touch sigma.
             'POLL_INTERVAL_SEC': 0.3,
+            # What a shutdown does to an OPEN position.
+            #   'ask'    prompt on the console and wait for an answer
+            #            (operator, 2026-08-25) — the default.
+            #   'always' close every position at market, the old
+            #            unconditional behaviour.
+            #   'never'  leave the book alone; restart recovery picks
+            #            the position back up.
+            # An unanswered prompt means 'never': closing at market is
+            # irreversible and pays the round trip, so it must not be
+            # what happens when nobody is at the keyboard.
+            'CLOSE_ON_SHUTDOWN': 'ask',
+            'SHUTDOWN_PROMPT_SEC': 30.0,
         }
         self.ASSETS = copy.deepcopy(DEFAULT_ASSETS)
         # Attaches to whatever terminal is already running when no
@@ -374,7 +386,8 @@ class AlgoTradingConfig:
 
     HOT_TRADING_KEYS = ('CLIP_LOTS', 'SLICE_LOTS', 'DAILY_LOT_TARGET',
                         'POLL_INTERVAL_SEC', 'SIZING_MODE',
-                        'NOTIONAL_PER_LEG_USD', 'HEDGE_MODE')
+                        'NOTIONAL_PER_LEG_USD', 'HEDGE_MODE',
+                        'CLOSE_ON_SHUTDOWN', 'SHUTDOWN_PROMPT_SEC')
 
     def hot_apply(self, fresh, positions_open=False):
         """Apply a freshly-loaded config to this live one in place.
