@@ -1457,12 +1457,21 @@
                     <table class="w-100 font-monospace" id="carry-lines"
                            style="font-size: 0.74rem; line-height: 1.5;">
                         <tbody>
-                            <tr><td class="text-secondary">SPREAD</td>
+                            <tr><td class="text-secondary" id="carry-spread-label"
+                                    title="The price this trade would actually be PUT ON at — the executable side for the direction the basis implies, not a midpoint of two midpoints.">SHORT SPREAD</td>
                                 <td class="text-end" id="carry-spread-now">-</td></tr>
-                            <tr><td class="text-secondary">BREAKEVEN
+                            <tr><td colspan="2" class="text-secondary pb-1"
+                                    id="carry-touches"
+                                    style="font-size: 0.9em; opacity: 0.85;"></td></tr>
+                            <tr><td class="text-secondary">FAIR (SWAP)
                                 <span class="text-secondary"
                                       style="font-size: 0.85em; opacity: 0.75;"
-                                      title="The spread this pair has to beat: what it costs to hold to expiry, in spread units. carry is signed, so a CHARGE adds to the requirement and a CREDIT subtracts from it.">(fees &minus; carry) &divide; units</span></td>
+                                      title="What the basis SHOULD be on financing alone, for the days remaining — priced from the broker's own swap rather than from a risk-free rate. This is the fair value of the spread; it carries no fees.">&minus;carry &divide; units</span></td>
+                                <td class="text-end" id="carry-fair-spread">-</td></tr>
+                            <tr><td class="text-secondary">TO CLEAR
+                                <span class="text-secondary"
+                                      style="font-size: 0.85em; opacity: 0.75;"
+                                      title="Fair value plus the round trip: what the spread has to beat for the trade to be worth placing. carry is signed, so a CHARGE adds to the requirement and a CREDIT subtracts from it.">+ fees</span></td>
                                 <td class="text-end" id="carry-breakeven-spread">-</td></tr>
                             <tr style="border-top: 1px solid var(--border-color);">
                                 <td class="fw-bold pt-1" id="carry-edge-label">EDGE</td>
@@ -1494,6 +1503,8 @@
                                     id="carry-net-usd">-</td></tr>
                         </tbody>
                     </table>
+                    <div class="text-secondary mt-1" id="carry-size-note"
+                         style="font-size: 0.63rem;"></div>
                     <div id="carry-legs" class="text-secondary font-monospace mt-2 pt-1"
                          style="font-size: 0.63rem; line-height: 1.45;
                                 border-top: 1px solid var(--border-color);"></div>
@@ -3111,7 +3122,35 @@
         const need = carry.breakeven_spread;
         const now = carry.spread == null ? null : Math.abs(carry.spread);
         const gap = carry.spread_gap;
+        document.getElementById('carry-spread-label').textContent =
+            (carry.direction === 'BUY_BASIS' ? 'LONG' : 'SHORT') + ' SPREAD';
         document.getElementById('carry-spread-now').textContent = sp(now);
+        // The two touches it is built from, and the width between the
+        // two tradable spreads — the provenance the Short/Long spread
+        // cards already carry. A price with no book beside it cannot be
+        // checked against anything.
+        const touchEl = document.getElementById('carry-touches');
+        touchEl.innerHTML = '';
+        (carry.touches || []).forEach(function (t, i) {
+            if (t.value == null) return;
+            const span = document.createElement('span');
+            span.className = (t.side === 'bid' ? 'price-up' : 'price-down')
+                             + (i ? ' ms-2' : '');
+            span.style.whiteSpace = 'nowrap';
+            span.textContent = t.label + ' ' + Number(t.value).toFixed(2);
+            touchEl.appendChild(span);
+        });
+        if (carry.spread_cost != null && touchEl.childNodes.length) {
+            const gapSpan = document.createElement('span');
+            gapSpan.className = 'ms-2 text-secondary';
+            gapSpan.style.whiteSpace = 'nowrap';
+            gapSpan.textContent = '· ' + Number(carry.spread_cost).toFixed(2)
+                                  + ' apart';
+            touchEl.appendChild(gapSpan);
+        }
+        document.getElementById('carry-fair-spread').textContent =
+            sp(carry.carry_spread == null ? null
+               : Math.abs(carry.carry_spread));
         document.getElementById('carry-breakeven-spread').textContent =
             need != null && need <= 0 ? 'ANY' : sp(need);
 
@@ -3128,27 +3167,36 @@
         document.getElementById('carry-gross-usd').textContent =
             money(carry.gross_usd);
         // The multiplier WITH its derivation. "×2" alone reads as a
-        // factor of two — it is 0.02 lots × 100 per lot = 2 units.
+        // factor of two — it is lots × contract size = units of the
+        // underlying. Everything below is priced at ONE lot of Leg A
+        // and the hedge it implies, so the figures describe the PAIR
+        // rather than today's configured size.
         document.getElementById('carry-gross-note').textContent =
             !carry.spread_units ? ''
             : '×' + carry.spread_units.toLocaleString()
               + ((carry.leg_b_lots && carry.leg_b_contract)
-                 ? ' (' + carry.leg_b_lots + '×'
+                 ? ' (' + (+carry.leg_b_lots.toFixed(4)) + '×'
                    + carry.leg_b_contract.toLocaleString() + ')' : '');
         // Swap is a COST when negative; the sign carries that, so the
-        // note only has to say over how many nights and at what size.
+        // note only has to say over how many nights.
         document.getElementById('carry-carry-usd').textContent =
             money(carry.carry_usd);
-        const legLots = (carry.per_leg || []).find(l => l.lots);
         document.getElementById('carry-swap-note').textContent =
-            Math.round(days) + 'N'
-            + (legLots ? ' × ' + legLots.lots : '');
+            Math.round(days) + 'N';
         document.getElementById('carry-cost-usd').textContent =
             money(-Math.abs(carry.cost_usd || 0));
         const netEl = document.getElementById('carry-net-usd');
         netEl.textContent = money(carry.net_usd);
         netEl.className = 'text-end fw-bold pt-1 '
             + ((carry.net_usd || 0) > 0 ? 'price-up' : 'price-down');
+
+        // Say the size the dollars are quoted at, once, rather than
+        // hiding it inside three separate notes.
+        const sizeNote = document.getElementById('carry-size-note');
+        sizeNote.textContent = (carry.leg_a_lots == null) ? ''
+            : 'Per 1 lot of Leg A and its '
+              + (+(carry.leg_b_lots || 0).toFixed(4))
+              + '-lot hedge. The two spread readings above are size-free.';
 
         const gapNote = document.getElementById('carry-gap-note');
         if (carry.warning) {

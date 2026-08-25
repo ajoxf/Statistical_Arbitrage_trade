@@ -2493,19 +2493,52 @@ class Coordinator:
         asset = self.config.ASSETS.get(asset_key) or {}
         plan = self._sizing_plan(asset_key, md)
         days = carry.days_to_expiry(asset.get('futures_expiry'))
-        units = sizing.spread_units(plan.get('leg_b_lots'),
-                                    plan.get('leg_b_contract'))
 
-        # A SHORT spread is long leg A and short leg B, and the two legs
-        # are charged different sides of the swap. The spread's sign
-        # says which way round it would be entered.
+        # ONE LOT of leg A, and the hedge it implies (operator,
+        # 2026-08-25: "Make it all relevant to 1 lot"). The card was
+        # priced at whatever `SIZING_MODE` happened to derive — 0.02
+        # lots — which makes every dollar on it a statement about
+        # today's configured size rather than about the pair. A rate
+        # card has to be size-free to be comparable from one day to the
+        # next, and the two SPREAD rows already are (dividing by k
+        # cancels the size), so only the dollars were inconsistent.
+        #
+        #   L_A x C_A = beta x L_B x C_B   with L_A = 1
+        #   -> L_B = C_A / (beta x C_B),  k = L_B x C_B = C_A / beta
+        beta = float(self.config.TRADING.get('HEDGE_RATIO', 1.0) or 1.0)
+        contract_a = float(plan.get('leg_a_contract')
+                           or asset.get('lot_size') or 1.0)
+        contract_b = float(plan.get('leg_b_contract') or contract_a)
+        lots_a = 1.0
+        lots_b = (contract_a / (beta * contract_b)) if contract_b else 1.0
+        units = sizing.spread_units(lots_b, contract_b)
+
+        # The price this trade would actually be PUT ON at, not the mid
+        # (operator, 2026-08-25: "you need the short spread price Bid
+        # and ask with a gap"). A positive basis is captured by SELLING
+        # the spread, which fills on the SHORT side; a negative one is
+        # bought, and fills on the long. The mid is a midpoint of two
+        # midpoints and nobody converges from there.
         short_spread = (md.get('spread') or 0.0) > 0
+        direction = 'SELL_BASIS' if short_spread else 'BUY_BASIS'
+        entry_spread = marketdata.executable_spread(md, direction)
+
+        # The round trip at the SAME size as everything else on the
+        # card. Taking it from the caller's sizing plan would put a
+        # 0.02-lot fee against a 1-lot convergence.
+        try:
+            cost_usd = costs_mod.round_trip_cost(
+                md, lots_a, contract_a, self.config.COSTS,
+                lots_b=lots_b, contract_b=contract_b)
+        except (KeyError, TypeError):
+            pass                      # keep the caller's figure
+
         legs, leg_labels = [], []
         for role, lots, price in (
-                ('spot', plan.get('leg_a_lots'), md.get('spot_price')),
-                ('futures', plan.get('leg_b_lots'),
-                 md.get('futures_price'))):
+                ('spot', lots_a, md.get('spot_price')),
+                ('futures', lots_b, md.get('futures_price'))):
             spec = dict(self._swap_specs.get((asset_key, role)) or {})
+            contract_here = contract_a if role == 'spot' else contract_b
             long_side = (role == 'spot') if short_spread else (role != 'spot')
             side = 'long' if long_side else 'short'
             # A hand-entered rate wins: the operator can see MT5's
@@ -2530,8 +2563,7 @@ class Coordinator:
                 per_night, note = carry.swap_per_lot_night(
                     spec.get('swap_long' if long_side else 'swap_short'),
                     spec.get('swap_mode'),
-                    contract_size=(plan.get('leg_a_contract') if role == 'spot'
-                                   else plan.get('leg_b_contract')),
+                    contract_size=contract_here,
                     price=price, tick_size=spec.get('tick_size'),
                     tick_value=spec.get('tick_value'))
             # symbol and side kept SEPARATE from the prose note so the
@@ -2545,7 +2577,7 @@ class Coordinator:
                          f"{'long' if long_side else 'short'}: {note}"))
 
         block = carry.convergence_plan(
-            md.get('spread'), days, units, legs,
+            entry_spread, days, units, legs,
             cost_usd=cost_usd,
             # The rate-implied basis, so the two estimates can be
             # checked against each other rather than sitting side by
@@ -2575,8 +2607,32 @@ class Coordinator:
                 # would report success and write nothing.
                 fix['asset'] = asset_key
             block['warning_fix'] = fix
-        block['leg_b_lots'] = plan.get('leg_b_lots')
-        block['leg_b_contract'] = plan.get('leg_b_contract')
+        block['leg_b_lots'] = lots_b
+        block['leg_b_contract'] = contract_b
+        block['leg_a_lots'] = lots_a
+        # The two touches the entry spread is built from, so the price
+        # can be checked against the book beside it — the same
+        # provenance the Short/Long spread cards carry.
+        block['direction'] = direction
+        # Named by LEG and SIDE, the way the Short/Long spread cards
+        # name them, so the same price never appears under two
+        # vocabularies. `futures_bid` here and not `fut_bid`: this is
+        # called with the RAW snapshot, and that rename has already
+        # caused one live fault.
+        if short_spread:                       # fut BID - beta x spot ASK
+            block['touches'] = [
+                {'label': 'Leg B bid', 'value': md.get('futures_bid'),
+                 'side': 'bid'},
+                {'label': 'Leg A ask', 'value': md.get('spot_ask'),
+                 'side': 'ask'}]
+        else:                                  # fut ASK - beta x spot BID
+            block['touches'] = [
+                {'label': 'Leg B ask', 'value': md.get('futures_ask'),
+                 'side': 'ask'},
+                {'label': 'Leg A bid', 'value': md.get('spot_bid'),
+                 'side': 'bid'}]
+        block['spread_cost'] = md.get('spread_cost')
+        block['mid_spread'] = md.get('spread')
         block['pair_type'] = md.get('pair_type')
         block['expiry'] = (asset['futures_expiry'].date().isoformat()
                            if asset.get('futures_expiry') else None)

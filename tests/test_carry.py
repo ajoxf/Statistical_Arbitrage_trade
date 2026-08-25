@@ -239,14 +239,29 @@ def test_each_leg_is_charged_the_side_it_will_be_traded_on(coord):
     assert long_['per_leg'][1]['per_lot_night'] == -1.0
 
 
-def test_the_net_subtracts_the_round_trip(coord):
+def test_the_net_subtracts_the_round_trip_at_the_cards_own_size(coord):
+    """The fee has to be priced at the size the rest of the card is
+    (operator, 2026-08-25: "Make it all relevant to 1 lot"). It used to
+    come from the caller's sizing plan, which put a 0.02-lot fee against
+    a convergence the card was about to quote per lot."""
+    from statarb import costs as costs_mod
+
     asset = coord.config.ASSETS['GOLD']
     asset['futures_expiry'] = datetime.now() + timedelta(days=30)
     asset['swap_spot_long_per_lot'] = 0.0
     asset['swap_futures_short_per_lot'] = 0.0
-    free = coord._carry_block('GOLD', GOLD_MD, 0.0)
-    charged = coord._carry_block('GOLD', GOLD_MD, 59.0)
-    assert charged['net_usd'] == pytest.approx(free['net_usd'] - 59.0)
+    coord.config.COSTS['COMMISSION_PER_LOT_SPOT'] = 7.0
+    coord.config.COSTS['COMMISSION_PER_LOT_FUT'] = 9.0
+
+    block = coord._carry_block('GOLD', GOLD_MD, 59.0)
+    expected = costs_mod.round_trip_cost(
+        GOLD_MD, 1.0, block['leg_b_contract'], coord.config.COSTS,
+        lots_b=block['leg_b_lots'], contract_b=block['leg_b_contract'])
+    assert block['cost_usd'] == pytest.approx(expected)
+    assert block['net_usd'] == pytest.approx(
+        block['gross_usd'] + block['carry_usd'] - block['cost_usd'])
+    # ...and the caller's own figure no longer leaks in.
+    assert block['cost_usd'] != pytest.approx(59.0)
 
 
 # --- the override has to be removable -----------------------------------
@@ -558,7 +573,13 @@ def test_the_card_is_down_to_two_numbers_and_a_verdict(client_dash):
     assert 'id="carry-spread-now"' in page
     assert 'id="carry-breakeven-spread"' in page
     assert 'id="carry-verdict"' in page
-    assert 'SPREAD' in page and 'BREAKEVEN' in page
+    assert 'SPREAD' in page and 'TO CLEAR' in page
+    # "Break even" was the wrong words for it (operator, 2026-08-25):
+    # what the swap implies is the FAIR VALUE of the spread, and the
+    # row that adds the fees on top is a different statement.
+    assert 'FAIR (SWAP)' in page
+    assert 'id="carry-fair-spread"' in page
+    assert 'BREAKEVEN' not in page
     # The jargon rows are gone. Matched on their ELEMENT IDS, not on
     # their labels: "Round trip" is also a legitimate column heading on
     # the Volume card and a heading on Filters.
@@ -717,12 +738,13 @@ def test_a_correction_without_the_asset_writes_nothing():
     assert out['assets']['GOLD']['swap_spot_long_per_lot'] == 58.0
 
 
-def test_the_breakeven_row_states_its_formula(client_dash):
-    """Operator, 2026-08-24: "BREAKEVEN — in brackets, in 3-4 words,
-    give the formula for the result." carry is SIGNED, so a charge adds
-    to the requirement and a credit subtracts from it — which is why
-    the row can read ANY."""
-    assert '(fees &minus; carry) &divide; units' in client_dash
+def test_both_reference_rows_state_their_formula(client_dash):
+    """Operator, 2026-08-24: "in brackets, in 3-4 words, give the
+    formula for the result." carry is SIGNED, so a charge adds to the
+    requirement and a credit subtracts from it — which is why the row
+    can read ANY."""
+    assert '&minus;carry &divide; units' in client_dash    # FAIR (SWAP)
+    assert '+ fees' in client_dash                          # TO CLEAR
 
 
 def test_the_breakeven_formula_is_the_one_computed():
@@ -733,3 +755,109 @@ def test_the_breakeven_formula_is_the_one_computed():
         legs=[(-58.0, 0.02, 'a')], cost_usd=1.16)
     assert plan['breakeven_spread'] == pytest.approx(
         (plan['cost_usd'] - plan['carry_usd']) / plan['spread_units'])
+
+
+# --- priced where the trade would actually go on, and per one lot ------
+# Operator, 2026-08-25: "there is mid price of the spread. you need the
+# short spread price Bid and ask with a gap"; "0.02 in the calculation
+# is wrong. Make it all relevant to 1 lot"; "Break even seems like the
+# Wrong choice of words - it's the fair value of the spread".
+
+EXEC_MD = dict(GOLD_MD,
+               short_spread=4351.38 - 4292.68,      # 58.70, fut bid - spot ask
+               long_spread=4351.72 - 4292.55,       # 59.17, fut ask - spot bid
+               spread_cost=(4351.72 - 4292.55) - (4351.38 - 4292.68))
+
+
+def _priced(coord, md=EXEC_MD, days=30):
+    coord.config.ASSETS['GOLD']['futures_expiry'] = \
+        datetime.now() + timedelta(days=days)
+    coord.config.ASSETS['GOLD']['swap_spot_long_per_lot'] = -0.50
+    coord.config.ASSETS['GOLD']['swap_futures_short_per_lot'] = 0.10
+    return coord._carry_block('GOLD', md, 59.0)
+
+
+def test_a_positive_basis_is_priced_at_the_SHORT_spread(coord):
+    """You capture a rich basis by SELLING the spread, which fills on
+    the short side. The mid is a midpoint of two midpoints and nobody
+    converges from there."""
+    block = _priced(coord)
+    assert block['direction'] == 'SELL_BASIS'
+    assert block['spread'] == pytest.approx(EXEC_MD['short_spread'])
+    assert block['spread'] != pytest.approx(EXEC_MD['spread'])
+
+
+def test_a_negative_basis_is_priced_at_the_LONG_spread(coord):
+    md = dict(EXEC_MD, spread=-58.94,
+              short_spread=-59.17, long_spread=-58.70)
+    block = _priced(coord, md)
+    assert block['direction'] == 'BUY_BASIS'
+    assert block['spread'] == pytest.approx(md['long_spread'])
+
+
+def test_the_two_touches_travel_with_it(coord):
+    """Named by LEG and SIDE, the way the Short/Long spread cards name
+    them — a price with no book beside it cannot be checked."""
+    block = _priced(coord)
+    labels = [t['label'] for t in block['touches']]
+    values = [t['value'] for t in block['touches']]
+    assert labels == ['Leg B bid', 'Leg A ask']
+    assert values == [EXEC_MD['futures_bid'], EXEC_MD['spot_ask']]
+    # ...and they make the price the card is quoting.
+    assert values[0] - values[1] == pytest.approx(block['spread'])
+    assert block['spread_cost'] == pytest.approx(EXEC_MD['spread_cost'])
+
+
+def test_a_long_basis_reads_the_other_two_touches(coord):
+    md = dict(EXEC_MD, spread=-58.94,
+              short_spread=-59.17, long_spread=-58.70)
+    block = _priced(coord, md)
+    assert [t['label'] for t in block['touches']] == ['Leg B ask',
+                                                      'Leg A bid']
+
+
+def test_everything_is_quoted_at_one_lot_of_leg_A(coord):
+    """It was priced at whatever SIZING_MODE derived — 0.02 lots — so
+    every dollar described today's configured size rather than the
+    pair."""
+    block = _priced(coord)
+    asset = coord.config.ASSETS['GOLD']
+    beta = coord.config.TRADING.get('HEDGE_RATIO', 1.0)
+    c_a = asset['lot_size']
+    c_b = float(asset.get('fut_lot_size') or c_a)
+
+    assert block['leg_a_lots'] == 1.0
+    assert block['leg_b_lots'] == pytest.approx(c_a / (beta * c_b))
+    # k = L_B x C_B = C_A / beta, the units one lot of leg A controls.
+    assert block['spread_units'] == pytest.approx(c_a / beta)
+    assert block['gross_usd'] == pytest.approx(
+        abs(block['spread']) * block['spread_units'])
+    # Each leg's swap is charged on ITS OWN lots at that size.
+    for leg in block['per_leg']:
+        assert leg['lots'] in (pytest.approx(1.0),
+                               pytest.approx(block['leg_b_lots']))
+
+
+def test_the_spread_readings_are_size_free(coord):
+    """Dividing by k cancels the size, which is exactly why the two
+    spread rows are the ones to read. Pinned so a future sizing change
+    cannot move them."""
+    block = _priced(coord)
+    coord.config.TRADING['CLIP_LOTS'] = 25.0
+    coord.config.TRADING['SIZING_MODE'] = 'lots'
+    bigger = _priced(coord)
+    assert bigger['carry_spread'] == pytest.approx(block['carry_spread'])
+    assert bigger['breakeven_spread'] == pytest.approx(
+        block['breakeven_spread'])
+    # The DOLLARS do not move either, because both are quoted at one lot.
+    assert bigger['gross_usd'] == pytest.approx(block['gross_usd'])
+
+
+def test_fair_value_and_the_level_to_clear_are_different_numbers(coord):
+    """"Break even" was the wrong words: what the swap implies is the
+    FAIR VALUE of the spread, and it carries no fees. The row that adds
+    the round trip on top is a separate statement, and the two differ by
+    exactly the round trip in spread units."""
+    block = _priced(coord)
+    assert block['breakeven_spread'] - block['carry_spread'] == \
+        pytest.approx(block['cost_usd'] / block['spread_units'])

@@ -1246,6 +1246,47 @@ Had this one been a resting limit at 55.76 it would simply not have
 filled, instead of crossing 1.51 through a price that was not there.
 Stops must stay market; a target does not have to.
 
+## The carry card, priced where the trade goes on (2026-08-25)
+
+Operator, three corrections in one message: "there is mid price of the
+spread. you need the short spread price Bid and ask with a gap";
+"0.02 in the calculation is wrong. Make it all relevant to 1 lot";
+"Break even seems like the Wrong choice of words - it's the fair value
+of the spread".
+
+All three were right, and the third is the one worth keeping.
+
+- **The price is the EXECUTABLE side, with its two touches.** A rich
+  basis is captured by SELLING the spread, which fills on the short
+  side; a negative one is bought and fills on the long. The card was
+  showing the mid — a midpoint of two midpoints, and nobody converges
+  from there. It now shows the side the trade would actually go on,
+  under `Leg B bid` / `Leg A ask` (or the mirror), with the round turn
+  between the two tradable spreads stated beside them. Same provenance
+  the Short/Long spread cards carry, and the same vocabulary: a price
+  must not appear under two names depending on which card it sits in.
+- **Everything is quoted at ONE LOT of leg A and the hedge it implies**
+  (`L_B = C_A / (beta x C_B)`, so `k = C_A / beta`). It had been priced
+  at whatever `SIZING_MODE` derived, so every dollar on a REFERENCE card
+  described today's configured size rather than the pair — and a rate
+  card that moves with the clip cannot be compared from one day to the
+  next. The round trip is recomputed at that size too: taking it from
+  the caller's sizing plan put a 0.02-lot fee against a 1-lot
+  convergence. The two SPREAD readings were always size-free (dividing
+  by `k` cancels it), which is exactly why they are the rows to read,
+  and a test pins that changing CLIP_LOTS moves neither them nor the
+  dollars now.
+- **"Break even" was the wrong words.** `-carry / k` is the FAIR VALUE
+  of the spread — what the basis should be on financing alone for the
+  days remaining, priced from the broker's own swap rather than
+  fairvalue's risk-free rate. It carries no fees. What the card was
+  showing under that label was `(cost - carry) / k`, which is fair value
+  PLUS the round trip: a different statement, and the one that decides
+  whether to place the trade. Both are shown now — `FAIR (SWAP)` and
+  `TO CLEAR` — and they differ by exactly the round trip in spread
+  units (regression-tested), so the card states the fee rather than
+  hiding it inside a number labelled as something else.
+
 ## The two books (2026-08-25, operator)
 
 "Stop manual trades feeding the breakers and streak reducer. We should
