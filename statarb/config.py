@@ -126,6 +126,19 @@ class AlgoTradingConfig:
             # Keep a partially-hedged position only if the matched size
             # is at least this fraction of the intended clip.
             'MIN_MATCHED_FRACTION': 0.4,
+            # Quote staleness. A pair trade is only as good as its WORSE
+            # leg: the spread is a difference, so one lagging quote makes
+            # it fictitious while the other leg ticks perfectly. Live
+            # 2026-08-25 a take-profit fired on a spread that existed
+            # only in our snapshot and filled 1.51 away, $15.10 of
+            # slippage against a $9.40 target.
+            #
+            # Blocks ENTRIES and PROFIT-taking exits outright. A STOP is
+            # only DEFERRED, and only for the grace below — a trade must
+            # always have a stop, so an unrefreshed feed cannot become a
+            # reason to hold a loser indefinitely.
+            'MAX_QUOTE_AGE_SEC': 2.0,       # 0 = off
+            'STALE_STOP_GRACE_SEC': 10.0,
         }
         self.SIGNALS = {
             'USE_Z_SIGNALS': True,     # z-score on the spread (fixed

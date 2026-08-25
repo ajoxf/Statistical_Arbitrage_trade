@@ -109,6 +109,8 @@ FIELD_MAP = {
     'limit_order_price_offset_bps': ('EXECUTION', 'PEG_OFFSET_POINTS'),
     'min_fill_ratio': ('EXECUTION', 'MIN_MATCHED_FRACTION'),
     'on_timeout': ('EXECUTION', 'ON_TIMEOUT'),
+    'max_quote_age_sec': ('EXECUTION', 'MAX_QUOTE_AGE_SEC'),
+    'stale_stop_grace_sec': ('EXECUTION', 'STALE_STOP_GRACE_SEC'),
     'slippage_tolerance': ('EXECUTION', 'SLIPPAGE_TOLERANCE'),
 
     # Risk / breakers

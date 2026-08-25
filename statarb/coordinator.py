@@ -207,6 +207,12 @@ class Coordinator:
         self._last_z = {}          # asset -> z (for SD-touch detection)
         self._last_beta_block = None   # so the refusal logs once, not 3/sec
         self._swap_specs = {}          # (asset, leg) -> swap + its units
+        # How long since each leg's quote last CHANGED, measured on the
+        # local clock. Gates every decision that reads a price LEVEL.
+        self.quote_ages = marketdata.QuoteAgeTracker()
+        self._stale_since = {}         # asset -> when a level first
+                                       # deferred, for the stop grace
+        self._last_stale_note = {}     # so a stale feed logs once
 
         self.active_assets = {}
         self.last_signals = {}
@@ -816,11 +822,15 @@ class Coordinator:
         if not spot_tick or not futures_tick:
             return None
         try:
-            return compute_market_data(
+            md = compute_market_data(
                 asset['config'],
                 SimpleNamespace(**spot_tick),
                 SimpleNamespace(**futures_tick),
                 self.config.TRADING.get('HEDGE_RATIO', 1.0))
+            # Stamp per-leg quote ages before anything reads a level off
+            # this snapshot.
+            self.quote_ages.observe(asset_key, md)
+            return md
         except Exception as e:
             logging.error("Market data error for %s: %s", asset_key, e)
             return None
@@ -886,7 +896,9 @@ class Coordinator:
                 market_data['basis_pct'],
                 contract_size=contract_size, contract_b=contract_b)
 
-            reason = self._exit_reason(position, z, market_data)
+            reason = self._gate_on_stale_quote(
+                asset_key, self._exit_reason(position, z, market_data),
+                market_data)
             if reason and self._close_is_due(position):
                 # The spread this exit is RECORDED at must be the one
                 # it can be done at, and on the same basis as the entry
@@ -909,6 +921,13 @@ class Coordinator:
             self._log_quote(asset_key, market_data, SignalType.NO_SIGNAL, z)
             return
         active = self.position_manager.get_positions_for_asset(asset_key)
+        # Never OPEN on a price we cannot trust. Unlike an exit there is
+        # no asymmetry to weigh: not trading costs nothing.
+        stale = self._stale_quote(market_data)
+        if stale:
+            self.last_signals[asset_key] = SignalType.NO_SIGNAL
+            self._log_quote(asset_key, market_data, SignalType.NO_SIGNAL, z)
+            return
         signal = self._entry_signal(asset_key, stats, market_data, active,
                                     contract_size)
         self.last_signals[asset_key] = signal or SignalType.NO_SIGNAL
@@ -972,6 +991,61 @@ class Coordinator:
                 getattr(position, 'last_close_error', 'unknown'),
                 self.CLOSE_RETRY_SEC)
         return True
+
+    # Exits that read a PRICE LEVEL. A stale quote makes the level
+    # fictitious, so these must not fire on one. Everything else — the
+    # clock, the overnight rule, the operator's Close button, the
+    # reconciler — is unaffected: none of them is reading a price.
+    STALE_BLOCKED_PROFIT = {'TAKE_PROFIT', 'MANUAL_TARGET',
+                            'REVERSION_EXIT'}
+    STALE_DEFERRED_STOPS = {'DOLLAR_STOP', 'MANUAL_STOP', 'Z_STOP',
+                            'STOP_LOSS'}
+
+    def _stale_quote(self, market_data):
+        return marketdata.stale_quote(
+            market_data,
+            self.config.EXECUTION.get('MAX_QUOTE_AGE_SEC', 0.0))
+
+    def _gate_on_stale_quote(self, asset_key, reason, market_data):
+        """Withhold a price-level exit while a leg's quote is stale.
+
+        The asymmetry is deliberate. Taking a PROFIT off a fictitious
+        price is what cost $15.10 on a $9.40 target — and waiting costs
+        nothing, because a target that was only ever on a stale quote
+        was never available. A STOP is different: a trade must always
+        have a stop, so an unrefreshed feed must not become a reason to
+        hold a loser for ever. It is DEFERRED, and only until
+        STALE_STOP_GRACE_SEC has passed, then it fires with a CRITICAL
+        line saying the price it fired on could not be trusted.
+        """
+        note = self._stale_quote(market_data)
+        if not note:
+            self._stale_since.pop(asset_key, None)
+            self._last_stale_note.pop(asset_key, None)
+            return reason
+        if not reason or (reason not in self.STALE_BLOCKED_PROFIT
+                          and reason not in self.STALE_DEFERRED_STOPS):
+            return reason
+        now = time.time()
+        waited = now - self._stale_since.setdefault(asset_key, now)
+        if reason in self.STALE_DEFERRED_STOPS:
+            grace = self.config.EXECUTION.get('STALE_STOP_GRACE_SEC', 10.0)
+            if waited >= grace:
+                logging.critical(
+                    "%s: %s is firing on a quote we cannot trust — %s, and "
+                    "it has not refreshed in %.0fs. A stop is never held "
+                    "back indefinitely, but treat this fill as unpriced.",
+                    asset_key, reason, note, waited)
+                return reason
+        if self._last_stale_note.get(asset_key) != (reason, note):
+            self._last_stale_note[asset_key] = (reason, note)
+            logging.warning(
+                "%s: holding %s — %s. %s", asset_key, reason, note,
+                "It will fire as soon as both legs quote."
+                if reason in self.STALE_BLOCKED_PROFIT
+                else "A stop is deferred at most %.0fs." % (
+                    self.config.EXECUTION.get('STALE_STOP_GRACE_SEC', 10.0)))
+        return None
 
     def _exit_reason(self, position, z, market_data):
         plan = position.exit_plan or {}
@@ -2024,6 +2098,18 @@ class Coordinator:
             return
         if self.position_manager.get_positions_for_asset(asset_key):
             return                       # already in the trade
+        # An armed trigger reads a price LEVEL, so a stale leg makes it
+        # fictitious in exactly the way a target is. Stay armed and wait
+        # — the level is still there when the quote refreshes, and if it
+        # is not then it was never offered.
+        stale = self._stale_quote(market_data)
+        if stale:
+            if self._last_stale_note.get(f'arm:{asset_key}') != stale:
+                self._last_stale_note[f'arm:{asset_key}'] = stale
+                logging.warning("%s: armed trade still waiting — %s",
+                                asset_key, stale)
+            return
+        self._last_stale_note.pop(f'arm:{asset_key}', None)
         direction = order.get('direction', '')
         # The EXECUTABLE spread for the direction being entered, not the
         # mid. Arming a short at 59.00 and firing when the MID touches
@@ -3092,9 +3178,23 @@ class Coordinator:
                          f'only {rate:.0f} quotes/min — too thin to '
                          f'trust a standard deviation'))
         else:
-            rows.append(('feed', self.OK,
-                         f'{rate:.0f} quotes/min' if rate
-                         else 'ticking'))
+            # A healthy RATE is not a fresh pair of quotes: the rate is
+            # both legs together, and one leg can lag while the other
+            # carries the count. That is what made a target fire on a
+            # spread nobody could trade.
+            stale = self._stale_quote(md)
+            if stale:
+                rows.append(('feed', self.BLOCKED, stale))
+            else:
+                ages = [md.get('spot_quote_age_sec'),
+                        md.get('fut_quote_age_sec')]
+                oldest = max([a for a in ages if a is not None],
+                             default=None)
+                rows.append(('feed', self.OK,
+                             (f'{rate:.0f} quotes/min' if rate
+                              else 'ticking')
+                             + (f', oldest leg {oldest:.1f}s'
+                                if oldest is not None else '')))
 
         # -- beta sanity --
         beta_problem = self._implausible_spread(md)

@@ -18,9 +18,84 @@ the carry term did do reliably was make the spread depend on a swap
 number nobody could verify.
 """
 
+import time as time_mod
 from datetime import datetime
 
 from .fairvalue import fair_value_block
+
+
+class QuoteAgeTracker:
+    """How long since each leg's quote last CHANGED, measured locally.
+
+    Live 2026-08-25: a manual short's take-profit fired on a spread of
+    55.67 and filled at 57.18 — $15.10 of slippage against a $9.40
+    target. Spot had run up 2.60 while the futures quote moved 1.29, so
+    the spread appeared to collapse ~2.9 sigma; three minutes later it
+    was back where it started, having gone nowhere. The futures fill
+    came back 1.29 ABOVE the ask we had, which a market order cannot do
+    unless the ask has moved. The engine took a profit that only existed
+    on a stale price.
+
+    Measured against `time.monotonic()` and the quote's own identity, NOT
+    against the broker's timestamp. `tick.time - time.time()` conflates
+    the broker's clock offset with how old the tick is — that conflation
+    is what made the broker-clock line flap for weeks — and a clock
+    offset would poison a guard that has to gate real orders.
+
+    Ages are None until a leg has been seen CHANGE twice: an unknown age
+    is not a fresh one, but it must not read as stale on the first poll
+    either, so callers treat None as "no opinion".
+    """
+
+    def __init__(self, clock=time_mod.monotonic):
+        self.clock = clock
+        self._seen = {}
+
+    def observe(self, key, market_data):
+        """Stamp `spot_quote_age_sec` / `fut_quote_age_sec` on the
+        snapshot and return them."""
+        now = self.clock()
+        ages = {}
+        for leg, field in (('spot', 'spot_quote_age_sec'),
+                           ('fut', 'fut_quote_age_sec')):
+            qid = market_data.get(f'{leg}_quote_id')
+            prev = self._seen.get((key, leg))
+            if prev is None or prev[0] != qid:
+                self._seen[(key, leg)] = (qid, now)
+                age = 0.0 if prev is not None else None
+            else:
+                age = now - prev[1]
+            market_data[field] = age
+            ages[leg] = age
+        return ages['spot'], ages['fut']
+
+    def forget(self, key):
+        for leg in ('spot', 'fut'):
+            self._seen.pop((key, leg), None)
+
+
+def stale_quote(market_data, max_age_sec):
+    """A one-line reason why this snapshot must not price an order, or
+    None when both legs are fresh enough.
+
+    A pair trade is only as good as its WORSE leg: the spread is a
+    difference, so one lagging quote makes the whole number fictitious
+    even while the other leg ticks perfectly. `max_age_sec` of 0 turns
+    the check off.
+    """
+    if not market_data or not max_age_sec or max_age_sec <= 0:
+        return None
+    worst, name = None, None
+    for label, field in (('Leg A', 'spot_quote_age_sec'),
+                         ('Leg B', 'fut_quote_age_sec')):
+        age = market_data.get(field)
+        if age is not None and age > max_age_sec \
+                and (worst is None or age > worst):
+            worst, name = age, label
+    if worst is None:
+        return None
+    return (f"{name}'s quote has not moved for {worst:.1f}s "
+            f"(limit {max_age_sec:g}s) — the spread is stale")
 
 
 def executable_spread(market_data, signal_type, closing=False):
@@ -99,9 +174,11 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick,
     # keep its window a series of quote events rather than of poll
     # iterations. Prices join the tick times because some brokers stamp
     # ticks only to the second.
-    quote_id = "{}:{}/{}|{}:{}/{}".format(
-        getattr(spot_tick, 'time', ''), spot_tick.bid, spot_tick.ask,
+    spot_quote_id = "{}:{}/{}".format(
+        getattr(spot_tick, 'time', ''), spot_tick.bid, spot_tick.ask)
+    fut_quote_id = "{}:{}/{}".format(
         getattr(futures_tick, 'time', ''), futures_tick.bid, futures_tick.ask)
+    quote_id = f"{spot_quote_id}|{fut_quote_id}"
 
     # The MID of the book, always — never `tick.last`.
     #
@@ -159,6 +236,11 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick,
         'asset_name': asset_cfg['name'],
         'timestamp': datetime.now(),
         'quote_id': quote_id,
+        # Per leg, so a lagging leg can be named. The spread is a
+        # difference: one stale quote makes it fictitious even while the
+        # other leg ticks perfectly.
+        'spot_quote_id': spot_quote_id,
+        'fut_quote_id': fut_quote_id,
         'spot_price': spot_price,
         'futures_price': futures_price,
         'spot_bid': spot_tick.bid,

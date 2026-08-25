@@ -1002,6 +1002,34 @@
                         </div>
                     </div>
 
+                    <!-- Quote staleness. A pair trade is only as good as
+                         its WORSE leg: the spread is a difference, so one
+                         lagging quote makes it fictitious while the other
+                         leg ticks perfectly. -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6 class="text-secondary mb-3"><i class="bi bi-hourglass-split me-2"></i>Stale Quote Guard</h6>
+                            <small class="text-secondary d-block mb-3">
+                                The spread is a <strong>difference</strong>, so one lagging leg makes it
+                                fictitious even while the other leg ticks perfectly and the quote rate
+                                looks healthy. Entries and profit-taking exits are <strong>held</strong>
+                                while either leg's quote is older than this; a stop is only
+                                <strong>deferred</strong>, and only for the grace period, because a trade
+                                must always have a stop.
+                            </small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Quote Age (sec)</label>
+                            <input type="number" class="form-control" id="max_quote_age_sec" name="max_quote_age_sec" value="{{ config.max_quote_age_sec }}" min="0" max="60" step="0.5">
+                            <small class="text-secondary">0 turns the guard off. The health line shows the oldest leg.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Stale Stop Grace (sec)</label>
+                            <input type="number" class="form-control" id="stale_stop_grace_sec" name="stale_stop_grace_sec" value="{{ config.stale_stop_grace_sec }}" min="0" max="300" step="1">
+                            <small class="text-secondary">A stop fires anyway after this long, logged CRITICAL</small>
+                        </div>
+                    </div>
+
                     <hr class="my-4" style="border-color: var(--border-color);">
 
                     <!-- Margin Breaker (per-account M2M) -->
@@ -2161,6 +2189,10 @@
             entry_slices: parseInt(document.getElementById('entry_slices').value) || 1,
             entry_slice_interval_sec: parseFloat(document.getElementById('entry_slice_interval_sec').value) || 5.0,
             min_fill_ratio: parseFloat(document.getElementById('min_fill_ratio').value) || 0.95,
+            // 0 is a real value here — it turns the guard off — so it
+            // must not fall through an `||` to the default.
+            max_quote_age_sec: parseFloat(document.getElementById('max_quote_age_sec').value) || 0,
+            stale_stop_grace_sec: parseFloat(document.getElementById('stale_stop_grace_sec').value) || 0,
             entry_cooldown_seconds: parseInt(document.getElementById('entry_cooldown_seconds').value),
             verify_exchange_position: document.getElementById('verify_exchange_position').checked,
             orphan_recovery_timeout_sec: parseInt(document.getElementById('orphan_recovery_timeout_sec').value),
@@ -2488,6 +2520,8 @@
                 document.getElementById('entry_cooldown_seconds').value = config.entry_cooldown_seconds || 60;
                 document.getElementById('verify_exchange_position').checked = config.verify_exchange_position !== false;
                 document.getElementById('orphan_recovery_timeout_sec').value = config.orphan_recovery_timeout_sec || 60;
+                document.getElementById('max_quote_age_sec').value = config.max_quote_age_sec ?? 2.0;
+                document.getElementById('stale_stop_grace_sec').value = config.stale_stop_grace_sec ?? 10.0;
                 document.getElementById('daily_max_loss_usd').value = config.daily_max_loss_usd || 0;
                 updateLimitSettingsVisibility();
                 updateFeeSummary();

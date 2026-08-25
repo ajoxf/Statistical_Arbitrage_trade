@@ -1174,6 +1174,78 @@ take an optional `contract_b`, so leg B is priced in ITS OWN units.
 They defaulted to leg A's, which is exact only when the legs share a
 contract size. The coordinator passes `fut_lot_size`.
 
+## The profit that only existed on a stale quote (2026-08-25, LIVE)
+
+POS_0002, a manual short. It closed on MANUAL_TARGET and booked a LOSS:
+
+```
+trigger   executable closing spread 55.67   past the 55.76 target
+mark      (56.70 - 55.67) x 10 = +$10.30    the recorded peak, at 61m
+fill      4711.04 - 4653.86  =  57.18
+realised  (56.70 - 57.18) x 10 = -$4.80     MT5 agreed to the cent:
+                                            spot +$71.50, fut -$76.30
+```
+
+$15.10 of slippage against a $9.40 target. **The decision was correct
+and the price was not.** The futures leg filled 1.29 ABOVE the ask we
+were holding, which a market order cannot do unless the ask has moved.
+The heartbeats say why: over the two minutes before, spot ran up 2.60
+while the futures quote moved 1.29, so the spread appeared to fall
+1.32 — about 2.9 sigma against a sigma of 0.45 — and three minutes
+later it was back at 56.71, having gone nowhere. No tradeable move ever
+happened. The target was sitting in the middle of a phantom dip.
+
+**The feed looked perfect throughout: 108 quotes/min.** That figure is
+both legs together, and one leg was carrying the count. A pair trade is
+only as good as its WORSE leg — the spread is a DIFFERENCE, so one
+lagging quote makes the whole number fictitious while the other leg
+ticks beautifully.
+
+`marketdata.QuoteAgeTracker` + `stale_quote`, gating every decision
+that reads a price LEVEL:
+
+- **Measured on the LOCAL monotonic clock and the quote's own identity,
+  never on the tick's timestamp.** `tick.time - time.time()` conflates
+  the broker's clock offset with staleness — the conflation that made
+  the broker-clock line flap for weeks — and a guard that gates real
+  orders must not inherit it. A quote stamped in 1970 is fresh if it
+  just arrived.
+- **Unknown is not fresh, and not stale either.** Ages are None until a
+  leg has been seen to change twice, so the first poll of a start
+  cannot block anything.
+- **The asymmetry is the whole design.** ENTRIES and PROFIT-taking exits
+  (TAKE_PROFIT / MANUAL_TARGET / REVERSION_EXIT) are withheld outright:
+  waiting costs nothing, because a target that existed only on a stale
+  quote was never available to take. A STOP is only DEFERRED, and only
+  for `STALE_STOP_GRACE_SEC`, then it fires with a CRITICAL line saying
+  the fill is unpriced — **a trade must always have a stop**, so an
+  unrefreshed feed cannot become a reason to hold a loser for ever.
+- **Exits that read no price are untouched**: MAX_HOLD, TIME_STOP, the
+  overnight rule, MANUAL_CLOSE, the shutdown prompt and the reconciler
+  are not looking at a quote, so a stale one tells them nothing.
+- **The grace clock starts at the first DEFERRAL**, not at the first
+  stale tick — otherwise a feed that was briefly stale hours ago would
+  let the next stop straight through. A refreshed quote resets it.
+- An armed manual entry STAYS ARMED rather than being cancelled: the
+  level is still there when the quote refreshes, and if it is not then
+  it was never offered.
+- `EXECUTION.MAX_QUOTE_AGE_SEC` (default 2.0, 0 = off) and
+  `STALE_STOP_GRACE_SEC` (10.0), both hot, both on the Settings page.
+  The health line now prints `oldest leg X.Xs` beside the rate, so the
+  threshold can be set from measurement rather than from opinion.
+
+The regression test is the live sequence: leg A ticks the spread down
+through the target while leg B is frozen, and nothing closes; leg B
+quotes again and the target fires at once. Its control turns the guard
+off and asserts the same sequence DOES close — otherwise the test could
+be passing for an unrelated reason.
+
+The other lever, unused so far: `MANUAL_TARGET` is deliberately not in
+`URGENT_REASONS`, so a non-urgent exit obeys `EXECUTION.ENTRY_STYLE`.
+Had this one been a resting limit at 55.76 it would simply not have
+filled, instead of crossing 1.51 through a price that was not there.
+Stops must stay market; a target does not have to.
+
 ## The two books (2026-08-25, operator)
 
 "Stop manual trades feeding the breakers and streak reducer. We should
