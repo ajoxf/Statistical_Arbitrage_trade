@@ -1188,7 +1188,11 @@
                     <span class="fw-bold font-monospace" id="manual-current-spread"
                           style="font-size: 1rem;">&mdash;</span>
                 </div>
-                <div id="manual-spread-legs" class="mb-2"></div>
+                <!-- A ROW, so renderTouches' col-6 cells have something
+                     to sit in. As a plain div they had no grid parent and
+                     stacked one per line, which is what made this panel
+                     twice as tall as it needed to be. -->
+                <div id="manual-spread-legs" class="row g-1 mb-2"></div>
                 <div class="row g-1 mb-2">
                     <div class="col-7">
                         <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>

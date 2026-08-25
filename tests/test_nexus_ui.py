@@ -2540,3 +2540,18 @@ def test_only_a_z_inside_the_band_marks_a_direction(client):
     assert '(zCeil == null || zNow < zCeil)' in page
     # ...nor for a direction the operator has switched off.
     assert "allow === 'both' || allow === side" in page
+
+
+def test_the_manual_panel_touches_sit_in_a_grid_row(client):
+    """renderTouches emits col-6 cells. Without a `row` parent they have
+    no grid to sit in and stack one per line, which is what made the
+    manual panel twice as tall as it needed to be (operator,
+    2026-08-24: "Present this better in the manual trading box")."""
+    page = client.get('/').get_data(as_text=True)
+    i = page.index('id="manual-spread-legs"')
+    tag = page[page.rindex('<div', 0, i):page.index('>', i) + 1]
+    assert 'row' in tag, tag
+    # The two Signal-card containers were already rows; keep them so.
+    for other in ('short-spread-legs', 'long-spread-legs'):
+        j = page.index('id="%s"' % other)
+        assert 'row' in page[page.rindex('<div', 0, j):page.index('>', j) + 1]
