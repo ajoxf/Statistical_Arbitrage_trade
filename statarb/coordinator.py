@@ -1211,8 +1211,23 @@ class Coordinator:
             # SPREAD levels for the in-position card
             plan['entry_mu'] = stats.mu if stats else None
             plan['entry_spread'] = market_data['spread']
+            # The SPREAD levels are anchored on what we FILLED at, not
+            # on the mid the decision was taken at.
+            #
+            # The dollar ladder fires off gross P&L, and P&L is measured
+            # from the executed prices — so a $9.67 stop trips when the
+            # spread has travelled that far from the FILL. Anchoring the
+            # displayed levels on the mid put every one of them out by
+            # the entry crossing plus slippage: live 2026-08-25 the card
+            # named a stop at 60.05 that would actually have fired at
+            # 59.59, and a break-even at 54.59 where the trade was still
+            # down $0.91. `entry_spread` above stays the mid, because
+            # that is the statistical anchor and it is what the z-series
+            # and entry_mu are measured on.
+            anchor, fill_spread = self.levels_anchor(position, market_data)
+            plan['fill_spread'] = fill_spread
             plan['levels'] = self.exit_ladder.spread_levels(
-                plan, market_data['spread'],
+                plan, anchor,
                 spot_trade.lot_size * contract_size, signal_type)
         position.exit_plan = plan
         self.data_logger.save_position_state(position)
@@ -3129,6 +3144,30 @@ class Coordinator:
             if not leg.ping():
                 leg.close()
                 leg.connect()
+
+    @staticmethod
+    def levels_anchor(position, market_data):
+        """What the BE/EX/TP/SL SPREAD levels are measured from.
+
+        Returns `(anchor, fill_spread)`. `fill_spread` is None when the
+        entry could not be measured, and the anchor then falls back to
+        the mid — levels an operator cannot read at all are worse than
+        slightly-off ones.
+
+        Otherwise it is the EXECUTED spread. The dollar ladder those
+        levels translate fires off gross P&L, and P&L is measured from
+        the executed prices, so a $9.67 stop trips when the spread has
+        travelled that far from the FILL. Anchoring on the decision mid
+        put every displayed level out by the entry crossing plus
+        slippage (live 2026-08-25: a stop named at 60.05 that would
+        have fired at 59.59, and a break-even at 54.59 where the trade
+        was still down $0.91).
+        """
+        fill_spread = (getattr(position, 'entry_slippage', None)
+                       or {}).get('executed_spread')
+        if fill_spread is None:
+            return market_data['spread'], None
+        return fill_spread, fill_spread
 
     @staticmethod
     def describe_open_position(position_id, position):

@@ -71,10 +71,24 @@ def compute_market_data(asset_cfg, spot_tick, futures_tick,
         getattr(spot_tick, 'time', ''), spot_tick.bid, spot_tick.ask,
         getattr(futures_tick, 'time', ''), futures_tick.bid, futures_tick.ask)
 
-    spot_price = (spot_tick.last if spot_tick.last > 0
-                  else (spot_tick.bid + spot_tick.ask) / 2)
-    futures_price = (futures_tick.last if futures_tick.last > 0
-                     else (futures_tick.bid + futures_tick.ask) / 2) * multiplier
+    # The MID of the book, always — never `tick.last`.
+    #
+    # `last` is the price of the most recent TRADE. It preferred it
+    # whenever the broker reported one, which made the spread a
+    # different quantity from everything quoted beside it: short_spread,
+    # long_spread, spread_cost, costs.round_trip_cost and slippage's
+    # decision mid are all built from bid/ask. The module's own comment
+    # below asserts `short <= mid <= long` "by construction", and with a
+    # `last` outside the book that is simply false — a futures leg whose
+    # last print sat 0.30 above the ask put the mid ABOVE the long
+    # spread, i.e. above the best price anyone could buy at.
+    #
+    # It also matters for the series. mu/sigma/z need one continuous
+    # definition, and a spread that switches from a midpoint to a trade
+    # print whenever a trade happens to cross is not one — the jump
+    # between them is noise the sigma then has to carry.
+    spot_price = (spot_tick.bid + spot_tick.ask) / 2
+    futures_price = (futures_tick.bid + futures_tick.ask) / 2 * multiplier
 
     beta = float(hedge_ratio or 1.0)
     spread = futures_price - beta * spot_price

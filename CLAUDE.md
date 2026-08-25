@@ -1067,6 +1067,60 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## "The Wanted value looks incorrect" (2026-08-25, operator)
+
+One reading on the in-position card:
+
+```
+Levels      BE 54.59 · EX 55.09 · TP 53.77 · SL 60.05 (profit ↓)
+Level P&L   BE $0.00 · TP +$2.90 · SL −$9.66 gross
+Entry cost  wanted 55.2150 · quoted 54.9000 · filled 54.7600
+```
+
+Every figure reconciled to the cent against the others, which is why it
+survived. TWO definitions were wrong underneath.
+
+**The spread preferred `tick.last`.** `compute_market_data` read the
+most recent TRADE price whenever the broker reported one, and fell back
+to the mid otherwise — while `short_spread`, `long_spread`,
+`spread_cost`, `costs.round_trip_cost` and slippage's decision mid are
+all built from bid/ask. So the number labelled `wanted` and the number
+the levels were anchored on were **not the same quantity**, and
+marketdata's own comment asserting `short <= mid <= long` "by
+construction" was false: a futures print 0.30 above the ask puts the mid
+ABOVE the long spread — above the best price anyone can buy the spread
+at. It also breaks the series, which is the worse half: mu/sigma/z need
+ONE continuous definition, and a spread that switches from a midpoint to
+a trade print whenever a trade happens to cross carries that jump as
+noise sigma then has to absorb. **The spread is the mid of the book,
+always.** (On a feed where `last` is 0 — spot metals, most CFDs —
+nothing changes at all, including the warm-start history.)
+
+**The SPREAD levels were anchored on the MID, and the dollar ladder they
+translate fires off the FILL.** Gross P&L is measured from the executed
+prices, so a $9.67 stop trips when the spread has travelled that far
+from what we filled at — 54.76 + 4.835 = **59.59**. The card said
+**60.05**, because it measured from the 55.215 mid. Every level was out
+by the entry crossing plus slippage, 0.455 here:
+
+- the stop named a level 0.46 PAST where it actually fires, so an
+  operator watching for 60.05 was already stopped out;
+- break-even read 54.59 where the trade was still down **$0.91**.
+
+`Coordinator.levels_anchor` returns the executed spread, falling back to
+the mid when the entry could not be measured — levels an operator cannot
+read at all are worse than slightly-off ones, and `fill_spread` reports
+None rather than restating the mid as a fill. `plan['entry_spread']`
+stays the MID on purpose: that one is the STATISTICAL anchor, and it is
+what `entry_mu` and the z-series are measured on. Same distinction as
+everywhere else here — a price someone named is compared against what
+the market offers; a statistic is compared against the series it was
+measured on.
+
+The lesson the card keeps re-teaching: **internal consistency is not
+correctness.** Four rows agreeing to the cent proves they share an
+anchor, not that the anchor is right.
+
 ## Shutting down asks before it closes anything (2026-08-25, operator)
 
 Operator: "Before shutting down - if there is an active position - Ask
