@@ -53,6 +53,40 @@
         line-height: 1.5;
     }
     .pos-line .pk { color: var(--text-secondary, #6c757d); white-space: nowrap; }
+
+    /* The manual-trade fields, as ONE grid rather than four
+       stacked Bootstrap rows. Six tracks divide evenly by 2 and by 3,
+       so a 2-up row and a 3-up row share the same column edges — the
+       fields line up down the panel instead of each row setting its
+       own widths. Local CSS for the same reason .pos-grid is: a
+       blocked CDN must not turn this back into a stack. */
+    .mt-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 0.2rem 0.3rem;
+        align-items: end;
+    }
+    .mt-grid > div { min-width: 0; }
+    /* Labels WRAP. A third of this column is ~100px and "Take Profit"
+       carries its own % box, so nowrap ran it over Stop Loss. With
+       align-items:end a wrapped label makes its row taller and every
+       input still bottom-aligns, which is the edge that has to hold. */
+    .mt-grid label {
+        display: block;
+        margin-bottom: 0;
+        font-size: 0.62rem;
+        line-height: 1.25;
+    }
+    .mt-grid label.d-flex { flex-wrap: wrap; }
+    .mt-grid .form-control, .mt-grid .form-select {
+        font-size: 0.75rem;
+        padding-top: 0;
+        padding-bottom: 0;
+        width: 100%;
+    }
+    .mt-2up { grid-column: span 3; }
+    .mt-3up { grid-column: span 2; }
+    .mt-full { grid-column: 1 / -1; }
 </style>
 
 <!-- Top Account Bar - Full Width -->
@@ -1210,61 +1244,75 @@
                      mid. The armed trigger fires on the executable side,
                      so showing the mid here meant arming against a level
                      the engine would never compare against. -->
-                <div class="d-flex justify-content-between align-items-baseline">
-                    <span class="text-secondary" id="manual-spread-label">Current Spread:</span>
-                    <span class="fw-bold font-monospace" id="manual-current-spread"
-                          style="font-size: 1rem;">&mdash;</span>
+                <!-- The price first and CENTRED, with the two touches it
+                     is built from directly underneath — the same shape as
+                     the Short/Long cards above, so the number the order
+                     fills at is read the same way wherever it appears. -->
+                <div class="text-center">
+                    <div class="text-secondary" id="manual-spread-label"
+                         style="font-size:0.6rem; letter-spacing:0.04em;
+                                text-transform:uppercase;">Current spread</div>
+                    <div class="fw-bold font-monospace" id="manual-current-spread"
+                         style="font-size: 1.35rem; line-height: 1.15;">&mdash;</div>
                 </div>
                 <!-- A ROW, so renderTouches' col-6 cells have something
                      to sit in. As a plain div they had no grid parent and
                      stacked one per line, which is what made this panel
                      twice as tall as it needed to be. -->
                 <div id="manual-spread-legs" class="row g-1 mb-2"></div>
-                <div class="row g-1 mb-2">
-                    <div class="col-7">
-                        <label class="form-label mb-0" style="font-size:0.65rem;">Direction</label>
-                        <select class="form-select form-select-sm py-0" id="manual-trade-direction" style="font-size:0.72rem;" onchange="updateManualHints()">
+                <!-- Every field in ONE grid: Direction/Lots two-up over
+                     Entry/Take Profit/Stop Loss three-up over Overnight,
+                     all sharing six column tracks so the boxes line up
+                     down the panel. Entry / TP / SL are all SPREAD
+                     levels; the hints below say which side of entry each
+                     has to be on for the chosen direction — that is the
+                     mistake that costs money here. -->
+                <div class="mt-grid mb-1">
+                    <div class="mt-2up">
+                        <label>Direction</label>
+                        <select class="form-select form-select-sm" id="manual-trade-direction" onchange="updateManualHints()">
                             <option value="SELL_BASIS">Short Spread</option>
                             <option value="BUY_BASIS">Long Spread</option>
                         </select>
                     </div>
-                    <div class="col-5">
-                        <label class="form-label mb-0" style="font-size:0.65rem;">Lots
-                            <span class="text-secondary" style="font-size:0.58rem;">blank = engine size</span>
+                    <div class="mt-2up">
+                        <label>Lots
+                            <span class="text-secondary" style="font-size:0.56rem;">blank = engine size</span>
                         </label>
-                        <input type="number" class="form-control form-control-sm py-0" id="manual-lots" step="0.01" min="0.01" placeholder="engine" style="font-size:0.75rem;"
+                        <input type="number" class="form-control form-control-sm" id="manual-lots" step="0.01" min="0.01" placeholder="engine"
                                title="Leave blank to trade whatever the engine would size — the same plan the Position Sizing card shows, honouring your sizing mode, the volume step and each leg's minimum. A number typed here is used exactly as typed; MAX_LOT_SIZE still applies.">
                     </div>
-                </div>
-                <!-- Entry / Take Profit / Stop Loss, all SPREAD levels.
-                     The hints below each field say which side of entry
-                     the level has to be on for the chosen direction —
-                     that is the mistake that costs money here. -->
-                <div class="row g-1 mb-1">
-                    <div class="col-4">
-                        <label class="form-label mb-0" style="font-size:0.65rem;">Entry <span class="text-secondary">(blank=now)</span></label>
-                        <input type="number" class="form-control form-control-sm py-0" id="manual-entry-spread" step="0.0001"
-                               oninput="updateManualHints()" style="font-size:0.75rem;">
+                    <div class="mt-3up">
+                        <label>Entry <span class="text-secondary">(blank=now)</span></label>
+                        <input type="number" class="form-control form-control-sm" id="manual-entry-spread" step="0.0001"
+                               oninput="updateManualHints()">
                     </div>
-                    <div class="col-4">
-                        <label class="form-label mb-0 text-success d-flex justify-content-between align-items-baseline"
-                               style="font-size:0.65rem;">
-                            <span>Take Profit</span>
-                            <span class="text-secondary">
-                                <input type="number" class="py-0 px-1"
+                    <div class="mt-3up">
+                        <!-- The % box sits directly AFTER the words, not
+                             pushed to the cell's right edge: at a third
+                             of this column that put it hard against
+                             "Stop Loss" and the two labels read as one. -->
+                        <label class="text-success">Take Profit<span class="text-secondary"
+                               ><input type="number" class="py-0 px-1 ms-1"
                                        id="manual-tp-pct" value="1" step="0.1" min="0"
                                        oninput="updateManualHints()"
-                                       style="font-size:0.6rem; width:2.6rem;"
-                                       title="Profit target as a % of the margin this pair ties up — the same base as EXITS.TP_CAPITAL_PCT, so the manual and signal paths agree.">%
-                            </span>
-                        </label>
-                        <input type="number" class="form-control form-control-sm py-0" id="manual-exit-spread" step="0.0001"
-                               oninput="updateManualHints()" style="font-size:0.75rem;">
+                                       style="font-size:0.58rem; width:2.2rem;"
+                                       title="Profit target as a % of the margin this pair ties up — the same base as EXITS.TP_CAPITAL_PCT, so the manual and signal paths agree.">%</span></label>
+                        <input type="number" class="form-control form-control-sm" id="manual-exit-spread" step="0.0001"
+                               oninput="updateManualHints()">
                     </div>
-                    <div class="col-4">
-                        <label class="form-label mb-0 text-danger" style="font-size:0.65rem;">Stop Loss</label>
-                        <input type="number" class="form-control form-control-sm py-0" id="manual-stop-spread" step="0.0001"
-                               oninput="updateManualHints()" style="font-size:0.75rem;">
+                    <div class="mt-3up">
+                        <label class="text-danger">Stop Loss</label>
+                        <input type="number" class="form-control form-control-sm" id="manual-stop-spread" step="0.0001"
+                               oninput="updateManualHints()">
+                    </div>
+                    <div class="mt-full">
+                        <label>Overnight</label>
+                        <select class="form-select form-select-sm" id="manual-overnight-mode">
+                            <option value="ALLOW">Allow (accept swap)</option>
+                            <option value="EXIT_IF_PROFIT">Exit if in profit</option>
+                            <option value="EXIT_ALWAYS">Exit always</option>
+                        </select>
                     </div>
                 </div>
                 <!-- Break-even and a suggested target, both in SPREAD,
@@ -1274,14 +1322,6 @@
                      what EXITS.TP_CAPITAL_PCT already means. -->
                 <div class="mb-1" id="manual-tp-suggest" style="font-size:0.64rem;"></div>
                 <div class="mb-2" id="manual-level-hint" style="font-size:0.62rem;"></div>
-                <div class="mb-2">
-                    <label class="form-label mb-0" style="font-size:0.65rem;">Overnight</label>
-                    <select class="form-select form-select-sm py-0" id="manual-overnight-mode" style="font-size:0.72rem;">
-                        <option value="ALLOW">Allow (accept swap)</option>
-                        <option value="EXIT_IF_PROFIT">Exit if in profit</option>
-                        <option value="EXIT_ALWAYS">Exit always</option>
-                    </select>
-                </div>
                 <div class="d-grid gap-1">
                     <button class="btn btn-primary btn-sm py-1" id="manual-trade-activate" onclick="activateManualTrade()" style="font-size:0.75rem;">
                         <i class="bi bi-play-fill me-1"></i>Activate Trade
@@ -1824,9 +1864,8 @@
         }
         const label = document.getElementById('manual-spread-label');
         if (label) {
-            label.textContent = value == null ? 'Current Spread:'
-                : (short ? 'Short spread (fill here):'
-                         : 'Long spread (fill here):');
+            label.textContent = value == null ? 'Current spread'
+                : (short ? 'Short spread' : 'Long spread');
         }
         const legs = document.getElementById('manual-spread-legs');
         if (legs) {

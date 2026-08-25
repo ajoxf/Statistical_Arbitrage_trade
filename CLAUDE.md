@@ -1067,6 +1067,47 @@ injected Bootstrap rules PREPENDED to `<head>`, because Bootstrap is a
 cascade and reported 16px — the opposite of the truth, and it would
 have "proved" the change did nothing.
 
+## The manual panel, on one grid (2026-08-25, operator)
+
+"Can you make this better with the spread in the centre and Bid and Ask
+below that? Make all the boxes in a grid with minimum whitespace.
+'(fill here)' is not needed."
+
+- **The price is CENTRED above its two touches**, the same shape the
+  Short/Long cards use — so the number an order fills at is read the
+  same way wherever it appears. It was a `label: value` line with the
+  touches under it, which made the panel that places orders the only
+  place on the page where the executable spread looked like a footnote.
+- **All six controls are ONE grid** (`.mt-grid`, `repeat(6, 1fr)`)
+  rather than four stacked Bootstrap rows. Six tracks divide evenly by
+  2 AND by 3, so the Direction/Lots pair and the Entry/TP/Stop trio
+  share the same column edges. Measured in Chromium at the real
+  `col-lg-3` width: left 1070 and right 1380 on every row, with
+  Overnight spanning both. Four independent rows each sized their own
+  columns, so nothing lined up down a panel four inches wide.
+- **Local CSS, like `.pos-grid`** — a blocked CDN must not turn this
+  back into a stack of full-width controls.
+- **Labels WRAP; `nowrap` was the fault.** A third of this column is
+  ~100px and "Take Profit" carries its own % box, so nowrap ran it over
+  "Stop Loss". With `align-items: end` a wrapped label makes its row
+  taller and every input still bottom-aligns, which is the edge that
+  has to hold. The % box also moved to sit directly after the words
+  instead of being pushed to the cell's right edge by
+  `justify-content-between`, where it sat hard against the next label
+  and the two read as one.
+- **"(fill here)" is gone.** The panel's whole job is to fill, so the
+  suffix said nothing on every reading of it. A test forbids the string
+  returning.
+- The driver gained a **spill check** — no label may extend past its own
+  grid cell — because the overlap was visible in a screenshot and
+  invisible to every edge measurement that only looked at the inputs.
+  It also needs `box-sizing: border-box` in the injected stub, since
+  Bootstrap's reboot sets it globally: without it the inputs overflowed
+  their tracks and the alignment assertions failed on the stub's fault,
+  not the page's.
+
+Card height 326px -> 325px, and one fewer vertical rhythm to follow.
+
 ## Crisp like a trading platform (2026-08-24, operator)
 
 Four passes over the same two cards, each one the same fault: the

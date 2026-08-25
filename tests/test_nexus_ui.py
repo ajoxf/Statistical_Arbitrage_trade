@@ -2260,9 +2260,39 @@ def test_the_manual_panel_shows_the_executable_spread(client):
     page = client.get('/').get_data(as_text=True)
     assert 'function renderManualSpread' in page
     assert 'id="manual-spread-legs"' in page
-    assert 'Short spread (fill here):' in page
+    assert "'Short spread'" in page and "'Long spread'" in page
     # ...and it follows the Direction selector.
     assert 'renderManualSpread();' in page
+    # "(fill here)" is gone (operator, 2026-08-25): the panel's whole job
+    # is to fill, so the suffix was on every reading of it saying nothing.
+    assert 'fill here' not in page
+
+
+def test_the_manual_fields_are_one_grid(client):
+    """Operator, 2026-08-25: "Make all the boxes in a grid with minimum
+    whitespace."
+
+    Four stacked Bootstrap rows each sized their own columns, so the
+    Direction/Lots pair and the Entry/TP/Stop trio started at different
+    x-positions down a panel four inches wide. Six tracks divide evenly
+    by 2 AND by 3, so both rows share the same column edges.
+
+    Local CSS, like .pos-grid: a blocked CDN must not turn this back
+    into a stack of full-width controls.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert '.mt-grid {' in page
+    assert 'grid-template-columns: repeat(6, 1fr);' in page
+    for field in ('manual-trade-direction', 'manual-lots',
+                  'manual-entry-spread', 'manual-exit-spread',
+                  'manual-stop-spread', 'manual-overnight-mode'):
+        assert f'id="{field}"' in page
+    # The spread reads above its two touches, centred, like the
+    # Short/Long cards — not as a label-and-value line.
+    head = page.index('id="manual-spread-label"')
+    value = page.index('id="manual-current-spread"')
+    legs = page.index('id="manual-spread-legs"')
+    assert head < value < legs
 
 
 def test_the_mid_spread_tile_is_gone(client):
