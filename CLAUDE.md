@@ -1169,6 +1169,19 @@ below that? Make all the boxes in a grid with minimum whitespace.
 
 Card height 326px -> 325px, and one fewer vertical rhythm to follow.
 
+**The TP % box then clipped its own value** (operator, same day:
+"Increase the TP % box. The values are not visible") — it rendered
+`0.:` at 2.2rem. A field whose value cannot be read is worse than no
+field, because it still submits. Now 3.4rem with the spinner arrows
+dropped, which is ~14px back on a box this narrow and no loss: nobody
+nudges a profit target by 0.1 with a mouse. Sized in the stylesheet, so
+width and spinners live together and a test can read the number; an
+inline width would beat it silently. Measured in Chromium at `1`, `0.5`,
+`12.5` and `100` — `scrollWidth == clientWidth` on all four, which is
+the browser saying the text fits. The label wraps onto two lines to make
+room, and `align-items: end` keeps the three level inputs on one
+baseline regardless (325px -> 339px).
+
 ## Crisp like a trading platform (2026-08-24, operator)
 
 Four passes over the same two cards, each one the same fault: the

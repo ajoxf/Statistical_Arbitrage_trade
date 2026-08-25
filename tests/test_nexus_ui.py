@@ -2310,6 +2310,28 @@ def test_the_manual_fields_are_one_grid(client):
     assert head < value < legs
 
 
+def test_the_tp_percent_box_can_show_its_value(client):
+    """Operator, 2026-08-25: "Increase the TP % box. The values are not
+    visible." It was 2.2rem and rendered "0.:" — a field whose value you
+    cannot read is worse than no field, because it still submits.
+
+    Sized in the stylesheet rather than inline, so the width and the
+    dropped spinner arrows (~14px of a box this narrow, and nobody
+    nudges a target by 0.1 with a mouse) live together.
+    """
+    page = client.get('/').get_data(as_text=True)
+    css = page[page.index('#manual-tp-pct {'):]
+    css = css[:css.index('}')]
+    width = float(css.split('width:')[1].split('rem')[0].strip())
+    assert width >= 3.2, f'the TP % box is back down to {width}rem'
+    assert 'appearance: textfield' in css
+    assert '#manual-tp-pct::-webkit-inner-spin-button' in page
+    # ...and no inline width may quietly override it.
+    tag = page[page.index('id="manual-tp-pct"'):]
+    tag = tag[:tag.index('>')]
+    assert 'width' not in tag, tag
+
+
 def test_the_mid_spread_tile_is_gone(client):
     """Operator, 2026-08-24: "Remove this number. It doesn't make any
     sense." A midpoint of two midpoints — no order ever fills there, and

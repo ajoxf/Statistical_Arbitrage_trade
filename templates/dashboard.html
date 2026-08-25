@@ -84,6 +84,23 @@
         padding-bottom: 0;
         width: 100%;
     }
+    /* The Take Profit %. Its own box inside a label, in a cell a third
+       of a narrow column wide, so every pixel is fought for: the
+       spinner arrows are dropped (they cost ~14px and nobody nudges a
+       target by 0.1 with a mouse) and the box is wide enough for a
+       two-digit percent with a decimal. It read "0.:" before. */
+    #manual-tp-pct {
+        width: 3.4rem;
+        font-size: 0.68rem;
+        text-align: right;
+        -moz-appearance: textfield;
+        appearance: textfield;
+    }
+    #manual-tp-pct::-webkit-outer-spin-button,
+    #manual-tp-pct::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+    }
     .mt-2up { grid-column: span 3; }
     .mt-3up { grid-column: span 2; }
     .mt-full { grid-column: 1 / -1; }
@@ -1296,7 +1313,6 @@
                                ><input type="number" class="py-0 px-1 ms-1"
                                        id="manual-tp-pct" value="1" step="0.1" min="0"
                                        oninput="updateManualHints()"
-                                       style="font-size:0.58rem; width:2.2rem;"
                                        title="Profit target as a % of the margin this pair ties up — the same base as EXITS.TP_CAPITAL_PCT, so the manual and signal paths agree.">%</span></label>
                         <input type="number" class="form-control form-control-sm" id="manual-exit-spread" step="0.0001"
                                oninput="updateManualHints()">
