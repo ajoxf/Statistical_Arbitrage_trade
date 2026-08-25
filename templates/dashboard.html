@@ -55,14 +55,17 @@
     .pos-line .pk { color: var(--text-secondary, #6c757d); white-space: nowrap; }
 
     /* The manual-trade fields, as ONE grid rather than four
-       stacked Bootstrap rows. Six tracks divide evenly by 2 and by 3,
-       so a 2-up row and a 3-up row share the same column edges — the
+       stacked Bootstrap rows. Twelve tracks divide evenly by 2 AND by
+       3, so a 2-up row and a 3-up row share the same outer edges — the
        fields line up down the panel instead of each row setting its
-       own widths. Local CSS for the same reason .pos-grid is: a
-       blocked CDN must not turn this back into a stack. */
+       own widths. Twelve rather than six because the three level
+       fields are NOT equally wide: "Take Profit" carries its own %
+       box, and at an even third it wrapped onto two lines. Local CSS
+       for the same reason .pos-grid is: a blocked CDN must not turn
+       this back into a stack. */
     .mt-grid {
         display: grid;
-        grid-template-columns: repeat(6, 1fr);
+        grid-template-columns: repeat(12, 1fr);
         gap: 0.2rem 0.3rem;
         align-items: end;
     }
@@ -101,8 +104,13 @@
         -webkit-appearance: none;
         margin: 0;
     }
-    .mt-2up { grid-column: span 3; }
-    .mt-3up { grid-column: span 2; }
+    .mt-2up { grid-column: span 6; }
+    /* Sized to their LABELS, which are not the same length. Take Profit
+       gets the extra track its % box needs; Stop Loss is the shortest
+       label on the row and gives it up. */
+    .mt-entry { grid-column: span 4; }
+    .mt-tp    { grid-column: span 5; }
+    .mt-stop  { grid-column: span 3; }
     .mt-full { grid-column: 1 / -1; }
 </style>
 
@@ -1299,12 +1307,12 @@
                         <input type="number" class="form-control form-control-sm" id="manual-lots" step="0.01" min="0.01" placeholder="engine"
                                title="Leave blank to trade whatever the engine would size — the same plan the Position Sizing card shows, honouring your sizing mode, the volume step and each leg's minimum. A number typed here is used exactly as typed; MAX_LOT_SIZE still applies.">
                     </div>
-                    <div class="mt-3up">
+                    <div class="mt-entry">
                         <label>Entry <span class="text-secondary">(blank=now)</span></label>
                         <input type="number" class="form-control form-control-sm" id="manual-entry-spread" step="0.0001"
                                oninput="updateManualHints()">
                     </div>
-                    <div class="mt-3up">
+                    <div class="mt-tp">
                         <!-- The % box sits directly AFTER the words, not
                              pushed to the cell's right edge: at a third
                              of this column that put it hard against
@@ -1317,7 +1325,7 @@
                         <input type="number" class="form-control form-control-sm" id="manual-exit-spread" step="0.0001"
                                oninput="updateManualHints()">
                     </div>
-                    <div class="mt-3up">
+                    <div class="mt-stop">
                         <label class="text-danger">Stop Loss</label>
                         <input type="number" class="form-control form-control-sm" id="manual-stop-spread" step="0.0001"
                                oninput="updateManualHints()">

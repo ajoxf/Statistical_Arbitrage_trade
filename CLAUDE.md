@@ -1178,9 +1178,24 @@ nudges a profit target by 0.1 with a mouse. Sized in the stylesheet, so
 width and spinners live together and a test can read the number; an
 inline width would beat it silently. Measured in Chromium at `1`, `0.5`,
 `12.5` and `100` — `scrollWidth == clientWidth` on all four, which is
-the browser saying the text fits. The label wraps onto two lines to make
-room, and `align-items: end` keeps the three level inputs on one
-baseline regardless (325px -> 339px).
+the browser saying the text fits.
+
+That first pass bought the width by letting the label WRAP, and the
+operator's next words were "the Take Profit label going to two lines
+looks odd" — rightly: the % box then sat on its own line directly above
+the take-profit input, reading as a second field stacked over the real
+one. The room comes from the GRID instead. Twelve tracks rather than
+six, split **4 / 5 / 3** — the three level fields were never equally
+wide, and an even third was the assumption at fault. Take Profit gets
+the extra track its box needs; Stop Loss has the shortest label on the
+row and gives one up. Twelve still divides by 2, so the Direction/Lots
+row keeps the same outer edges. Card back to 327px.
+
+Measuring the wrap needed a second attempt too. A label's HEIGHT does
+not answer it — the inline % input is taller than a line of text all by
+itself, so the one-line label measured 1.5 lines and the driver reported
+a wrap that was not there. Counting distinct line-box tops from a Range
+over the label's contents is the reading that means what it says.
 
 ## Crisp like a trading platform (2026-08-24, operator)
 

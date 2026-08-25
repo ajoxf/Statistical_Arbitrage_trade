@@ -2289,19 +2289,36 @@ def test_the_manual_fields_are_one_grid(client):
 
     Four stacked Bootstrap rows each sized their own columns, so the
     Direction/Lots pair and the Entry/TP/Stop trio started at different
-    x-positions down a panel four inches wide. Six tracks divide evenly
-    by 2 AND by 3, so both rows share the same column edges.
+    x-positions down a panel four inches wide. Twelve tracks divide
+    evenly by 2 AND by 3, so both rows share the same outer edges.
+
+    Twelve rather than six because the three level fields are NOT
+    equally wide: "Take Profit" carries its own % box, and at an even
+    third the label wrapped onto two lines with the box stacked over
+    the input it belongs to.
 
     Local CSS, like .pos-grid: a blocked CDN must not turn this back
     into a stack of full-width controls.
     """
     page = client.get('/').get_data(as_text=True)
     assert '.mt-grid {' in page
-    assert 'grid-template-columns: repeat(6, 1fr);' in page
+    assert 'grid-template-columns: repeat(12, 1fr);' in page
     for field in ('manual-trade-direction', 'manual-lots',
                   'manual-entry-spread', 'manual-exit-spread',
                   'manual-stop-spread', 'manual-overnight-mode'):
         assert f'id="{field}"' in page
+    # The three level cells must still fill the row exactly — a span
+    # that does not add to 12 silently reflows one field onto its own
+    # line, which is the fault this is here to stop coming back.
+    spans = {}
+    for name in ('mt-2up', 'mt-entry', 'mt-tp', 'mt-stop'):
+        rule = page[page.index(f'.{name} '):]
+        spans[name] = int(rule[:rule.index('}')].split('span')[1]
+                          .strip(' ;'))
+    assert spans['mt-2up'] * 2 == 12
+    assert spans['mt-entry'] + spans['mt-tp'] + spans['mt-stop'] == 12
+    # Take Profit is the widest of the three; it carries the % box.
+    assert spans['mt-tp'] > spans['mt-entry'] > spans['mt-stop']
     # The spread reads above its two touches, centred, like the
     # Short/Long cards — not as a label-and-value line.
     head = page.index('id="manual-spread-label"')
