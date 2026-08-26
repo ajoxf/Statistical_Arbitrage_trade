@@ -21,7 +21,11 @@ Hedge policy (unchanged from the market-only version):
 
 Hedging-mode accounts: fills record their MT5 position tickets and
 closes target those tickets (a plain opposite order would OPEN a
-second position instead of closing).
+second position instead of closing). That holds on EVERY path out of
+the ladder — a rejected limit, no tick to peg on, a timeout, and an
+entry that recorded no tickets at all (the book is re-read then). The
+opposite order survives only for opening orders and for a leg whose
+book shows nothing of ours, which is the netting case it is for.
 """
 
 import logging
@@ -107,6 +111,32 @@ class PairExecutor:
             'error': result.get('error'),
         }
 
+    def _cross_instead(self, leg, symbol, side, volume, comment,
+                       position_ticket, escalate, why):
+        """A limit that cannot rest has to cross — but a CLOSE must
+        still close.
+
+        On a hedging account a plain opposite market order does not
+        close anything: it opens a second, offsetting position and
+        leaves the first one on the book. Live 2026-08-26, the first
+        session with EXIT_STYLE=limit: a spot exit fell out of the
+        limit path, offset instead of closing, and the reconciler
+        force-closed BOTH rows 40 seconds later — economically flat,
+        two extra round trips paid, and naked for as long as the
+        reconciler was down.
+
+        So when a position ticket is in hand, cross by TICKET. Only an
+        opening order (no ticket) may cross with a plain market order."""
+        if position_ticket is None:
+            return self._market_child(leg, symbol, side, volume, comment)
+        logging.warning("[%s] %s — crossing by ticket %s (a plain "
+                        "opposite order would OPEN a position here)",
+                        leg.name, why, position_ticket)
+        if escalate is not None:
+            return escalate(volume)
+        return {'filled': 0.0, 'price': None, 'tickets': [], 'ok': False,
+                'error': f'{why}; no ticket-close route was provided'}
+
     def _limit_child(self, leg, symbol, side, volume, comment, timeout,
                      position_ticket=None, escalate=None):
         """Rest at peg, re-peg via modify, escalate on timeout.
@@ -122,15 +152,19 @@ class PairExecutor:
 
         price = self._peg_price(leg, symbol, side, meta)
         if price is None:
-            return self._market_child(leg, symbol, side, volume, comment)
+            return self._cross_instead(
+                leg, symbol, side, volume, comment,
+                position_ticket, escalate,
+                'no fresh tick to peg a limit on')
 
         placed = leg.place_limit(symbol, side.value, volume, price,
                                  comment=comment,
                                  position_ticket=position_ticket)
         if not placed.get('ok'):
-            logging.warning("[%s] limit rejected (%s) — falling back to "
-                            "market", leg.name, placed.get('error'))
-            return self._market_child(leg, symbol, side, volume, comment)
+            return self._cross_instead(
+                leg, symbol, side, volume, comment,
+                position_ticket, escalate,
+                f"limit rejected ({placed.get('error')})")
 
         ticket = placed['ticket']
         deadline = self.clock() + timeout
@@ -164,11 +198,9 @@ class PairExecutor:
         remaining = volume - filled
 
         if remaining > EPS and execution.get('ON_TIMEOUT', 'cross') == 'cross':
-            if escalate is None:
-                crossed = self._market_child(leg, symbol, side, remaining,
-                                             comment)
-            else:
-                crossed = escalate(remaining)
+            crossed = self._cross_instead(leg, symbol, side, remaining,
+                                          comment, position_ticket, escalate,
+                                          'no fill before timeout')
             got = crossed['filled']
             if got > EPS:
                 total = filled + got
@@ -634,16 +666,63 @@ class PairExecutor:
                       ', '.join(f"#{p.get('ticket')} {p.get('volume')}"
                                 for p in live) or 'none')
 
+    def _recover_tickets(self, leg, trade):
+        """No tickets recorded for this leg — ask the BROKER what it
+        holds before sending an opposite order.
+
+        The opposite order is only a close on a NETTING account. On a
+        hedging one it opens a second position, which is how a close
+        can report success over a book that still holds the trade
+        (live 2026-08-26). Magic-scoped, side-matched, and capped at
+        the trade's own size so it can only ever close this leg."""
+        read = getattr(leg, 'positions', None)
+        if not callable(read):
+            return []
+        try:
+            live = read(trade.symbol) or []
+        except Exception as e:
+            logging.error("[%s] cannot read the %s book (%s) — falling "
+                          "back to an opposite order, which does NOT "
+                          "close on a hedging account",
+                          leg.name, trade.symbol, e)
+            return []
+        wanted = trade.lot_size
+        found = []
+        for position in live:
+            if str(position.get('side') or '').upper() != trade.side.value:
+                continue
+            volume = min(float(position.get('volume') or 0.0), wanted)
+            if volume <= EPS:
+                continue
+            found.append((position['ticket'], volume))
+            wanted -= volume
+            if wanted <= EPS:
+                break
+        if found:
+            logging.critical(
+                "[%s] closing %s with NO recorded position tickets — the "
+                "broker's book shows %s, so those are closed BY TICKET. "
+                "An opposite order would have opened an offsetting "
+                "position and left the trade open.",
+                leg.name, trade.symbol,
+                ', '.join(f"#{t} {v:g}" for t, v in found))
+        return found
+
     def _close_leg(self, leg, trade, comment, urgent):
-        """Close one leg. Tickets recorded -> close each by ticket
-        (hedging-mode correct); none recorded -> opposite market order
-        (netting fallback).
+        """Close one leg by TICKET — recorded at entry, or read back
+        off the broker's book when the entry never recorded them.
+        Only a book with nothing of ours on it falls through to an
+        opposite market order (the netting-account instrument).
 
         Non-urgent ticket closes go limit-first: a pending limit with
         position=ticket closes the position when it executes, saving
         the spread on every exit; timeout escalates to a market close
         of the remainder. Urgent closes (stops) never rest."""
-        if trade.position_tickets:
+        tickets = [(t, trade.lot_size / len(trade.position_tickets))
+                   for t in trade.position_tickets] \
+            if trade.position_tickets else self._recover_tickets(leg, trade)
+
+        if tickets:
             # EXIT_STYLE, falling back to ENTRY_STYLE — which is what
             # this read before it had a knob of its own, so a config
             # written without one behaves exactly as it did. A target
@@ -656,9 +735,8 @@ class PairExecutor:
             close_side = trade.side.opposite
             filled = 0.0
             notional = 0.0
-            per_ticket = trade.lot_size / len(trade.position_tickets)
 
-            for ticket in trade.position_tickets:
+            for ticket, per_ticket in tickets:
                 if style == 'limit':
                     result = self._limit_child(
                         leg, trade.symbol, close_side, per_ticket, comment,
@@ -676,8 +754,9 @@ class PairExecutor:
             vwap = notional / filled if filled > EPS else None
             return filled, vwap
 
-        style = 'market' if urgent else \
-            self.config.EXECUTION.get('ENTRY_STYLE', 'market')
+        style = 'market' if urgent else (
+            self.config.EXECUTION.get('EXIT_STYLE')
+            or self.config.EXECUTION.get('ENTRY_STYLE', 'market'))
         filled, vwap, _ = self._send_sliced(
             leg, trade.symbol, trade.side.opposite, trade.lot_size,
             comment, style=style,
