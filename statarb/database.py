@@ -7,12 +7,36 @@ from datetime import datetime, timedelta
 
 
 class DataLogger:
+    # A writer holds the database for the length of its transaction, and
+    # the webapp is a SECOND PROCESS reading the same file continuously.
+    # Live 2026-08-26 that collided: "Coordinator loop error: database is
+    # locked" four times over thirty seconds, and /api/volume 500ing —
+    # thirty seconds in which the exit ladder was not evaluating an OPEN
+    # LIVE POSITION. sqlite3 raises immediately by default; both defences
+    # below are one line each.
+    #
+    #   WAL      readers do not block the writer and vice versa, which is
+    #            exactly this shape (one writer, several readers).
+    #   timeout  a writer WAITS for the lock instead of raising. 30s is
+    #            far longer than any statement here takes; it only ever
+    #            comes into play instead of an exception.
+    BUSY_TIMEOUT_SEC = 30.0
+
+    def _connect(self):
+        return sqlite3.connect(self.db_path, timeout=self.BUSY_TIMEOUT_SEC)
+
     def __init__(self, db_path="algo_trading.db"):
         self.db_path = db_path
         self.init_database()
 
     def init_database(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
+        # Persistent on the file, so this only has to succeed once — and
+        # it is attempted on a connection that already waits for its lock.
+        try:
+            conn.execute('PRAGMA journal_mode=WAL')
+        except sqlite3.DatabaseError:
+            pass                     # a read-only file or an old SQLite
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS trades (
@@ -273,7 +297,7 @@ class DataLogger:
         # VALUES(...) would start writing fields into the wrong slots.
         columns = ', '.join(self.BROKER_ORDER_FIELDS + ('seen',))
         placeholders = ', '.join('?' * (len(self.BROKER_ORDER_FIELDS) + 1))
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.executemany(
             "DELETE FROM broker_orders WHERE account = ? "
             "AND state = 'working'",
@@ -295,7 +319,7 @@ class DataLogger:
                            'ORDER BY filled_at DESC LIMIT ?', (limit,))
 
     def log_sd_touch(self, asset, sd_level, direction, zscore, spread):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute('INSERT INTO sd_touches VALUES (?, ?, ?, ?, ?, ?)',
                      (datetime.now().isoformat(), asset, sd_level,
                       direction, zscore, spread))
@@ -303,7 +327,7 @@ class DataLogger:
         conn.close()
 
     def log_shadow(self, shadow):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute('''
             INSERT OR REPLACE INTO shadow_trades VALUES
             (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -316,7 +340,7 @@ class DataLogger:
         conn.close()
 
     def _query(self, sql, args=()):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.row_factory = sqlite3.Row
         rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
         conn.close()
@@ -333,7 +357,7 @@ class DataLogger:
     # -- crash-safe position state ---------------------------------------
 
     def save_position_state(self, position):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute('''
             INSERT OR REPLACE INTO position_state VALUES (?, ?, ?, ?)
         ''', (position.position_id, position.status.value,
@@ -342,14 +366,14 @@ class DataLogger:
         conn.close()
 
     def clear_position_state(self, position_id):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute('DELETE FROM position_state WHERE position_id = ?',
                      (position_id,))
         conn.commit()
         conn.close()
 
     def load_open_position_states(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         rows = conn.execute(
             "SELECT state_json FROM position_state "
             "WHERE status IN ('ACTIVE', 'CLOSING')").fetchall()
@@ -359,7 +383,7 @@ class DataLogger:
     # -- ledgers -----------------------------------------------------------
 
     def log_untracked_close(self, leg, symbol, ticket, volume, price, note):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute('''
             INSERT INTO untracked_closes VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (datetime.now().isoformat(), leg, symbol, ticket, volume,
@@ -370,7 +394,7 @@ class DataLogger:
     def log_trade_review(self, position, exit_z=None, capture_target=None,
                          cost_est=None, outcome=None, exit_spread=None,
                          notional=None):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         plan = position.exit_plan or {}
         levels = plan.get('levels') or {}
         entry_slip = position.entry_slippage or {}
@@ -450,7 +474,7 @@ class DataLogger:
             'error_message': trade.error_message,
             'contract_size': getattr(trade, 'contract_size', None),
         }
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute(
             'INSERT OR REPLACE INTO trades ({}) VALUES ({})'.format(
                 ', '.join(values), ', '.join('?' * len(values))),
@@ -476,7 +500,7 @@ class DataLogger:
         day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week = day - timedelta(days=day.weekday())      # Monday
         month = day.replace(day=1)
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.row_factory = sqlite3.Row
         out = {}
         for key, since in (('day', day), ('week', week), ('month', month)):
@@ -522,7 +546,7 @@ class DataLogger:
         return out
 
     def log_position(self, position):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute('''
             INSERT OR REPLACE INTO positions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
@@ -539,7 +563,7 @@ class DataLogger:
     def log_market_data(self, asset, market_data, signal, z=None,
                         series_key=None):
         signal_str = signal.value if hasattr(signal, 'value') else str(signal)
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute('''
             INSERT INTO market_data
                 (timestamp, asset, spot_price, futures_price, actual_basis,
@@ -568,7 +592,7 @@ class DataLogger:
         spread has no relationship to. Rows predating the column are
         NULL and are therefore never reused.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 'SELECT timestamp, spread FROM market_data '

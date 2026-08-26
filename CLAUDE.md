@@ -1313,6 +1313,56 @@ The test fixtures were carrying the same fault, which is how it
 survived: `tests/test_exits.py` ran a $1,500 stop against $3,000 of
 crossing and read as a perfectly ordinary plan.
 
+## Recovered, and managed by nothing (2026-08-26, LIVE)
+
+```
+Recovered position POS_0001 from DB (GOLD SELL_BASIS, 0.02 lots)
+Recovered position POS_0004 from DB (GOLD SELL_BASIS, 0.10 lots)
+    exits    OK      1 position(s) being managed
+```
+
+Two recovered, one managed. `close_position` sets CLOSING before it
+calls the broker, so a process that dies in that window leaves the row
+CLOSING — and `load_open_position_states` deliberately loads it, which
+means somebody knew it mattered. But `Position.from_dict` restores the
+status verbatim and EVERY lookup in PositionManager filters on ACTIVE.
+So it came back invisible: no exit ladder, no health block, no
+dashboard, and **not in the reconciler's known-ticket set either**,
+which is built from ACTIVE positions — so if the money really was at
+the broker it read as an orphan rather than as itself.
+
+POS_0001 sat like that across at least two restarts, reprinting its
+mark-fees backfill line each time.
+
+It now comes back ACTIVE, which is the same call `_close_failed` makes
+for the in-process version of this (2026-08-07): a close that was not
+seen to complete leaves the position OPEN. If it did complete, the
+reconciler's 3-strike ghost clear resolves it — and that machinery is
+ACTIVE-only too, so the promotion is what lets it run at all. The
+promotion is PERSISTED, or the next restart re-reads CLOSING and the
+whole thing repeats.
+
+## "database is locked" stopped the exit loop (2026-08-26, LIVE)
+
+```
+13:04:04 ERROR Coordinator loop error: database is locked
+13:04:12 ERROR Coordinator loop error: database is locked
+13:04:19 ERROR Coordinator loop error: database is locked
+13:04:27 ERROR Coordinator loop error: database is locked
+```
+
+Thirty seconds in which the ladder was not evaluating an OPEN LIVE
+POSITION, plus a 500 on `/api/volume`. The webapp is a SECOND PROCESS
+reading the same SQLite file continuously while the coordinator writes
+it, and `sqlite3.connect` raises immediately on a held lock by default.
+
+Two one-line defences: **WAL** (readers and the writer stop blocking
+each other, which is exactly this shape) and a **30s busy timeout** (a
+writer WAITS instead of raising — far longer than any statement here
+takes, so it only ever replaces an exception). Every connection in
+`database.py` goes through one `_connect()` now; there were fifteen
+call sites each opening their own.
+
 ## The carry card, priced where the trade goes on (2026-08-25)
 
 Operator, three corrections in one message: "there is mid price of the

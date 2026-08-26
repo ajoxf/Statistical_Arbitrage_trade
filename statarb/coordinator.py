@@ -32,7 +32,8 @@ from . import fairvalue
 from . import hedgeratio
 from . import marketdata
 from .marketdata import compute_market_data
-from .models import Position, SignalType, Trade, OrderSide
+from .models import (Position, PositionStatus, SignalType, Trade,
+                     OrderSide)
 from .notify import TelegramNotifier
 from .pair_executor import PairExecutor
 from .performance import PerformanceTracker
@@ -394,6 +395,35 @@ class Coordinator:
                 logging.error("Could not recover position state: %s", e)
                 continue
             self._backfill_mark_fees(position)
+            # A row saved as CLOSING is a close that STARTED and was
+            # never seen to finish — the process died between marking it
+            # and hearing back from the broker. On restart we cannot
+            # know which, and every lookup in PositionManager filters on
+            # ACTIVE, so leaving it CLOSING makes it invisible: not in
+            # the exit loop, not in the health block, not on the
+            # dashboard, and not even in the reconciler's known-ticket
+            # set — while the money may well still be at the broker.
+            #
+            # Live 2026-08-26: POS_0001 was recovered on every start for
+            # at least two sessions and managed by nothing, with the
+            # health line reading "1 position(s) being managed" beside
+            # two recovered positions.
+            #
+            # So it goes back under management, which is the same call
+            # `_close_failed` makes for the in-process version of this:
+            # a close that did not demonstrably complete leaves the
+            # position OPEN. If it did complete, the reconciler's
+            # 3-strike ghost clear resolves it — and that machinery only
+            # ever looks at ACTIVE positions too.
+            if position.status == PositionStatus.CLOSING:
+                logging.warning(
+                    "%s was saved mid-close and the outcome was never "
+                    "recorded — recovering it as OPEN and putting it back "
+                    "under the exit ladder. Reconciliation will clear it "
+                    "if the broker shows it already closed.",
+                    position.position_id)
+                position.status = PositionStatus.ACTIVE
+                self.data_logger.save_position_state(position)
             self.position_manager.restore_position(position)
 
     def _backfill_mark_fees(self, position):
