@@ -137,7 +137,14 @@ class AlgoTradingConfig:
             # only DEFERRED, and only for the grace below — a trade must
             # always have a stop, so an unrefreshed feed cannot become a
             # reason to hold a loser indefinitely.
-            'MAX_QUOTE_AGE_SEC': 2.0,       # 0 = off
+            #
+            # 2.0 was the first guess and it was too tight for a real
+            # retail feed: live 2026-08-26 a healthy gold pair running
+            # 102 quotes/min still had routine 2.0-2.5s gaps on one leg
+            # or the other, so the guard sat on the threshold and
+            # flipped continuously. Set it from the `oldest leg` figure
+            # on the health line, which is there to be measured.
+            'MAX_QUOTE_AGE_SEC': 5.0,       # 0 = off
             'STALE_STOP_GRACE_SEC': 10.0,
         }
         self.SIGNALS = {
@@ -318,6 +325,15 @@ class AlgoTradingConfig:
             # what happens when nobody is at the keyboard.
             'CLOSE_ON_SHUTDOWN': 'ask',
             'SHUTDOWN_PROMPT_SEC': 30.0,
+            # How long a health verdict must HOLD before the block is
+            # reprinted. The log is event-driven, which is right, but
+            # any gate sitting on its own threshold then flips on every
+            # poll and each flip costs seven lines (live 2026-08-26: the
+            # staleness guard at 2.0s on a feed with 2.0-2.5s gaps).
+            # A state that changes back inside the dwell is not news; it
+            # is counted and reported when something finally settles.
+            # 0 = report every change immediately (the old behaviour).
+            'LOG_STATE_DWELL_SEC': 5.0,
         }
         self.ASSETS = copy.deepcopy(DEFAULT_ASSETS)
         # Attaches to whatever terminal is already running when no
@@ -400,7 +416,8 @@ class AlgoTradingConfig:
     HOT_TRADING_KEYS = ('CLIP_LOTS', 'SLICE_LOTS', 'DAILY_LOT_TARGET',
                         'POLL_INTERVAL_SEC', 'SIZING_MODE',
                         'NOTIONAL_PER_LEG_USD', 'HEDGE_MODE',
-                        'CLOSE_ON_SHUTDOWN', 'SHUTDOWN_PROMPT_SEC')
+                        'CLOSE_ON_SHUTDOWN', 'SHUTDOWN_PROMPT_SEC',
+                        'LOG_STATE_DWELL_SEC')
 
     def hot_apply(self, fresh, positions_open=False):
         """Apply a freshly-loaded config to this live one in place.

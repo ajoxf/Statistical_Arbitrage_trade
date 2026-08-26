@@ -1246,6 +1246,35 @@ Had this one been a resting limit at 55.76 it would simply not have
 filled, instead of crossing 1.51 through a price that was not there.
 Stops must stay market; a target does not have to.
 
+## A threshold sitting on the live figure (2026-08-26, operator)
+
+The guard above shipped at `MAX_QUOTE_AGE_SEC` 2.0. A day of it on a
+healthy feed — 102 quotes/min, both legs — showed routine 2.0-2.5s gaps
+on one leg or the other, so the guard sat exactly on its own threshold
+and flipped OK↔BLOCKED continuously. Default now **5.0**, and the
+health line's `oldest leg` figure is there to set it from measurement
+rather than from a first guess.
+
+The flapping was only half the damage. The status log is EVENT-DRIVEN,
+which is right (2026-08-07: a fixed cadence wrote the same sentence 360
+times an hour) — but the event is "a verdict changed" and the block is
+**seven lines**, so a gate on its threshold turns the fix back into the
+flood, worse than the cadence it replaced.
+
+`TRADING.LOG_STATE_DWELL_SEC` (5.0, hot, on the Settings page, 0 =
+print every change) makes a change wait until it HOLDS. Two rules keep
+it honest:
+
+- **A withheld change is COUNTED, not lost** — "(15 earlier changes did
+  not hold)" beside whatever finally settles. A block that arrives
+  quietly after thirty flips reads as a stable engine, and the flapping
+  is precisely the operator's cue to go and widen the threshold. Only
+  the states that were GIVEN UP ON are counted; the one being reported
+  is the headline, not a flap.
+- **The heartbeat is never withheld and states the LIVE verdict.** It
+  exists to prove the engine is alive, and reporting the last state
+  that happened to settle would make it a stale one.
+
 ## The carry card, priced where the trade goes on (2026-08-25)
 
 Operator, three corrections in one message: "there is mid price of the

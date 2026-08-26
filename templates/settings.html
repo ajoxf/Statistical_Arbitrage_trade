@@ -471,6 +471,19 @@
                             </select>
                             <small class="text-secondary">How often to recalculate mean/std (bands stay stable)</small>
                         </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Log Settle Delay (seconds)</label>
+                            <input type="number" class="form-control" id="log_state_dwell_sec"
+                                   name="log_state_dwell_sec" value="{{ config.log_state_dwell_sec }}"
+                                   step="1" min="0" max="120">
+                            <small class="text-secondary">The health block is printed when a verdict
+                            <strong>changes</strong>, and it is seven lines. A gate sitting right on
+                            its threshold therefore floods the log. A change must now hold for this
+                            long before it is printed; one that reverts sooner is counted and
+                            reported alongside whatever finally settles &mdash; so the flapping is
+                            still visible as the reason to widen that threshold. 0 = print every
+                            change, as before.</small>
+                        </div>
                     </div>
 
                     <hr class="my-4" style="border-color: var(--border-color);">
@@ -2128,6 +2141,10 @@
             min_sigma: parseFloat(document.getElementById('min_sigma').value),
             max_abs_z: parseFloat(document.getElementById('max_abs_z').value),
             poll_interval_sec: parseFloat(document.getElementById('poll_interval_sec').value),
+            // 0 is a real value — it restores print-every-change — so
+            // it must not fall through an `||` to the default.
+            log_state_dwell_sec: parseFloat(
+                document.getElementById('log_state_dwell_sec').value) || 0,
             close_on_shutdown: document.getElementById('close_on_shutdown').value,
             shutdown_prompt_sec: parseFloat(document.getElementById('shutdown_prompt_sec').value),
             pair_type: document.getElementById('pair_type').value,
@@ -2451,6 +2468,9 @@
                 document.getElementById('min_sigma').value = config.min_sigma;
                 document.getElementById('max_abs_z').value = config.max_abs_z;
                 document.getElementById('poll_interval_sec').value = config.poll_interval_sec;
+                // `?? 5` and not `|| 5`: 0 means print every change.
+                document.getElementById('log_state_dwell_sec').value =
+                    config.log_state_dwell_sec ?? 5;
                 document.getElementById('close_on_shutdown').value = config.close_on_shutdown || 'ask';
                 document.getElementById('shutdown_prompt_sec').value = config.shutdown_prompt_sec;
                 document.getElementById('pair_type').value = config.pair_type || 'SPOT_FUTURE';

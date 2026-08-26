@@ -161,6 +161,8 @@ class Coordinator:
         self._last_order_log = 0.0
         self._last_logged_quote = {}   # asset -> last quote_id persisted
         self._last_status_state = {}   # asset -> last LOGGED state
+        self._pending_status = {}      # asset -> (state, first seen at)
+        self._status_flaps = {}        # asset -> changes since last logged
         self._plan_refusal = None      # why the last entry was blocked
         self._exec_error = None        # ...or what the broker said
         self._meta_cache = {}          # (leg, symbol) -> volume limits
@@ -3355,7 +3357,7 @@ class Coordinator:
         numbers move on every tick and must not trigger a reprint."""
         return tuple(state for _, state, _ in self._health(asset_key, md))
 
-    def _status_line(self, asset_key, md, prefix=''):
+    def _status_line(self, asset_key, md, prefix='', flaps=0):
         """One health block. Prices first, because they anchor the
         rest, then every subsystem with its verdict and the reason it
         holds — so "what is working and what is not" is readable
@@ -3365,12 +3367,56 @@ class Coordinator:
                    if state in (self.BLOCKED, self.FAILED)]
         headline = ('all systems go' if not blocked
                     else 'held up by: ' + ', '.join(blocked))
+        # A verdict that changed back and forth before settling is the
+        # symptom of a threshold set right on top of the live figure.
+        # Withholding those blocks keeps the log readable; withholding
+        # the FACT of them would hide the reason to go and widen it.
+        if flaps:
+            headline += (f" ({flaps} earlier change"
+                         f"{'' if flaps == 1 else 's'} did not hold)")
         logging.info(
             "%s%s spot %.2f | fut %.2f | spread %+.2f — %s",
             prefix, asset_key, md['spot_price'], md['futures_price'],
             md['spread'], headline)
         for name, state, detail in rows:
             logging.info("    %-8s %-7s %s", name, state, detail)
+
+    def _status_settled(self, asset_key, state, now, dwell):
+        """True when `state` is a change that has HELD for `dwell`.
+
+        The status log is event-driven and prints seven lines per
+        event, so any gate sitting on its own threshold turns it into a
+        flood — live 2026-08-26, the staleness guard at 2.0s against a
+        feed with routine 2.0-2.5s gaps flipped OK<->BLOCKED
+        continuously. Dwell costs a few seconds of latency on a genuine
+        change, which a log can afford; a state that reverts inside the
+        window is counted rather than printed.
+        """
+        if state == self._last_status_state.get(asset_key):
+            # Back where it was — nothing to announce, and the pending
+            # timer must not survive to fire later on stale evidence.
+            # It is still a change that came and went, so it counts.
+            if self._pending_status.pop(asset_key, None) is not None:
+                self._bump_flaps(asset_key)
+            return False
+        if dwell <= 0:
+            return True
+        pending = self._pending_status.get(asset_key)
+        if pending is None:
+            self._pending_status[asset_key] = (state, now)
+            return False
+        if pending[0] != state:
+            # Abandoned before it could hold. Only the states that were
+            # GIVEN UP ON are counted — the one being reported is the
+            # headline itself, not a flap.
+            self._bump_flaps(asset_key)
+            self._pending_status[asset_key] = (state, now)
+            return False
+        return (now - pending[1]) >= dwell
+
+    def _bump_flaps(self, asset_key):
+        self._status_flaps[asset_key] = (
+            self._status_flaps.get(asset_key, 0) + 1)
 
     def log_status(self, all_market_data, heartbeat=False):
         """Log what CHANGED, plus an occasional heartbeat.
@@ -3385,13 +3431,19 @@ class Coordinator:
         are logged the moment they occur; the heartbeat exists only so
         a quiet log still proves the engine is alive.
         """
+        dwell = float(self.config.TRADING.get('LOG_STATE_DWELL_SEC', 5.0)
+                      or 0.0)
+        now = time.monotonic()
         for asset_key, md in all_market_data.items():
             state = self._status_state(asset_key, md)
-            changed = self._last_status_state.get(asset_key) != state
+            changed = self._status_settled(asset_key, state, now, dwell)
             if not changed and not heartbeat:
                 continue
             self._last_status_state[asset_key] = state
-            self._status_line(asset_key, md, '' if changed else '[heartbeat] ')
+            self._pending_status.pop(asset_key, None)
+            flaps = self._status_flaps.pop(asset_key, 0)
+            self._status_line(asset_key, md,
+                              '' if changed else '[heartbeat] ', flaps)
 
     # ------------------------------------------------------------------
     # Loop

@@ -97,6 +97,7 @@ FIELD_MAP = {
     'hedge_mode': ('TRADING', 'HEDGE_MODE'),
     'daily_lot_target': ('TRADING', 'DAILY_LOT_TARGET'),
     'poll_interval_sec': ('TRADING', 'POLL_INTERVAL_SEC'),
+    'log_state_dwell_sec': ('TRADING', 'LOG_STATE_DWELL_SEC'),
     'close_on_shutdown': ('TRADING', 'CLOSE_ON_SHUTDOWN'),
     'shutdown_prompt_sec': ('TRADING', 'SHUTDOWN_PROMPT_SEC'),
 
