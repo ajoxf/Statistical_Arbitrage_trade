@@ -1041,6 +1041,22 @@
                             <input type="number" class="form-control" id="stale_stop_grace_sec" name="stale_stop_grace_sec" value="{{ config.stale_stop_grace_sec }}" min="0" max="300" step="1">
                             <small class="text-secondary">A stop fires anyway after this long, logged CRITICAL</small>
                         </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Max Spread Jump (sigma)</label>
+                            <input type="number" class="form-control" id="max_spread_jump_sigma" name="max_spread_jump_sigma" value="{{ config.max_spread_jump_sigma }}" min="0" max="50" step="0.5">
+                            <small class="text-secondary">The check above finds a leg that <strong>stopped</strong>.
+                            It cannot find a leg <strong>lagging</strong> during a fast move &mdash; both legs are
+                            ticking, so the feed looks perfect while the spread between them prints a
+                            level neither book is offering. A move bigger than this between two quotes
+                            is treated as a desync, not a price. 0 = off.</small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Jump Settle (sec)</label>
+                            <input type="number" class="form-control" id="jump_settle_sec" name="jump_settle_sec" value="{{ config.jump_settle_sec }}" min="0" max="60" step="0.5">
+                            <small class="text-secondary">How long the series has to be quiet before the
+                            level is trusted again. A desync jumps twice &mdash; out and back &mdash; so the
+                            window covers both.</small>
+                        </div>
                     </div>
 
                     <hr class="my-4" style="border-color: var(--border-color);">
@@ -2210,6 +2226,8 @@
             // must not fall through an `||` to the default.
             max_quote_age_sec: parseFloat(document.getElementById('max_quote_age_sec').value) || 0,
             stale_stop_grace_sec: parseFloat(document.getElementById('stale_stop_grace_sec').value) || 0,
+            max_spread_jump_sigma: parseFloat(document.getElementById('max_spread_jump_sigma').value) || 0,
+            jump_settle_sec: parseFloat(document.getElementById('jump_settle_sec').value) || 0,
             entry_cooldown_seconds: parseInt(document.getElementById('entry_cooldown_seconds').value),
             verify_exchange_position: document.getElementById('verify_exchange_position').checked,
             orphan_recovery_timeout_sec: parseInt(document.getElementById('orphan_recovery_timeout_sec').value),
@@ -2542,6 +2560,10 @@
                 document.getElementById('orphan_recovery_timeout_sec').value = config.orphan_recovery_timeout_sec || 60;
                 document.getElementById('max_quote_age_sec').value = config.max_quote_age_sec ?? 2.0;
                 document.getElementById('stale_stop_grace_sec').value = config.stale_stop_grace_sec ?? 10.0;
+                // `?? x` and not `|| x`: 0 turns each guard off, and is
+                // a real answer rather than a missing one.
+                document.getElementById('max_spread_jump_sigma').value = config.max_spread_jump_sigma ?? 5.0;
+                document.getElementById('jump_settle_sec').value = config.jump_settle_sec ?? 2.0;
                 document.getElementById('daily_max_loss_usd').value = config.daily_max_loss_usd || 0;
                 updateLimitSettingsVisibility();
                 updateFeeSummary();

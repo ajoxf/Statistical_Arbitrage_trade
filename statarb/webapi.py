@@ -103,6 +103,12 @@ FIELD_MAP = {
 
     # Execution
     'entry_execution_mode': ('EXECUTION', 'ENTRY_STYLE'),
+    # Exits get their OWN style. The Settings page has had an "Exit
+    # Execution Mode" selector since the vendored UI landed and it was
+    # not in this map, so the server dropped it on every save — the
+    # maker/taker-fee fault of 2026-08-10 exactly. Worse than dead: the
+    # knob that DID govern exit style was the one labelled "Entry".
+    'exit_execution_mode': ('EXECUTION', 'EXIT_STYLE'),
     'limit_order_timeout_sec': ('EXECUTION', 'LIMIT_TIMEOUT_SEC'),
     'hedge_timeout_sec': ('EXECUTION', 'HEDGE_TIMEOUT_SEC'),
     'exit_timeout_sec': ('EXECUTION', 'EXIT_TIMEOUT_SEC'),
@@ -112,6 +118,8 @@ FIELD_MAP = {
     'on_timeout': ('EXECUTION', 'ON_TIMEOUT'),
     'max_quote_age_sec': ('EXECUTION', 'MAX_QUOTE_AGE_SEC'),
     'stale_stop_grace_sec': ('EXECUTION', 'STALE_STOP_GRACE_SEC'),
+    'max_spread_jump_sigma': ('EXECUTION', 'MAX_SPREAD_JUMP_SIGMA'),
+    'jump_settle_sec': ('EXECUTION', 'JUMP_SETTLE_SEC'),
     'slippage_tolerance': ('EXECUTION', 'SLIPPAGE_TOLERANCE'),
 
     # Risk / breakers
@@ -147,7 +155,8 @@ SECTION_JSON_KEY = {
 }
 
 # Values the UI sends uppercase but the engine stores lowercase
-LOWERCASE_FIELDS = {'entry_execution_mode', 'exit_signal_mode',
+LOWERCASE_FIELDS = {'entry_execution_mode', 'exit_execution_mode',
+                    'exit_signal_mode',
                     'on_timeout', 'allowed_directions',
                     'close_on_shutdown'}
 BOOL_FIELDS = {'z_stop_exit_enabled', 'trend_direction_filter',
@@ -171,7 +180,9 @@ def to_ui_config(raw, defaults=None):
         merged.update(raw.get(SECTION_JSON_KEY[section], {}))
         value = merged.get(key)
         if field in LOWERCASE_FIELDS and isinstance(value, str):
-            value = value.upper() if field == 'entry_execution_mode' else value
+            value = (value.upper()
+                     if field in ('entry_execution_mode',
+                                  'exit_execution_mode') else value)
         out[field] = value
 
     assets = raw.get('assets') or {

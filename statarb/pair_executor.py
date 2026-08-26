@@ -644,8 +644,14 @@ class PairExecutor:
         the spread on every exit; timeout escalates to a market close
         of the remainder. Urgent closes (stops) never rest."""
         if trade.position_tickets:
-            style = 'market' if urgent else \
-                self.config.EXECUTION.get('ENTRY_STYLE', 'market')
+            # EXIT_STYLE, falling back to ENTRY_STYLE — which is what
+            # this read before it had a knob of its own, so a config
+            # written without one behaves exactly as it did. A target
+            # that RESTS cannot be filled 2.04 through the price it was
+            # decided on (live 2026-08-26, $20.40 on a $9.14 target).
+            style = 'market' if urgent else (
+                self.config.EXECUTION.get('EXIT_STYLE')
+                or self.config.EXECUTION.get('ENTRY_STYLE', 'market'))
             timeout = self.config.EXECUTION.get('EXIT_TIMEOUT_SEC', 15)
             close_side = trade.side.opposite
             filled = 0.0

@@ -121,6 +121,15 @@ class AlgoTradingConfig:
             'HEDGE_TIMEOUT_SEC': 4.0,       # patience: hedge leg (short —
                                             # unhedged time is real risk)
             'EXIT_TIMEOUT_SEC': 15.0,       # patience: non-urgent closes
+            # How a NON-URGENT close is worked. Blank falls back to
+            # ENTRY_STYLE, which is what the exit path read before it
+            # had a knob of its own. Stops are always market whatever
+            # this says — only a target, a reversion exit or the
+            # operator's own level obeys it. A resting target cannot be
+            # filled through the price it was decided on: live
+            # 2026-08-26 a manual target crossed 2.04 past its trigger
+            # and turned +$9.14 into -$2.10.
+            'EXIT_STYLE': '',
             'ON_TIMEOUT': 'cross',          # 'cross' (market) or 'abort'
             'ORDER_POLL_SEC': 0.5,
             # Keep a partially-hedged position only if the matched size
@@ -146,6 +155,18 @@ class AlgoTradingConfig:
             # on the health line, which is there to be measured.
             'MAX_QUOTE_AGE_SEC': 5.0,       # 0 = off
             'STALE_STOP_GRACE_SEC': 10.0,
+            # The other half of the same problem. Quote AGE catches a
+            # leg that stopped; it cannot catch a leg LAGGING during a
+            # fast move, because both legs are ticking and the feed
+            # reads perfectly healthy (live 2026-08-26: `oldest leg
+            # 0.0s` while the spread printed 2.3 away from the market
+            # either side of it). Measured against the spread's own
+            # sigma; 0 = off. Deliberately wide — it is the sigma of
+            # the LEVEL, not of the tick-to-tick change, so a real move
+            # gets through and only a desync is caught.
+            'MAX_SPREAD_JUMP_SIGMA': 5.0,   # 0 = off
+            'JUMP_SETTLE_SEC': 2.0,         # quiet needed before trusting
+                                            # the level again
         }
         self.SIGNALS = {
             'USE_Z_SIGNALS': True,     # z-score on the spread (fixed

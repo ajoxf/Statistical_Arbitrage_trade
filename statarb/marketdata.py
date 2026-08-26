@@ -98,6 +98,78 @@ def stale_quote(market_data, max_age_sec):
             f"(limit {max_age_sec:g}s) — the spread is stale")
 
 
+class SpreadJumpTracker:
+    """Catches the OTHER way a pair's price goes wrong.
+
+    `QuoteAgeTracker` finds a leg that has STOPPED. It cannot find a leg
+    that lags during a fast move, because both legs are ticking hard —
+    one is simply a moment behind the other, and the difference between
+    them prints a spread that neither book ever offered.
+
+    Live 2026-08-26, POS_0004: gold fell ~12 points in a minute, the
+    futures leg led, and the spread printed 53.26 against a market that
+    read 54.96 a minute before and 55.26 five seconds after. The
+    operator's 54.18 target fired on it and filled at 55.30 — 2.04 of
+    slippage, +$9.14 turned into -$2.10. The feed reported
+    `oldest leg 0.0s` throughout, correctly: nothing was stale.
+
+    The scale is the spread's own SIGMA, which is the unit every other
+    number here is read in. Note it is the sigma of the LEVEL, not of
+    the tick-to-tick change, and the change distribution is much
+    tighter — so this threshold is generously wide and errs firmly
+    towards letting a real move through. That is the right direction
+    for a guard that can withhold an exit.
+
+    A jump makes the price unusable until it has SETTLED: `settle_sec`
+    with no further jump. A disturbance jumps twice — out and back —
+    and the window covers both, clearing once the series is quiet.
+    """
+
+    def __init__(self, clock=time_mod.monotonic):
+        self.clock = clock
+        self._last = {}       # key -> (quote_id, spread)
+        self._until = {}      # key -> (expiry, jump, sigmas)
+
+    def observe(self, key, market_data, sigma, max_sigmas, settle_sec):
+        """Stamp the jump on `market_data` and return a reason or None."""
+        spread = (market_data or {}).get('spread')
+        quote_id = (market_data or {}).get('quote_id')
+        if spread is None:
+            return None
+
+        previous = self._last.get(key)
+        moved = previous is not None and previous[0] != quote_id
+        if previous is None or moved:
+            self._last[key] = (quote_id, spread)
+
+        # No sigma yet (cold start) or the guard is off: still TRACK the
+        # series, so the first quote after warm-up has something to be
+        # measured against, but hold no opinion.
+        if not sigma or sigma <= 0 or not max_sigmas or max_sigmas <= 0:
+            self._until.pop(key, None)
+            return None
+
+        now = self.clock()
+        if moved:
+            jump = abs(spread - previous[1])
+            sigmas = jump / sigma
+            market_data['spread_jump_sigmas'] = sigmas
+            if sigmas > max_sigmas:
+                self._until[key] = (now + max(settle_sec or 0.0, 0.0),
+                                    jump, sigmas)
+
+        pending = self._until.get(key)
+        if pending is None:
+            return None
+        expiry, jump, sigmas = pending
+        if now >= expiry:
+            self._until.pop(key, None)
+            return None
+        return (f"the spread jumped {jump:.2f} ({sigmas:.1f} sigma) between "
+                f"two quotes — one leg is lagging the other, so this level "
+                f"is not one the market is offering")
+
+
 def executable_spread(market_data, signal_type, closing=False):
     """The spread THIS action can actually be done at.
 

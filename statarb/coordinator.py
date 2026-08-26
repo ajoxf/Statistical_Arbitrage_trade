@@ -213,6 +213,7 @@ class Coordinator:
         # How long since each leg's quote last CHANGED, measured on the
         # local clock. Gates every decision that reads a price LEVEL.
         self.quote_ages = marketdata.QuoteAgeTracker()
+        self.spread_jumps = marketdata.SpreadJumpTracker()
         self._stale_since = {}         # asset -> when a level first
                                        # deferred, for the stop grace
         self._last_stale_note = {}     # so a stale feed logs once
@@ -897,6 +898,17 @@ class Coordinator:
             z = stats.z
             self.z_gen.update(asset_key, z)
 
+        # Two ways a pair's price goes wrong: a leg that FREEZES (caught
+        # by quote age, stamped in get_market_data) and a leg that LAGS
+        # during a fast move (caught here — both legs tick, so the age
+        # check reads a perfectly healthy feed). Needs sigma, so it can
+        # only be measured once the stats exist.
+        market_data['jump_note'] = self.spread_jumps.observe(
+            asset_key, market_data,
+            getattr(stats, 'sigma', None) if stats is not None else None,
+            self.config.EXECUTION.get('MAX_SPREAD_JUMP_SIGMA', 0.0),
+            self.config.EXECUTION.get('JUMP_SETTLE_SEC', 2.0))
+
         self._detect_sd_touches(asset_key, z, market_data['spread'])
         self.shadow.update(asset_key, market_data['spot_price'],
                            market_data['futures_price'],
@@ -1034,9 +1046,18 @@ class Coordinator:
                             'STOP_LOSS'}
 
     def _stale_quote(self, market_data):
-        return marketdata.stale_quote(
+        """Why this snapshot must not price an order, or None.
+
+        Two independent faults, one answer, because every caller wants
+        the same thing: is this a price the market is offering? A leg
+        that stopped quoting and a leg lagging its partner produce the
+        same fictitious spread by different routes, and the gating is
+        identical either way.
+        """
+        return (marketdata.stale_quote(
             market_data,
             self.config.EXECUTION.get('MAX_QUOTE_AGE_SEC', 0.0))
+            or (market_data or {}).get('jump_note'))
 
     def _gate_on_stale_quote(self, asset_key, reason, market_data):
         """Withhold a price-level exit while a leg's quote is stale.

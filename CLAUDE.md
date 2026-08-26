@@ -1363,6 +1363,63 @@ takes, so it only ever replaces an exception). Every connection in
 `database.py` goes through one `_connect()` now; there were fifteen
 call sites each opening their own.
 
+## A leg LAGGING is not a leg STOPPED (2026-08-26, LIVE)
+
+POS_0004, the day after the staleness guard shipped, and the guard was
+right not to fire — nothing was stale:
+
+```
+13:14:54   spread +54.96      heartbeat
+13:16:03   spread  53.26      the 54.18 manual target fired here
+           filled  55.30      2.04 away, $20.40 at k=10
+13:16:08   spread +55.26      heartbeat, five seconds later
+           feed OK, oldest leg 0.0s, throughout
+```
+
+Sigma was 0.29, so 53.26 is eight sigma below the mean and gone within
+seconds. The recorded extremes settle it: peak **+$18.30** and trough
+**-$35.40** both stamped at minute **280** — a 5.3-point swing in the
+spread inside one minute on a 0.29 sigma. Gold fell ~12 points, the
+futures leg led, and the difference between two legs a moment out of
+step printed a level neither book was offering. +$9.14 became -$2.10.
+
+`QuoteAgeTracker` cannot see this: both legs are ticking hard, which is
+exactly what it checks for. `marketdata.SpreadJumpTracker` measures the
+change BETWEEN QUOTES against the spread's own sigma
+(`EXECUTION.MAX_SPREAD_JUMP_SIGMA`, 5.0, 0 = off).
+
+- **The scale is the LEVEL's sigma, not the tick-to-tick change's**,
+  and the change distribution is far tighter — so the threshold is
+  generously wide and errs towards letting a real move through. That is
+  the right direction for something that can withhold an exit.
+- **A disturbance jumps TWICE — out and back — and both prints are
+  untradeable.** So a jump makes the level unusable until the series has
+  been quiet for `JUMP_SETTLE_SEC` (2.0), rather than for one quote.
+- **Cold start has no opinion** (no sigma yet) but the series is still
+  TRACKED, or the guard is blind for exactly one tick after warm-up —
+  and one tick is all this fault takes.
+- It joins the staleness note in ONE `_stale_quote`, so it inherits the
+  whole asymmetry already built there: entries and profit-takers
+  withheld, stops deferred only, clock-based exits untouched. Two
+  faults, one question — is this a price the market is offering?
+
+## The exit style had a control and no wiring (2026-08-26)
+
+The answer to the trade above was "make the target rest instead of
+cross" — and the operator could not have done it. The Settings page has
+had an **Exit Execution Mode** selector since the vendored UI landed,
+posted on every save and read back on every load, and it was never in
+`webapi.FIELD_MAP`, so the server dropped it. The maker/taker-fee fault
+of 2026-08-10 exactly.
+
+Worse than dead: `_close_leg` read `ENTRY_STYLE` for exits, so the knob
+that DID govern how a target was worked was the one labelled "Entry".
+
+`EXECUTION.EXIT_STYLE` now exists and the selector writes to it;
+blank falls back to `ENTRY_STYLE`, which is what that path read before,
+so an existing config behaves identically. Stops are market whatever it
+says.
+
 ## The carry card, priced where the trade goes on (2026-08-25)
 
 Operator, three corrections in one message: "there is mid price of the
