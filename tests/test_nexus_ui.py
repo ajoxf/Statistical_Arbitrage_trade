@@ -2786,3 +2786,28 @@ def test_the_pnl_bar_survives_a_trade_with_only_one_level(client):
     assert 'upScale > 0 && downScale > 0 && pnl !== null' in page
     # A mirrored scale must never be read as a stop that will fire.
     assert 'it is not a stop' in page
+
+
+def test_the_position_badge_says_what_the_trade_does(client):
+    """Operator, 2026-08-25: "Change this to High to Low instead of
+    Sell_Bias or Short."
+
+    The badge showed whatever the last caller happened to pass — the
+    status path passes the raw signal type, the trade path passes
+    SHORT/LONG — so it read SELL_BASIS. It now names the direction by
+    what the spread has to do, from one normaliser, and the code words
+    live in the tooltip.
+    """
+    page = client.get('/').get_data(as_text=True)
+    assert 'HIGH TO LOW' in page and 'LOW TO HIGH' in page
+    assert 'function directionOf' in page
+    # The colour used to be chosen by `=== 'LONG'` alone, so a long
+    # arriving as BUY_BASIS took the SHORT colour and rendered red.
+    assert "badge.className = 'badge ' + (position === 'LONG'" not in page
+    assert "(dir === 'LONG' ? 'badge-long'" in page
+    # The code words are still findable, in the tooltip.
+    assert 'Short spread (SELL_BASIS)' in page
+    assert 'Long spread (BUY_BASIS)' in page
+    # ...and the Direction selector speaks the same way.
+    assert 'Short &mdash; high to low' in page
+    assert 'Long &mdash; low to high' in page

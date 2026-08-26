@@ -1348,8 +1348,8 @@
                     <div class="mt-2up">
                         <label>Direction</label>
                         <select class="form-select form-select-sm" id="manual-trade-direction" onchange="resumeManualEntryTracking(); updateManualHints();">
-                            <option value="SELL_BASIS">Short Spread</option>
-                            <option value="BUY_BASIS">Long Spread</option>
+                            <option value="SELL_BASIS">Short &mdash; high to low</option>
+                            <option value="BUY_BASIS">Long &mdash; low to high</option>
                         </select>
                     </div>
                     <div class="mt-2up">
@@ -4448,6 +4448,18 @@ function updateFilterStatus(elementId, passed, value) {
         }
     }
 
+    // One vocabulary for the direction, whatever the caller passes.
+    // The call sites disagree — the status path passes the raw signal
+    // type ('SELL_BASIS'), the trade path passes 'SHORT'/'LONG' — and
+    // the badge only tested `=== 'LONG'`, so a long spread arriving as
+    // 'BUY_BASIS' took the SHORT colour and rendered red.
+    function directionOf(position) {
+        const v = String(position || '').toUpperCase();
+        if (v === 'SELL_BASIS' || v === 'SHORT') return 'SHORT';
+        if (v === 'BUY_BASIS' || v === 'LONG') return 'LONG';
+        return null;
+    }
+
     function updatePosition(position) {
         const badge = document.getElementById('position-badge');
         const details = document.getElementById('position-details');
@@ -4474,9 +4486,25 @@ function updateFilterStatus(elementId, passed, value) {
                 topPnlFlat.classList.remove('balance-positive', 'balance-negative');
             }
         } else {
-            badge.textContent = position;
-            badge.className = 'badge ' + (position === 'LONG' ? 'badge-long' : 'badge-short');
-            badge.style.fontSize = '1.2rem';
+            // Named by what the trade DOES, not by a code word
+            // (operator, 2026-08-25: "Change this to High to Low
+            // instead of Sell_Bias or Short"). A short spread is sold
+            // high and bought back lower; a long is the mirror. Their
+            // own words for it, and they describe the trade rather
+            // than requiring the reader to remember which of
+            // SELL_BASIS / SHORT means which way the spread has to go.
+            const dir = directionOf(position);
+            badge.textContent = dir === 'LONG' ? 'LOW TO HIGH'
+                : dir === 'SHORT' ? 'HIGH TO LOW' : String(position);
+            badge.className = 'badge ' + (dir === 'LONG' ? 'badge-long'
+                                          : 'badge-short');
+            badge.title = dir === 'LONG'
+                ? 'Long spread (BUY_BASIS): bought low, sold higher — '
+                  + 'profits as the spread RISES.'
+                : 'Short spread (SELL_BASIS): sold high, bought back '
+                  + 'lower — profits as the spread FALLS.';
+            badge.style.fontSize = '1rem';
+            badge.style.whiteSpace = 'nowrap';
             badge.style.padding = '0.4rem 0.8rem';
             details.style.display = 'block';
             if (closeBtn) closeBtn.style.display = 'inline-block';
