@@ -1295,6 +1295,10 @@ class Coordinator:
             if plan is None:
                 self._plan_refusal = self.exit_ladder.last_refusal
                 return None
+            # A plan that BUILT clears the last refusal, so the health
+            # line does not go on reporting a config the operator has
+            # already fixed.
+            self._plan_refusal = None
             if manual:
                 plan['source'] = 'MANUAL'
                 # The operator's own take-profit, stop and overnight
@@ -3319,6 +3323,13 @@ class Coordinator:
                          f'{held} position(s) already open'))
         elif blocking:
             rows.append(('entries', self.BLOCKED, f'{blocking} gate'))
+        elif self._plan_refusal:
+            # A plan the ladder refuses blocks the entry as firmly as
+            # any gate, and this row used to read "armed — z +3.10"
+            # while every signal was being turned away. Never send the
+            # operator to a log for a decision the engine already made.
+            rows.append(('entries', self.BLOCKED,
+                         f'last entry refused — {self._plan_refusal}'))
         elif stats is not None and stats.warm and stats.z is not None:
             rows.append(('entries', self.OK,
                          f'armed — z {stats.z:+.2f}, need '

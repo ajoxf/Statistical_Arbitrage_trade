@@ -44,7 +44,12 @@ def exit_config(config):
                          'COMMISSION_PER_LOT_FUT': 10.0})
     config.EXITS.update({
         'USE_SIGMA_TARGET': True, 'COST_FLOOR_MULT': 1.2,
-        'STOP_USD_PER_LOT': 30.0, 'RR': 0.3, 'GATE_FLOOR_USD': 0.0,
+        # $80/lot x 50 = $4,000, which clears the $3,000 of bid-ask
+        # crossed on the way in. A stop INSIDE that crossing is refused
+        # now — the position is marked at the touches it would close
+        # at, so it opens exactly one round turn down and a tighter
+        # stop is tripped before the spread has moved (2026-08-26).
+        'STOP_USD_PER_LOT': 80.0, 'RR': 0.3, 'GATE_FLOOR_USD': 0.0,
         'MAX_HOLD_HALF_LIVES': 4.0, 'MAX_HOLD_FALLBACK_MIN': 240,
         'MAX_HOLD_PROGRESS_SUPPRESS': 0.5,
         'HARD_TIME_STOP_MULT': 3.0,
@@ -65,13 +70,13 @@ def build(exit_config, entry_z=3.0, sigma=2.0, half_life=600):
 def test_plan_sigma_target_and_stop(exit_config):
     _, plan = build(exit_config)
     assert plan['tp_usd'] == pytest.approx(15000)   # 0.5 * 3 * 2 * 5000
-    assert plan['stop_usd'] == pytest.approx(1500)  # per-lot 30*50 binds
+    assert plan['stop_usd'] == pytest.approx(4000)  # per-lot 80*50 binds
     assert plan['max_hold_sec'] == pytest.approx(2400)
     assert plan['rt_cost_usd'] == pytest.approx(FEES)
 
 
 def test_stop_rr_side_can_bind(exit_config):
-    exit_config.EXITS['STOP_USD_PER_LOT'] = 1000.0
+    exit_config.EXITS['STOP_USD_PER_LOT'] = 1000.0    # far outside; RR binds
     exit_config.EXITS['RR'] = 0.9
     _, plan = build(exit_config)
     assert plan['stop_usd'] == pytest.approx(15000 / 0.9)
@@ -86,7 +91,13 @@ def test_capital_pct_forms_bind_when_leverage_set(exit_config):
     exit_config.EXITS.update({'LEVERAGE': 100.0, 'USE_SIGMA_TARGET': False,
                               'TP_CAPITAL_PCT': 0.5,
                               'STOP_CAPITAL_PCT': 0.3,
-                              'COST_FLOOR_MULT': 0.0, 'RR': 0.0})
+                              'COST_FLOOR_MULT': 0.0, 'RR': 0.0,
+                              'STOP_USD_PER_LOT': 0.0})
+    # The %-of-capital stop is the form under test and it lands at
+    # $993, inside this fixture's $3,000 of crossing — which is refused
+    # now. Zero the crossing so the test measures the knob rather than
+    # the guard; the commission stays.
+    exit_config.COSTS['SPREAD_COST_FACTOR'] = 0.0
     ladder, plan = build(exit_config)
     assert plan['capital_at_risk'] == pytest.approx(331000, rel=0.001)
     assert plan['tp_usd'] == pytest.approx(1655, rel=0.001)
@@ -102,11 +113,11 @@ def test_dollar_stop_fires_first_on_gross_and_ungated(exit_config):
     ladder, plan = build(exit_config)
     position = make_position()
     # z home AND huge gross loss: stop wins, not reversion
-    assert ladder.evaluate(position, plan, z=0.1, gross_pnl=-2000,
+    assert ladder.evaluate(position, plan, z=0.1, gross_pnl=-4500,
                            age_sec=10) == 'DOLLAR_STOP'
-    # Stop means SPREAD distance: gross -1400 is inside the line even
-    # though net (-2400) is past it
-    assert ladder.evaluate(position, plan, z=2.0, gross_pnl=-1400,
+    # Stop means SPREAD distance: gross -3500 is inside the $4,000 line
+    # even though net (-4,500) is past it
+    assert ladder.evaluate(position, plan, z=2.0, gross_pnl=-3500,
                            age_sec=10) is None
 
 
@@ -215,7 +226,7 @@ def test_z_stop_suppression_matrix(exit_config, caplog):
         assert ladder.evaluate(sell, plan, z=4.5, gross_pnl=-100,
                                age_sec=10) is None
     assert any('WOULD HAVE FIRED' in r.message for r in caplog.records)
-    assert ladder.evaluate(sell, plan, z=4.5, gross_pnl=-2000,
+    assert ladder.evaluate(sell, plan, z=4.5, gross_pnl=-4500,
                            age_sec=10) == 'DOLLAR_STOP'
 
     exit_config.EXITS['Z_STOP_EXIT_ENABLED'] = True
@@ -280,7 +291,7 @@ def test_spread_levels_sell_basis(exit_config):
     assert levels['favorable'] == 'down'
     assert levels['be'] == pytest.approx(20.0 - MARK_FEES / 5000)   # 19.80
     assert levels['tp'] == pytest.approx(20.0 - 16000 / 5000)     # 16.80
-    assert levels['sl'] == pytest.approx(20.0 + 1500 / 5000)      # 20.30
+    assert levels['sl'] == pytest.approx(20.0 + 4000 / 5000)      # 20.80
     assert levels['ex'] == pytest.approx(levels['be'])            # floor 0
 
 
@@ -291,7 +302,7 @@ def test_spread_levels_buy_basis_mirrored(exit_config):
     assert levels['favorable'] == 'up'
     assert levels['be'] == pytest.approx(-10.0 + MARK_FEES / 5000)
     assert levels['tp'] == pytest.approx(-10.0 + 16000 / 5000)
-    assert levels['sl'] == pytest.approx(-10.0 - 1500 / 5000)
+    assert levels['sl'] == pytest.approx(-10.0 - 4000 / 5000)
 
 
 def test_outcome_tags_are_deterministic():
@@ -315,6 +326,10 @@ def test_a_seconds_long_half_life_does_not_produce_a_seconds_long_hold(
     seconds after entry, paying the full round trip with no chance of
     reaching it."""
     ladder = ExitLadder(config)
+    # The real CFI gold book: 0.13 + 0.34 = $47 of crossing per lot.
+    # The stop has to clear that or the plan is refused (2026-08-26) —
+    # incidental here, these three are about the max-hold floor.
+    config.EXITS['STOP_USD_PER_LOT'] = 100.0
     md = {'spot_price': 4335.11, 'futures_price': 4394.03,
           'spot_bid': 4335.05, 'spot_ask': 4335.18,
           'futures_bid': 4394.03, 'futures_ask': 4394.37}
@@ -329,6 +344,10 @@ def test_a_seconds_long_half_life_does_not_produce_a_seconds_long_hold(
 def test_a_real_half_life_is_left_alone(config):
     """The floor must not override a genuine reversion horizon."""
     ladder = ExitLadder(config)
+    # The real CFI gold book: 0.13 + 0.34 = $47 of crossing per lot.
+    # The stop has to clear that or the plan is refused (2026-08-26) —
+    # incidental here, these three are about the max-hold floor.
+    config.EXITS['STOP_USD_PER_LOT'] = 100.0
     md = {'spot_price': 4335.11, 'futures_price': 4394.03,
           'spot_bid': 4335.05, 'spot_ask': 4335.18,
           'futures_bid': 4394.03, 'futures_ask': 4394.37}
@@ -339,6 +358,10 @@ def test_a_real_half_life_is_left_alone(config):
 def test_the_floor_can_be_switched_off(config):
     config.EXITS['MIN_MAX_HOLD_SEC'] = 0
     ladder = ExitLadder(config)
+    # The real CFI gold book: 0.13 + 0.34 = $47 of crossing per lot.
+    # The stop has to clear that or the plan is refused (2026-08-26) —
+    # incidental here, these three are about the max-hold floor.
+    config.EXITS['STOP_USD_PER_LOT'] = 100.0
     md = {'spot_price': 4335.11, 'futures_price': 4394.03,
           'spot_bid': 4335.05, 'spot_ask': 4335.18,
           'futures_bid': 4394.03, 'futures_ask': 4394.37}
@@ -356,8 +379,12 @@ def _plan(config, **over):
           'spot_bid': 4658.05, 'spot_ask': 4658.15,
           'futures_bid': 4714.17, 'futures_ask': 4714.27}
     config.EXITS.update(over)
+    # 1 lot, not 0.02: opening this pair crosses $20 of bid-ask, and a
+    # stop inside that is refused outright now (it would fire on the
+    # tick the position opens). These tests are about WHICH KNOB set
+    # the stop, so they need stops that can actually exist.
     return ExitLadder(config).build_plan(
-        lots=0.02, contract_size=100.0, entry_z=3.0, sigma=0.2,
+        lots=1.0, contract_size=100.0, entry_z=3.0, sigma=0.5,
         half_life_sec=600.0, market_data=md)
 
 
@@ -371,8 +398,8 @@ def test_the_plan_names_the_knob_that_set_the_stop(config):
 
 
 def test_a_per_lot_stop_that_binds_says_so(config):
-    plan = _plan(config, STOP_USD_PER_LOT=1.0, STOP_CAPITAL_PCT=0.0, RR=0.3)
-    assert plan['stop_usd'] == pytest.approx(0.02)
+    plan = _plan(config, STOP_USD_PER_LOT=30.0, STOP_CAPITAL_PCT=0.0, RR=0.3)
+    assert plan['stop_usd'] == pytest.approx(30.0)
     assert 'STOP_USD_PER_LOT' in plan['stop_source']
 
 
@@ -391,3 +418,91 @@ def test_the_plan_states_the_win_rate_the_geometry_needs(config):
 def test_rr_above_one_needs_fewer_than_half_the_trades(config):
     plan = _plan(config, STOP_USD_PER_LOT=0.0, STOP_CAPITAL_PCT=0.0, RR=2.0)
     assert plan['breakeven_win_rate'] < 0.5
+
+
+# --- a stop inside the entry crossing ------------------------------------
+# Found in the pre-live review of 2026-08-26, asked for by the operator
+# ("if I turned the Algo on, would it all work as expected?").
+#
+# Since a position is marked at the touches it would CLOSE at, its gross
+# P&L at t=0 is exactly minus one round turn of both legs' bid-ask.
+# DOLLAR_STOP compares gross against `stop_usd`, so a stop at or inside
+# that crossing is tripped before the spread has moved at all.
+
+def _gold_book(lots):
+    """The real CFI gold book — Leg A 0.13, Leg B 0.34 wide."""
+    return {'spot_price': 4335.11, 'futures_price': 4394.03,
+            'spot_bid': 4335.045, 'spot_ask': 4335.175,
+            'futures_bid': 4393.86, 'futures_ask': 4394.20}
+
+
+def test_a_stop_inside_the_entry_crossing_is_refused(config):
+    """The shipped default: $30/lot against gold's $47/lot round turn."""
+    config.EXITS.update({'STOP_USD_PER_LOT': 30.0, 'RR': 0.0,
+                         'STOP_CAPITAL_PCT': 0.0})
+    ladder = ExitLadder(config)
+    plan = ladder.build_plan(1.0, 100, 3.0, 0.5, 600.0, _gold_book(1.0))
+    assert plan is None
+    assert 'stopped out on the tick it opens' in ladder.last_refusal
+    assert '$30.00' in ladder.last_refusal      # names the stop...
+    assert '$47.00' in ladder.last_refusal      # ...and what it is under
+
+
+@pytest.mark.parametrize('lots', [0.1, 1.0, 10.0])
+def test_it_does_not_wash_out_with_size(config, lots):
+    """Both sides scale with lots, so a stop inside the crossing is
+    inside it at every clip. Trading smaller is not the fix."""
+    config.EXITS.update({'STOP_USD_PER_LOT': 30.0, 'RR': 0.0,
+                         'STOP_CAPITAL_PCT': 0.0})
+    ladder = ExitLadder(config)
+    assert ladder.build_plan(lots, 100, 3.0, 0.5, 600.0,
+                             _gold_book(lots)) is None
+
+
+def test_a_stop_outside_the_crossing_is_fine(config):
+    """The guard must not block a sanely configured trade — otherwise
+    the algo silently never trades, which is its own kind of failure."""
+    config.EXITS.update({'STOP_USD_PER_LOT': 100.0, 'RR': 0.0,
+                         'STOP_CAPITAL_PCT': 0.0})
+    ladder = ExitLadder(config)
+    plan = ladder.build_plan(1.0, 100, 3.0, 0.5, 600.0, _gold_book(1.0))
+    assert plan is not None
+    assert plan['stop_usd'] == pytest.approx(100.0)
+
+
+def test_the_refused_plan_really_would_have_stopped_at_once(config):
+    """The strong form: with the guard off, the plan it would have
+    built stops on the position's opening mark. Otherwise this whole
+    check could be pinned by arithmetic that means nothing."""
+    from statarb import marketdata
+    config.EXITS.update({'STOP_USD_PER_LOT': 100.0, 'RR': 0.0,
+                         'STOP_CAPITAL_PCT': 0.0})
+    md = _gold_book(1.0)
+    plan = ExitLadder(config).build_plan(1.0, 100, 3.0, 0.5, 600.0, md)
+    # ...then put back the stop the OLD code would have chosen from the
+    # shipped $30/lot default. This is the plan being refused.
+    plan['stop_usd'] = 30.0
+
+    # Mark the pair where it would actually close, the way the
+    # coordinator does, and read the gross P&L that lands on the ladder.
+    from statarb.positions import PositionManager
+
+    class NullLog:
+        def __getattr__(self, _name):
+            return lambda *a, **k: None
+
+    manager = PositionManager(NullLog())
+    position = manager.create_position(
+        'GOLD', SignalType.SELL_BASIS,
+        Trade('XAUUSD', OrderSide.BUY, 1.0), Trade('GC1225', OrderSide.SELL, 1.0),
+        md['futures_price'] - md['spot_price'])
+    position.spot_trade.executed_price = md['spot_ask']     # bought at the ask
+    position.futures_trade.executed_price = md['futures_bid']  # sold at the bid
+    close_spot, close_fut = marketdata.closing_prices(md, SignalType.SELL_BASIS)
+    manager.update_position_pnl(position.position_id, close_spot, close_fut,
+                                0.0, contract_size=100.0, contract_b=100.0)
+
+    assert position.unrealized_pnl == pytest.approx(-47.0)   # one round turn
+    assert ExitLadder(config).evaluate(
+        position, plan, z=3.0, gross_pnl=position.unrealized_pnl,
+        age_sec=0.5) == 'DOLLAR_STOP'

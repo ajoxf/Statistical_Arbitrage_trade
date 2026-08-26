@@ -1042,3 +1042,24 @@ def test_a_manual_trade_reports_a_sizing_refusal_rather_than_guessing(coord):
     assert coord._manual_open('GOLD', 'SELL_BASIS', lots=None) is None
     assert coord.manual_note['ok'] is False
     assert coord.manual_note['text']
+
+
+def test_a_refused_exit_plan_shows_on_the_entries_row(coord):
+    """The row used to read "armed — z +3.10, need |z| >= 3.0" while
+    every signal was being turned away by the exit ladder. A refusal
+    blocks the entry as firmly as any gate, and the operator must not
+    have to read a log to find a decision the engine already made."""
+    coord._plan_refusal = ('the stop is $30.00 but opening the pair '
+                           'crosses $47.00 of bid-ask')
+    row = details(coord)['entries']
+    assert 'refused' in row
+    assert '$47.00' in row
+    assert states(coord)['entries'] == coord.BLOCKED
+
+
+def test_a_plan_that_builds_clears_the_refusal(coord):
+    """Otherwise the line goes on naming a config already fixed."""
+    coord._plan_refusal = 'something old'
+    coord._open_position('GOLD', SignalType.SELL_BASIS, 0.1, gold_md(),
+                         None, 100.0, manual=True)
+    assert coord._plan_refusal is None

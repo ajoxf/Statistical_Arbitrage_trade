@@ -293,6 +293,37 @@ class ExitLadder:
 
         stop, stop_source = self._choose_stop(tp, lots, capital)
 
+        # A stop INSIDE the entry crossing fires on the tick it opens.
+        #
+        # Since 2026-08-25 a position is marked at the touches it would
+        # CLOSE at, so its gross P&L at t=0 is exactly minus one round
+        # turn of both legs' bid-ask — that is what closing immediately
+        # would book, and it is the right mark. DOLLAR_STOP compares
+        # gross against `stop_usd`, so a stop at or under that crossing
+        # is tripped before the spread has moved at all.
+        #
+        # It does NOT wash out with size: both sides scale with lots.
+        # The shipped STOP_USD_PER_LOT of $30 against gold's measured
+        # $58/lot round turn is stopped on the first tick at 0.1 lots,
+        # at 1 lot and at 10 lots alike.
+        #
+        # Refused for a SIGNAL entry, on the same grounds as the
+        # viability veto directly above: a trade that cannot survive its
+        # own entry is not a trade. A MANUAL one is warned about and
+        # placed — the trader's stop is the trader's.
+        by_hand = manual or manual_target_usd is not None
+        if stop and crossing and stop <= crossing:
+            detail = (f"the stop is ${stop:,.2f} ({stop_source}) but "
+                      f"opening the pair crosses ${crossing:,.2f} of "
+                      f"bid-ask, so the trade is stopped out on the tick "
+                      f"it opens — widen the stop past the round turn")
+            if by_hand:
+                logging.warning("MANUAL entry: %s", detail)
+            else:
+                self.last_refusal = detail
+                logging.error("Exit plan not viable: %s", detail)
+                return None
+
         if half_life_sec:
             max_hold = exits.get('MAX_HOLD_HALF_LIVES', 4) * half_life_sec
         else:

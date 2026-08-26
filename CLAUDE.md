@@ -1275,6 +1275,44 @@ it honest:
   exists to prove the engine is alive, and reporting the last state
   that happened to settle would make it a stale one.
 
+## The stop was inside the entry crossing (2026-08-26, pre-live review)
+
+Operator: "if I turned the Algo on, would it all work as expected?" No,
+and the reason had been sitting in the shipped defaults since the mark
+moved to the closing touch the day before.
+
+A position is now marked at the touches it would CLOSE at, so its gross
+P&L at t=0 is exactly **minus one round turn of both legs' bid-ask**.
+That is correct and was always true — it is what closing immediately
+would book. `DOLLAR_STOP` fires on GROSS. So a stop at or inside that
+crossing is tripped **before the spread has moved at all**:
+
+```
+STOP_USD_PER_LOT 30 x 1 lot   = $30 stop
+gold book 0.13 + 0.34         = $47 crossed on the way in
+                              -> stopped on the tick it opens
+```
+
+**It does not wash out with size.** Both sides scale with lots, so the
+same config self-stops at 0.1 lots, at 1 lot and at 10 lots alike —
+trading smaller is not the fix. Every entry would have paid a round
+trip for nothing, up to MAX_DAILY_TRADES, unattended.
+
+`build_plan` now refuses such a plan, on the same grounds as the
+viability veto directly above it: a trade that cannot survive its own
+entry is not a trade. A MANUAL one is warned about and placed, like
+every other veto here — the trader's stop is the trader's.
+
+And the refusal is now **on the health line**. `entries` read "armed —
+z +3.10, need |z| >= 3.0" while every signal was being turned away,
+because `_plan_refusal` was published to the manual panel and nowhere
+else. It now names the refusal, and a plan that BUILDS clears it so the
+line cannot go on describing a config already fixed.
+
+The test fixtures were carrying the same fault, which is how it
+survived: `tests/test_exits.py` ran a $1,500 stop against $3,000 of
+crossing and read as a perfectly ordinary plan.
+
 ## The carry card, priced where the trade goes on (2026-08-25)
 
 Operator, three corrections in one message: "there is mid price of the

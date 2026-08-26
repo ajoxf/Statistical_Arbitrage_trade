@@ -176,6 +176,9 @@ def test_an_unstamped_plan_is_treated_as_a_signal(config):
 def test_build_plan_stamps_the_source(config):
     """`evaluate` reads it, so it cannot be left to the caller."""
     ladder = ExitLadder(config)
+    # The stop has to clear the $0.80 crossed on the way in, or the
+    # SIGNAL plan is refused before it can be stamped (2026-08-26).
+    config.EXITS['STOP_USD_PER_LOT'] = 100.0
     market = {'spot_price': 4636.0, 'futures_price': 4691.0,
               'spot_bid': 4635.9, 'spot_ask': 4636.1,
               'futures_bid': 4690.9, 'futures_ask': 4691.1,
