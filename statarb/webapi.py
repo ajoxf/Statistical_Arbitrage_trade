@@ -857,6 +857,7 @@ def status_to_ui(status, config_raw):
             'position_type': ('SHORT' if open_position.get('signal_type')
                               == 'SELL_BASIS' else 'LONG'),
             'quantity': open_position.get('lots'),
+            'quantity_b': open_position.get('lots_b'),
             'entry_spot_price': open_position.get('entry_spot'),
             'entry_futures_price': open_position.get('entry_fut'),
             'entry_spread': levels.get('entry_spread'),

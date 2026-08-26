@@ -2946,13 +2946,22 @@
         // imbalance. The engine resolves all of it; the browser must
         // not re-derive lots or the two can disagree.
         const sz = _engineSizing;
-        // What one trade would be, on the card that shows whether one
-        // is open. Answers "how big is this if it fires" without
-        // leaving the row.
+        // While FLAT: what one trade would be, so "how big is this if
+        // it fires" is answerable without leaving the row. While a
+        // position is OPEN: what is actually on the book. Showing the
+        // plan over a live position put two different sizes on one card
+        // (live 2026-08-26: "Leg A 0.02 / Leg B 0.02" beside a $46,292
+        // Size, which is 0.1 lots) — and the one that matters is the
+        // one the close button acts on.
         if (typeof renderPair === 'function') {
+            const open = currentOpenTrade;
+            const a = (open && open.quantity  != null) ? open.quantity
+                    : (sz && sz.leg_a_lots ? sz.leg_a_lots : null);
+            const b = (open && open.quantity  != null) ? open.quantity_b
+                    : (sz && sz.leg_b_lots ? sz.leg_b_lots : null);
             renderPair('position-size-row', [
-                ['Leg A', sz && sz.leg_a_lots ? sz.leg_a_lots.toFixed(2) : '—'],
-                ['Leg B', sz && sz.leg_b_lots ? sz.leg_b_lots.toFixed(2) : '—']]);
+                ['Leg A', a != null ? parseFloat(a).toFixed(2) : '—'],
+                ['Leg B', b != null ? parseFloat(b).toFixed(2) : '—']]);
         }
         const lotsEl = document.getElementById('sizing-lots');
         const balEl  = document.getElementById('sizing-balance');

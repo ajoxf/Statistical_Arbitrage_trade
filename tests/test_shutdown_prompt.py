@@ -25,11 +25,16 @@ import pytest
 from statarb.models import OrderSide, Position, SignalType, Trade
 
 
-def make_position(pid='POS_0001', lots=0.05, pnl=-1.06):
+def make_position(pid='POS_0001', lots=0.05, lots_b=None, pnl=-1.06):
+    # NOTE: no `p.lots = lots` here. A real Position has no such
+    # attribute — the size lives on each leg's Trade — and the fixture
+    # inventing one is why `describe_open_position` reading
+    # `position.lots` shipped and then crashed the shutdown prompt on
+    # a live box (2026-08-26). A test may only touch what the engine
+    # itself sets.
     spot = Trade('XAUUSD', OrderSide.BUY, lots)
-    fut = Trade('GC1225', OrderSide.SELL, lots)
+    fut = Trade('GC1225', OrderSide.SELL, lots if lots_b is None else lots_b)
     p = Position(pid, 'GOLD', SignalType.SELL_BASIS, spot, fut)
-    p.lots = lots
     p.unrealized_pnl = pnl
     return p
 
@@ -114,6 +119,32 @@ def test_the_prompt_names_the_position(live):
     assert 'SELL_BASIS' in line
     assert '0.05 lots' in line
     assert '$-1.06' in line
+
+
+def test_the_prompt_names_BOTH_legs_when_they_differ():
+    """The hedge is derived from both contract sizes, so it is
+    routinely not leg A's number. Naming one of them names half the
+    trade the operator is deciding whether to close."""
+    from statarb.coordinator import Coordinator
+    position = make_position(lots=0.05, lots_b=0.2)
+    line = Coordinator.describe_open_position('POS_0001', position)
+    assert '0.05 / 0.2 lots' in line
+
+
+def test_the_prompt_reads_a_REAL_position():
+    """Guards the fixture as much as the code: `describe_open_position`
+    may only read attributes a Position actually has. It read
+    `position.lots`, which no Position has ever carried, and the
+    AttributeError took the whole shutdown prompt down."""
+    from statarb.coordinator import Coordinator
+    position = Position('POS_0009', 'GOLD', SignalType.BUY_BASIS,
+                        Trade('XAUUSD', OrderSide.SELL, 0.1),
+                        Trade('GC1225', OrderSide.BUY, 0.1))
+    line = Coordinator.describe_open_position('POS_0009', position)
+    assert 'BUY_BASIS' in line
+    # Never marked, so there is no P&L to state — and a zero there
+    # would read as flat rather than as unknown.
+    assert '0.1 / 0.1 lots' in line
 
 
 # --- the config knob ------------------------------------------------------

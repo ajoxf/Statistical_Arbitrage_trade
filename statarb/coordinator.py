@@ -1494,6 +1494,13 @@ class Coordinator:
                 'asset': position.asset,
                 'signal_type': position.signal_type.value,
                 'lots': position.spot_trade.lot_size,
+                # The hedge is sized from BOTH contract sizes, so it is
+                # not leg A's number. The card showed the SIZING PLAN's
+                # two legs while a position was open (live 2026-08-26:
+                # "Leg A 0.02 / Leg B 0.02" beside a $46,292 size that
+                # is 0.1 lots), which is what one trade WOULD be, not
+                # what is on the book.
+                'lots_b': position.futures_trade.lot_size,
                 'entry_premium': position.entry_premium,
                 # Marked at the touches this position would CLOSE at, so
                 # it IS what closing now books — no second "closable"
@@ -3534,8 +3541,16 @@ class Coordinator:
                        position.signal_type) or '?'
         pnl = getattr(position, 'unrealized_pnl', None)
         money = '—' if pnl is None else f"${pnl:+,.2f}"
+        # BOTH legs' lots. A Position has no single size — the hedge is
+        # derived from both contract sizes and is routinely a different
+        # number from leg A's — so naming one of them is naming half the
+        # trade the operator is deciding whether to close.
+        lots_a = getattr(position.spot_trade, 'lot_size', None)
+        lots_b = getattr(position.futures_trade, 'lot_size', None)
+        size = ' / '.join(f"{x:g}" for x in (lots_a, lots_b)
+                          if x is not None) or '?'
         return (f"  {position_id}  {position.asset}  {side}  "
-                f"{position.lots:g} lots  P&L {money}")
+                f"{size} lots  P&L {money}")
 
     def _ask_close_on_shutdown(self, active):
         """Before shutting down, ask whether an open position should be

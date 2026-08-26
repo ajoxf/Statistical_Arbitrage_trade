@@ -102,6 +102,7 @@ def client(tmp_path, monkeypatch):
                     'lot_target': 500}],
         'positions': [{'position_id': 'POS_0009', 'asset': 'GOLD',
                        'signal_type': 'SELL_BASIS', 'lots': 50.0,
+                       'lots_b': 25.0,
                        'entry_premium': 25.0, 'unrealized_pnl': 250.0,
                        'net_pnl': -2750.0, 'age': '1.5h', 'age_sec': 5400,
                        'entry_spot': 3300.0, 'entry_fut': 3320.0,
@@ -372,6 +373,24 @@ def test_engine_status_shape(client):
     assert trade['position_type'] == 'SHORT'      # SELL_BASIS -> SHORT
     assert trade['spread_levels']['break_even'] == 19.4
     assert trade['max_hold_minutes'] == 40.0
+    # BOTH legs. The hedge is derived from both contract sizes and is
+    # routinely not leg A's number, and the position card was drawing
+    # the SIZING PLAN's two legs over a live position (2026-08-26).
+    assert trade['quantity'] == 50.0
+    assert trade['quantity_b'] == 25.0
+
+
+def test_the_position_card_shows_the_OPEN_lots_not_the_plan():
+    """A position card that shows what one trade WOULD be, beside a
+    Size and a close button that belong to what IS open, puts two
+    different sizes on one card. Live 2026-08-26: 'Leg A 0.02 / Leg B
+    0.02' beside a $46,292 Size, which is 0.1 lots."""
+    text = open(os.path.join(TEMPLATES, 'dashboard.html'),
+                encoding='utf-8').read()
+    block = text.split("renderPair('position-size-row'")[0][-1200:]
+    assert 'currentOpenTrade' in block, \
+        'the size row never consults the open position'
+    assert 'quantity_b' in block, 'leg B falls back to the plan'
 
 
 def test_trade_journal_shape(client):
