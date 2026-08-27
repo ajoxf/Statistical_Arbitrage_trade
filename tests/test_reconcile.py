@@ -1,6 +1,7 @@
 """Reconciliation: orphan auto-close (3 strikes, ledger, breaker
 charge), ghost force-clear, flaky-snapshot tolerance."""
 
+import logging
 import sqlite3
 
 import pytest
@@ -88,7 +89,11 @@ def test_orphan_closed_after_three_strikes(config, data_logger):
                         ).fetchall()
     conn.close()
     assert rows == [(999, 10.0)]
-    assert rm.daily_realized_pnl == pytest.approx(10.0)  # (3301-3300)*10
+    # (3301 - 3300) x 10 lots x 100 oz/lot. The contract size was MISSING
+    # here and this test asserted $10 — live 2026-08-26 four orphans were
+    # booked at a hundredth of what they cost, understating both the
+    # ledger the operator reads and the daily-loss breaker.
+    assert rm.daily_realized_pnl == pytest.approx(1000.0)
 
 
 def test_tracked_positions_are_never_touched(config, data_logger):
@@ -228,3 +233,45 @@ def test_a_close_that_starts_working_clears_the_escalation(config,
         actions = reconciler.check()
     assert ('orphan_closed', 'Uts', 7001) in actions
     assert not reconciler.unclosable
+
+
+# ----------------------------------------------------------------------
+# Orphan P&L is MONEY, so it carries the contract size
+# ----------------------------------------------------------------------
+
+def test_orphan_pnl_uses_the_futures_leg_contract_size(config, data_logger):
+    """Leg B can have its OWN contract size, and the orphan booked
+    against it must use that one rather than leg A's."""
+    config.ASSETS['GOLD']['fut_lot_size'] = 50
+    spot_leg = ReconFakeLeg('a')
+    fut_leg = ReconFakeLeg('b')
+    recon, pm, rm = make_recon(config, data_logger, spot_leg, fut_leg)
+    fut_leg.live = [{'ticket': 777, 'symbol': 'GC1225', 'side': 'SELL',
+                     'volume': 2.0, 'price_open': 3311.0}]
+
+    for _ in range(3):
+        recon.check()
+
+    assert fut_leg.closed == [('GC1225', 777, 2.0)]
+    # SELL closed at 3301: (3311 - 3301) x 2 lots x 50 = +$1,000
+    assert rm.daily_realized_pnl == pytest.approx(1000.0)
+
+
+def test_an_unknown_symbol_books_per_unit_and_says_so(config, data_logger,
+                                                      caplog):
+    """A symbol that belongs to no configured pair gets 1.0 rather than
+    a guess — and a warning, because the figure is then understated by
+    exactly the multiplier nobody could supply."""
+    spot_leg = ReconFakeLeg('a')
+    fut_leg = ReconFakeLeg('b')
+    recon, pm, rm = make_recon(config, data_logger, spot_leg, fut_leg)
+    spot_leg.live = [{'ticket': 555, 'symbol': 'WHO_KNOWS', 'side': 'BUY',
+                      'volume': 10.0, 'price_open': 3300.0}]
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            recon.check()
+
+    assert rm.daily_realized_pnl == pytest.approx(10.0)
+    assert any('not a configured leg symbol' in r.message
+               for r in caplog.records)

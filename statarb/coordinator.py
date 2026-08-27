@@ -26,6 +26,7 @@ from .database import DataLogger
 from .exits import ExitLadder, mark_fees, outcome_tag, overnight_exit
 from .legs import LocalLeg, RemoteLeg
 from . import carry
+from . import carryloop
 from . import costs as costs_mod
 from . import expectancy
 from . import fairvalue
@@ -155,6 +156,7 @@ class Coordinator:
         self._control_mtime = 0
         self._last_close_ts = 0
         self._last_open_ts = 0
+        self._last_carry_loop_ts = 0
         self._last_test_ts = 0
         self._last_recon_ts = 0
         self._last_scenario_ts = 0
@@ -175,6 +177,7 @@ class Coordinator:
         self._symbol_search = None     # last symbol lookup for the UI
         self._test_results = None
         self.manual_order = None       # armed Manual Spread Trade
+        self.carry_loop = None         # convergence loop (operator's button)
         self.manual_note = None        # last manual-trade outcome, for the UI
         self.algo_enabled = True       # entries only; exits ALWAYS run
 
@@ -916,6 +919,9 @@ class Coordinator:
         # An armed Manual Spread Trade watches the spread on every
         # tick, independently of the algo switch.
         self._check_manual_arm(asset_key, market_data)
+        # The convergence loop is the operator's own switch, like the
+        # armed trade above — it runs whatever the algo switch says.
+        self._check_carry_loop(asset_key, market_data)
 
         active = self.position_manager.get_positions_for_asset(asset_key)
 
@@ -1536,6 +1542,7 @@ class Coordinator:
                      self.risk_manager.daily_realized_pnl)
         if self.trading_mode == "LIVE":
             self._confirm_with_mt5(position, 'exit')
+        self._carry_loop_closed(position_id, position.realized_pnl, reason)
 
     # ------------------------------------------------------------------
     # Status
@@ -1636,6 +1643,13 @@ class Coordinator:
         ('diagnose', '_last_diag_ts'),
         ('scenario', '_last_scenario_ts'),
         ('reconcile', '_last_recon_ts'),
+        # The convergence loop PLACES ORDERS by itself, so it is a
+        # command and not persistent state like `algo_enabled`. A loop
+        # left on at 17:00 must not resume the moment a crashed process
+        # comes back at 02:00 with nobody watching — that is the shape
+        # of the 2026-08-07 replay incident. Turning it back on is one
+        # click, and it is a decision.
+        ('carry_loop', '_last_carry_loop_ts'),
     )
 
     def _prime_control(self):
@@ -1740,6 +1754,15 @@ class Coordinator:
                                   overnight=open_cmd.get('overnight'))
             else:
                 self._arm_manual(open_cmd)
+
+        loop_cmd = control.get('carry_loop') or {}
+        ts = loop_cmd.get('ts', 0)
+        if ts > self._last_carry_loop_ts:
+            self._last_carry_loop_ts = ts
+            if loop_cmd.get('enabled'):
+                self._carry_loop_start(loop_cmd)
+            else:
+                self._carry_loop_stop()
 
         test_cmd = control.get('test') or {}
         ts = test_cmd.get('ts', 0)
@@ -2198,6 +2221,118 @@ class Coordinator:
                           exit_spread=order.get('exit_spread'),
                           stop_spread=order.get('stop_spread'),
                           overnight=order.get('overnight'))
+
+    # ------------------------------------------------------------------
+    # Convergence loop (operator's button)
+    # ------------------------------------------------------------------
+
+    def _carry_loop_start(self, cmd):
+        """Arm the loop. A stop distance is REQUIRED.
+
+        The operator chose the per-cycle stop as the loop's only bound,
+        so without one there is no bound at all: a manual trade has no
+        engine stop, and a loop of stopless trades re-entering after
+        every win is a machine for turning many small wins into one
+        unlimited loss. Refusing here is the whole safety design.
+        """
+        asset_key = cmd.get('asset')
+        if asset_key not in self.active_assets:
+            return self._manual_reject(f"unknown asset {asset_key}")
+        stop = cmd.get('stop_loss')
+        if not stop:
+            return self._manual_reject(
+                "the convergence loop needs a stop distance — it re-enters "
+                "by itself, and the stop is what makes it stop")
+        take_profit = cmd.get('take_profit')
+        if not take_profit:
+            return self._manual_reject(
+                "the convergence loop needs a take-profit distance — a "
+                "cycle has to be able to END in profit for the loop to "
+                "have anything to repeat")
+        self.carry_loop = carryloop.LoopState(
+            asset_key, lots=cmd.get('lots'),
+            take_profit=float(take_profit), stop_loss=float(stop),
+            edge_mult=float(cmd.get('edge_mult')
+                            or carryloop.DEFAULT_EDGE_MULT))
+        logging.warning(
+            "Carry loop ON for %s: short whenever the spread is rich vs "
+            "the swap-implied fair value. TP %s / SL %s of spread per "
+            "cycle, %s lots. A losing cycle switches it off.",
+            asset_key, take_profit, stop, cmd.get('lots') or 'sized')
+        self.manual_note = {
+            'ok': True, 'ts': time.time(),
+            'text': 'convergence loop armed — it opens a short whenever '
+                    'the spread is rich against the swap-implied fair '
+                    'value, and stands down after a losing cycle'}
+
+    def _carry_loop_stop(self, why='switched off'):
+        if not self.carry_loop:
+            return
+        logging.warning("Carry loop OFF for %s: %s (%d cycles, %d won, "
+                        "$%.2f realized)", self.carry_loop.asset, why,
+                        self.carry_loop.cycles, self.carry_loop.wins,
+                        self.carry_loop.realized)
+        self.carry_loop = None
+
+    def _carry_loop_closed(self, position_id, pnl, reason):
+        """A cycle finished — bank it and decide whether to re-arm."""
+        loop = self.carry_loop
+        if not loop or loop.position_id != position_id:
+            return
+        loop.closed(pnl, reason)
+
+    def _check_carry_loop(self, asset_key, market_data):
+        """Open the next cycle when the basis is rich enough to pay for
+        itself, and nothing is already open on this pair."""
+        loop = self.carry_loop
+        if not loop or not loop.enabled or loop.asset != asset_key:
+            return
+        if self.position_manager.get_positions_for_asset(asset_key):
+            return                       # a cycle is running
+        # Same guard as every other decision that reads a price LEVEL.
+        # The gap IS a level comparison, so a stale or desynced quote
+        # makes it fictitious in exactly the way a target is.
+        stale = self._stale_quote(market_data)
+        if stale:
+            loop.last_note = f"waiting — {stale}"
+            return
+
+        plan = self._sizing_plan(asset_key, market_data)
+        cost = (self._sizing_and_cost(asset_key, market_data) or {})
+        block = self._carry_block(asset_key, market_data,
+                                  cost.get('round_trip_cost') or 0.0)
+        spread = marketdata.executable_spread(market_data,
+                                              SignalType.SELL_BASIS)
+        ok, detail = carryloop.evaluate(
+            spread, block,
+            cost_usd=cost.get('round_trip_cost') or 0.0,
+            spread_units=(plan or {}).get('spread_units'),
+            edge_mult=loop.edge_mult)
+        loop.last_note = detail
+        if not ok:
+            return
+
+        # Levels are DISTANCES on the panel and have to become absolute
+        # spreads here, anchored on the price this decision was made at
+        # — the executable short spread, the same one `evaluate` just
+        # compared against fair. Anchoring on the mid would put both
+        # levels half a round turn out, in the direction that flatters
+        # the trade.
+        target, stop = carryloop.levels_from_fill(
+            spread, loop.take_profit, loop.stop_loss)
+        logging.warning("Carry loop cycle %d: %s", loop.cycles + 1, detail)
+        position = self._manual_open(
+            asset_key, SignalType.SELL_BASIS.value, loop.lots,
+            exit_spread=target, stop_spread=stop)
+        if position is not None:
+            loop.opened(position.position_id)
+        if position is None:
+            # The open was refused (sizing, precheck, the broker). Do
+            # NOT retry three times a second against a broker that just
+            # said no — stand the loop down and let the operator read
+            # the reason the panel is already showing.
+            self._carry_loop_stop('the cycle could not be opened — see '
+                                  'the manual panel for the reason')
 
     def _manual_reject(self, why):
         """Every manual-trade refusal used to end in a log line the
@@ -2880,6 +3015,8 @@ class Coordinator:
             'symbol_search': self._symbol_search,
             'margin_breaker': self._margin_breaker_state(),
             'manual_order': self.manual_order,
+            'carry_loop': (self.carry_loop.to_dict()
+                           if self.carry_loop else None),
             'manual_note': self.manual_note,
             # The same what-is-working breakdown the log prints, so a
             # UI can show it without re-deriving any of the verdicts.

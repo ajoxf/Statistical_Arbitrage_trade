@@ -630,6 +630,61 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         write_control({'open': {'asset': None, 'ts': time.time()}})
         return jsonify({'success': True, 'note': 'Manual trade cancelled.'})
 
+    @app.route('/api/carry-loop', methods=['POST'])
+    def api_carry_loop():
+        """The convergence loop: keep shorting the spread while it is
+        rich against the swap-implied fair value.
+
+        Levels here are DISTANCES in spread, not the absolute levels the
+        rest of this panel takes — the loop re-enters, and each cycle
+        fills somewhere else. Both are REQUIRED: the take profit is what
+        ends a cycle so there is something to repeat, and the stop is
+        the loop's only bound (the operator chose it as such). Refusing
+        here as well as in the engine, because the browser can be
+        bypassed and an unbounded re-entering loop is the one mistake on
+        this panel that does not stop by itself.
+        """
+        payload = request.get_json(silent=True) or {}
+        if not payload.get('enabled'):
+            write_control({'carry_loop': {'enabled': False,
+                                          'ts': time.time()}})
+            return jsonify({'success': True, 'enabled': False,
+                            'note': 'Convergence loop off. An open cycle '
+                                    'is left alone — close it yourself.'})
+        if not payload.get('asset'):
+            return jsonify({'success': False,
+                            'error': 'asset required'}), 400
+        try:
+            take_profit = abs(float(payload.get('take_profit') or 0))
+            stop_loss = abs(float(payload.get('stop_loss') or 0))
+        except (TypeError, ValueError):
+            return jsonify({'success': False,
+                            'error': 'take profit and stop must be '
+                                     'numbers'}), 400
+        if not stop_loss:
+            return jsonify({'success': False,
+                            'error': 'a stop distance is required — the '
+                                     'loop re-enters by itself, and the '
+                                     'stop is what makes it stop'}), 400
+        if not take_profit:
+            return jsonify({'success': False,
+                            'error': 'a take-profit distance is required '
+                                     '— a cycle has to be able to end in '
+                                     'profit for the loop to repeat'}), 400
+        write_control({'carry_loop': {
+            'enabled': True,
+            'asset': payload['asset'],
+            'lots': payload.get('lots'),
+            'take_profit': take_profit,
+            'stop_loss': stop_loss,
+            'edge_mult': payload.get('edge_mult'),
+            'ts': time.time()}})
+        return jsonify({'success': True, 'enabled': True,
+                        'note': 'Convergence loop on — it shorts the '
+                                'spread whenever it is rich against the '
+                                'swap-implied fair value, and stands '
+                                'down after a losing cycle.'})
+
     @app.route('/api/manual-trade', methods=['GET'])
     def api_manual_status():
         status = runtime_status()
@@ -637,6 +692,7 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
         first = (status.get('assets') or [{}])[0]
         return jsonify({
             'armed': bool(order), 'order': order,
+            'carry_loop': status.get('carry_loop'),
             'current_spread': first.get('spread'),
             'asset': first.get('asset'),
             # Whether the ENGINE accepted the last request. A refusal

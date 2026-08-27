@@ -133,6 +133,37 @@ class Reconciler:
 
     # ------------------------------------------------------------------
 
+    def _contract_size(self, symbol):
+        """Units per lot for a symbol, from the configured pair.
+
+        A price move is only money once it is multiplied by this. The
+        orphan estimate went out WITHOUT it (live 2026-08-26: four
+        orphans booked at $0.81 / $0.16 / -$0.62 / -$0.18 against real
+        fills of $81.10 / $15.80 / -$62.50 / -$17.60 — exactly 100x, the
+        oz per gold lot). The ledger the operator reads and the daily-loss
+        breaker were both being charged a hundredth of the damage.
+
+        Unknown symbol -> 1.0, which is the old behaviour and the only
+        honest fallback: a guessed multiplier is worse than a plain one.
+        """
+        for asset in (self.config.ASSETS or {}).values():
+            # The RESOLVED symbol first (what `_setup_symbols` picked and
+            # what the broker therefore reports), then the configured
+            # candidate lists — an orphan can outlive a symbol change,
+            # and its P&L is still worth booking correctly.
+            if symbol == asset.get('spot_symbol') or symbol in (
+                    asset.get('spot_symbols') or ()):
+                return float(asset.get('lot_size') or 1.0)
+            if symbol == asset.get('futures_symbol') or symbol in (
+                    asset.get('futures_symbols') or ()):
+                return float(asset.get('fut_lot_size')
+                             or asset.get('lot_size') or 1.0)
+        logging.warning(
+            "Reconcile: %s is not a configured leg symbol — booking its "
+            "orphan P&L per unit of price, which understates it by the "
+            "contract size", symbol)
+        return 1.0
+
     def _close_orphan(self, leg, pos_info):
         """Close a bot-tagged position the engine doesn't know, by
         ticket — never hand-compute sizes, use the broker's own volume."""
@@ -148,7 +179,8 @@ class Reconciler:
             cost = 0.0
             if price and entry:
                 signed = 1.0 if side is OrderSide.BUY else -1.0
-                cost = signed * (price - entry) * pos_info['volume']
+                cost = (signed * (price - entry) * pos_info['volume']
+                        * self._contract_size(pos_info['symbol']))
             self.data_logger.log_untracked_close(
                 leg.name, pos_info['symbol'], pos_info['ticket'],
                 pos_info['volume'], price,

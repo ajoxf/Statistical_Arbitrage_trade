@@ -1416,6 +1416,52 @@
                     </button>
                 </div>
                 <div class="text-secondary mt-2" id="manual-trade-info" style="font-size:0.65rem;"></div>
+
+                <!-- The convergence loop. A different question from the
+                     Activate button above: not "put this trade on" but
+                     "keep putting this trade on while the basis is rich
+                     against what it costs to carry". Levels here are
+                     DISTANCES, because each cycle fills somewhere else
+                     and an absolute level typed for cycle 1 is
+                     meaningless by cycle 2. -->
+                <hr class="my-2">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="mb-0" style="font-size:0.7rem;font-weight:600;">
+                        <i class="bi bi-arrow-repeat me-1"></i>Convergence loop
+                    </label>
+                    <span class="badge bg-secondary" id="carry-loop-badge" style="font-size:0.58rem;">OFF</span>
+                </div>
+                <div class="mt-grid mb-1">
+                    <div class="mt-tp">
+                        <label class="text-success">TP distance</label>
+                        <input type="number" class="form-control form-control-sm" id="loop-tp" step="0.0001" placeholder="1.20">
+                    </div>
+                    <div class="mt-stop">
+                        <label class="text-danger">Stop distance</label>
+                        <input type="number" class="form-control form-control-sm" id="loop-stop" step="0.0001" placeholder="0.80">
+                    </div>
+                    <div class="mt-lots">
+                        <label>Lots</label>
+                        <input type="number" class="form-control form-control-sm" id="loop-lots" step="0.01" placeholder="sized">
+                    </div>
+                </div>
+                <div class="d-grid">
+                    <button class="btn btn-outline-primary btn-sm py-1" id="carry-loop-toggle" onclick="toggleCarryLoop()" style="font-size:0.75rem;">
+                        <i class="bi bi-arrow-repeat me-1"></i>Start loop
+                    </button>
+                </div>
+                <div class="text-secondary mt-1" id="carry-loop-note" style="font-size:0.62rem;"></div>
+                <div class="text-secondary mt-1" style="font-size:0.62rem;">
+                    Shorts the spread whenever it is <strong>rich against the
+                    swap-implied fair value</strong> on the Carry to Expiry
+                    card, by more than one round trip. Re-opens after each
+                    winning cycle. <strong>A losing cycle switches it
+                    off</strong> &mdash; that stop is the only thing bounding
+                    it, so both distances are required. It refuses to trade at
+                    all when the carry estimate is missing a leg, when the swap
+                    and the carry rate disagree about the sign, or on a stale
+                    quote.
+                </div>
                 <div class="text-secondary mt-2" style="font-size:0.62rem;">
                     <i class="bi bi-exclamation-triangle text-warning me-1"></i>
                     A manual trade is governed by <strong>this card and
@@ -2185,12 +2231,85 @@
         refreshManualTrade();
     }
 
+    // ===== Convergence loop =====
+    // One switch. ON sends the two distances and the size; OFF sends
+    // nothing but the flag, because turning it off must work even if
+    // the fields have since been cleared or edited.
+    async function toggleCarryLoop() {
+        const on = window.__carryLoopOn === true;
+        const num = id => {
+            const v = document.getElementById(id).value;
+            return v === '' ? null : parseFloat(v);
+        };
+        const body = on ? {enabled: false} : {
+            enabled: true,
+            asset: (window.__manualAsset || 'GOLD'),
+            take_profit: num('loop-tp'),
+            stop_loss: num('loop-stop'),
+            lots: num('loop-lots'),
+        };
+        const response = await fetch('/api/carry-loop', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        const result = await response.json();
+        if (!result.success) {
+            await showDialog(result.error || 'The loop was refused.',
+                             {title: 'Convergence loop refused',
+                              variant: 'danger'});
+        } else {
+            showToast(result.note || 'Done', on ? 'info' : 'success');
+        }
+        refreshManualTrade();
+    }
+
+    // The loop's own line: what it is doing, and what it has done. A
+    // stood-down loop says WHY in the same place — "the button went
+    // grey" with no reason is the failure mode this panel keeps fixing.
+    function renderCarryLoop(loop) {
+        const badge = document.getElementById('carry-loop-badge');
+        const button = document.getElementById('carry-loop-toggle');
+        const note = document.getElementById('carry-loop-note');
+        const on = !!(loop && loop.enabled);
+        window.__carryLoopOn = on;
+        if (badge) {
+            badge.textContent = on ? 'RUNNING' : 'OFF';
+            badge.className = 'badge ' + (on ? 'bg-success' : 'bg-secondary');
+        }
+        if (button) {
+            button.innerHTML = on
+                ? '<i class="bi bi-stop-fill me-1"></i>Stop loop'
+                : '<i class="bi bi-arrow-repeat me-1"></i>Start loop';
+            button.className = 'btn btn-sm py-1 '
+                + (on ? 'btn-outline-danger' : 'btn-outline-primary');
+            button.style.fontSize = '0.75rem';
+        }
+        if (!note) return;
+        if (!loop) { note.innerHTML = ''; return; }
+        const bits = [];
+        if (loop.cycles) {
+            bits.push(`<span class="text-secondary">${loop.cycles} cycle`
+                + `${loop.cycles === 1 ? '' : 's'}, ${loop.wins} won, `
+                + `<span class="${loop.realized >= 0 ? 'price-up' : 'price-down'}">`
+                + `$${Number(loop.realized).toFixed(2)}</span></span>`);
+        }
+        if (loop.stood_down) {
+            bits.push(`<span class="text-warning">`
+                + `${escapeHtml(loop.stood_down)}</span>`);
+        } else if (loop.note) {
+            bits.push(`<span class="text-secondary">`
+                + `${escapeHtml(loop.note)}</span>`);
+        }
+        note.innerHTML = bits.join('<br>');
+    }
+
     async function refreshManualTrade() {
         try {
             const data = await (await fetch('/api/manual-trade')).json();
             if (data.asset) window.__manualAsset = data.asset;
             window.__manualMid = data.current_spread;
             renderManualSpread();
+            renderCarryLoop(data.carry_loop);
             const badge = document.getElementById('manual-trade-status-badge');
             const activate = document.getElementById('manual-trade-activate');
             const cancel = document.getElementById('manual-trade-cancel');

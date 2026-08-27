@@ -922,6 +922,81 @@ The arithmetic of the mistake, worth keeping: the whole error is TWICE
 the carry, because a charge added instead of subtracted moves the net by
 2x. That is why $8 read as $216.
 
+## The convergence loop, and an orphan booked at 1% of its cost (2026-08-27)
+
+Operator: "If Current Spread > fair spread - open a position, after
+profit position is closed, open again the same high to low trade (as
+long as current spread > fair). This loop keeps going on as long as the
+button for this is kept on."
+
+**`statarb/carryloop.py`** does it, driven off the CARRY card's
+swap-implied fair value (`carry_spread`) rather than fairvalue's
+risk-free rate — the operator's choice, and the right one: it is tied to
+money the broker actually charges, and it is size-free, so the same
+threshold holds whatever the clip is.
+
+The loop is a MANUAL decision automated, so it inherits the manual
+rules — no signal gates, no risk limits — which is exactly why almost
+all of it is refusals:
+
+- **no `carry_spread`** (an unconvertible swap, no expiry) — a carry
+  estimate missing a leg is not a smaller estimate. Entering on half of
+  one is entering on a number nobody computed.
+- **a `carry.sanity` warning** — the swap and the risk-free rate
+  disagree about the SIGN of this basis, so one input is provably wrong.
+  The dashboard already refuses to print a verdict there; something
+  placing real orders refuses harder.
+- **a stale or desynced quote** — the gap IS a level comparison, so it
+  goes through the same `_stale_quote` gate as a target.
+- **a gap inside the round trip** — `(cost / k) x EDGE_MULT` of spread,
+  stated in spread so it is comparable to the two numbers beside it.
+- **a refused open** stands the loop down rather than retrying three
+  times a second against a broker that just said no.
+
+**What bounds it is one thing: the per-cycle stop** (operator's choice
+of the four offered). A winning cycle re-arms; a losing one — a scratch
+included — switches the whole loop OFF and says why. Both distances are
+therefore REQUIRED, in the engine and at the endpoint: without a stop
+there is no bound at all, because a manual trade has no engine stop, and
+a loop of stopless trades re-entering after every win is a machine for
+turning many small wins into one unlimited loss.
+
+- **Levels are DISTANCES, not the absolute spreads the rest of the panel
+  takes.** Cycle 2 fills somewhere else, so a level typed for cycle 1 is
+  by then either unreachable or already passed.
+- **Anchored on the executable SHORT spread**, the same price `evaluate`
+  compared against fair. The mid would put both levels half a round turn
+  out, in the direction that flatters the trade.
+- **It is a primed command, not persistent state like `algo_enabled`.**
+  It places orders by itself, and a loop left on at 17:00 must not
+  resume when a crashed process comes back at 02:00 with nobody
+  watching — that is the 2026-08-07 replay incident's shape. Turning it
+  back on is one click, and it is a decision.
+- **SHORT only.** A basis below fair is the mirror trade; the operator
+  asked for the high-to-low one.
+- The structural bar still holds and is now asserted for carry too:
+  signals / exits / spread / costs / pair_executor import neither
+  `carry` nor `carryloop`.
+
+**And the orphan sweep was booking 1% of what it cost.** The four
+reconciler closes at 22:01:50 estimated `$0.81 / $0.16 / -$0.62 /
+-$0.18` against real fills of `$81.10 / $15.80 / -$62.50 / -$17.60` —
+exactly 100x, the oz per gold lot. `_close_orphan` computed
+`(price - entry) x volume` and never multiplied by the **contract
+size**, so the untracked-close ledger the operator reads and the
+daily-loss breaker were both charged a hundredth of the damage. An
+unknown symbol still gets 1.0 — a guessed multiplier is worse than a
+plain one — but it now says so. The existing test asserted the bug
+($10 where the answer was $1,000) and was encoding it.
+
+Worth keeping about those four orphans: they came from POS_0004's close
+falling out of the limit path onto a ticketless market order — the
+2026-08-26 hedging-mode defect, this time on BOTH legs. The engine
+booked that trade at **+$26.90**, computed against the OPENING prices of
+the two offsetting positions; the money that actually reached the
+accounts was the four cleanup rows, **+$16.80**. A recorded P&L for a
+close that never happened is not the money.
+
 ## Which spread each decision reads (2026-08-24, operator)
 
 Operator: "will the algo know which Bid and ask to take into
