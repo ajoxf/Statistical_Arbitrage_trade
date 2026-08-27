@@ -193,8 +193,19 @@ Each ladder is one card/panel and owns one pair.
 ### Header
 
 Pair name (`CL Oct26 − BZ Oct26`), the account pair it routes to, the
-**Increment** (spread ticks per row), quantity presets, and the order-type
-controls: **Limit / Market**, **Day / GTC**, and a default quantity.
+**Increment** (spread ticks per row), quantity presets and a default quantity,
+and three selectors:
+
+- **Order Type — LIMIT / MARKET.** Decides what a click does; see §4. LIMIT
+  creates a synthetic working order at the clicked level; MARKET crosses both
+  legs now, with the clicked price as a slippage guard. **The ladder's click
+  columns must look visibly different in MARKET mode** — a click there is
+  immediate and irreversible.
+- **Time in force — DAY / GTC.** See §3.1.
+- **Overnight — ALLOW / EXIT_IF_PROFIT / EXIT_ALWAYS.** See §3.2.
+
+All three are per-ladder, and their current values are readable without opening
+a menu. A trader must never have to remember which mode a ladder is in.
 
 ### Columns, left to right
 
@@ -234,6 +245,51 @@ controls: **Limit / Market**, **Day / GTC**, and a default quantity.
   blocked CDN has already taken this UI down once; the dialog that reports
   "could not save" must work when the network is what failed.
 
+### 3.1 Time in force — DAY / GTC
+
+Standard semantics, per ladder:
+
+- **DAY** — the working order is cancelled at the session cutoff.
+- **GTC** — it lives until the trader cancels it.
+
+**One honest caveat, and it must be on the screen, not only in the code.** A
+synthetic order lives in *our* process; nothing at the broker knows what a
+spread is. So GTC cannot mean what it means on an exchange:
+
+- Both DAY and GTC orders are **cancelled at shutdown** and **do not resume on
+  restart** (§4's sweep, and §10). While this process is down, no one is watching
+  the spread, so an order that "survived" would be a promise nothing could keep.
+- The real pending backing a LIMIT-mode order **does** survive at the broker,
+  which is why the sweep is mandatory rather than tidy.
+- Label GTC accordingly in the UI — "until cancelled, or until this system
+  stops" — so it is never misread as exchange-resident.
+
+The DAY cutoff uses the same broker-session clock as the overnight rule below, so
+a trader only ever configures one time.
+
+### 3.2 Overnight — the same three options as the Manual Trade card
+
+Port `exits.overnight_exit` verbatim. Per ladder, with a global default on the
+settings page:
+
+| Mode | At the session cutoff |
+|---|---|
+| **ALLOW** (default) | keep the position and pay the swap |
+| **EXIT_IF_PROFIT** | flatten only if net P&L > 0 |
+| **EXIT_ALWAYS** | flatten regardless |
+
+- The cutoff is `OVERNIGHT_CLOSE_HOUR` / `OVERNIGHT_CLOSE_MINUTE`
+  (default 16:55, broker-session local, both settings).
+- This governs **positions**. Working orders are governed by DAY/GTC above.
+- **EXIT_IF_PROFIT reads NET P&L** — marked at the closing touch, less
+  commissions only (§5). Marked at the mid it would flatten trades that are not
+  actually in profit.
+- An overnight close is **urgent**: market, by ticket, never resting. And it is
+  one of the exits that reads no price level, so the staleness and jump guards
+  (§8) do not withhold it.
+- This is a **carry decision, not a risk rule.** Holding a rich basis over the
+  swap is often the whole trade. Default ALLOW and let the trader choose.
+
 ---
 
 ## 4. The hard part: a resting spread order is SYNTHETIC
@@ -243,15 +299,55 @@ There is nothing to rest an order on. A working order on the ladder is a
 **synthetic order held by the coordinator**, and how it becomes two real orders
 is the central engineering problem of the whole product.
 
-### The fire rule — DECIDED: quote one leg, cross the other
+### The fire rule — DECIDED: an Order Type dropdown, LIMIT or MARKET
+
+As on the reference ladder, the header carries an **Order Type** selector, and
+it decides what a click on the price columns does. Both modes are first-class;
+neither is a fallback for the other.
+
+| Order Type | A click… | Pays | Legging window |
+|---|---|---|---|
+| **LIMIT** (default) | creates a **synthetic working order** at that level, backed by a real pending on one leg | earns one leg's bid-ask, pays the other's | from the quoting leg's fill to the crossing leg landing |
+| **MARKET** | **crosses both legs immediately** at the touch | both legs' bid-ask | the two market orders, back to back |
+
+The two modes share everything downstream — the hedge arithmetic, ticket-based
+closes, the escalation deadline, the reconciler. They differ only in how the
+pair gets on.
+
+**The armed mode must be unmistakable on screen.** In MARKET mode a click is
+irreversible and immediate, so the click columns change appearance (a distinct
+border/tint and the cursor) the moment the selector moves. The expensive misclick
+on any ladder is a market order the trader thought was a working order.
+
+**Record the mode on every order and every fill.** The slippage and cost reports
+in §5 are meaningless if a taker fill and a maker fill are averaged together.
+
+#### MARKET mode
+
+- Cross both legs back to back, no waiting. This is the fast, boring path and it
+  is what the 24 ms measurement below describes.
+- **Send the harder-to-fill leg FIRST** — the one with the wider book, the larger
+  minimum volume, or the slower feed (usually the future). Filling the easy leg
+  first and then discovering the hard one will not fill is how you end up naked.
+- **The clicked price is a slippage guard, not decoration.** A market order on a
+  ladder should be *market-with-protection*: refuse a fill worse than the clicked
+  spread by more than `MARKET_PROTECTION_TICKS` (a per-pair setting, default a
+  few increments). Without it, a click anywhere on the ladder fills at whatever
+  the touch happens to be, which on a desynced print is exactly the $20.40 fault
+  in §8. If protection is breached, the pair does **not** go on and the ladder
+  says why.
+- The staleness and jump guards (§8) apply: a market click into a stale or jumped
+  print is refused with the reason on screen, not silently swallowed.
+
+#### LIMIT mode — quote one leg, cross the other
 
 > **A synthetic working order is backed by a REAL pending limit on ONE leg (the
 > "quoting" leg). When that limit fills, the other leg is crossed at market
 > immediately.**
 
-This earns one leg's bid-ask and pays the other's, instead of paying both. The
-operator chose it knowingly, and it buys that edge by taking on legging risk.
-Build it properly.
+This earns one leg's bid-ask and pays the other's, instead of paying both. It
+buys that edge by taking on legging risk. Build it properly — the rest of this
+section is what "properly" means, and all of it is specific to this mode.
 
 **The quoting leg's price is NOT fixed.** This is the part that is easy to get
 wrong. The trader clicked a *spread* level, but the pending order lives on a
@@ -298,11 +394,13 @@ That is the mechanism; everything below is what it costs.
 - **A pending can fill PARTIALLY.** Hedge to what actually filled, not to what
   rested.
 
-### The naked window is now real — bound it hard
+### The naked window — bound it hard (BOTH modes)
 
-Between the quoting leg filling and the crossing leg landing, **you hold one leg
-of a spread**. That is an outright position in gold or oil, not a basis trade.
-It is the price of the fire rule, and it must be bounded by construction:
+Between the first leg being on and the second leg landing, **you hold one leg of
+a spread**. That is an outright position in gold or oil, not a basis trade. In
+MARKET mode the window is the two round trips and should be milliseconds; in
+LIMIT mode it opens the instant the quoting leg fills, which can be at any hour
+and without warning. The bound is the same in both, and it is by construction:
 
 1. **The crossing order goes IMMEDIATELY on fill notification — not after a
    wait.** The deadline below is a *failure-escalation* window, not a patience
@@ -313,7 +411,7 @@ It is the price of the fire rule, and it must be bounded by construction:
    retry the market order across the allowed filling modes (10030) and re-read.
 3. **Only a REJECTED crossing leg triggers an unwind** — `10027 AutoTrading
    disabled`, insufficient margin, symbol not tradable. Slow is not rejected. On
-   a genuine rejection: unwind the quoting leg **by ticket** (see below), log
+   a genuine rejection: unwind the leg that is on **by ticket** (see below), log
    CRITICAL, name the broker's own words on the ladder, and **pull every other
    working order on that pair** — if the crossing account cannot trade, none of
    the remaining synthetics can complete either.
@@ -678,24 +776,61 @@ an order it cannot reliably close is worse than no ladder.
 
 ---
 
-## 15. Ask the operator these before building
+## 15. Decisions already taken by the operator
 
-1. **Fire rule default** — should a synthetic working order cross both legs at
-   market when the spread trades through (fast, pays both bid-asks), or rest a
-   real limit on one leg and cross the other on fill (earns one spread, owns the
-   legging risk)?
-2. **Legging deadline** — if leg B is not on within N seconds of leg A filling,
-   cross B at market or unwind A? And what is N?
-3. **Increment per pair** — what spread tick should each ladder step by?
-4. **Default click quantity** — in spreads, or in leg-A lots?
-5. **Does a click ever cross immediately** (a market order at the touch), or is
-   every click a working order?
-6. **Should working orders survive a restart?** (The existing system's answer for
-   anything that places orders by itself was *no* — a loop left on at 17:00 must
-   not resume at 02:00 with nobody watching. A ladder may want the opposite.
-   It is their call, and it must be a deliberate one.)
-7. **Day / GTC** — does a working order die at the session end?
-8. **Overnight** — is holding a spread over the swap charge allowed per ladder?
+These are settled. Do not re-open them; build to them.
+
+1. **Fire rule — a LIMIT / MARKET dropdown, both first-class.** LIMIT rests a
+   real pending on one leg and crosses the other on fill; MARKET crosses both
+   now. §4.
+2. **Legging deadline — 2.0 s, and it CROSSES, it does not unwind.** The
+   crossing order goes immediately on fill; 2.0 s is a failure-escalation
+   window, not patience. Only a *rejected* crossing leg unwinds. §4.
+3. **Time in force — DAY and GTC, standard semantics**, with the honest caveat
+   that neither survives this process stopping. §3.1.
+4. **Overnight — ALLOW / EXIT_IF_PROFIT / EXIT_ALWAYS**, the same three options
+   as the Manual Trade card, per ladder, defaulting to ALLOW, with the default
+   also on the settings page. §3.2.
+5. **No loops.** Nothing in this system re-enters by itself. There is no
+   convergence loop, no auto-repeat, no "keep trading while X". A click is one
+   order. `carryloop.py` is explicitly not ported.
+
+### Defaults chosen for the questions the operator left open
+
+Build these, make each one a visible setting, and let the numbers be corrected
+from measurement rather than argued about up front.
+
+6. **Increment per pair — derived, not typed.** Default to
+   `max(tick_B, β × tick_A)`, which is the smallest step the spread can actually
+   move in, rounded to something readable. On gold at β = 1 with 0.01 ticks both
+   legs that gives 0.01, so ±30 rows spans about a sigma — a usable ladder.
+   Per-pair override, and show the derivation beside the field.
+7. **Default click quantity — in SPREADS, not in leg lots.** One spread = the
+   configured clip for that pair, defaulting to
+   `sizing.matched_minimum_lots` — the smallest size at which *both* legs clear
+   their own minimum volume. This matters more than it looks: on CFI, spot's
+   minimum is 0.01 lots and the future's is 0.1, ten times larger, so a size
+   expressed in leg-A lots can silently imply a hedge below leg B's floor.
+   Quoting in spreads makes that unrepresentable. Always display the implied
+   leg lots and `k` beside the quantity — "1 spread = 0.10 A / 0.10 B, $10 per
+   1.00 of spread".
+8. **A click crosses immediately only in MARKET mode** — which is now the
+   dropdown, so this is answered by decision 1. In LIMIT mode every click is a
+   working order, whatever price it lands on.
+9. **Working orders do NOT survive a restart**, and cannot meaningfully: nothing
+   is watching the spread while this process is down. §3.1 and §4's sweep.
+
+### Still genuinely open — ask before building the LIMIT path
+
+10. **Which leg quotes?** Default is the wider bid-ask (the spread you earn),
+    but that is usually the less liquid leg where you queue longest. Show both
+    legs' measured widths and let the operator pick per pair.
+11. **The re-peg dead band.** Default one increment. Too tight destroys queue
+    position; too loose lets the implied spread drift off the clicked level.
+    This is the LIMIT path's main tuning knob and it needs live measurement.
+12. **`MARKET_PROTECTION_TICKS`.** How far through the clicked spread may a
+    market click fill before it is refused? Default a few increments; measure
+    the real distribution before fixing it.
 
 ---
 
@@ -711,5 +846,9 @@ an order it cannot reliably close is worse than no ladder.
   Levels and triggers read the **executable** side; a position reads the opposite
   executable side to close.
 - **`L_B = L_A · C_A / (β · C_B)`**, and `k = L_B · C_B` is the one multiplier.
-- **No strategy.** No z-score, no signals, no automatic entries, no automatic
-  exits. The trader decides; the system executes and keeps the books honest.
+- **Sweep our pendings at shutdown AND at startup.** A LIMIT-mode order rests at
+  the broker and outlives this process; one that fills while we are down is an
+  unhedged outright position nobody is watching.
+- **No strategy and no loops.** No z-score, no signals, no automatic entries, no
+  automatic exits, nothing that re-enters by itself. The trader decides; the
+  system executes and keeps the books honest.
