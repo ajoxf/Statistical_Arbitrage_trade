@@ -239,60 +239,131 @@ controls: **Limit / Market**, **Day / GTC**, and a default quantity.
 ## 4. The hard part: a resting spread order is SYNTHETIC
 
 **MT5 has no spread instrument, and certainly not one spanning two accounts.**
-There is nothing to rest an order on. So:
+There is nothing to rest an order on. A working order on the ladder is a
+**synthetic order held by the coordinator**, and how it becomes two real orders
+is the central engineering problem of the whole product.
 
-> A working order on the ladder is a **synthetic order held by the coordinator**.
-> It watches the executable spread and, when the level trades through, legs into
-> the position by sending orders to both accounts.
+### The fire rule — DECIDED: quote one leg, cross the other
 
-This is the central engineering risk of the whole product and everything below
-follows from it. Design it deliberately.
+> **A synthetic working order is backed by a REAL pending limit on ONE leg (the
+> "quoting" leg). When that limit fills, the other leg is crossed at market
+> immediately.**
 
-### Legging risk — the failure you will actually hit
+This earns one leg's bid-ask and pays the other's, instead of paying both. The
+operator chose it knowingly, and it buys that edge by taking on legging risk.
+Build it properly.
+
+**The quoting leg's price is NOT fixed.** This is the part that is easy to get
+wrong. The trader clicked a *spread* level, but the pending order lives on a
+*leg*. The price that produces the clicked spread depends on where the other leg
+is right now — so it moves whenever the other leg moves:
+
+```
+quoting leg = B, SELL the spread at S :   P_B = S + β × spot_ask
+quoting leg = B, BUY  the spread at S :   P_B = S + β × spot_bid
+quoting leg = A, SELL the spread at S :   P_A = (fut_bid − S) / β      (buy A)
+quoting leg = A, BUY  the spread at S :   P_A = (fut_ask − S) / β      (sell A)
+```
+
+So the pending order must be **continuously re-priced by
+`TRADE_ACTION_MODIFY`** to hold the implied spread at the level the trader
+clicked. Place it once, then chase the *other* leg for the order's whole life.
+That is the mechanism; everything below is what it costs.
+
+- **Re-peg on a dead band, not on every tick.** Every MODIFY loses queue
+  position, so re-pricing three times a second guarantees you are never at the
+  front of a queue — which defeats the entire point of quoting. Only re-peg when
+  the implied spread has drifted more than a threshold (default: one ladder
+  increment). Make it a setting and log how often it fires.
+- **Re-peg by MODIFY, never cancel-and-replace.** MODIFY keeps one ticket for
+  the order's life. Cancel-and-replace needs ticket-history tracking across
+  replacements and opens a window where the order does not exist.
+- **Every MODIFY can race a fill.** MT5 can fill the pending between your read
+  and your modify, and `positions_get` shows the fill (carrying the *order's*
+  ticket) before deal history does. Check for that on every re-peg, or you will
+  re-price an order that has already become a naked position.
+- **`legal_limit_price` governs where the peg may go**, and the broker's
+  `trade_stops_level` can make the required price **unreachable**. When it does,
+  say so on the ladder in words — "this level needs a peg 3 points inside the
+  broker's stops level; it cannot rest here" — not in a log file.
+- **Which leg quotes is a per-pair setting.** Default it to the leg with the
+  **wider bid-ask** (that is the spread you are earning), and show both legs'
+  measured widths on the ladder so the choice is made from measurement. Note the
+  tension honestly: the wider leg is usually the less liquid one, where you queue
+  longest and fill least.
+- **Aggregate the real pendings, track the synthetics separately.** Three clicks
+  at 58.40 are three synthetic orders, individually cancellable — but they should
+  become **one** real pending at the summed size, not three. Cancelling one
+  synthetic re-sizes the real pending; cancelling the last one pulls it.
+- **A pending can fill PARTIALLY.** Hedge to what actually filled, not to what
+  rested.
+
+### The naked window is now real — bound it hard
+
+Between the quoting leg filling and the crossing leg landing, **you hold one leg
+of a spread**. That is an outright position in gold or oil, not a basis trade.
+It is the price of the fire rule, and it must be bounded by construction:
+
+1. **The crossing order goes IMMEDIATELY on fill notification — not after a
+   wait.** The deadline below is a *failure-escalation* window, not a patience
+   window. There is nothing to be patient for: the hedge must go on.
+2. **DECIDED — the deadline is 2.0 seconds, and it CROSSES; it does not
+   unwind.** Measured in the existing system, a market order round-trips in
+   **24 ms**, so 2 s is ~80× headroom and only fires on a real fault. Within it,
+   retry the market order across the allowed filling modes (10030) and re-read.
+3. **Only a REJECTED crossing leg triggers an unwind** — `10027 AutoTrading
+   disabled`, insufficient margin, symbol not tradable. Slow is not rejected. On
+   a genuine rejection: unwind the quoting leg **by ticket** (see below), log
+   CRITICAL, name the broker's own words on the ladder, and **pull every other
+   working order on that pair** — if the crossing account cannot trade, none of
+   the remaining synthetics can complete either.
+4. **Log the elapsed time from fill to hedge-on, on every single fill**, and
+   surface it in the UI. It is the number that tells the operator whether 2.0 s
+   is right, and it is exactly what was missing when the 13.96 s entry happened.
+
+### The worked example — why this section exists
 
 In the existing system, one live manual entry showed **+0.4700 of slippage
-(−$9.40)** on a 0.02-lot gold pair. The cause, from the logs:
+(−$9.40)** on a 0.02-lot gold pair:
 
-- The executor sends **leg A first** and only sends leg B **after leg A fills**.
-- Leg A was a resting limit at the peg, re-pegging every 2 s, with
-  `LIMIT_TIMEOUT_SEC = 15.0`.
+- The executor rested a limit on leg A, re-pegging every 2 s, `LIMIT_TIMEOUT_SEC
+  = 15.0`, and only sent leg B **after leg A filled**.
 - Spot was falling (4623.91 → 4620.19). The peg chased the market *away from
-  itself*, never filled, timed out at 15 s, and crossed.
-- **13.96 seconds** elapsed between the click and the pair being on. The
-  comparable market-order entry took **24 ms**.
+  itself* — it was pegged to leg A's own book, not to the spread — never filled,
+  timed out at 15 s, and crossed.
+- **13.96 seconds** from click to pair-on. The comparable market entry: **24 ms**.
 
-So: **sequential legging + patient limits = unbounded spread drift between the
-two legs.** For a ladder where the trader is clicking prices and expecting the
-spread, this is the defining problem.
+Two distinct faults, and the new design must not reproduce either. The peg was
+anchored on the wrong thing (§4's re-pricing formula fixes that), and the
+timeout was a patience window with no ceiling on the drift it permitted (the
+2 s escalation fixes that).
 
-Decisions the new system must make explicitly (and expose):
+### Two more rules, ported
 
-1. **How the synthetic fires.** Two honest choices, and you should offer both
-   per ladder:
-   - **Aggressive / taker** — when the spread trades through the level, cross
-     both legs with market orders, back to back, as fast as possible. Fastest
-     completion, pays both bid-asks, minimal legging window. *This is the
-     correct default for a ladder.*
-   - **Passive / maker** — rest a real limit on **one** leg (the less liquid
-     one, usually the future) at the price that would make the spread, and only
-     when it fills, cross the other leg. You earn one spread and take one, but
-     you own the legging risk on the second leg.
-2. **Which leg goes first.** Send the **harder-to-fill leg first** — the one with
-   the wider book, the larger minimum, the slower feed. Filling the easy leg
-   first and then discovering the hard one will not fill is how you end up naked.
-3. **A hard legging deadline.** If leg B is not on within N seconds of leg A
-   filling, you are no longer trading a spread. Either cross leg B immediately
-   at market (default) or **unwind leg A**. Make the deadline a setting, default
-   it to something small (1–2 s), and **log the elapsed time on every fill** so
-   the operator can set it from measurement rather than opinion.
-4. **Partial fills.** Size leg B to what leg A **actually filled**, not to what
-   was requested. Keep the matched piece only if it is at least
-   `MIN_MATCHED_FRACTION` (0.4) of the clip; otherwise unwind everything. Port
-   this policy from `pair_executor.py` — it is tested.
-5. **Pre-check BOTH legs before sending EITHER.** `PairExecutor._precheck_pair`
-   verifies both symbols' minimum volumes and steps up front. A pair whose
-   *child* order is under either leg's minimum must be refused before any money
-   moves.
+- **Pre-check BOTH legs before resting EITHER.** `PairExecutor._precheck_pair`
+  verifies both symbols' minimum volumes and steps up front. A pair whose child
+  order is under either leg's minimum must be refused before any money moves —
+  and on a quoting design, before anything rests at the broker.
+- **Partial-fill policy.** Keep the matched piece only if it is at least
+  `MIN_MATCHED_FRACTION` (0.4) of the clip; otherwise unwind all of it. Ported
+  from `pair_executor.py`, where it is tested.
+
+### The most dangerous consequence of quoting: a pending outlives the process
+
+A synthetic order lives in our memory. **The real pending backing it lives at
+the broker**, and it does not care whether our process is running. If we die
+with pendings resting, they can fill — unhedged, unwatched, with nobody to cross
+the other leg.
+
+- **On shutdown: sweep and cancel every one of our pendings on both accounts,
+  before anything else.** Verify the cancels. A pending we failed to cancel is a
+  CRITICAL line, not a warning.
+- **On startup: sweep before doing anything at all.** Any of our pendings still
+  resting are from a previous life and must be cancelled, and any that *filled*
+  while we were down is an orphan position — hand it to the reconciler (§7) and
+  say so loudly on the ladder.
+- **Magic-number scope every sweep**, so the trader's own terminal orders are
+  never touched.
 
 ### The unwind must CLOSE, not offset
 
