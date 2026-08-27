@@ -2249,16 +2249,25 @@ class Coordinator:
                 "the convergence loop needs a take-profit distance — a "
                 "cycle has to be able to END in profit for the loop to "
                 "have anything to repeat")
+        direction = cmd.get('direction') or carryloop.SHORT
+        if direction not in (carryloop.SHORT, carryloop.LONG):
+            return self._manual_reject(f"bad direction {direction!r}")
         self.carry_loop = carryloop.LoopState(
             asset_key, lots=cmd.get('lots'),
             take_profit=float(take_profit), stop_loss=float(stop),
             edge_mult=float(cmd.get('edge_mult')
-                            or carryloop.DEFAULT_EDGE_MULT))
+                            or carryloop.DEFAULT_EDGE_MULT),
+            direction=direction,
+            overnight=cmd.get('overnight') or 'ALLOW')
         logging.warning(
-            "Carry loop ON for %s: short whenever the spread is rich vs "
-            "the swap-implied fair value. TP %s / SL %s of spread per "
-            "cycle, %s lots. A losing cycle switches it off.",
-            asset_key, take_profit, stop, cmd.get('lots') or 'sized')
+            "Carry loop ON for %s: %s whenever the spread is %s vs the "
+            "swap-implied fair value. TP %s / SL %s of spread per cycle, "
+            "%s lots, overnight %s. A losing cycle switches it off.",
+            asset_key,
+            'short' if direction == carryloop.SHORT else 'long',
+            'rich' if direction == carryloop.SHORT else 'cheap',
+            take_profit, stop, cmd.get('lots') or 'sized',
+            self.carry_loop.overnight)
         self.manual_note = {
             'ok': True, 'ts': time.time(),
             'text': 'convergence loop armed — it opens a short whenever '
@@ -2301,10 +2310,11 @@ class Coordinator:
         cost = (self._sizing_and_cost(asset_key, market_data) or {})
         block = self._carry_block(asset_key, market_data,
                                   cost.get('round_trip_cost') or 0.0)
-        spread = marketdata.executable_spread(market_data,
-                                              SignalType.SELL_BASIS)
+        # Each direction reads its OWN executable side: a short fills
+        # where the spread is sold, a long where it is bought.
+        spread = marketdata.executable_spread(market_data, loop.direction)
         ok, detail = carryloop.evaluate(
-            spread, block,
+            spread, block, direction=loop.direction,
             cost_usd=cost.get('round_trip_cost') or 0.0,
             spread_units=(plan or {}).get('spread_units'),
             edge_mult=loop.edge_mult)
@@ -2319,11 +2329,12 @@ class Coordinator:
         # levels half a round turn out, in the direction that flatters
         # the trade.
         target, stop = carryloop.levels_from_fill(
-            spread, loop.take_profit, loop.stop_loss)
+            spread, loop.take_profit, loop.stop_loss, loop.direction)
         logging.warning("Carry loop cycle %d: %s", loop.cycles + 1, detail)
         position = self._manual_open(
-            asset_key, SignalType.SELL_BASIS.value, loop.lots,
-            exit_spread=target, stop_spread=stop)
+            asset_key, loop.direction, loop.lots,
+            exit_spread=target, stop_spread=stop,
+            overnight=loop.overnight)
         if position is not None:
             loop.opened(position.position_id)
         if position is None:

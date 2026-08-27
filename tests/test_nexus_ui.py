@@ -2413,16 +2413,20 @@ def test_the_tp_percent_box_can_show_its_value(client):
     nudges a target by 0.1 with a mouse) live together.
     """
     page = client.get('/').get_data(as_text=True)
-    css = page[page.index('#manual-tp-pct {'):]
+    # The convergence loop has the same % box (operator, 2026-08-27:
+    # "Need the same parameters for the loop"), so the rule is shared —
+    # one place to change, and it cannot go narrow on one card only.
+    css = page[page.index('#manual-tp-pct, #loop-tp-pct {'):]
     css = css[:css.index('}')]
     width = float(css.split('width:')[1].split('rem')[0].strip())
     assert width >= 3.2, f'the TP % box is back down to {width}rem'
     assert 'appearance: textfield' in css
-    assert '#manual-tp-pct::-webkit-inner-spin-button' in page
-    # ...and no inline width may quietly override it.
-    tag = page[page.index('id="manual-tp-pct"'):]
-    tag = tag[:tag.index('>')]
-    assert 'width' not in tag, tag
+    for box in ('manual-tp-pct', 'loop-tp-pct'):
+        assert f'#{box}::-webkit-inner-spin-button' in page
+        # ...and no inline width may quietly override it.
+        tag = page[page.index(f'id="{box}"'):]
+        tag = tag[:tag.index('>')]
+        assert 'width' not in tag, tag
 
 
 def test_the_mid_spread_tile_is_gone(client):

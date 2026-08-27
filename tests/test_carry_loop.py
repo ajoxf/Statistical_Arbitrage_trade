@@ -519,3 +519,124 @@ def test_non_numeric_levels_are_refused_not_coerced(client):
                     json={'enabled': True, 'asset': 'GOLD',
                           'take_profit': 'soon', 'stop_loss': 0.8})
     assert r.status_code == 400
+
+
+# ----------------------------------------------------------------------
+# The same parameters as the Manual Trade Card
+# ----------------------------------------------------------------------
+# Operator, 2026-08-27: "Need the same parameters for the loop."
+# Direction, Lots, Take Profit (+% of margin), Stop Loss, Overnight —
+# everything on that card except Entry, which is the one thing the loop
+# works out for itself.
+
+def test_a_long_loop_buys_the_spread_when_it_is_CHEAP():
+    """The mirror trade. Same subtraction, opposite sign — positive
+    always means 'in our favour' whichever way round it is."""
+    ok, detail = carryloop.evaluate(48.00, BLOCK, direction=carryloop.LONG)
+    assert ok and 'cheap' in detail
+    assert not carryloop.evaluate(55.00, BLOCK,
+                                  direction=carryloop.LONG)[0]
+
+
+def test_short_and_long_are_exact_mirrors():
+    for gap in (0.5, 2.0, 7.0):
+        assert carryloop.evaluate(52.0 + gap, BLOCK,
+                                  direction=carryloop.SHORT)[0]
+        assert carryloop.evaluate(52.0 - gap, BLOCK,
+                                  direction=carryloop.LONG)[0]
+        assert not carryloop.evaluate(52.0 - gap, BLOCK,
+                                      direction=carryloop.SHORT)[0]
+        assert not carryloop.evaluate(52.0 + gap, BLOCK,
+                                      direction=carryloop.LONG)[0]
+
+
+def test_a_long_targets_above_the_fill_and_stops_below_it():
+    target, stop = carryloop.levels_from_fill(48.00, 1.20, 0.80,
+                                              carryloop.LONG)
+    assert target == pytest.approx(49.20)
+    assert stop == pytest.approx(47.20)
+
+
+def test_the_round_trip_bar_applies_to_a_long_too():
+    assert not carryloop.evaluate(51.90, BLOCK, direction=carryloop.LONG,
+                                  cost_usd=6.0, spread_units=20.0)[0]
+    assert carryloop.evaluate(51.60, BLOCK, direction=carryloop.LONG,
+                              cost_usd=6.0, spread_units=20.0)[0]
+
+
+def test_an_unset_direction_is_the_short(caplog):
+    """The operator asked for the high-to-low trade; that stays the
+    default so an omitted field cannot silently flip the trade."""
+    assert carryloop.direction_sign(None) == 1.0
+    assert carryloop.evaluate(55.0, BLOCK)[0]
+    assert carryloop.LoopState('GOLD').direction == carryloop.SHORT
+
+
+def test_the_loop_carries_direction_and_overnight(coord):
+    coord._carry_loop_start({'asset': 'GOLD', 'stop_loss': 0.8,
+                             'take_profit': 1.2,
+                             'direction': 'BUY_BASIS',
+                             'overnight': 'EXIT_ALWAYS'})
+    published = coord.carry_loop.to_dict()
+    assert published['direction'] == 'BUY_BASIS'
+    assert published['overnight'] == 'EXIT_ALWAYS'
+
+
+def test_the_loop_refuses_a_bad_direction(coord):
+    coord._carry_loop_start({'asset': 'GOLD', 'stop_loss': 0.8,
+                             'take_profit': 1.2, 'direction': 'sideways'})
+    assert coord.carry_loop is None
+
+
+def test_overnight_defaults_to_allow(coord):
+    coord._carry_loop_start({'asset': 'GOLD', 'stop_loss': 0.8,
+                             'take_profit': 1.2})
+    assert coord.carry_loop.overnight == 'ALLOW'
+
+
+def test_a_long_cycle_reads_the_long_spread_and_mirrors_its_levels(
+        coord, monkeypatch):
+    """A long fills where the spread is BOUGHT (59.17), not where it is
+    sold — and its target sits above that, its stop below."""
+    opened = {}
+    monkeypatch.setattr(coord, '_manual_open',
+                        lambda a, d, l, **kw: (opened.update(dict(kw,
+                                               direction=d)) or
+                                               type('P', (), {
+                                                   'position_id': 'P1'})()))
+    armed(coord, monkeypatch, carry_spread=70.0, direction='BUY_BASIS',
+          overnight='EXIT_IF_PROFIT')
+    coord._check_carry_loop('GOLD', dict(RICH))
+
+    assert opened['direction'] == 'BUY_BASIS'
+    assert opened['overnight'] == 'EXIT_IF_PROFIT'
+    assert opened['exit_spread'] == pytest.approx(59.17 + 1.20)
+    assert opened['stop_spread'] == pytest.approx(59.17 - 0.80)
+
+
+def test_the_endpoint_carries_direction_and_overnight(client):
+    client.post('/api/carry-loop',
+                json={'enabled': True, 'asset': 'GOLD',
+                      'take_profit': 1.2, 'stop_loss': 0.8,
+                      'direction': 'BUY_BASIS',
+                      'overnight': 'EXIT_ALWAYS'})
+    cmd = client.control()['carry_loop']
+    assert cmd['direction'] == 'BUY_BASIS'
+    assert cmd['overnight'] == 'EXIT_ALWAYS'
+
+
+def test_the_endpoint_refuses_a_bad_direction(client):
+    r = client.post('/api/carry-loop',
+                    json={'enabled': True, 'asset': 'GOLD',
+                          'take_profit': 1.2, 'stop_loss': 0.8,
+                          'direction': 'UP'})
+    assert r.status_code == 400
+
+
+def test_the_endpoint_defaults_to_the_short(client):
+    client.post('/api/carry-loop',
+                json={'enabled': True, 'asset': 'GOLD',
+                      'take_profit': 1.2, 'stop_loss': 0.8})
+    cmd = client.control()['carry_loop']
+    assert cmd['direction'] == 'SELL_BASIS'
+    assert cmd['overnight'] == 'ALLOW'

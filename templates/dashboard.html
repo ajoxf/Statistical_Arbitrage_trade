@@ -138,7 +138,7 @@
        spinner arrows are dropped (they cost ~14px and nobody nudges a
        target by 0.1 with a mouse) and the box is wide enough for a
        two-digit percent with a decimal. It read "0.:" before. */
-    #manual-tp-pct {
+    #manual-tp-pct, #loop-tp-pct {
         width: 3.4rem;
         font-size: 0.68rem;
         text-align: right;
@@ -146,7 +146,9 @@
         appearance: textfield;
     }
     #manual-tp-pct::-webkit-outer-spin-button,
-    #manual-tp-pct::-webkit-inner-spin-button {
+    #manual-tp-pct::-webkit-inner-spin-button,
+    #loop-tp-pct::-webkit-outer-spin-button,
+    #loop-tp-pct::-webkit-inner-spin-button {
         -webkit-appearance: none;
         margin: 0;
     }
@@ -1431,20 +1433,50 @@
                     </label>
                     <span class="badge bg-secondary" id="carry-loop-badge" style="font-size:0.58rem;">OFF</span>
                 </div>
+                <!-- The same parameter set as the card above (operator,
+                     2026-08-27: "Need the same parameters for the loop")
+                     with ONE omission: Entry. The loop works its own
+                     entry out from the fair-value comparison, and a
+                     typed level beside that would be two entry rules
+                     for one trade. -->
                 <div class="mt-grid mb-1">
+                    <div class="mt-2up">
+                        <label>Direction</label>
+                        <select class="form-select form-select-sm" id="loop-direction" onchange="renderLoopTpSuggestion()">
+                            <option value="SELL_BASIS">Short &mdash; sell it rich</option>
+                            <option value="BUY_BASIS">Long &mdash; buy it cheap</option>
+                        </select>
+                    </div>
+                    <div class="mt-2up">
+                        <label>Lots <span class="text-secondary">blank = engine size</span></label>
+                        <input type="number" class="form-control form-control-sm" id="loop-lots" step="0.01" placeholder="sized">
+                    </div>
                     <div class="mt-tp">
-                        <label class="text-success">TP distance</label>
+                        <label class="d-flex align-items-center gap-1 text-success">
+                            <span>Take Profit</span>
+                            <input type="number" class="form-control form-control-sm" id="loop-tp-pct"
+                                   step="0.1" min="0" placeholder="%" oninput="renderLoopTpSuggestion()">
+                            <span class="text-secondary">%</span>
+                        </label>
                         <input type="number" class="form-control form-control-sm" id="loop-tp" step="0.0001" placeholder="1.20">
                     </div>
                     <div class="mt-stop">
-                        <label class="text-danger">Stop distance</label>
+                        <label class="text-danger">Stop Loss</label>
                         <input type="number" class="form-control form-control-sm" id="loop-stop" step="0.0001" placeholder="0.80">
                     </div>
-                    <div class="mt-lots">
-                        <label>Lots</label>
-                        <input type="number" class="form-control form-control-sm" id="loop-lots" step="0.01" placeholder="sized">
+                    <div class="mt-full">
+                        <label>Overnight</label>
+                        <select class="form-select form-select-sm" id="loop-overnight">
+                            <option value="ALLOW">Allow (accept swap)</option>
+                            <option value="EXIT_IF_PROFIT">Exit if in profit</option>
+                            <option value="EXIT_ALWAYS">Exit always</option>
+                        </select>
                     </div>
                 </div>
+                <!-- Both distances, so the % of margin converts straight
+                     into one rather than into a level that is stale by
+                     the next cycle. -->
+                <div class="mb-1" id="loop-tp-suggest" style="font-size:0.64rem;"></div>
                 <div class="d-grid">
                     <button class="btn btn-outline-primary btn-sm py-1" id="carry-loop-toggle" onclick="toggleCarryLoop()" style="font-size:0.75rem;">
                         <i class="bi bi-arrow-repeat me-1"></i>Start loop
@@ -2235,6 +2267,50 @@
     // One switch. ON sends the two distances and the size; OFF sends
     // nothing but the flag, because turning it off must work even if
     // the fields have since been cleared or edited.
+    // The % of margin, converted straight into a DISTANCE. On the card
+    // above the same percentage becomes an absolute level, which is
+    // right there and wrong here — the loop re-enters, and a level is
+    // stale by the next cycle while a distance is not.
+    function renderLoopTpSuggestion() {
+        const el = document.getElementById('loop-tp-suggest');
+        if (!el) return;
+        const e = window.__manualEdge || {};
+        const pctEl = document.getElementById('loop-tp-pct');
+        const pct = pctEl ? parseFloat(pctEl.value) : NaN;
+        el.innerHTML = '';
+        if (!e.k || e.cost == null) return;
+
+        const be = document.createElement('span');
+        be.className = 'text-secondary';
+        be.textContent = 'Break even is ' + (e.cost / e.k).toFixed(4)
+                       + ' of spread away';
+        el.appendChild(be);
+        if (!isFinite(pct) || pct <= 0) return;
+        if (!e.capital) {
+            const why = document.createElement('span');
+            why.className = 'text-secondary';
+            why.textContent = ' · set leverage to size a % target';
+            el.appendChild(why);
+            return;
+        }
+        const profit = e.capital * pct / 100;
+        const distance = (e.cost + profit) / e.k;
+        const link = document.createElement('a');
+        link.href = '#';
+        link.textContent = 'use ' + distance.toFixed(4);
+        link.title = pct + '% of $' + e.capital.toFixed(0) + ' margin = $'
+            + profit.toFixed(2) + ' on top of the $' + e.cost.toFixed(2)
+            + ' round trip, as a distance from wherever each cycle fills';
+        link.onclick = function (ev) {
+            ev.preventDefault();
+            const tp = document.getElementById('loop-tp');
+            if (tp) tp.value = distance.toFixed(4);
+        };
+        el.appendChild(document.createTextNode(' · +$' + profit.toFixed(2)
+                                               + ' at ' + pct + '% margin · '));
+        el.appendChild(link);
+    }
+
     async function toggleCarryLoop() {
         const on = window.__carryLoopOn === true;
         const num = id => {
@@ -2244,9 +2320,11 @@
         const body = on ? {enabled: false} : {
             enabled: true,
             asset: (window.__manualAsset || 'GOLD'),
+            direction: document.getElementById('loop-direction').value,
             take_profit: num('loop-tp'),
             stop_loss: num('loop-stop'),
             lots: num('loop-lots'),
+            overnight: document.getElementById('loop-overnight').value,
         };
         const response = await fetch('/api/carry-loop', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2276,6 +2354,23 @@
             badge.textContent = on ? 'RUNNING' : 'OFF';
             badge.className = 'badge ' + (on ? 'bg-success' : 'bg-secondary');
         }
+        // While it runs, the fields show what is IN FORCE and are
+        // locked. An editable box that changes nothing is the dead
+        // control this codebase keeps finding — and here it would be
+        // worse than dead, because the loop is placing orders against
+        // the old value.
+        const fields = {'loop-direction': 'direction', 'loop-lots': 'lots',
+                        'loop-tp': 'take_profit', 'loop-stop': 'stop_loss',
+                        'loop-overnight': 'overnight'};
+        for (const [id, key] of Object.entries(fields)) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            el.disabled = on;
+            if (on && loop[key] != null) el.value = loop[key];
+        }
+        const pct = document.getElementById('loop-tp-pct');
+        if (pct) pct.disabled = on;
+        renderLoopTpSuggestion();
         if (button) {
             button.innerHTML = on
                 ? '<i class="bi bi-stop-fill me-1"></i>Stop loop'
@@ -6198,12 +6293,19 @@ function updateFilterStatus(elementId, passed, value) {
 
     // ========== Exchange Order Log ==========
     // Where the order came FROM, read off the comment MT5 stored.
+    // 'ALGO' used to cover everything our magic number touched, so
+    // reconciler cleanup read as a decision the strategy had made —
+    // four such rows were badged ALGO while the algo had been stopped
+    // for an hour (operator, 2026-08-27). RECONCILE is red on purpose:
+    // it only ever fires because something went wrong.
     const SOURCE_STYLE = {
-        'ALGO': 'bg-primary',
+        'STRATEGY': 'bg-primary',
         'MANUAL TRADE': 'bg-info text-dark',
+        'RECONCILE': 'bg-danger',
         'TEST SUITE': 'bg-warning text-dark',
         'ORDER TEST': 'bg-warning text-dark',
         'MANUAL (terminal)': 'bg-secondary',
+        'BOT (unknown)': 'bg-dark',
     };
     function refreshExchangeOrders() {
         const tbody = document.getElementById('exchange-orders-table');

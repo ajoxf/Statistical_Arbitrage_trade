@@ -56,6 +56,7 @@ class HedgingLeg:
         self.orders = []                # plain market orders sent
         self.closed_tickets = []        # (symbol, ticket, volume)
         self.placed = []                # (symbol, side, volume, ticket)
+        self.comments = []              # every comment we were sent
         self.resting = {}
         self.next_ticket = 900
 
@@ -115,6 +116,7 @@ class HedgingLeg:
         self.next_ticket += 1
         ticket = self.next_ticket
         self.placed.append((symbol, side, volume, position_ticket))
+        self.comments.append(comment)
         self.resting[ticket] = {'symbol': symbol, 'side': side,
                                 'volume': volume,
                                 'position': position_ticket, 'open': True}
@@ -152,6 +154,7 @@ class HedgingLeg:
                      slippage_points=1.0, comment=""):
         taken = self._reduce(ticket, volume)
         self.closed_tickets.append((symbol, ticket, volume))
+        self.comments.append(comment)
         return {'ok': True, 'filled_volume': taken or volume,
                 'price': self.price, 'error': None}
 
@@ -316,3 +319,32 @@ def test_an_empty_book_still_falls_through_to_an_opposite_order(
     # One resting close per leg, with no position attached to it
     assert [p[3] for p in spot.placed] == [None]
     assert spot.closed_tickets == []
+
+
+# ----------------------------------------------------------------------
+# The close carries the SOURCE its entry did
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('source, prefix', [
+    ('MANUAL', 'MANUAL_CX'),
+    ('SIGNAL', 'BASIS_ARB_CX'),
+    (None, 'BASIS_ARB_CX'),          # unstamped -> the strategy, fail safe
+])
+def test_the_close_comment_says_who_placed_the_trade(hedge_config,
+                                                     data_logger,
+                                                     source, prefix):
+    """The Exchange Order Log reads the SOURCE off this comment. Every
+    close was tagged BASIS_ARB_CX regardless, so a hand-placed trade's
+    entry said MANUAL and its exit said ALGO — one trade, two answers."""
+    spot = HedgingLeg('a')
+    fut = HedgingLeg('b')
+    pm = PositionManager(data_logger)
+    px, position = open_pair(hedge_config, spot, fut, pm)
+    position.exit_plan = {'source': source} if source else None
+
+    assert pm.close_position(position.position_id, "MANUAL_TARGET", px)
+
+    assert spot.placed, 'the close should have placed something'
+    comment_seen = [c for c in spot.comments if '_CX_' in c]
+    assert comment_seen, spot.comments
+    assert all(c.startswith(prefix) for c in comment_seen), comment_seen

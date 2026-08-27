@@ -307,6 +307,9 @@ def client(tmp_path, monkeypatch):
         row(order_id='3', deal_id='3', comment='SCENARIO MKT spr/spot'),
         row(order_id='4', deal_id='4', comment='ORDER_TEST'),
         row(order_id='5', deal_id='5', comment='my own click', is_bot=False),
+        row(order_id='6', deal_id='6', comment='BASIS_ARB_ORPHAN'),
+        row(order_id='7', deal_id='7', comment='MANUAL_CX_ef56'),
+        row(order_id='8', deal_id='8', comment='something else'),
     ])
     (tmp_path / "runtime_status.json").write_text(json.dumps({}))
     (tmp_path / "config.json").write_text(json.dumps({}))
@@ -324,8 +327,21 @@ def client(tmp_path, monkeypatch):
 def test_every_row_says_where_the_order_came_from(client):
     data = client.get('/api/exchange-orders').get_json()
     by_id = {o['order_id']: o['source'] for o in data['orders']}
-    assert by_id == {'1': 'ALGO', '2': 'MANUAL TRADE', '3': 'TEST SUITE',
-                     '4': 'ORDER TEST', '5': 'MANUAL (terminal)'}
+    assert by_id == {'1': 'STRATEGY', '2': 'MANUAL TRADE',
+                     '3': 'TEST SUITE', '4': 'ORDER TEST',
+                     '5': 'MANUAL (terminal)',
+                     # Cleanup after a failed close is not a decision the
+                     # strategy made — it fires precisely when something
+                     # went wrong. Four such rows read ALGO while the
+                     # algo had been stopped for an hour (2026-08-27).
+                     '6': 'RECONCILE',
+                     # A hand-placed trade's EXIT used to be tagged
+                     # BASIS_ARB_CX like every other close, so one trade
+                     # showed MANUAL going in and ALGO coming out.
+                     '7': 'MANUAL TRADE',
+                     # Our magic, a comment we do not recognise. Saying
+                     # ALGO there is a claim the column cannot support.
+                     '8': 'BOT (unknown)'}
     assert 'TEST SUITE' in data['sources']
 
 

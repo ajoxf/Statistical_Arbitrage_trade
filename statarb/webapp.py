@@ -671,19 +671,30 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
                             'error': 'a take-profit distance is required '
                                      '— a cycle has to be able to end in '
                                      'profit for the loop to repeat'}), 400
+        direction = payload.get('direction') or 'SELL_BASIS'
+        if direction not in ('SELL_BASIS', 'BUY_BASIS'):
+            return jsonify({'success': False,
+                            'error': 'direction must be SELL_BASIS '
+                                     '(short spread) or BUY_BASIS '
+                                     '(long spread)'}), 400
         write_control({'carry_loop': {
             'enabled': True,
             'asset': payload['asset'],
+            'direction': direction,
             'lots': payload.get('lots'),
             'take_profit': take_profit,
             'stop_loss': stop_loss,
+            'overnight': payload.get('overnight', 'ALLOW'),
             'edge_mult': payload.get('edge_mult'),
             'ts': time.time()}})
+        short = direction == 'SELL_BASIS'
         return jsonify({'success': True, 'enabled': True,
-                        'note': 'Convergence loop on — it shorts the '
-                                'spread whenever it is rich against the '
-                                'swap-implied fair value, and stands '
-                                'down after a losing cycle.'})
+                        'note': f"Convergence loop on — it "
+                                f"{'shorts' if short else 'buys'} the "
+                                f"spread whenever it is "
+                                f"{'rich' if short else 'cheap'} against "
+                                f"the swap-implied fair value, and stands "
+                                f"down after a losing cycle."})
 
     @app.route('/api/manual-trade', methods=['GET'])
     def api_manual_status():
@@ -1605,7 +1616,16 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
     def order_source(row):
         """Who sent this order — read off the comment MT5 stored, so
         the answer comes from the terminal's own record rather than
-        from anything the app remembers."""
+        from anything the app remembers.
+
+        'ALGO' used to catch everything our magic number touched, which
+        made it a claim the column could not support. Operator,
+        2026-08-27, on four reconciler cleanup rows badged ALGO while
+        the algo had been stopped for an hour: "rename it". The strategy
+        deciding to trade, the reconciler cleaning up after a failed
+        close, and a bot order nobody can identify are three different
+        facts and now read as three different things.
+        """
         comment = (row.get('comment') or '').upper()
         if not row.get('is_bot'):
             return 'MANUAL (terminal)'
@@ -1615,7 +1635,17 @@ def create_app(db_path="algo_trading.db", status_path="runtime_status.json",
             return 'ORDER TEST'
         if comment.startswith('MANUAL'):
             return 'MANUAL TRADE'
-        return 'ALGO'
+        # Housekeeping, not a decision: the reconciler force-closing a
+        # position the engine had lost track of. Badging that ALGO says
+        # the strategy chose to trade, which is the opposite of what
+        # happened — it fires precisely when something went wrong.
+        if comment.startswith('BASIS_ARB_ORPHAN'):
+            return 'RECONCILE'
+        if comment.startswith('BASIS_ARB'):
+            return 'STRATEGY'
+        # Our magic, an unrecognised comment. Say so rather than
+        # assuming the strategy sent it.
+        return 'BOT (unknown)'
 
     def exchange_orders(limit=100, account=None, source_filter=None):
         """Both accounts' MT5 activity in one list, newest first. The

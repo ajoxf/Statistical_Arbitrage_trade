@@ -76,14 +76,25 @@ def fair_spread(carry_block):
     return float(value), None
 
 
-def evaluate(spread, carry_block, cost_usd=0.0, spread_units=None,
-             edge_mult=DEFAULT_EDGE_MULT):
-    """Should the loop open a short right now?
+SHORT = 'SELL_BASIS'
+LONG = 'BUY_BASIS'
 
-    `spread` is the EXECUTABLE short spread — the price a seller of the
-    spread actually fills at — not the mid. The whole trade is 'sell it
-    rich', so comparing the mid against fair would claim an edge half a
-    round turn of which is not there.
+
+def direction_sign(direction):
+    """+1 when the trade profits as the spread FALLS (a short), -1 for
+    the mirror. The same `d` the exit ladder and the manual panel use,
+    so all three agree about which way round a level goes."""
+    return 1.0 if (direction or SHORT) == SHORT else -1.0
+
+
+def evaluate(spread, carry_block, direction=SHORT, cost_usd=0.0,
+             spread_units=None, edge_mult=DEFAULT_EDGE_MULT):
+    """Should the loop open a cycle right now?
+
+    SHORT sells a basis that is RICH against carry; LONG buys one that
+    is CHEAP. Same subtraction, opposite sign — and each reads the
+    EXECUTABLE spread for its own side, never the mid, because the mid
+    would claim half a round turn of edge that is not there.
 
     Returns (ok, detail). `detail` always says something, because the
     panel shows it whether the answer is yes or no.
@@ -94,38 +105,43 @@ def evaluate(spread, carry_block, cost_usd=0.0, spread_units=None,
     if spread is None:
         return False, 'no executable spread yet'
 
-    gap = float(spread) - fair
+    short = direction_sign(direction) > 0
+    # Signed so that POSITIVE always means "in our favour", whichever
+    # way round the trade is. A long wants the spread BELOW fair.
+    gap = (float(spread) - fair) if short else (fair - float(spread))
     # The gap has to cover the round trip before it is an edge at all.
     # Expressed in SPREAD, so it is comparable to the two numbers beside
     # it rather than needing the reader to convert.
     need = 0.0
     if cost_usd and spread_units:
         need = (float(cost_usd) / float(spread_units)) * float(edge_mult)
+    side = 'rich' if short else 'cheap'
     if gap <= need:
         if need:
-            return False, (f"spread {spread:.4f} is {gap:+.4f} vs fair "
-                           f"{fair:.4f} — needs {need:.4f} to clear the "
-                           f"round trip")
+            return False, (f"spread {spread:.4f} is {gap:+.4f} {side} vs "
+                           f"fair {fair:.4f} — needs {need:.4f} to clear "
+                           f"the round trip")
         return False, (f"spread {spread:.4f} is {gap:+.4f} vs fair "
-                       f"{fair:.4f} — not rich")
-    return True, (f"spread {spread:.4f} is {gap:+.4f} above fair "
+                       f"{fair:.4f} — not {side}")
+    return True, (f"spread {spread:.4f} is {gap:+.4f} {side} vs fair "
                   f"{fair:.4f}, clearing {need:.4f} of cost")
 
 
-def levels_from_fill(fill_spread, take_profit, stop_loss):
-    """A short's absolute TP/SL for THIS cycle, from distances.
+def levels_from_fill(fill_spread, take_profit, stop_loss, direction=SHORT):
+    """Absolute TP/SL for THIS cycle, from distances.
 
-    A short profits as the spread FALLS, so the target sits below the
-    fill and the stop above it. Returning None for an unset distance is
-    deliberate: no take-profit means the cycle is closed by the operator
-    or by the stop, and no stop means the loop refuses to start at all
-    (see `Coordinator._carry_loop_start`) rather than running unbounded.
+    A short profits as the spread FALLS, so its target sits below the
+    fill and its stop above; a long is the mirror. Returning None for an
+    unset distance is deliberate: the loop refuses to start without both
+    (see `Coordinator._carry_loop_start`) rather than running unbounded,
+    so a None here can only mean a caller that did not go through it.
     """
     if fill_spread is None:
         return None, None
     fill = float(fill_spread)
-    target = fill - abs(float(take_profit)) if take_profit else None
-    stop = fill + abs(float(stop_loss)) if stop_loss else None
+    d = direction_sign(direction)
+    target = fill - d * abs(float(take_profit)) if take_profit else None
+    stop = fill + d * abs(float(stop_loss)) if stop_loss else None
     return target, stop
 
 
@@ -138,12 +154,20 @@ class LoopState:
     """
 
     def __init__(self, asset, lots=None, take_profit=None, stop_loss=None,
-                 edge_mult=DEFAULT_EDGE_MULT):
+                 edge_mult=DEFAULT_EDGE_MULT, direction=SHORT,
+                 overnight='ALLOW'):
         self.asset = asset
         self.lots = lots
         self.take_profit = take_profit
         self.stop_loss = stop_loss
         self.edge_mult = edge_mult
+        # The same parameter set as the Manual Trade Card (operator,
+        # 2026-08-27: "Need the same parameters for the loop") — minus
+        # Entry, which is the one thing the loop works out for itself.
+        # Typing a level there and ALSO asking it to enter on the fair
+        # comparison would be two entry rules for one trade.
+        self.direction = direction or SHORT
+        self.overnight = overnight or 'ALLOW'
         self.enabled = True
         self.cycles = 0
         self.wins = 0
@@ -187,6 +211,7 @@ class LoopState:
         return {'asset': self.asset, 'enabled': self.enabled,
                 'lots': self.lots, 'take_profit': self.take_profit,
                 'stop_loss': self.stop_loss, 'edge_mult': self.edge_mult,
+                'direction': self.direction, 'overnight': self.overnight,
                 'cycles': self.cycles, 'wins': self.wins,
                 'realized': round(self.realized, 2),
                 'position_id': self.position_id, 'note': self.last_note,

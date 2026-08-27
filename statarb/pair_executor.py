@@ -765,7 +765,14 @@ class PairExecutor:
 
     def execute_close_pair(self, position, reason=None, reference=None):
         urgent = (reason or '').upper() in URGENT_REASONS
-        comment = f"BASIS_ARB_CX_{uuid.uuid4().hex[:6]}"
+        # The comment is what the Exchange Order Log reads the SOURCE
+        # back off, so a close has to carry the same one its entry did.
+        # Every close was tagged BASIS_ARB_CX regardless, which made a
+        # hand-placed trade's exit read as the strategy's — the entry
+        # said MANUAL and the exit beside it said ALGO, for one trade.
+        source = (getattr(position, 'exit_plan', None) or {}).get('source')
+        prefix = 'MANUAL_CX' if source == 'MANUAL' else 'BASIS_ARB_CX'
+        comment = f"{prefix}_{uuid.uuid4().hex[:6]}"
 
         close_spot = Trade(position.spot_trade.symbol,
                            position.spot_trade.side.opposite,
