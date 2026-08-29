@@ -202,10 +202,12 @@ and three selectors:
   columns must look visibly different in MARKET mode** — a click there is
   immediate and irreversible.
 - **Time in force — DAY / GTC.** See §3.1.
-- **Overnight — ALLOW / EXIT_IF_PROFIT / EXIT_ALWAYS.** See §3.2.
 
-All three are per-ladder, and their current values are readable without opening
-a menu. A trader must never have to remember which mode a ladder is in.
+Both are per-ladder, and their current values are readable without opening a
+menu. A trader must never have to remember which mode a ladder is in.
+
+The **overnight rule is exit logic and lives in Settings**, not here (§3.2) — but
+the panel *displays* the active mode read-only, for the same reason.
 
 ### Columns, left to right
 
@@ -267,28 +269,72 @@ spread is. So GTC cannot mean what it means on an exchange:
 The DAY cutoff uses the same broker-session clock as the overnight rule below, so
 a trader only ever configures one time.
 
-### 3.2 Overnight — the same three options as the Manual Trade card
+### 3.2 The overnight rule — EXIT LOGIC, and it belongs in Settings
 
-Port `exits.overnight_exit` verbatim. Per ladder, with a global default on the
-settings page:
+**This is not a ladder header control.** It decides how an open position is
+closed, so it sits in Settings with the rest of the exit logic. The ladder panel
+shows the active mode read-only, next to break-even and take-profit — the other
+two things that decide where a position ends.
 
-| Mode | At the session cutoff |
+Port `exits.overnight_exit` verbatim. Three options, in the trader's words:
+
+| Setting | At the session cutoff |
 |---|---|
-| **ALLOW** (default) | keep the position and pay the swap |
-| **EXIT_IF_PROFIT** | flatten only if net P&L > 0 |
-| **EXIT_ALWAYS** | flatten regardless |
+| **Hold position overnight** (default) | keep it, and pay the swap |
+| **Exit before market close if in profit** | flatten only if in profit — **even if the take-profit was never reached** |
+| **Exit anyway — profit or loss** | flatten regardless |
+
+(`ALLOW` / `EXIT_IF_PROFIT` / `EXIT_ALWAYS` in the config.)
 
 - The cutoff is `OVERNIGHT_CLOSE_HOUR` / `OVERNIGHT_CLOSE_MINUTE`
   (default 16:55, broker-session local, both settings).
-- This governs **positions**. Working orders are governed by DAY/GTC above.
-- **EXIT_IF_PROFIT reads NET P&L** — marked at the closing touch, less
-  commissions only (§5). Marked at the mid it would flatten trades that are not
-  actually in profit.
-- An overnight close is **urgent**: market, by ticket, never resting. And it is
-  one of the exits that reads no price level, so the staleness and jump guards
-  (§8) do not withhold it.
+- This governs **positions**. Working orders are governed by DAY/GTC above, and
+  the two must not be conflated: a DAY order dying at the cutoff says nothing
+  about a position that is already on.
+- **"In profit" means NET P&L** — marked at the closing touch, less commissions
+  only (§5.2). Marked at the mid it would flatten trades that are not actually in
+  profit, by up to half a round turn.
+- **It is the second exit, and often the only one.** AutoRouting arms a target
+  and no stop (§5.4), so for a position that never reaches its TP this rule is
+  what closes it. Option 2 is exactly that case — "even if TP is not reached" —
+  and it is the difference between a target and a plan.
+- An overnight close is **urgent**: market, by ticket, never resting. It reads no
+  price level, so the staleness and jump guards (§8) must not withhold it.
+- Anything unrecognised falls back to **Hold**. The failure mode of a typo must
+  not be silently liquidating the book.
 - This is a **carry decision, not a risk rule.** Holding a rich basis over the
-  swap is often the whole trade. Default ALLOW and let the trader choose.
+  swap is often the whole trade — it is the same swap the fair spread is priced
+  from (§5.1). Default to Hold and let the trader choose.
+
+### 3.3 Panel layout — the order things appear in
+
+Top to bottom, per the reference panels:
+
+1. **Status strip** — feed state (`warming up` / live), a manual refresh, and the
+   position state (`flat`, or the open size).
+2. **The ladder** — Work / Bid / Price / Ask / Work / LTQ.
+3. **The quote table**, which is §2 made visible and is worth building exactly:
+
+   | | Bid | Ask | Width | Age |
+   |---|---|---|---|---|
+   | **A** | XAGUSD 66.3210 | 66.3670 | 0.0460 | — |
+   | **B** | SIU6 69.4330 | 69.4810 | 0.0480 | — |
+   | **spread** | **3.0660** | **3.1600** | **0.0940** | |
+
+   The spread row is `short_spread` / `long_spread` / `spread_cost` — the bid is
+   what you can sell at, the ask what you can buy at, and the width is one round
+   turn of both books. Note it equals the two legs' widths summed (0.0460 +
+   0.0480 = 0.0940), which is the check that makes the row readable at a glance.
+   **The `Age` column is the staleness guard's per-leg reading** (§8) and must
+   stay per-leg: a combined figure lets one healthy leg mask a frozen one, which
+   is precisely how a pair trade goes wrong.
+4. **The sizing line** — `1 spread = 0.01 A / 0.01 B, $50.00 per 1.00`. That
+   `$50.00` is `k`, stated in the one place a trader will look for it.
+5. **The Exit section** — fair spread (§5.1), then break-even and take-profit per
+   side (§5.2–5.3), then the active overnight mode and the AutoRouting switch.
+
+The Exit section goes **below** the quote table, not above it: prices first, then
+what they imply.
 
 ---
 
@@ -520,7 +566,70 @@ exit's cost as a gain). **Unmeasured is not zero** — render "—". Add the
 **elapsed time from click to both legs on**; on a ladder that is the number that
 explains a bad fill.
 
-### 5.1 The Exit panel — break-even from four settings
+### 5.1 Fair spread — from the swap and the days to expiry
+
+Sits at the top of the Exit panel, above break-even. It answers a different
+question from anything else on the screen: **what should this basis be, on
+financing alone, for the days remaining until the contract expires?**
+
+```
+carry        = Σ over both legs of ( swap_per_lot_per_night × lots × nights )
+fair_spread  = − carry / k                    nights = days to expiry
+```
+
+Priced from **the broker's own swap**, not from an annual risk-free rate. That is
+the deliberate choice: it is tied to money actually charged, and dividing by `k`
+makes it **size-free**, so the reading does not move when the clip does. Port
+`statarb/carry.py`.
+
+- **The panel shows "—" and a prompt when it cannot be computed**, exactly as in
+  the reference screenshot (`set expiry + swap`). Link the prompt to the fields.
+- **Swap units are the whole difficulty.** MT5 reports `swap_long` / `swap_short`
+  in whatever `swap_mode` says — the same `-4.5` is 4.5 points on one symbol,
+  4.5 units of account currency on another, 4.5% a year on a third. Convert each
+  mode **explicitly** and return None with the reason for a mode you cannot
+  convert. **An unconvertible swap is not a zero swap.**
+- **One unpriced leg makes the whole estimate None.** Half a carry estimate is
+  not a smaller estimate; a fair value that quietly dropped a leg's financing
+  reads as an edge that is not there.
+- **Keep the sign.** The pair is long one leg and short the other, so the two
+  frequently pull opposite ways, and being *paid* to wait is the case worth
+  finding. Which side each leg is charged on follows the direction held — reading
+  `swap_long` on both prices a trade nobody places. Hence four keys:
+  `swap_{A,B}_{long,short}_per_lot`.
+- **Hand-entered overrides win, and must be CLEARABLE.** Blank means "use MT5's".
+  MT5's units cannot always be converted and the trader can see what the broker
+  actually charges. Use `?? ''`, never `|| ''`, on the reload path — a swap of 0
+  is a real statement.
+- **Both legs' expiry dates are operator-editable**, beside the swap fields.
+  Read from MT5 when blank, kept when typed. A date that will not parse is
+  reported and the old value kept; a date already past is accepted but flagged.
+- **Missing expiry hides the reading only when the pair could not have one.**
+  A basis pair (XAGUSD vs SIU6) with no date is an *unset field* and shows the
+  prompt; a RELATED pair (WTI vs Brent) legitimately has none and shows nothing.
+  Carry an `expects_expiry` flag — without it an operator who has just typed an
+  expiry cannot tell whether it was rejected, ignored, or is waiting on a
+  restart.
+- **Cross-check the sign against an independent estimate** (`carry.sanity`).
+  Price the same basis from an annual rate as well; if the two disagree in
+  **sign**, or are more than ~3× apart, say so and **replace the reading rather
+  than printing beneath it**. A conclusion drawn from an input that can be proven
+  wrong should not render at all. In the existing system a swap entered as
+  `+58.00` where `−58.00` belonged produced "you are paid to hold this at any
+  spread" — a licence to print money, from one wrong sign. Name the exact field
+  and offer the corrected value as one click; do not apply it silently.
+- **Fair spread is a REFERENCE reading.** It does not feed break-even, the
+  take-profit, or AutoRouting — those come from costs and margin. It is there so
+  the trader can see whether today's spread is wide or narrow against what it
+  costs to carry to expiry, which is a judgement they make, not one the system
+  makes.
+- **The carry inputs must HOT-APPLY.** Symbols, contract sizes and β are
+  structural and need a restart; four reference-only fields whose consumer is a
+  panel are not. In the existing system they were blocked with the structural
+  keys, and the log said "assets change requires a restart" ten lines above the
+  trade while the values sat saved and correct.
+
+### 5.2 The Exit panel — break-even from four settings
 
 Each ladder carries a compact Exit panel showing break-even and take-profit for
 **both directions** before entry (a `B` and an `S` column), and the frozen levels
@@ -598,7 +707,7 @@ the two prices — so the only fee still to subtract at that point is
 **commission** (`exits.mark_fees`), not the whole round trip. Subtracting the
 round trip again is the bid-ask charged twice.
 
-### 5.2 Take-profit — a percentage of the margin deployed
+### 5.3 Take-profit — a percentage of the margin deployed
 
 ```
 TP = BE  ±  ( tp_pct × margin ) / k
@@ -622,7 +731,7 @@ mean the same thing by "1%".
   it is *reachable* is the trader's call, and they can only make it if the range
   is on screen.
 
-### 5.3 AutoRouting — arm the exit when the entry fills
+### 5.4 AutoRouting — arm the exit when the entry fills
 
 A per-ladder switch, **default OFF**. When on:
 
@@ -936,32 +1045,35 @@ These are settled. Do not re-open them; build to them.
    window, not patience. Only a *rejected* crossing leg unwinds. §4.
 3. **Time in force — DAY and GTC, standard semantics**, with the honest caveat
    that neither survives this process stopping. §3.1.
-4. **Overnight — ALLOW / EXIT_IF_PROFIT / EXIT_ALWAYS**, the same three options
-   as the Manual Trade card, per ladder, defaulting to ALLOW, with the default
-   also on the settings page. §3.2.
+4. **Overnight — Hold / Exit if in profit / Exit anyway.** It is EXIT LOGIC and
+   lives in **Settings**, not on the ladder header; the panel shows the active
+   mode read-only. Defaults to Hold. §3.2.
 5. **No loops.** Nothing in this system re-enters by itself. There is no
    convergence loop, no auto-repeat, no "keep trading while X". A click is one
    order. `carryloop.py` is explicitly not ported.
-6. **Break-even is built from four editable settings** — bid-ask round trip,
+6. **Fair spread comes from the swap and the days to expiry** — `−carry / k`,
+   priced from the broker's own swap, size-free, and a reference reading only.
+   §5.1.
+7. **Break-even is built from four editable settings** — bid-ask round trip,
    commission, a slippage *allowance*, and swap × nights — and is quoted on the
-   closing executable side. §5.1.
-7. **Take-profit is `BE ± (tp_pct × margin) / k`**, the percentage set in
-   Settings. §5.2.
-8. **AutoRouting** — a per-ladder switch, default OFF. On a fill it rests a
+   closing executable side. §5.2.
+8. **Take-profit is `BE ± (tp_pct × margin) / k`**, the percentage set in
+   Settings. §5.3.
+9. **AutoRouting** — a per-ladder switch, default OFF. On a fill it rests a
    synthetic working order to close at the TP level, priced from the actual
-   fill. It arms a target and no stop. §5.3.
+   fill. It arms a target and no stop. §5.4.
 
 ### Defaults chosen for the questions the operator left open
 
 Build these, make each one a visible setting, and let the numbers be corrected
 from measurement rather than argued about up front.
 
-9. **Increment per pair — derived, not typed.** Default to
+10. **Increment per pair — derived, not typed.** Default to
    `max(tick_B, β × tick_A)`, which is the smallest step the spread can actually
    move in, rounded to something readable. On gold at β = 1 with 0.01 ticks both
    legs that gives 0.01, so ±30 rows spans about a sigma — a usable ladder.
    Per-pair override, and show the derivation beside the field.
-10. **Default click quantity — in SPREADS, not in leg lots.** One spread = the
+11. **Default click quantity — in SPREADS, not in leg lots.** One spread = the
    configured clip for that pair, defaulting to
    `sizing.matched_minimum_lots` — the smallest size at which *both* legs clear
    their own minimum volume. This matters more than it looks: on CFI, spot's
@@ -970,21 +1082,21 @@ from measurement rather than argued about up front.
    Quoting in spreads makes that unrepresentable. Always display the implied
    leg lots and `k` beside the quantity — "1 spread = 0.10 A / 0.10 B, $10 per
    1.00 of spread".
-11. **A click crosses immediately only in MARKET mode** — which is now the
+12. **A click crosses immediately only in MARKET mode** — which is now the
    dropdown, so this is answered by decision 1. In LIMIT mode every click is a
    working order, whatever price it lands on.
-12. **Working orders do NOT survive a restart**, and cannot meaningfully: nothing
+13. **Working orders do NOT survive a restart**, and cannot meaningfully: nothing
    is watching the spread while this process is down. §3.1 and §4's sweep.
 
 ### Still genuinely open — ask before building the LIMIT path
 
-13. **Which leg quotes?** Default is the wider bid-ask (the spread you earn),
+14. **Which leg quotes?** Default is the wider bid-ask (the spread you earn),
     but that is usually the less liquid leg where you queue longest. Show both
     legs' measured widths and let the operator pick per pair.
-14. **The re-peg dead band.** Default one increment. Too tight destroys queue
+15. **The re-peg dead band.** Default one increment. Too tight destroys queue
     position; too loose lets the implied spread drift off the clicked level.
     This is the LIMIT path's main tuning knob and it needs live measurement.
-15. **`MARKET_PROTECTION_TICKS`.** How far through the clicked spread may a
+16. **`MARKET_PROTECTION_TICKS`.** How far through the clicked spread may a
     market click fill before it is refused? Default a few increments; measure
     the real distribution before fixing it.
 
