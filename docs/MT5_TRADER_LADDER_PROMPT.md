@@ -1,10 +1,3 @@
-# Prompt for the new project — `ajoxf/MT5-Trader`
-
-Paste everything below the line into a fresh session that has access to
-`https://github.com/ajoxf/MT5-Trader`.
-
----
-
 ## What you are building
 
 A **spread price-ladder trading terminal for MetaTrader 5**, in the repo
@@ -121,32 +114,46 @@ For a pair with Leg A (e.g. spot) and Leg B (e.g. the future), and a hedge
 ratio β (`HEDGE_RATIO`):
 
 ```
-mid_spread   = fut_mid - β × spot_mid          the display / series price
-short_spread = fut_bid - β × spot_ask          SELL the spread: sell B, buy A
-long_spread  = fut_ask - β × spot_bid          BUY  the spread: buy B, sell A
-spread_cost  = long_spread - short_spread      exactly one round turn of both
-                                               legs' bid-ask, in spread units
+short_spread = fut_bid - β × spot_ask     the spread's BID: sell B, buy A
+long_spread  = fut_ask - β × spot_bid     the spread's ASK: buy B, sell A
+spread_cost  = long_spread - short_spread exactly one round turn of both
+                                          legs' bid-ask, in spread units
 ```
 
-By construction `short_spread ≤ mid_spread ≤ long_spread`.
+### THERE IS NO MID. Do not compute one, display one, or decide on one.
 
-Three rules that came out of live losses:
+**This is a hard rule for this product and it removes a whole class of bug.**
+The spread has a bid and an ask, exactly like any other instrument. A midpoint of
+two midpoints is a price nobody fills at, and the existing repo needed it only
+because a z-score needs one continuous series to measure mu and sigma on. **This
+product has no z-score and no series, so the mid has no job here at all.**
 
-1. **Build the spread from the mid of the BOOK, never from `tick.last`.** A
-   trade print above the ask puts the "mid" above the long spread — above the
-   best price anyone can buy the spread at.
-2. **A price someone NAMED is compared against what the market OFFERS.** Every
-   ladder level, every working order, every trigger reads the **executable**
-   spread for its own direction, never the mid. Arming at 59.00 and firing when
-   the mid touched 59.00 fires on a level the market never offered, and fills
-   half a round turn worse.
-3. **A position reads a DIFFERENT touch at each end of its life.** A short
-   enters on `short_spread` and exits on `long_spread`. Reading the favourable
-   side at both ends makes every trade look like it cleared its costs — worse
-   than using the mid, not better. Port
+Concretely, and without exception:
+
+- The ladder, the quote table, break-even, take-profit, fair spread, the slippage
+  reference, the P&L mark and every working-order trigger are quoted on an
+  **executable side**. Two prices, always.
+- Each leg's own bid and ask come from the **book**, never from `tick.last`.
+  A trade print above the ask would put a derived price above the best offer.
+- Where one number is genuinely needed for a rolling measurement (the jump guard,
+  §8), measure it on **each executable side separately** — a jump on either makes
+  the level unusable — not on a synthesised midpoint.
+- If you find yourself averaging two prices, you have introduced a price the
+  market is not showing. Stop.
+
+Three rules that follow, all of which came out of live losses:
+
+1. **A price someone NAMED is compared against what the market OFFERS.** Every
+   ladder level, every working order, every trigger reads the executable spread
+   for its own direction. Arming at 59.00 and firing when a midpoint touched
+   59.00 fires on a level the market never offered, and fills half a round turn
+   worse.
+2. **A position reads a DIFFERENT touch at each end of its life.** A short enters
+   on `short_spread` and exits on `long_spread`. Reading the favourable side at
+   both ends makes every trade look like it cleared its costs. Port
    `marketdata.executable_spread(md, side, closing=False)` and use it as the
    single rule.
-4. **The bid-ask is charged ONCE.** `spread_cost × k` and `costs.round_trip_cost`
+3. **The bid-ask is charged ONCE.** `spread_cost × k` and `costs.round_trip_cost`
    are two views of the same quantity. Use the executable spreads to decide
    *whether a level has been reached*; never add them on top of the cost model.
 
@@ -292,8 +299,8 @@ Port `exits.overnight_exit` verbatim. Three options, in the trader's words:
   the two must not be conflated: a DAY order dying at the cutoff says nothing
   about a position that is already on.
 - **"In profit" means NET P&L** — marked at the closing touch, less commissions
-  only (§5.2). Marked at the mid it would flatten trades that are not actually in
-  profit, by up to half a round turn.
+  only (§5.2). Read on any other basis it would flatten trades that are not
+  actually in profit, by up to half a round turn.
 - **It is the second exit, and often the only one.** AutoRouting arms a target
   and no stop (§5.4), so for a position that never reaches its TP this rule is
   what closes it. Option 2 is exactly that case — "even if TP is not reached" —
@@ -535,8 +542,8 @@ timeout, unwind, close button, cancel-with-a-leaked-fill:
 
 - **Mark every position at the touches it would actually CLOSE at.**
   `marketdata.closing_prices(md, side)` gives them: a long spot leg at the bid,
-  a short futures leg at the ask, and the mirror. A mid mark shows a profit that
-  cannot be taken.
+  a short futures leg at the ask, and the mirror. Any other mark shows a profit
+  that cannot be taken.
 - Consequence, and it is correct: **a position shows a loss the instant it
   opens**, equal to one round turn of both legs' bid-ask. That is what closing
   immediately would cost. Say so in the UI rather than hiding it.
@@ -554,7 +561,7 @@ timeout, unwind, close button, cancel-with-a-leaked-fill:
 ### Slippage, measured properly
 
 Port `statarb/slippage.py`. Score every fill against **the executable touch at
-the moment the order was decided**, not the mid:
+the moment the order was decided** — the side that order would fill on:
 
 ```
 EXPECTED 55.9300   FILLED 55.8000   SLIPPAGE +0.1300
@@ -682,29 +689,33 @@ breaking:
 - **Show the total in BOTH units.** `k` is what converts them, and a bare dollar
   total cannot be checked against a ladder quoted in spread.
 
-#### The half-turn trap — get the basis right
+#### Which side break-even is read on — label it
 
-In the reference panel, `B/E` reads **3.160 buy / 3.065 sell** against an implied
-mid of 3.1125 — that is mid ± **half** the round trip, i.e. each side's executable
-touch. That is coherent **only if** break-even is read against the *closing*
-side, and it is off by half a round turn if read against the mid.
+In the reference panel `B/E` reads **3.160 buy / 3.065 sell**, and those are
+exactly the spread's ask and bid (`long_spread` 3.1600, `short_spread` 3.0660).
+That is correct: **your break-even is what you paid.** Buy the spread at the ask
+of 3.1600 and you are square when you can sell it back at 3.1600 — and selling
+happens on the **bid**. So:
+
+> **Break-even is quoted on the CLOSING side, which is the opposite side to the
+> one you entered on.** A long's break-even is a **bid** level; a short's is an
+> **ask** level. It is the same basis the P&L is marked on.
+
+**Label it on the panel — `B/E (bid)` / `B/E (ask)`.** The number is
+unambiguous once the side is named and dangerously ambiguous without it: 3.1600
+appears identical to the ask sitting in the quote table two rows above, so an
+unlabelled break-even reads as "the price now" rather than "the bid you need".
 
 This is not hypothetical. It is the "why is the trade showing a profit if the
-Long Spread is above the break-even?" fault of 2026-08-25 in the existing repo,
-where a short filled at 54.98 showed +$0.02 against a break-even of 54.38 while
-closing would actually have booked −$0.58. Every figure on that card agreed with
-every other figure on that card.
+Long Spread is above the break-even?" fault of 2026-08-25 in the existing repo:
+a short filled at 54.98 showed **+$0.02** while closing would have booked
+**−$0.58**. Every figure on that card agreed with every other figure on it. The
+fix is the same one as §2's — quote both sides, name them, and never average.
 
-So, settled and non-negotiable:
-
-> **Break-even is quoted on the same basis the P&L is marked on — the CLOSING
-> executable side.** For a long that is the bid; for a short, the ask.
-
-Label it on the panel (`B/E (bid)` / `B/E (ask)`), and assert it with a test:
-**reaching break-even books exactly zero.** Because the mark is taken at the
-closing touch on a position entered at a real fill, both crossings are already in
-the two prices — so the only fee still to subtract at that point is
-**commission** (`exits.mark_fees`), not the whole round trip. Subtracting the
+Assert it with a test: **reaching break-even books exactly zero.** Because the
+mark is taken at the closing touch on a position entered at a real fill, both
+crossings are already in the two prices, so the only fee still to subtract there
+is **commission** (`exits.mark_fees`), not the whole round trip. Subtracting the
 round trip again is the bid-ask charged twice.
 
 ### 5.3 Take-profit — a percentage of the margin deployed
@@ -739,9 +750,9 @@ A per-ladder switch, **default OFF**. When on:
 > spread**, then place a working order to close the position at the TP level.
 > Entry: sell at 100, BE 95, TP 93 → a working order rests at 93.
 
-- **Anchor every level on the FILL, never on the mid the click was taken at.**
+- **Anchor every level on the FILL, never on the price the click was taken at.**
   This is the "Wanted value looks incorrect" fault: spread levels anchored on the
-  mid while P&L is measured from the fill, so the displayed stop named a level
+  quote while P&L is measured from the fill, so the displayed stop named a level
   the engine would not fire at and break-even read as flat while the trade was
   down. `levels_anchor` returns the executed spread.
 - **The closing order is SYNTHETIC too**, and runs on the same §4 machinery —
@@ -948,7 +959,7 @@ These are all rules the existing system learned by getting them wrong.
   as "doubled". Show the derivation: `56.5400 × 2 units (0.02 lots × 100)`.
 - **Internal consistency is not correctness.** Four rows agreeing to the cent
   proves they share an anchor, not that the anchor is right. Anchor spread levels
-  on the **executed fill**, not on the mid the decision was taken at.
+  on the **executed fill**, not on the quote the decision was taken at.
 - **Log on state CHANGE, not on a clock** — and make a change wait until it
   *holds* before printing, counting the ones that did not hold. A gate sitting on
   its own threshold turns an event-driven log back into a flood. Keep a slow
@@ -1017,7 +1028,7 @@ unanswered prompt cannot hold the process open. Make it a setting
 
 1. Config + `.env` + accounts/pairs model; the clash refusals; the launcher.
 2. Leg runners + IPC + `LocalLeg`/`RemoteLeg` (port).
-3. Coordinator loop: fuse two feeds → `mid/short/long` spread per pair, publish
+3. Coordinator loop: fuse two feeds → `short`/`long` spread per pair, publish
    a status file. Verify with a read-only ladder that just prints prices.
 4. Market orders both legs, ticket-based closes, verify-out-of-MT5, order log.
    **Get flat-and-back-to-flat exactly right before anything rests.**
@@ -1110,9 +1121,9 @@ from measurement rather than argued about up front.
   opposite order opens a second position.
 - **Credentials live only in `.env`.** Never in code, config, chat, or logs.
 - **Never run LIVE without `pytest tests/` passing.**
-- **The spread is `Leg B − β × Leg A`**, built from the **mid of the book**.
-  Levels and triggers read the **executable** side; a position reads the opposite
-  executable side to close.
+- **The spread is `Leg B − β × Leg A`**, and it has a **bid and an ask, never a
+  mid**. Levels and triggers read the executable side; a position reads the
+  opposite executable side to close.
 - **`L_B = L_A · C_A / (β · C_B)`**, and `k = L_B · C_B` is the one multiplier.
 - **Sweep our pendings at shutdown AND at startup.** A LIMIT-mode order rests at
   the broker and outlives this process; one that fills while we are down is an
