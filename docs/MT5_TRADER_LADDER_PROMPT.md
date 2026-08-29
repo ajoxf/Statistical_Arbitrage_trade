@@ -520,6 +520,154 @@ exit's cost as a gain). **Unmeasured is not zero** — render "—". Add the
 **elapsed time from click to both legs on**; on a ladder that is the number that
 explains a bad fill.
 
+### 5.1 The Exit panel — break-even from four settings
+
+Each ladder carries a compact Exit panel showing break-even and take-profit for
+**both directions** before entry (a `B` and an `S` column), and the frozen levels
+for the position once one is on.
+
+Break-even is built from four terms, **each an editable setting**, each shown as
+its own row so the total can be checked:
+
+```
+BE = fill  ±  ( bid_ask_round_trip + commission_round_trip
+                + slippage_allowance + swap × nights )  /  k
+```
+
+`+` for a BUY (you need the spread higher), `−` for a SELL. `k = L_B × C_B`, as
+everywhere else.
+
+- **Bid-ask round trip** — *measured live* from both books
+  (`costs.round_trip_cost`, equivalently `spread_cost × k`). The Settings field is
+  an **override**, and it must be **clearable**: blank means "use the measured
+  value". A blank-skipping field loop can only ever *set* a value, and an
+  override that cannot be deleted outlives the pair it was typed for.
+- **Commission** — per lot, per leg, round turn. Two fields, labelled with the
+  running symbol, because a lot is a different amount of money on each leg.
+  **Defaults to 0 and must never default to anything else.** A fabricated cost is
+  charged against every trade and the operator cannot tell it was never their
+  number.
+- **Slippage allowance** — *new, and different in kind from the other three: it
+  is a BUDGET, not a measurement.* Label it "allowance" and show the **measured**
+  realised slippage next to it (the system already computes it, above), so the
+  number is corrected from data rather than left at whatever was first guessed.
+  Default 0.
+- **Swap** — **time-dependent, so break-even is only defined given a holding
+  period.** The panel needs a **nights** input; default 0 (intraday), where the
+  term vanishes. Port `carry.py`'s conversion wholesale, including its refusal:
+  MT5 reports swap in whatever `swap_mode` says, and **an unconvertible swap is
+  not a zero swap** — when it cannot be converted, break-even says so instead of
+  silently dropping the term. Use the four per-side keys
+  (`swap_{A,B}_{long,short}_per_lot`), since the two legs are charged on opposite
+  sides and the values routinely differ in sign.
+
+Two presentation rules, both of which this exact panel is already at risk of
+breaking:
+
+- **One column, one basis.** In the reference panel `B-A Sp` reads `0.094`
+  (spread) while `Comm` reads `$0.00` (dollars) directly beneath it. Read down,
+  that column mixes two units. Put the spread figures in one column and the money
+  in another — the same fault was found and fixed on the existing Filters card,
+  where per-lot and at-size numbers were stacked and capture appeared to dwarf a
+  requirement it actually fell short of.
+- **Show the total in BOTH units.** `k` is what converts them, and a bare dollar
+  total cannot be checked against a ladder quoted in spread.
+
+#### The half-turn trap — get the basis right
+
+In the reference panel, `B/E` reads **3.160 buy / 3.065 sell** against an implied
+mid of 3.1125 — that is mid ± **half** the round trip, i.e. each side's executable
+touch. That is coherent **only if** break-even is read against the *closing*
+side, and it is off by half a round turn if read against the mid.
+
+This is not hypothetical. It is the "why is the trade showing a profit if the
+Long Spread is above the break-even?" fault of 2026-08-25 in the existing repo,
+where a short filled at 54.98 showed +$0.02 against a break-even of 54.38 while
+closing would actually have booked −$0.58. Every figure on that card agreed with
+every other figure on that card.
+
+So, settled and non-negotiable:
+
+> **Break-even is quoted on the same basis the P&L is marked on — the CLOSING
+> executable side.** For a long that is the bid; for a short, the ask.
+
+Label it on the panel (`B/E (bid)` / `B/E (ask)`), and assert it with a test:
+**reaching break-even books exactly zero.** Because the mark is taken at the
+closing touch on a position entered at a real fill, both crossings are already in
+the two prices — so the only fee still to subtract at that point is
+**commission** (`exits.mark_fees`), not the whole round trip. Subtracting the
+round trip again is the bid-ask charged twice.
+
+### 5.2 Take-profit — a percentage of the margin deployed
+
+```
+TP = BE  ±  ( tp_pct × margin ) / k
+```
+
+`tp_pct` is a Settings field. This is already in the existing repo
+(`EXITS.TP_CAPITAL_PCT`) — reuse it, so a target set here and a target set there
+mean the same thing by "1%".
+
+- **Margin is `capital_required`**: each leg's notional divided by **that leg's
+  own leverage**, plus the mark-to-market buffer. Not one leverage for both.
+- **No leverage set means NO suggestion.** Say "set leverage to size a % target"
+  rather than falling back to a different base. A target computed off the wrong
+  base is worse than no target — it looks like a considered number.
+- **Show the derivation**, as the reference panel already does with
+  `2% of $135.80`. Keep that line.
+- **State the distance in spread, and put the pair's recent range beside it.**
+  At small size a percentage of margin can be far outside anything the pair moves
+  in a session — in the existing system, 1% of a $1,220 margin came to 6.65 of
+  spread on a pair that never travelled that far. The number is honest; whether
+  it is *reachable* is the trader's call, and they can only make it if the range
+  is on screen.
+
+### 5.3 AutoRouting — arm the exit when the entry fills
+
+A per-ladder switch, **default OFF**. When on:
+
+> On a fill, compute break-even and take-profit **from the actual executed
+> spread**, then place a working order to close the position at the TP level.
+> Entry: sell at 100, BE 95, TP 93 → a working order rests at 93.
+
+- **Anchor every level on the FILL, never on the mid the click was taken at.**
+  This is the "Wanted value looks incorrect" fault: spread levels anchored on the
+  mid while P&L is measured from the fill, so the displayed stop named a level
+  the engine would not fire at and break-even read as flat while the trade was
+  down. `levels_anchor` returns the executed spread.
+- **The closing order is SYNTHETIC too**, and runs on the same §4 machinery —
+  quoting leg, re-pricing by MODIFY, 2 s escalation. With two differences:
+  - the quoting leg's pending carries **`position=<ticket>`**, so when it
+    executes it **closes** that position rather than opening a new one. On a
+    hedging account a plain opposite pending would open a second position;
+  - when it fills, the other leg is closed **by ticket, at market**.
+- **Never merge an opening pending with a closing one.** §4 aggregates multiple
+  synthetic orders at one level into a single real pending — that aggregation must
+  key on the `position` field too, or an auto-TP close gets merged into an entry
+  order and one of them silently changes meaning.
+- **Cancel the TP order whenever its position changes or goes** — a manual close,
+  the overnight rule, a partial close, a reconciler force-close. An auto-TP left
+  resting after its position is gone is the orphan-pending incident with a
+  *guaranteed* fill: it will eventually execute, and with nothing to close it
+  opens a naked position instead. Pull it **first**, then close.
+- **Size it to what actually filled.** A partially filled entry gets a partially
+  sized TP.
+- **On restart: re-arm from the recovered position's frozen levels, and ANNOUNCE
+  it on the ladder.** This deliberately differs from the existing system's rule
+  that anything placing orders by itself must not resume after a restart — that
+  rule exists because a replayed *entry* creates risk nobody chose, and it was
+  written after a restart opened an unintended live position. A TP re-arm places
+  a **closing** order on a position that already exists: it reduces exposure. And
+  the worse failure here is silent — a trader who believes a target is armed when
+  it is not. So re-arm, and make it visible. Never silently.
+- **AutoRouting arms a target and NO STOP.** Say so plainly on the panel, in the
+  same words the existing Manual card uses: the position runs until the target,
+  the overnight rule, or the trader. If a stop is wanted later it is a separate
+  decision — and it must never be a broker-side stop on one leg.
+- **This is not strategy.** It places the exit order the trader would otherwise
+  place by hand, at a level derived from settings they typed. No signal, no
+  re-entry, no loop.
+
 ---
 
 ## 6. MT5 order mechanics — the lessons that cost money
@@ -794,18 +942,26 @@ These are settled. Do not re-open them; build to them.
 5. **No loops.** Nothing in this system re-enters by itself. There is no
    convergence loop, no auto-repeat, no "keep trading while X". A click is one
    order. `carryloop.py` is explicitly not ported.
+6. **Break-even is built from four editable settings** — bid-ask round trip,
+   commission, a slippage *allowance*, and swap × nights — and is quoted on the
+   closing executable side. §5.1.
+7. **Take-profit is `BE ± (tp_pct × margin) / k`**, the percentage set in
+   Settings. §5.2.
+8. **AutoRouting** — a per-ladder switch, default OFF. On a fill it rests a
+   synthetic working order to close at the TP level, priced from the actual
+   fill. It arms a target and no stop. §5.3.
 
 ### Defaults chosen for the questions the operator left open
 
 Build these, make each one a visible setting, and let the numbers be corrected
 from measurement rather than argued about up front.
 
-6. **Increment per pair — derived, not typed.** Default to
+9. **Increment per pair — derived, not typed.** Default to
    `max(tick_B, β × tick_A)`, which is the smallest step the spread can actually
    move in, rounded to something readable. On gold at β = 1 with 0.01 ticks both
    legs that gives 0.01, so ±30 rows spans about a sigma — a usable ladder.
    Per-pair override, and show the derivation beside the field.
-7. **Default click quantity — in SPREADS, not in leg lots.** One spread = the
+10. **Default click quantity — in SPREADS, not in leg lots.** One spread = the
    configured clip for that pair, defaulting to
    `sizing.matched_minimum_lots` — the smallest size at which *both* legs clear
    their own minimum volume. This matters more than it looks: on CFI, spot's
@@ -814,21 +970,21 @@ from measurement rather than argued about up front.
    Quoting in spreads makes that unrepresentable. Always display the implied
    leg lots and `k` beside the quantity — "1 spread = 0.10 A / 0.10 B, $10 per
    1.00 of spread".
-8. **A click crosses immediately only in MARKET mode** — which is now the
+11. **A click crosses immediately only in MARKET mode** — which is now the
    dropdown, so this is answered by decision 1. In LIMIT mode every click is a
    working order, whatever price it lands on.
-9. **Working orders do NOT survive a restart**, and cannot meaningfully: nothing
+12. **Working orders do NOT survive a restart**, and cannot meaningfully: nothing
    is watching the spread while this process is down. §3.1 and §4's sweep.
 
 ### Still genuinely open — ask before building the LIMIT path
 
-10. **Which leg quotes?** Default is the wider bid-ask (the spread you earn),
+13. **Which leg quotes?** Default is the wider bid-ask (the spread you earn),
     but that is usually the less liquid leg where you queue longest. Show both
     legs' measured widths and let the operator pick per pair.
-11. **The re-peg dead band.** Default one increment. Too tight destroys queue
+14. **The re-peg dead band.** Default one increment. Too tight destroys queue
     position; too loose lets the implied spread drift off the clicked level.
     This is the LIMIT path's main tuning knob and it needs live measurement.
-12. **`MARKET_PROTECTION_TICKS`.** How far through the clicked spread may a
+15. **`MARKET_PROTECTION_TICKS`.** How far through the clicked spread may a
     market click fill before it is refused? Default a few increments; measure
     the real distribution before fixing it.
 
